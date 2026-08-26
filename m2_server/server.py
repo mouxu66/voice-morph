@@ -390,9 +390,15 @@ def _run_audio_config(action: str) -> dict:
     if not out:
         return {"ok": False, "error": err or "脚本无输出"}
     try:
-        return json.loads(out)
+        data = json.loads(out)
     except json.JSONDecodeError:
         return {"ok": False, "error": err or out}
+    # 脚本明确失败（含逐项 errors）时，把明细合并到 error 便于前端展示
+    if not data.get("ok"):
+        errs = data.get("errors")
+        if isinstance(errs, list) and errs:
+            data["error"] = ", ".join(str(e) for e in errs)
+    return data
 
 
 @app.get(API_PREFIX + "/audio/status")

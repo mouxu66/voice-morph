@@ -220,6 +220,7 @@ export type KangarooLiveStatus = {
   dataset_count: number;
   live_running: boolean;
   audio_switched: boolean;
+  last_error?: string;
   train_running: boolean;
   output_device: string;
 };
@@ -250,11 +251,11 @@ export async function rvcLiveStart(): Promise<KangarooStartResult> {
   return jsonFetch<KangarooStartResult>("/rvc/live/start", { method: "POST" });
 }
 
-export async function rvcLiveStop(): Promise<{ ok: boolean; restored?: boolean; error?: string }> {
+export async function rvcLiveStop(): Promise<{ ok: boolean; restored?: boolean; error?: string; note?: string }> {
   return jsonFetch("/rvc/live/stop", { method: "POST" })
 }
 
-export async function rvcLiveReset(): Promise<{ ok: boolean; reset?: boolean }> {
+export async function rvcLiveReset(): Promise<{ ok: boolean; reset?: boolean; error?: string }> {
   return jsonFetch("/rvc/live/reset", { method: "POST" })
 }
 

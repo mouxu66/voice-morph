@@ -101,6 +101,58 @@ namespace CoreAudio {
             int hr = obj.SetDefaultEndpoint(id, role);
             if (hr < 0) throw new Exception("SetDefaultEndpoint failed hr=" + hr);
         }
+        // 设置设备并立即验证是否真实生效；返回 null=成功，否则返回错误描述
+        public static string SetDeviceVerified(string id, int role) {
+            try {
+                var obj = (IPolicyConfig)new PolicyConfigClient();
+                int hr = obj.SetDefaultEndpoint(id, role);
+                if (hr < 0) return "SetDefaultEndpoint hr=" + hr;
+            } catch (Exception ex) { return ex.Message; }
+            try {
+                System.Threading.Thread.Sleep(120);
+                int flow = id.IndexOf("0.0.1", StringComparison.Ordinal) >= 0 ? 1 : 0;
+                var e = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+                IMMDevice d; int gh = e.GetDefaultAudioEndpoint(flow, role, out d);
+                if (gh != 0) return "verify_get_default_failed_hr=" + gh;
+                IntPtr p; d.GetId(out p); string cur = Marshal.PtrToStringUni(p); Marshal.FreeCoTaskMem(p);
+                if (cur != id) return "verify_mismatch want=" + id + " got=" + cur;
+                return null;
+            } catch (Exception ex) { return "verify_ex:" + ex.Message; }
+        }
+        // 枚举当前激活设备 ID 列表
+        static System.Collections.Generic.List<string> EnumerateIds(int flow) {
+            var e = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+            IMMDeviceCollection coll; e.EnumAudioEndpoints(flow, 1, out coll);
+            int cnt; coll.GetCount(out cnt);
+            var list = new System.Collections.Generic.List<string>();
+            for (int i = 0; i < cnt; i++) {
+                IMMDevice d; coll.Item(i, out d);
+                IntPtr p; d.GetId(out p); string id = Marshal.PtrToStringUni(p); Marshal.FreeCoTaskMem(p);
+                list.Add(id);
+            }
+            return list;
+        }
+        // 校验备份文件中的设备 ID 当前是否仍然存在且不是 CABLE 虚拟设备（存在才设置，避免坏 ID 中断，
+        // 也避免把默认设备设回 CABLE 导致"恢复无效"）
+        static void ValidateBackupDict(System.Collections.Generic.Dictionary<string,string> dict, out string[] renderIds, out string[] captureIds) {
+            var rlist = EnumerateIds(0);
+            var clist = EnumerateIds(1);
+            renderIds = new string[3]; captureIds = new string[3];
+            for (int r=0;r<3;r++) {
+                string id = dict.ContainsKey("R"+r) ? dict["R"+r] : "";
+                if (id == "" || !rlist.Contains(id)) { renderIds[r] = null; continue; }
+                string n = GetName(id, true);
+                if (n != null && n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) { renderIds[r] = null; continue; }
+                renderIds[r] = id;
+            }
+            for (int r=0;r<3;r++) {
+                string id = dict.ContainsKey("C"+r) ? dict["C"+r] : "";
+                if (id == "" || !clist.Contains(id)) { captureIds[r] = null; continue; }
+                string n = GetName(id, false);
+                if (n != null && n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) { captureIds[r] = null; continue; }
+                captureIds[r] = id;
+            }
+        }
         public static string GetDefaultId(int flow, int role) {
             var e = (IMMDeviceEnumerator)new MMDeviceEnumerator();
             IMMDevice d; e.GetDefaultAudioEndpoint(flow, role, out d);
@@ -139,15 +191,35 @@ namespace CoreAudio {
             string co = FindId(1, renderSub, captureSub);
             if (pb == null || co == null) return "{\"ok\":false,\"error\":\"device_not_found\",\"playback\":"+J(pb)+",\"capture\":"+J(co)+"}";
             bool saved = false;
+            // 备份时确保保存的是"真实设备"：当前默认若是 CABLE 虚拟设备，则改用真实设备，
+            // 否则 restore 会把默认设备设回 CABLE，导致"恢复无效"。
             if (!System.IO.File.Exists(backupPath)) {
                 var lines = new string[6];
-                for (int r=0;r<3;r++) lines[r] = "R"+r+"="+GetDefaultId(0,r);
-                for (int r=0;r<3;r++) lines[3+r] = "C"+r+"="+GetDefaultId(1,r);
+                for (int r=0;r<3;r++) {
+                    string d = GetDefaultId(0,r);
+                    string n = GetName(d, true);
+                    if (n != null && n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(0); if (rd != null) d = rd; }
+                    lines[r] = "R"+r+"="+d;
+                }
+                for (int r=0;r<3;r++) {
+                    string d = GetDefaultId(1,r);
+                    string n = GetName(d, false);
+                    if (n != null && n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(1); if (rd != null) d = rd; }
+                    lines[3+r] = "C"+r+"="+d;
+                }
                 try { System.IO.File.WriteAllLines(backupPath, lines); saved = true; } catch {}
             }
-            for (int role=0; role<3; role++){ SetDevice(pb, role); SetDevice(co, role); }
+            var errors = new System.Collections.Generic.List<string>();
+            int okCount = 0;
+            for (int role=0; role<3; role++){
+                string er = SetDeviceVerified(pb, role); if (er == null) okCount++; else errors.Add("R"+role+":"+er);
+                string ec = SetDeviceVerified(co, role); if (ec == null) okCount++; else errors.Add("C"+role+":"+ec);
+            }
+            if (errors.Count > 0)
+                return "{\"ok\":false,\"error\":\"apply_partial\",\"setted\":"+okCount+",\"playback\":"+J(pb)+",\"capture\":"+J(co)+",\"backupSaved\":"+(saved?"true":"false")+",\"errors\":[" + string.Join(",", errors.ConvertAll(J).ToArray()) + "]}";
             return "{\"ok\":true,\"playback\":"+J(pb)+",\"capture\":"+J(co)+",\"backupSaved\":"+(saved?"true":"false")+"}";
         }
+        // 找到"真实"设备（当前激活、非 CABLE）；无法确定时回退到默认设备
         public static string FindReal(int flow) {
             var e = (IMMDeviceEnumerator)new MMDeviceEnumerator();
             IMMDeviceCollection coll; e.EnumAudioEndpoints(flow, 1, out coll);
@@ -161,23 +233,57 @@ namespace CoreAudio {
             return null;
         }
         public static string Reset(string backupPath) {
-            string pb = FindReal(0); if (pb == null) pb = GetDefaultId(0, 1);
-            string co = FindReal(1); if (co == null) co = GetDefaultId(1, 1);
-            for (int role = 0; role < 3; role++) { SetDevice(pb, role); SetDevice(co, role); }
-            try { if (System.IO.File.Exists(backupPath)) System.IO.File.Delete(backupPath); } catch {}
-            return "{\"ok\":true,\"reset\":true,\"playback\":" + J(pb) + ",\"capture\":" + J(co) + "}";
+            var errors = new System.Collections.Generic.List<string>();
+            // 优先用备份中记录的原始设备（用户真正在用的设备），备份无效则 FindReal
+            string[] rTargets = null, cTargets = null;
+            if (System.IO.File.Exists(backupPath)) {
+                try {
+                    var dict = new Dictionary<string,string>();
+                    foreach (var line in System.IO.File.ReadAllLines(backupPath)) {
+                        int eq = line.IndexOf('=');
+                        if (eq > 0) dict[line.Substring(0,eq)] = line.Substring(eq+1);
+                    }
+                    string[] rl, cl;
+                    ValidateBackupDict(dict, out rl, out cl);
+                    bool rOk = false, cOk = false;
+                    foreach (var x in rl) if (x != null) { rOk = true; break; }
+                    foreach (var x in cl) if (x != null) { cOk = true; break; }
+                    if (rOk) rTargets = rl;
+                    if (cOk) cTargets = cl;
+                } catch (Exception ex) { errors.Add("backup_parse:" + ex.Message); }
+            }
+            if (rTargets == null) { string pb = FindReal(0); if (pb == null) pb = GetDefaultId(0, 1); rTargets = new string[]{pb,pb,pb}; }
+            if (cTargets == null) { string co = FindReal(1); if (co == null) co = GetDefaultId(1, 1); cTargets = new string[]{co,co,co}; }
+            int okCount = 0;
+            for (int role = 0; role < 3; role++) {
+                if (rTargets[role] != null) { string er = SetDeviceVerified(rTargets[role], role); if (er == null) okCount++; else errors.Add("R"+role+":"+er); }
+                if (cTargets[role] != null) { string ec = SetDeviceVerified(cTargets[role], role); if (ec == null) okCount++; else errors.Add("C"+role+":"+ec); }
+            }
+            bool allOk = (errors.Count == 0);
+            if (allOk) { try { if (System.IO.File.Exists(backupPath)) System.IO.File.Delete(backupPath); } catch {} }
+            string detail = allOk ? "" : ",\"errors\":[" + string.Join(",", errors.ConvertAll(J).ToArray()) + "]";
+            return "{\"ok\":" + (allOk?"true":"false") + ",\"reset\":true,\"setted\":" + okCount + ",\"playback\":" + J(rTargets[0]) + ",\"capture\":" + J(cTargets[0]) + detail + "}";
         }
         public static string Restore(string backupPath) {
             if (!System.IO.File.Exists(backupPath)) return Reset(backupPath);
             var dict = new Dictionary<string,string>();
-            foreach (var line in System.IO.File.ReadAllLines(backupPath)) {
-                int eq = line.IndexOf('=');
-                if (eq > 0) dict[line.Substring(0,eq)] = line.Substring(eq+1);
-            }
-            for (int r=0;r<3;r++){ if (dict.ContainsKey("R"+r) && dict["R"+r]!="") SetDevice(dict["R"+r],r); }
-            for (int r=0;r<3;r++){ if (dict.ContainsKey("C"+r) && dict["C"+r]!="") SetDevice(dict["C"+r],r); }
-            try { System.IO.File.Delete(backupPath); } catch {}
-            return "{\"ok\":true,\"restored\":true}";
+            try {
+                foreach (var line in System.IO.File.ReadAllLines(backupPath)) {
+                    int eq = line.IndexOf('=');
+                    if (eq > 0) dict[line.Substring(0,eq)] = line.Substring(eq+1);
+                }
+            } catch (Exception ex) { return "{\"ok\":false,\"restored\":false,\"error\":" + J("backup_read:" + ex.Message) + "}"; }
+            string[] rTargets, cTargets;
+            ValidateBackupDict(dict, out rTargets, out cTargets);
+            var errors = new System.Collections.Generic.List<string>();
+            int okCount = 0;
+            for (int r=0;r<3;r++){ if (rTargets[r] != null) { string er = SetDeviceVerified(rTargets[r], r); if (er == null) okCount++; else errors.Add("R"+r+":"+er); } else if (dict.ContainsKey("R"+r) && dict["R"+r]!="") errors.Add("R"+r+":device_missing"); }
+            for (int r=0;r<3;r++){ if (cTargets[r] != null) { string ec = SetDeviceVerified(cTargets[r], r); if (ec == null) okCount++; else errors.Add("C"+r+":"+ec); } else if (dict.ContainsKey("C"+r) && dict["C"+r]!="") errors.Add("C"+r+":device_missing"); }
+            bool allOk = (errors.Count == 0);
+            // 全部成功才删除备份；有失败保留备份供下次重试
+            if (allOk) { try { System.IO.File.Delete(backupPath); } catch {} }
+            string detail = allOk ? "" : ",\"errors\":[" + string.Join(",", errors.ConvertAll(J).ToArray()) + "]";
+            return "{\"ok\":" + (allOk?"true":"false") + ",\"restored\":" + (allOk?"true":"false") + ",\"setted\":" + okCount + detail + "}";
         }
         public static string Diagnostic() {
             var e = (IMMDeviceEnumerator)new MMDeviceEnumerator();

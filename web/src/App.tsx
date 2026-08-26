@@ -41,13 +41,17 @@ function AppChrome() {
     setRestoring(true)
     setRestoreMsg("")
     try {
-      await rvcLiveReset()
-      setRestoreMsg("已恢复默认音频设备")
-    } catch {
-      setRestoreMsg("恢复失败，请重试")
+      const r = await rvcLiveReset()
+      if (!r.ok) {
+        setRestoreMsg(`恢复失败：${r.error ?? "未知错误"}。可到 Windows 声音设置手动选择默认设备，或重启电脑。`)
+        return
+      }
+      setRestoreMsg("已恢复默认音频设备（已打开的微信/游戏需退出重开才生效）")
+    } catch (error) {
+      setRestoreMsg(`恢复失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setRestoring(false)
-      window.setTimeout(() => setRestoreMsg(""), 3000)
+      window.setTimeout(() => setRestoreMsg(""), 5000)
     }
   }, [])
   const online = serviceState === "online"

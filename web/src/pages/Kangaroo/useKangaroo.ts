@@ -64,8 +64,16 @@ export function useKangaroo() {
     setStopping(true)
     setMessage("")
     try {
-      await rvcLiveStop()
-      setMessage("已停止实时变声，并还原了你的声卡设置。")
+      const r = await rvcLiveStop()
+      if (!r.ok) {
+        setMessage(`停止失败：${r.error ?? "未知错误"}。若无法恢复，请点「一键恢复音频」或重启电脑。`)
+        return
+      }
+      setMessage(
+        r.note
+          ? `${r.note}。注意：已打开的微信/游戏等应用不会自动切换录音设备，请退出后重新打开即可恢复。`
+          : "已停止实时变声并还原声卡。注意：已打开的微信/游戏等应用不会自动跟随设备切换，请退出后重新打开即可恢复。",
+      )
     } catch (error) {
       setMessage(`停止失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
@@ -77,8 +85,12 @@ export function useKangaroo() {
   const reset = useCallback(async () => {
     setMessage("")
     try {
-      await rvcLiveReset()
-      setMessage("已把音频设备恢复为默认（真实扬声器/麦克风）。")
+      const r = await rvcLiveReset()
+      if (!r.ok) {
+        setMessage(`恢复音频设备失败：${r.error ?? "未知错误"}。可到 Windows 声音设置中手动选择默认设备，或重启电脑。`)
+        return
+      }
+      setMessage("已把音频设备恢复为默认（真实扬声器/麦克风）。注意：已打开的微信/游戏等应用不会自动跟随设备切换，请退出后重新打开即可恢复。")
     } catch (error) {
       setMessage(`恢复失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {

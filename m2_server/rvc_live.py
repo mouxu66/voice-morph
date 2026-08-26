@@ -44,14 +44,35 @@ _state = {
 }
 
 
-def _audio(action: str):
-    """调用 audio_config.ps1。apply 会首次自动备份原设备，restore 还原并删除备份。"""
-    subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-         "-File", str(AUDIO_PS1), "-action", action],
-        capture_output=True, text=True, timeout=120,
-        encoding="utf-8", errors="replace",
-    )
+def _audio(action: str) -> dict:
+    """调用 audio_config.ps1 并解析 JSON 输出。
+
+    apply 会首次自动备份原设备；restore 还原并删除备份；reset 强制恢复真实设备。
+    脚本失败（ok=false 或无输出）时抛 RuntimeError，避免前端误报"已恢复"。
+    """
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-File", str(AUDIO_PS1), "-action", action],
+            capture_output=True, text=True, timeout=120,
+            encoding="utf-8", errors="replace",
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"audio_config {action} 执行超时(120s)")
+    out = (proc.stdout or "").strip()
+    if not out:
+        err = (proc.stderr or "").strip()
+        raise RuntimeError(f"audio_config {action} 无输出: {err[:300]}")
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"audio_config {action} 输出非 JSON: {out[:300]}")
+    if not data.get("ok"):
+        errs = data.get("errors")
+        if isinstance(errs, list) and errs:
+            raise RuntimeError(f"audio_config {action} 失败: {', '.join(str(e) for e in errs)}")
+        raise RuntimeError(f"audio_config {action} 失败: {data.get('error') or data}")
+    return data
 
 
 def _realtime_alive() -> bool:
@@ -68,24 +89,39 @@ def _realtime_alive() -> bool:
 
 
 def _reset_audio():
-    """强制把音频设备恢复为真实默认设备（兜底：无论有无备份都生效）。"""
+    """强制把音频设备恢复为真实默认设备（兜底：无论有无备份都生效）。
+
+    返回 (ok, detail)。reset 失败时保留备份供前端/后续重试。
+    """
     try:
-        _audio("reset")
-    except Exception:
-        pass
+        data = _audio("reset")
+        return True, data
+    except Exception as e:
+        return False, str(e)
 
 
 def _auto_clean():
-    """服务器启动时清理上次异常残留的声卡切换：有备份但实时未运行时自动还原。"""
+    """服务器启动时清理上次异常残留的声卡切换：有备份但实时未运行时自动还原。
+
+    restore 成功会删除备份；若残留或抛错则走 reset 兜底（返回失败信息到日志）。
+    """
     backup = Path(os.environ.get("LOCALAPPDATA", "")) / "rvc_audio_backup.txt"
     if backup.exists() and not _realtime_alive():
         try:
             _audio("restore")
-            # restore 成功会删除备份文件；若残留则说明还原失败，走 reset 兜底
+        except Exception as e:
+            print(f"[auto_clean] restore 失败，尝试 reset 兜底: {e}", flush=True)
+            ok, detail = _reset_audio()
+            if not ok:
+                print(f"[auto_clean] reset 兜底也失败: {detail}", flush=True)
+            else:
+                print("[auto_clean] reset 兜底成功，声卡已还原", flush=True)
+        else:
             if backup.exists():
+                print("[auto_clean] restore 后备份残留，走 reset 兜底", flush=True)
                 _reset_audio()
-        except Exception:
-            _reset_audio()
+            else:
+                print("[auto_clean] restore 成功，声卡已还原", flush=True)
         _state["live"].update(running=False, pid=None, audio_switched=False)
 
 
@@ -137,11 +173,20 @@ def _live_proc_alive() -> bool:
 
 def _live_waiter(proc: subprocess.Popen):
     proc.wait()
+    # RVC 窗口关闭后自动还原声卡；restore 失败则 reset 兜底，并记录状态供 status 反馈
+    error = ""
     try:
         _audio("restore")
-    except Exception:
-        pass
-    _state["live"].update(running=False, pid=None, audio_switched=False)
+    except Exception as e:
+        error = f"自动还原声卡失败: {e}"
+        print(f"[live_waiter] {error}，尝试 reset 兜底", flush=True)
+        ok, detail = _reset_audio()
+        if not ok:
+            error = f"自动还原声卡失败: {e}；reset 兜底也失败: {detail}"
+            print(f"[live_waiter] {error}", flush=True)
+        else:
+            error = ""
+    _state["live"].update(running=False, pid=None, audio_switched=False, error=error)
 
 
 router = APIRouter(prefix=API_PREFIX)
@@ -160,6 +205,7 @@ def rvc_live_status():
         "dataset_count": len(list(DATASET_DIR.glob("*.wav"))) if DATASET_DIR.exists() else 0,
         "live_running": _live_proc_alive(),
         "audio_switched": _state["live"]["audio_switched"],
+        "last_error": _state["live"].get("error", ""),
         "train_running": _state["train"]["running"],
         "output_device": OUTPUT_DEVICE,
     }
@@ -209,20 +255,31 @@ def rvc_live_stop():
         except Exception:
             pass
         _state["live"].update(running=False, pid=None, audio_switched=False)
+    # 还原声卡：restore 失败则 reset 兜底，并真实反馈
     try:
         _audio("restore")
         _state["live"]["audio_switched"] = False
+        _state["live"]["error"] = ""
+        return JSONResponse({"ok": True, "restored": True})
     except Exception as e:
-        return JSONResponse({"ok": False, "error": f"还原声卡失败: {e}"})
-    return JSONResponse({"ok": True, "restored": True})
+        ok, detail = _reset_audio()
+        _state["live"]["audio_switched"] = False
+        if ok:
+            _state["live"]["error"] = ""
+            return JSONResponse({"ok": True, "restored": True, "note": f"restore 失败({e})，已用 reset 兜底恢复"})
+        _state["live"]["error"] = f"还原声卡失败: {e}；reset 兜底失败: {detail}"
+        return JSONResponse({"ok": False, "error": _state["live"]["error"], "fallback_failed": True})
 
 
 @router.post("/rvc/live/reset")
 def rvc_live_reset():
     """强制把音频设备恢复为真实默认设备（兜底：无论有无备份都生效）。"""
-    _reset_audio()
+    ok, detail = _reset_audio()
     _state["live"].update(running=False, pid=None, audio_switched=False)
-    return JSONResponse({"ok": True, "reset": True})
+    if ok:
+        _state["live"]["error"] = ""
+        return JSONResponse({"ok": True, "reset": True})
+    return JSONResponse({"ok": False, "error": f"恢复音频设备失败: {detail}"})
 
 
 @router.get("/rvc/train/status")
