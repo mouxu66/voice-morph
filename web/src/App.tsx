@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react"
-import { Activity, AudioWaveform, Moon, Monitor, Settings2, Sun } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { Activity, AudioWaveform, Moon, Monitor, RotateCcw, Settings2, Sun } from "lucide-react"
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom"
-import { getHealth, listVoices } from "@/api/client"
+import { getHealth, listVoices, rvcLiveReset } from "@/api/client"
 import { StudioNav } from "@/components/voice-studio/StudioNav"
 import { useAppStore } from "@/store/useAppStore"
 import { ThemeMode, getStoredTheme, setStoredTheme } from "@/theme"
@@ -33,7 +33,23 @@ function AppChrome() {
   const serviceState = useServiceState()
   const [theme, setTheme] = useState<ThemeMode>(getStoredTheme())
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [restoring, setRestoring] = useState(false)
+  const [restoreMsg, setRestoreMsg] = useState("")
   const pageTitle = pageTitles[currentLocation.pathname] ?? "音色工坊"
+
+  const handleRestoreAudio = useCallback(async () => {
+    setRestoring(true)
+    setRestoreMsg("")
+    try {
+      await rvcLiveReset()
+      setRestoreMsg("已恢复默认音频设备")
+    } catch {
+      setRestoreMsg("恢复失败，请重试")
+    } finally {
+      setRestoring(false)
+      window.setTimeout(() => setRestoreMsg(""), 3000)
+    }
+  }, [])
   const online = serviceState === "online"
 
   return (
@@ -52,6 +68,18 @@ function AppChrome() {
           <p className="font-mono text-xs uppercase tracking-widest text-primary">工作区</p>
           <p className="mt-3 text-sm font-medium text-card-foreground">本地录音棚</p>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">质检、建库、转换，一处完成。</p>
+        </div>
+        <div className="mt-6">
+          <button
+            type="button"
+            onClick={handleRestoreAudio}
+            disabled={restoring}
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-primary/40 bg-primary/10 px-3 py-2.5 text-sm font-medium text-primary shadow-sm transition hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-60"
+          >
+            <RotateCcw className={restoring ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+            {restoring ? "正在恢复…" : "一键恢复音频"}
+          </button>
+          {restoreMsg && <p className="mt-2 px-1 text-center text-xs leading-5 text-primary">{restoreMsg}</p>}
         </div>
         <div className="mt-8">
           <StudioNav compact />

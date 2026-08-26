@@ -9,6 +9,7 @@
   4. 后台拉起 realtime_gui.py（新控制台），并守护进程 —— 退出后自动还原声卡
 """
 import json
+import os
 import re
 import subprocess
 import threading
@@ -23,7 +24,8 @@ ROOT = Path(__file__).resolve().parent.parent
 RVC_ROOT = Path(r"D:\RVC")
 CONFIG_JSON = RVC_ROOT / "configs" / "config.json"
 REALTIME_PY = RVC_ROOT / "realtime_gui.py"
-RUNTIME_PY = RVC_ROOT / "runtime" / "python.exe"
+# 本机 RVC 环境没有 runtime 目录，Python 解释器在 .venv（train_meituan_rat.py 亦如此）
+RUNTIME_PY = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 VENV_PY = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 TRAIN_PY = RVC_ROOT / "train_meituan_rat.py"
 LOG_DIR = RVC_ROOT / "logs" / "meituan_rat"
@@ -48,7 +50,43 @@ def _audio(action: str):
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
          "-File", str(AUDIO_PS1), "-action", action],
         capture_output=True, text=True, timeout=120,
+        encoding="utf-8", errors="replace",
     )
+
+
+def _realtime_alive() -> bool:
+    """检测 RVC 实时变声窗口（realtime_gui.py）是否仍在运行。"""
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\").CommandLine -join ' '"],
+            capture_output=True, text=True, timeout=20,
+        ).stdout
+        return "realtime_gui" in out
+    except Exception:
+        return False
+
+
+def _reset_audio():
+    """强制把音频设备恢复为真实默认设备（兜底：无论有无备份都生效）。"""
+    try:
+        _audio("reset")
+    except Exception:
+        pass
+
+
+def _auto_clean():
+    """服务器启动时清理上次异常残留的声卡切换：有备份但实时未运行时自动还原。"""
+    backup = Path(os.environ.get("LOCALAPPDATA", "")) / "rvc_audio_backup.txt"
+    if backup.exists() and not _realtime_alive():
+        try:
+            _audio("restore")
+            # restore 成功会删除备份文件；若残留则说明还原失败，走 reset 兜底
+            if backup.exists():
+                _reset_audio()
+        except Exception:
+            _reset_audio()
+        _state["live"].update(running=False, pid=None, audio_switched=False)
 
 
 def _model_status() -> bool | str:
@@ -146,8 +184,11 @@ def rvc_live_start():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"切换虚拟声卡失败: {e}")
 
+    # 注意：不能用 -I 隔离模式 —— realtime_gui.py 依赖脚本同目录下的 tools/ 模块，
+    # -I 不会把脚本目录加入 sys.path，会导致 `from tools.file_io import read_text` 失败。
+    # 这里依赖 cwd=RVC_ROOT + 解释器把脚本所在目录加入 sys.path[0]。
     proc = subprocess.Popen(
-        [str(RUNTIME_PY), "-I", str(REALTIME_PY)],
+        [str(RUNTIME_PY), str(REALTIME_PY)],
         cwd=str(RVC_ROOT), creationflags=CREATE_NEW_CONSOLE,
     )
     _state["live"].update(running=True, pid=proc.pid, error="")
@@ -155,7 +196,7 @@ def rvc_live_start():
     return JSONResponse({
         "ok": True, "pid": proc.pid, "audio_switched": True,
         "output_device": OUTPUT_DEVICE,
-        "hint": f"已把录音设备切到 {OUTPUT_DEVICE}，请在弹出的 RVC 窗口点「开始变声」；关闭窗口或点「停止变袋鼠音」会自动还原声卡",
+        "hint": "已把系统录音设备切到 CABLE Output（微信等应用会用变身后的声音），RVC 窗口输出已指向 CABLE Input。请在弹出的 RVC 窗口点「开始变声」；关闭窗口或点「停止变袋鼠音」会自动还原声卡",
     })
 
 
@@ -174,6 +215,14 @@ def rvc_live_stop():
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"还原声卡失败: {e}"})
     return JSONResponse({"ok": True, "restored": True})
+
+
+@router.post("/rvc/live/reset")
+def rvc_live_reset():
+    """强制把音频设备恢复为真实默认设备（兜底：无论有无备份都生效）。"""
+    _reset_audio()
+    _state["live"].update(running=False, pid=None, audio_switched=False)
+    return JSONResponse({"ok": True, "reset": True})
 
 
 @router.get("/rvc/train/status")
@@ -208,3 +257,7 @@ def rvc_train_start():
     threading.Thread(target=_waiter, args=(proc,), daemon=True).start()
     return JSONResponse({"ok": True, "started": True, "pid": proc.pid,
                          "log_dir": str(LOG_DIR)})
+
+
+# 服务器启动时，清理上次异常残留的声卡切换（有备份但实时未运行 → 自动还原）
+_auto_clean()

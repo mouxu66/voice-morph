@@ -194,6 +194,21 @@ export async function exportRvcDataset(): Promise<{ ok: boolean; copied: number;
   return jsonFetch("/rvc/dataset/export", { method: "POST" });
 }
 
+// ---- 袋鼠 RVC 模型状态（训练完成后的只读展示） ----
+
+export type RvcModelStatus = {
+  trained: boolean;
+  pth_exists: boolean;
+  index_exists: boolean;
+  dataset_count: number;
+  weights_dir: string;
+  dataset_dir: string;
+};
+
+export async function getRvcModel(): Promise<RvcModelStatus> {
+  return jsonFetch<RvcModelStatus>("/rvc/model");
+}
+
 // ---- 袋鼠语音一键（RVC 实时变声 / 训练） ----
 
 export type KangarooLiveStatus = {
@@ -236,7 +251,11 @@ export async function rvcLiveStart(): Promise<KangarooStartResult> {
 }
 
 export async function rvcLiveStop(): Promise<{ ok: boolean; restored?: boolean; error?: string }> {
-  return jsonFetch("/rvc/live/stop", { method: "POST" });
+  return jsonFetch("/rvc/live/stop", { method: "POST" })
+}
+
+export async function rvcLiveReset(): Promise<{ ok: boolean; reset?: boolean }> {
+  return jsonFetch("/rvc/live/reset", { method: "POST" })
 }
 
 export async function rvcTrainStatus(): Promise<KangarooTrainStatus> {

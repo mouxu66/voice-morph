@@ -86,6 +86,11 @@ export function KangarooPage(p: ReturnType<typeof useKangaroo>) {
               {p.starting ? "正在启动…" : "实时变袋鼠音"}
             </button>
           )}
+          {p.liveOn && (
+            <p className="mt-3 flex items-center gap-2 text-xs text-primary">
+              <CircleAlert className="h-3.5 w-3.5 shrink-0" />实时变声中：关闭 RVC 窗口或点「停止」会自动还原设备；若忘了关，随时在左侧栏点「一键恢复音频」。
+            </p>
+          )}
           {!p.modelOk && (
             <p className="mt-3 flex items-center gap-2 text-xs text-destructive">
               <CircleAlert className="h-3.5 w-3.5" />袋鼠模型未就绪，请先点「训练袋鼠模型」。

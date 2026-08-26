@@ -4,6 +4,7 @@ import {
   rvcLiveStart,
   rvcLiveStatus,
   rvcLiveStop,
+  rvcLiveReset,
   rvcTrainStart,
   rvcTrainStatus,
   type KangarooLiveStatus,
@@ -73,6 +74,18 @@ export function useKangaroo() {
     }
   }, [refresh])
 
+  const reset = useCallback(async () => {
+    setMessage("")
+    try {
+      await rvcLiveReset()
+      setMessage("已把音频设备恢复为默认（真实扬声器/麦克风）。")
+    } catch (error) {
+      setMessage(`恢复失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      void refresh()
+    }
+  }, [refresh])
+
   const train = useCallback(async () => {
     setTraining(true)
     setMessage("")
@@ -104,6 +117,7 @@ export function useKangaroo() {
     message,
     start,
     stop,
+    reset,
     train,
   }
 }

@@ -33,7 +33,7 @@ namespace CoreAudio {
     [Guid("D666063F-1587-4E43-81F1-B948E807363F")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IMMDevice {
-        int Activate(ref Guid iid, int dwClsCtx, IntPtr act, out object pp);
+        int Activate(ref Guid iid, int dwClsCtx, IntPtr act, out IntPtr pp);
         int OpenPropertyStore(int stgmAccess, out IntPtr pp);
         int GetId(out IntPtr ppstrId);
         int GetState(out int st);
@@ -148,8 +148,27 @@ namespace CoreAudio {
             for (int role=0; role<3; role++){ SetDevice(pb, role); SetDevice(co, role); }
             return "{\"ok\":true,\"playback\":"+J(pb)+",\"capture\":"+J(co)+",\"backupSaved\":"+(saved?"true":"false")+"}";
         }
+        public static string FindReal(int flow) {
+            var e = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+            IMMDeviceCollection coll; e.EnumAudioEndpoints(flow, 1, out coll);
+            int cnt; coll.GetCount(out cnt);
+            for (int i = 0; i < cnt; i++) {
+                IMMDevice d; coll.Item(i, out d);
+                IntPtr p; d.GetId(out p); string id = Marshal.PtrToStringUni(p); Marshal.FreeCoTaskMem(p);
+                string nm = GetName(id, flow == 0);
+                if (nm != null && nm.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) < 0) return id;
+            }
+            return null;
+        }
+        public static string Reset(string backupPath) {
+            string pb = FindReal(0); if (pb == null) pb = GetDefaultId(0, 1);
+            string co = FindReal(1); if (co == null) co = GetDefaultId(1, 1);
+            for (int role = 0; role < 3; role++) { SetDevice(pb, role); SetDevice(co, role); }
+            try { if (System.IO.File.Exists(backupPath)) System.IO.File.Delete(backupPath); } catch {}
+            return "{\"ok\":true,\"reset\":true,\"playback\":" + J(pb) + ",\"capture\":" + J(co) + "}";
+        }
         public static string Restore(string backupPath) {
-            if (!System.IO.File.Exists(backupPath)) return "{\"ok\":true,\"restored\":false,\"reason\":\"no_backup\"}";
+            if (!System.IO.File.Exists(backupPath)) return Reset(backupPath);
             var dict = new Dictionary<string,string>();
             foreach (var line in System.IO.File.ReadAllLines(backupPath)) {
                 int eq = line.IndexOf('=');
@@ -159,6 +178,29 @@ namespace CoreAudio {
             for (int r=0;r<3;r++){ if (dict.ContainsKey("C"+r) && dict["C"+r]!="") SetDevice(dict["C"+r],r); }
             try { System.IO.File.Delete(backupPath); } catch {}
             return "{\"ok\":true,\"restored\":true}";
+        }
+        public static string Diagnostic() {
+            var e = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+            var sb = new StringBuilder();
+            sb.Append("{\"ok\":true,\"devices\":[");
+            bool first = true;
+            for (int flow = 0; flow < 2; flow++) {
+                IMMDeviceCollection coll; e.EnumAudioEndpoints(flow, 7, out coll);
+                int cnt; coll.GetCount(out cnt);
+                for (int i = 0; i < cnt; i++) {
+                    IMMDevice d; coll.Item(i, out d);
+                    IntPtr p; d.GetId(out p); string id = Marshal.PtrToStringUni(p); Marshal.FreeCoTaskMem(p);
+                    int st; d.GetState(out st);
+                    string nm = GetName(id, flow == 0);
+                    var roles = new System.Collections.Generic.List<int>();
+                    for (int r = 0; r < 3; r++) { string def = GetDefaultId(flow, r); if (def == id) roles.Add(r); }
+                    if (!first) sb.Append(",");
+                    first = false;
+                    sb.Append("{\"flow\":" + flow + ",\"name\":" + J(nm) + ",\"state\":" + st + ",\"roles\":[" + string.Join(",", roles.ToArray()) + "]}");
+                }
+            }
+            sb.Append("]}");
+            return sb.ToString();
         }
     }
 }
@@ -170,5 +212,7 @@ switch ($action) {
     "status"  { [CoreAudio.Audio]::CurrentStatus() }
     "apply"   { [CoreAudio.Audio]::ApplyOptimal($renderSub, $captureSub, $backupPath) }
     "restore" { [CoreAudio.Audio]::Restore($backupPath) }
+    "reset"   { [CoreAudio.Audio]::Reset($backupPath) }
+    "diag"    { [CoreAudio.Audio]::Diagnostic() }
     default   { "error_unknown_action" }
 }

@@ -355,7 +355,9 @@ def export_rvc(request: Request):
 # 调用 Core Audio (IPolicyConfig) 完成。脚本：m2_server/audio_config.ps1
 #   -action status  查看当前默认设备
 #   -action apply   一键设为变声最优配置（备份原始配置）
-#   -action restore 恢复用户原始默认设备（删除备份）
+#   -action restore 恢复用户原始默认设备（删除备份；无备份时回退到 reset）
+#   -action reset   强制恢复为真实扬声器/麦克风（兜底，无论有无备份都生效）
+#   -action diag    枚举全部音频端点（含状态/角色，排查用）
 # 备份文件位于 %LOCALAPPDATA%/rvc_audio_backup.txt，首次 apply 时写入。
 
 _AUDIO_PS1 = ROOT / "m2_server" / "audio_config.ps1"
@@ -379,6 +381,7 @@ def _run_audio_config(action: str) -> dict:
             [exe, "-NoProfile", "-ExecutionPolicy", "Bypass",
              "-File", str(_AUDIO_PS1), "-action", action],
             capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "音频配置脚本执行超时（30s）"}
@@ -464,6 +467,8 @@ def tts_endpoint(req: TTSRequest):
 RVC_DATASET_DIR = ROOT / "media" / "rvc_dataset"
 # 用户 RVC 整合包（D:\RVC）的训练集目录；导出时不存在会自动创建
 RVC_EXPORT_DIR = Path(r"D:/RVC/dataset_raw/rvc_dataset")
+# 训练完成后的最终产物（实时变声依赖，不可移动/删除）
+RVC_WEIGHTS_DIR = Path(r"D:/RVC/logs/meituan_rat")
 
 # 20 句训练语料：与 tts_trial/qwen3_batch_tts.py 保持一致
 RVC_TEXTS = [
@@ -555,6 +560,23 @@ def export_rvc_dataset():
         shutil.copy2(f, dest / f.name)
         copied += 1
     return {"ok": True, "copied": copied, "dest": str(dest)}
+
+
+@app.get(API_PREFIX + "/rvc/model")
+def rvc_model_status():
+    """袋鼠 RVC 模型训练完成状态（供前端「模型已就绪」卡片展示）。"""
+    pth = RVC_WEIGHTS_DIR / "meituan_rat.pth"
+    idx = next(RVC_WEIGHTS_DIR.glob("added_*.index"), None) if RVC_WEIGHTS_DIR.exists() else None
+    trained = pth.exists() and idx is not None
+    dataset_count = len(list(RVC_DATASET_DIR.glob("*.wav"))) if RVC_DATASET_DIR.exists() else 0
+    return {
+        "trained": trained,
+        "pth_exists": pth.exists(),
+        "index_exists": idx is not None,
+        "dataset_count": dataset_count,
+        "weights_dir": str(RVC_WEIGHTS_DIR),
+        "dataset_dir": str(RVC_DATASET_DIR),
+    }
 
 
 if __name__ == "__main__":
