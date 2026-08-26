@@ -193,3 +193,56 @@ export async function getRvcGenStatus(): Promise<RvcGenStatus> {
 export async function exportRvcDataset(): Promise<{ ok: boolean; copied: number; dest: string }> {
   return jsonFetch("/rvc/dataset/export", { method: "POST" });
 }
+
+// ---- 袋鼠语音一键（RVC 实时变声 / 训练） ----
+
+export type KangarooLiveStatus = {
+  ok: boolean;
+  model_ok: boolean;
+  model_detail: string | null;
+  pth_exists: boolean;
+  index_exists: boolean;
+  dataset_count: number;
+  live_running: boolean;
+  audio_switched: boolean;
+  train_running: boolean;
+  output_device: string;
+};
+
+export type KangarooStartResult = {
+  ok: boolean;
+  already_running?: boolean;
+  pid?: number;
+  audio_switched?: boolean;
+  output_device?: string;
+  hint?: string;
+};
+
+export type KangarooTrainStatus = {
+  ok: boolean;
+  model_ok: boolean;
+  model_detail: string;
+  train_running: boolean;
+  dataset_count: number;
+  log_dir: string;
+};
+
+export async function rvcLiveStatus(): Promise<KangarooLiveStatus> {
+  return jsonFetch<KangarooLiveStatus>("/rvc/live/status");
+}
+
+export async function rvcLiveStart(): Promise<KangarooStartResult> {
+  return jsonFetch<KangarooStartResult>("/rvc/live/start", { method: "POST" });
+}
+
+export async function rvcLiveStop(): Promise<{ ok: boolean; restored?: boolean; error?: string }> {
+  return jsonFetch("/rvc/live/stop", { method: "POST" });
+}
+
+export async function rvcTrainStatus(): Promise<KangarooTrainStatus> {
+  return jsonFetch<KangarooTrainStatus>("/rvc/train/status");
+}
+
+export async function rvcTrainStart(): Promise<{ ok: boolean; started?: boolean; already_running?: boolean; pid?: number }> {
+  return jsonFetch("/rvc/train/start", { method: "POST" });
+}

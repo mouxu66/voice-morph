@@ -5,11 +5,13 @@ import { getHealth, listVoices } from "@/api/client"
 import { StudioNav } from "@/components/voice-studio/StudioNav"
 import { useAppStore } from "@/store/useAppStore"
 import { ThemeMode, getStoredTheme, setStoredTheme } from "@/theme"
+import { KangarooRoute } from "@/pages/Kangaroo/index"
 import { TtsRoute } from "@/pages/Tts/index"
 import { VoicesRoute } from "@/pages/Voices/index"
 import { WorkshopRoute } from "@/pages/Workshop/index"
 
 const pageTitles: Record<string, string> = {
+  "/kangaroo": "袋鼠语音",
   "/workshop": "音色工坊",
   "/voices": "音色库",
   "/tts": "文字转语音",
@@ -113,5 +115,5 @@ export default function App() {
     return () => { alive = false; window.clearInterval(timer) }
   }, [setHealth, setVoices])
 
-  return <div className="min-h-screen bg-gradient-to-br from-background via-background to-card text-foreground"><AppChrome /><main className="min-h-screen pt-16 lg:pl-64"><Routes><Route path="/workshop" element={<WorkshopRoute />} /><Route path="/voices" element={<VoicesRoute />} /><Route path="/tts" element={<TtsRoute />} /><Route path="*" element={<Navigate to="/workshop" replace />} /></Routes></main></div>
+  return <div className="min-h-screen bg-gradient-to-br from-background via-background to-card text-foreground"><AppChrome /><main className="min-h-screen pt-16 lg:pl-64"><Routes><Route path="/kangaroo" element={<KangarooRoute />} /><Route path="/workshop" element={<WorkshopRoute />} /><Route path="/voices" element={<VoicesRoute />} /><Route path="/tts" element={<TtsRoute />} /><Route path="*" element={<Navigate to="/kangaroo" replace />} /></Routes></main></div>
 }

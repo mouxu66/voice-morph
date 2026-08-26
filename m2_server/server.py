@@ -31,6 +31,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
+from rvc_live import router as rvc_live_router
 
 warnings.filterwarnings("ignore")
 
@@ -75,6 +76,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(rvc_live_router)
 
 
 @app.get(API_PREFIX + "/health")

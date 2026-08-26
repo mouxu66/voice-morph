@@ -1,7 +1,7 @@
-import { Library, Mic2, Speech } from "lucide-react"
+import { Library, Mic2, Speech, Zap } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 
-const items = [{ path: "/workshop", label: "音色工坊", icon: Mic2 }, { path: "/voices", label: "音色库", icon: Library }, { path: "/tts", label: "文字转语音", icon: Speech }]
+const items = [{ path: "/kangaroo", label: "袋鼠语音", icon: Zap }, { path: "/workshop", label: "音色工坊", icon: Mic2 }, { path: "/voices", label: "音色库", icon: Library }, { path: "/tts", label: "文字转语音", icon: Speech }]
 
 export function StudioNav({ compact = false }: { compact?: boolean }) {
   const currentLocation = useLocation()
