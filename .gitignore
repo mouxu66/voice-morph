@@ -1,0 +1,47 @@
+# ===== 系统 / 编辑器 =====
+.DS_Store
+Thumbs.db
+*.swp
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+*.log
+*.err
+
+# ===== 虚拟环境（不入库） =====
+.venv/
+tts_trial/venv312/
+
+# ===== 前端依赖与构建产物 =====
+web/node_modules/
+web/dist/
+web/release/
+release/
+
+# ===== 第三方 agent skills（安装的工具，非项目代码） =====
+.agents/
+agents/
+
+# ===== TTS 试听音频 / 构建缓存 =====
+tts_trial/*.wav
+web/tsconfig.tsbuildinfo
+
+# ===== 模型权重（大文件，另行管理/下载） =====
+tts_models/
+checkpoints_v2/
+
+# ===== 数据素材 / 切片 / 音色 / 输出（不入库） =====
+media/
+outputs/
+test_tts.wav
+
+# ===== 备份压缩包 / 演示素材 =====
+*.zip
+媒体播放器*.mp4
+
+# ===== 构建日志 =====
+build_log.txt
+builder_log.txt

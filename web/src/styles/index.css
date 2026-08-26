@@ -1,0 +1,80 @@
+/* ===== 主题变量：暗色(默认) / 亮色(跟随系统或手动) ===== */
+:root {
+  color-scheme: dark;
+  --c-bg: 11 14 20;        /* #0b0e14 */
+  --c-bg-1: 17 21 29;      /* #11151d */
+  --c-surface: 22 27 38;   /* #161b26 */
+  --c-surface-2: 28 34 48; /* #1c2230 */
+  --c-border: 38 46 64;    /* #262e40 */
+  --c-border-2: 51 64 90;  /* #33405a */
+  --c-t-strong: 255 255 255;
+  --c-t-200: 226 232 240;  /* #e2e8f0 */
+  --c-t-300: 203 213 225;  /* #cbd5e1 */
+  --c-t-400: 148 163 184;  /* #94a3b8 */
+  --c-t-500: 100 116 139;  /* #64748b */
+  --c-t-600: 71 85 105;    /* #475569 */
+  --c-t-700: 51 65 85;     /* #334155 */
+  --c-accent: 124 92 240;   /* #7c5cf0 */
+  --c-accent-h: 141 113 245; /* #8d71f5 */
+  --c-accent-p: 105 76 222; /* #694cde */
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --c-bg: 244 246 250;     /* #f4f6fa */
+  --c-bg-1: 236 239 244;   /* #eceff4 */
+  --c-surface: 255 255 255;/* #ffffff */
+  --c-surface-2: 238 241 246; /* #eef1f6 */
+  --c-border: 216 221 231; /* #d8dde7 */
+  --c-border-2: 195 203 217; /* #c3cbd9 */
+  --c-t-strong: 15 23 42;   /* #0f172a */
+  --c-t-200: 31 41 55;     /* #1f2937 */
+  --c-t-300: 51 65 85;     /* #334155 */
+  --c-t-400: 71 85 105;    /* #475569 */
+  --c-t-500: 100 116 139;  /* #64748b */
+  --c-t-600: 122 134 153;  /* #7a8699 */
+  --c-t-700: 148 163 184;  /* #94a3b8 */
+  --c-accent: 105 76 222;   /* #694cde */
+  --c-accent-h: 124 92 240; /* #7c5cf0 */
+  --c-accent-p: 88 62 198;  /* #583ec6 */
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply bg-ink-950 text-slate-200 antialiased;
+  }
+  body {
+    @apply font-body;
+  }
+  ::selection {
+    @apply bg-brand-500/30 text-white;
+  }
+  /* 细滚动条，贴合深色主题 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme("colors.ink.600") transparent;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply rounded-2xl border border-ink-700/60 bg-ink-850/80 backdrop-blur-sm;
+  }
+  .btn-primary {
+    @apply inline-flex items-center gap-2 rounded-xl bg-brand-500 px-4 py-2 text-sm font-medium text-white transition
+      hover:bg-brand-400 active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 rounded-xl border border-ink-600 px-4 py-2 text-sm font-medium text-slate-300 transition
+      hover:border-ink-600 hover:bg-ink-800 active:scale-[0.98] disabled:opacity-40;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-ink-600 px-3 py-1 text-xs text-slate-300;
+  }
+  .field-label {
+    @apply mb-1.5 block text-xs font-medium text-slate-400;
+  }
+}
