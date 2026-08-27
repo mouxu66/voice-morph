@@ -20,9 +20,8 @@ export interface TtsHistoryItem {
 const SLOW_HINT_MS = 8000
 
 export function useTts() {
-  const { backendUp } = useAppStore()
+  const { backendUp, voices, selectedVoiceId, selectVoice } = useAppStore()
   const [text, setText] = useState("")
-  const [promptText, setPromptText] = useState("")
   const [textLanguage, setTextLanguageState] = useState<TtsLanguage>("zh")
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [synthesizing, setSynthesizing] = useState(false)
@@ -40,12 +39,16 @@ export function useTts() {
   const generate = useCallback(async () => {
     const trimmed = text.trim()
     if (!backendUp || synthesizing || !trimmed || trimmed.length > TTS_MAX_LENGTH) return
+    if (!selectedVoiceId) {
+      setErrorMessage("还没有可用音色，请先到「音色库」挖掘并保存一个音色。")
+      return
+    }
     setSynthesizing(true)
     setErrorMessage("")
     setSlowHint("")
     const slowTimer = window.setTimeout(() => setSlowHint("正在合成…首次使用需加载语音模型，可能要等一两分钟"), SLOW_HINT_MS)
     try {
-      const result = await sendTts(trimmed, textLanguage, promptText.trim())
+      const result = await sendTts(trimmed, textLanguage, selectedVoiceId)
       const item: TtsHistoryItem = {
         id: `${Date.now()}`,
         text: trimmed,
@@ -61,11 +64,11 @@ export function useTts() {
       setSlowHint("")
       setSynthesizing(false)
     }
-  }, [text, textLanguage, promptText, backendUp, synthesizing])
+  }, [text, textLanguage, backendUp, synthesizing, selectedVoiceId])
 
   const textLength = text.length
   const overLimit = textLength > TTS_MAX_LENGTH
-  const canGenerate = backendUp && !synthesizing && text.trim().length > 0 && !overLimit
+  const canGenerate = backendUp && !synthesizing && text.trim().length > 0 && !overLimit && Boolean(selectedVoiceId)
   const latestResult = ttsHistory[0] ?? null
 
   return {
@@ -74,8 +77,6 @@ export function useTts() {
     setText,
     textLength,
     overLimit,
-    promptText,
-    setPromptText,
     textLanguage,
     setTextLanguage,
     advancedOpen,
@@ -87,5 +88,8 @@ export function useTts() {
     generate,
     ttsHistory,
     latestResult,
+    voices,
+    selectedVoiceId,
+    selectVoice,
   }
 }

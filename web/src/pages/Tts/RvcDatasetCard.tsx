@@ -23,8 +23,8 @@ export function RvcDatasetCard() {
     <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">RVC KANGAROO MODEL</p>
-          <h3 className="mt-2 text-lg font-semibold text-card-foreground">袋鼠音色模型</h3>
+          <p className="font-mono text-xs uppercase tracking-widest text-primary">RVC MODEL</p>
+          <h3 className="mt-2 text-lg font-semibold text-card-foreground">实时变声模型</h3>
         </div>
         <div className="text-right">
           {loading ? (
@@ -65,7 +65,7 @@ export function RvcDatasetCard() {
 
       <p className="mt-5 flex items-center gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2.5 text-xs leading-5 text-muted-foreground">
         <Globe className="h-4 w-4 shrink-0 text-primary" />
-        训练集、检查点与中间产物已收尾归档。实时变声去「袋鼠语音」页一键开启。
+        训练集、检查点与中间产物已收尾归档。实时变声去「实时变声」页一键开启。
       </p>
     </div>
   )

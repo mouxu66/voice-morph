@@ -1,20 +1,17 @@
 import { useCallback, useEffect, useState } from "react"
-import { useNavigate } from "react-router-dom"
 import {
   rvcLiveStart,
   rvcLiveStatus,
   rvcLiveStop,
-  rvcLiveReset,
   rvcTrainStart,
   rvcTrainStatus,
-  type KangarooLiveStatus,
+  type RvcLiveStatus,
+  type RvcTrainStatus,
 } from "@/api/client"
 
-export function useKangaroo() {
-  const navigate = useNavigate()
-  const [script, setScript] = useState("")
-  const [liveStatus, setLiveStatus] = useState<KangarooLiveStatus | null>(null)
-  const [trainingRunning, setTrainingRunning] = useState(false)
+export function useLive() {
+  const [liveStatus, setLiveStatus] = useState<RvcLiveStatus | null>(null)
+  const [trainStatus, setTrainStatus] = useState<RvcTrainStatus | null>(null)
   const [modelOk, setModelOk] = useState(false)
   const [datasetCount, setDatasetCount] = useState(0)
   const [starting, setStarting] = useState(false)
@@ -28,7 +25,7 @@ export function useKangaroo() {
       setLiveStatus(ls)
       setModelOk(ls.model_ok)
       setDatasetCount(ls.dataset_count)
-      setTrainingRunning(ts.train_running)
+      setTrainStatus(ts)
     } catch {
       /* 后端未启动时静默 */
     }
@@ -36,15 +33,11 @@ export function useKangaroo() {
 
   useEffect(() => {
     void refresh()
-    const timer = window.setInterval(refresh, 3000)
+    // 训练/实时进行中 1.5s 快轮询，空闲 5s 慢轮询
+    const busy = trainStatus?.running || liveStatus?.live_running
+    const timer = window.setInterval(refresh, busy ? 1500 : 5000)
     return () => window.clearInterval(timer)
-  }, [refresh])
-
-  const toTts = useCallback(() => {
-    const s = script.trim()
-    if (!s) return
-    navigate(`/tts?text=${encodeURIComponent(s)}`)
-  }, [script, navigate])
+  }, [refresh, trainStatus?.running, liveStatus?.live_running])
 
   const start = useCallback(async () => {
     setStarting(true)
@@ -82,28 +75,12 @@ export function useKangaroo() {
     }
   }, [refresh])
 
-  const reset = useCallback(async () => {
-    setMessage("")
-    try {
-      const r = await rvcLiveReset()
-      if (!r.ok) {
-        setMessage(`恢复音频设备失败：${r.error ?? "未知错误"}。可到 Windows 声音设置中手动选择默认设备，或重启电脑。`)
-        return
-      }
-      setMessage("已把音频设备恢复为默认（真实扬声器/麦克风）。注意：已打开的微信/游戏等应用不会自动跟随设备切换，请退出后重新打开即可恢复。")
-    } catch (error) {
-      setMessage(`恢复失败：${error instanceof Error ? error.message : String(error)}`)
-    } finally {
-      void refresh()
-    }
-  }, [refresh])
-
   const train = useCallback(async () => {
     setTraining(true)
     setMessage("")
     try {
       const r = await rvcTrainStart()
-      setMessage(r.already_running ? "训练已在后台进行中（请在新弹出的控制台窗口查看进度）。" : "已在新窗口启动训练，结束后自动生成模型。")
+      setMessage(r.already_running ? "训练已在后台进行中，下方将实时显示进度。" : "已启动训练，下方会实时显示各阶段进度（另开了控制台窗口可看完整日志）。")
     } catch (error) {
       setMessage(`训练启动失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
@@ -115,13 +92,11 @@ export function useKangaroo() {
   const liveOn = Boolean(liveStatus?.live_running)
 
   return {
-    script,
-    setScript,
-    toTts,
     liveStatus,
     liveOn,
     modelOk,
-    trainingRunning,
+    trainStatus,
+    trainingRunning: Boolean(trainStatus?.running),
     datasetCount,
     starting,
     stopping,
@@ -129,7 +104,6 @@ export function useKangaroo() {
     message,
     start,
     stop,
-    reset,
     train,
   }
 }

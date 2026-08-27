@@ -68,7 +68,7 @@ python -c "import torch; print(torch.cuda.is_available())"
 
 ---
 
-## 当前进度（2026-08-26）
+## 当前进度（2026-08-27）
 
 ✅ **环境**：Python 3.11 venv、PyTorch 2.9.1+cu128（RTX 5060 CUDA 正常）、ffmpeg、Qwen3-TTS 权重与 venv312 已就位
 ✅ **M1 素材流水线已验证**：视频→提音轨→demucs 分离→归一化→切片→参考音频（含追加聚合），全部实测通过
@@ -78,7 +78,7 @@ python -c "import torch; print(torch.cuda.is_available())"
 ✅ **RVC 袋鼠模型已训练完成**：Qwen3-TTS 批量生成 21 条语料 → 导出到 RVC 整合包离线训练 40 epoch（48k/v2/rmvpe），`meituan_rat.pth` + index 已就绪
 ✅ **RVC 实时变声已验证**：`/rvc/live/start` 一键启动 → 自动切虚拟声卡（录音→CABLE Output）→ realtime_gui 实时变声 → 退出/停止自动还原声卡
 ✅ **音频设备兜底**：`/rvc/live/reset` 一键强制恢复真实扬声器/麦克风；服务器启动自动清理上次异常残留的声卡切换
-⏳ **真实验收**：跑通「美团老鼠音色说你的话」全流程（素材→克隆→TTS→实时变声均已单项通过，待整机联调）
+✅ **整机联调已完成（2026-08-27）**：全流程自动化验收通过——后端服务(8000/CUDA) → 素材链路(55 切片+参考音频) → Qwen3-TTS 克隆出音(wav 落盘 outputs/) → RVC 数据集导出(21 条→D:\RVC) → 实时变声 start(弹窗+录音切 CABLE Output) / stop(进程退出+麦克风还原+备份清理)，全程无残留错误
 
 ---
 

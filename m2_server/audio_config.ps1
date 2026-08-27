@@ -72,11 +72,14 @@ namespace CoreAudio {
             using (var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64)) {
                 using (var k = baseKey.OpenSubKey(path)) {
                     if (k == null) return null;
-                    var v2 = k.GetValue("{a45c254e-df1c-4efd-8020-67d146a850e0},2");
-                    if (v2 is string) return (string)v2;
-                    var v14 = k.GetValue("{A45C254E-DF1C-4EFD-8020-67D146A850E0},14");
-                    if (v14 is string) return (string)v14;
-                    return null;
+                    // pid2 = 设备描述（"扬声器"），{b3f8fa53},6 = 设备提供方（"Senary Audio"/"Steam Streaming Speakers"）
+                    // 组合成声音面板显示的完整名 "扬声器 (Senary Audio)"，才能区分 Steam 虚拟设备
+                    var v2 = k.GetValue("{a45c254e-df1c-4efd-8020-67d146a850e0},2") as string;
+                    if (v2 == null) v2 = k.GetValue("{A45C254E-DF1C-4EFD-8020-67D146A850E0},14") as string;
+                    if (v2 == null) return null;
+                    var prov = k.GetValue("{b3f8fa53-0004-438e-9003-51a46e139bfc},6") as string;
+                    if (!string.IsNullOrWhiteSpace(prov) && !v2.Contains(prov)) return v2 + " (" + prov.TrimEnd() + ")";
+                    return v2;
                 }
             }
         }
@@ -132,8 +135,8 @@ namespace CoreAudio {
             }
             return list;
         }
-        // 校验备份文件中的设备 ID 当前是否仍然存在且不是 CABLE 虚拟设备（存在才设置，避免坏 ID 中断，
-        // 也避免把默认设备设回 CABLE 导致"恢复无效"）
+        // 校验备份文件中的设备 ID 当前是否仍然存在，且不是 CABLE / Steam 虚拟设备（存在才设置，避免坏 ID 中断，
+        // 也避免把默认设备设回 CABLE 或 Steam 串流设备导致"恢复无效"）
         static void ValidateBackupDict(System.Collections.Generic.Dictionary<string,string> dict, out string[] renderIds, out string[] captureIds) {
             var rlist = EnumerateIds(0);
             var clist = EnumerateIds(1);
@@ -143,6 +146,7 @@ namespace CoreAudio {
                 if (id == "" || !rlist.Contains(id)) { renderIds[r] = null; continue; }
                 string n = GetName(id, true);
                 if (n != null && n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) { renderIds[r] = null; continue; }
+                if (n != null && n.IndexOf("Steam Streaming", StringComparison.OrdinalIgnoreCase) >= 0) { renderIds[r] = null; continue; }
                 renderIds[r] = id;
             }
             for (int r=0;r<3;r++) {
@@ -150,6 +154,7 @@ namespace CoreAudio {
                 if (id == "" || !clist.Contains(id)) { captureIds[r] = null; continue; }
                 string n = GetName(id, false);
                 if (n != null && n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) { captureIds[r] = null; continue; }
+                if (n != null && n.IndexOf("Steam Streaming", StringComparison.OrdinalIgnoreCase) >= 0) { captureIds[r] = null; continue; }
                 captureIds[r] = id;
             }
         }
@@ -186,7 +191,7 @@ namespace CoreAudio {
             string pb = GetDefaultId(0, 1);
             string pbName = GetName(pb, true);
             if (pbName == null || pbName.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) {
-                pb = FindId(0, renderSub, captureSub);
+                pb = FindReal(0);
             }
             string co = FindId(1, renderSub, captureSub);
             if (pb == null || co == null) return "{\"ok\":false,\"error\":\"device_not_found\",\"playback\":"+J(pb)+",\"capture\":"+J(co)+"}";
@@ -198,13 +203,16 @@ namespace CoreAudio {
                 for (int r=0;r<3;r++) {
                     string d = GetDefaultId(0,r);
                     string n = GetName(d, true);
+                    // CABLE 和 Steam 虚拟设备都不能作为"用户原始设备"写入备份
                     if (n != null && n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(0); if (rd != null) d = rd; }
+                    if (n != null && n.IndexOf("Steam Streaming", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(0); if (rd != null) d = rd; }
                     lines[r] = "R"+r+"="+d;
                 }
                 for (int r=0;r<3;r++) {
                     string d = GetDefaultId(1,r);
                     string n = GetName(d, false);
                     if (n != null && n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(1); if (rd != null) d = rd; }
+                    if (n != null && n.IndexOf("Steam Streaming", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(1); if (rd != null) d = rd; }
                     lines[3+r] = "C"+r+"="+d;
                 }
                 try { System.IO.File.WriteAllLines(backupPath, lines); saved = true; } catch {}
@@ -219,18 +227,25 @@ namespace CoreAudio {
                 return "{\"ok\":false,\"error\":\"apply_partial\",\"setted\":"+okCount+",\"playback\":"+J(pb)+",\"capture\":"+J(co)+",\"backupSaved\":"+(saved?"true":"false")+",\"errors\":[" + string.Join(",", errors.ConvertAll(J).ToArray()) + "]}";
             return "{\"ok\":true,\"playback\":"+J(pb)+",\"capture\":"+J(co)+",\"backupSaved\":"+(saved?"true":"false")+"}";
         }
-        // 找到"真实"设备（当前激活、非 CABLE）；无法确定时回退到默认设备
+        // 找到"真实"设备（当前激活、非 CABLE、非 Steam 虚拟设备；优先 Senary 本机声卡）
         public static string FindReal(int flow) {
             var e = (IMMDeviceEnumerator)new MMDeviceEnumerator();
             IMMDeviceCollection coll; e.EnumAudioEndpoints(flow, 1, out coll);
             int cnt; coll.GetCount(out cnt);
+            string fallback = null;
             for (int i = 0; i < cnt; i++) {
                 IMMDevice d; coll.Item(i, out d);
                 IntPtr p; d.GetId(out p); string id = Marshal.PtrToStringUni(p); Marshal.FreeCoTaskMem(p);
                 string nm = GetName(id, flow == 0);
-                if (nm != null && nm.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) < 0) return id;
+                if (nm == null) continue;
+                if (nm.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                // Steam Streaming Speakers/Microphone 是 Steam 串流虚拟设备，绝不能当真实设备
+                if (nm.IndexOf("Steam Streaming", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                // 本机真实声卡优先（Senary Audio），直接返回
+                if (nm.IndexOf("Senary", StringComparison.OrdinalIgnoreCase) >= 0) return id;
+                if (fallback == null) fallback = id;
             }
-            return null;
+            return fallback;
         }
         public static string Reset(string backupPath) {
             var errors = new System.Collections.Generic.List<string>();

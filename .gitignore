@@ -45,3 +45,19 @@ test_tts.wav
 # ===== 构建日志 =====
 build_log.txt
 builder_log.txt
+
+# ===== 试验脚本产物 / 诊断输出 =====
+tts_trial/*.txt
+tts_trial/ft_train_*.jsonl
+
+# ===== Qwen3-TTS 官方仓库（第三方 clone）=====
+tts_trial/Qwen3-TTS/
+
+# ===== 微调数据/产物（大文件不入库）=====
+tts_trial/ft_data/
+tts_trial/ft_output/
+tts_trial/ft_samples/
+
+# ===== 工作记录 =====
+.workbuddy/
+m2_server/data/

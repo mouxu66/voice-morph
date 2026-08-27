@@ -114,12 +114,12 @@ export async function openFolder(kind: "raw_videos" | "clips" | "outputs" | "voi
 export async function sendTts(
   text: string,
   textLanguage: "zh" | "en",
-  promptText: string
-): Promise<{ url: string; duration_s: number }> {
+  voiceId: string
+): Promise<{ url: string; duration_s: number; voice_id: string }> {
   const res = await fetch(BASE + "/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, text_language: textLanguage, prompt_text: promptText }),
+    body: JSON.stringify({ text, text_language: textLanguage, voice_id: voiceId }),
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -131,7 +131,56 @@ export async function sendTts(
     }
     throw new Error(detail);
   }
-  return res.json() as Promise<{ url: string; duration_s: number }>;
+  return res.json() as Promise<{ url: string; duration_s: number; voice_id: string }>;
+}
+
+// ---- 音色挖掘（解析切片 → 自动筛音色 → 迭代试听 → 保存） ----
+
+export type MineCluster = {
+  cluster: number;
+  size: number;
+  members: string[];
+  rep: { name: string; path: string; text: string };
+};
+
+export type MineState = {
+  running: boolean;
+  stage: "idle" | "running" | "done" | "error";
+  message: string;
+  kept: number;
+  clusters: MineCluster[];
+};
+
+export async function mineRun(): Promise<{ ok: boolean; already_running?: boolean }> {
+  return jsonFetch("/mine/run", { method: "POST" });
+}
+
+export async function getMineState(): Promise<MineState> {
+  return jsonFetch<MineState>("/mine/state");
+}
+
+export async function minePreview(
+  clip: string,
+  text = ""
+): Promise<{ url: string; text: string; ref_text: string; duration_s: number }> {
+  return jsonFetch("/mine/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clip, text }),
+  });
+}
+
+export async function mineSave(
+  clip: string,
+  voiceId: string,
+  displayName: string,
+  members: string[] = []
+): Promise<{ ok: boolean; voice_id: string; duration_s: number; clips: number }> {
+  return jsonFetch("/mine/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clip, voice_id: voiceId, display_name: displayName, members }),
+  });
 }
 
 // ---- 音频设备配置（一键最优 / 自动恢复） ----
@@ -209,9 +258,9 @@ export async function getRvcModel(): Promise<RvcModelStatus> {
   return jsonFetch<RvcModelStatus>("/rvc/model");
 }
 
-// ---- 袋鼠语音一键（RVC 实时变声 / 训练） ----
+// ---- RVC 实时变声 / 训练 ----
 
-export type KangarooLiveStatus = {
+export type RvcLiveStatus = {
   ok: boolean;
   model_ok: boolean;
   model_detail: string | null;
@@ -225,7 +274,7 @@ export type KangarooLiveStatus = {
   output_device: string;
 };
 
-export type KangarooStartResult = {
+export type RvcStartResult = {
   ok: boolean;
   already_running?: boolean;
   pid?: number;
@@ -234,21 +283,30 @@ export type KangarooStartResult = {
   hint?: string;
 };
 
-export type KangarooTrainStatus = {
+export type RvcTrainStatus = {
   ok: boolean;
   model_ok: boolean;
   model_detail: string;
-  train_running: boolean;
+  running: boolean;
+  rc: number | null;
+  done: boolean;
+  error: string;
+  stage: string;
+  stage_index: number;
+  total_stages: number;
+  percent: number;
+  message: string;
+  log_tail: string[];
   dataset_count: number;
   log_dir: string;
 };
 
-export async function rvcLiveStatus(): Promise<KangarooLiveStatus> {
-  return jsonFetch<KangarooLiveStatus>("/rvc/live/status");
+export async function rvcLiveStatus(): Promise<RvcLiveStatus> {
+  return jsonFetch<RvcLiveStatus>("/rvc/live/status");
 }
 
-export async function rvcLiveStart(): Promise<KangarooStartResult> {
-  return jsonFetch<KangarooStartResult>("/rvc/live/start", { method: "POST" });
+export async function rvcLiveStart(): Promise<RvcStartResult> {
+  return jsonFetch<RvcStartResult>("/rvc/live/start", { method: "POST" });
 }
 
 export async function rvcLiveStop(): Promise<{ ok: boolean; restored?: boolean; error?: string; note?: string }> {
@@ -259,8 +317,8 @@ export async function rvcLiveReset(): Promise<{ ok: boolean; reset?: boolean; er
   return jsonFetch("/rvc/live/reset", { method: "POST" })
 }
 
-export async function rvcTrainStatus(): Promise<KangarooTrainStatus> {
-  return jsonFetch<KangarooTrainStatus>("/rvc/train/status");
+export async function rvcTrainStatus(): Promise<RvcTrainStatus> {
+  return jsonFetch<RvcTrainStatus>("/rvc/train/status");
 }
 
 export async function rvcTrainStart(): Promise<{ ok: boolean; started?: boolean; already_running?: boolean; pid?: number }> {

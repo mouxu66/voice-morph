@@ -31,6 +31,8 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
+
+import config as cfg
 from rvc_live import router as rvc_live_router
 
 warnings.filterwarnings("ignore")
@@ -68,10 +70,26 @@ def is_valid_voice_id(voice_id: str) -> bool:
 
 app = FastAPI(title="变声 · M2 转换服务", version="0.1.0")
 
-# CORS：允许本地前端(5173 dev)与打包后的 file:// 页面访问
+# 可选 Bearer Token：仅当配置了 VM_API_TOKEN 时启用，否则完全不拦截（LAN-only 默认）
+if cfg.API_TOKEN:
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from fastapi.responses import JSONResponse
+
+    class _TokenMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            if request.method == "OPTIONS" or request.url.path.endswith("/health"):
+                return await call_next(request)
+            if request.headers.get("Authorization", "") != f"Bearer {cfg.API_TOKEN}":
+                return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+            return await call_next(request)
+
+    app.add_middleware(_TokenMiddleware)
+
+# CORS：默认允许本地前端(5173 dev)与打包后的 file:// 页面访问。
+# 来源可经 VM_CORS_ORIGINS 收紧（逗号分隔）；留 "*" 维持 LAN 可用。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cfg.CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -441,19 +459,41 @@ def media(kind: str, name: str):
 class TTSRequest(BaseModel):
     text: str
     text_language: str = "zh"
-    prompt_text: str = ""
+    voice_id: str = ""
+
+
+def _voice_ref(voice_id: str) -> tuple[Path, str]:
+    """读取音色档案的参考音频与文字稿（ref_text.txt 可缺省）。"""
+    if not is_valid_voice_id(voice_id):
+        raise HTTPException(status_code=400, detail="voice_id 非法")
+    ref = VOICEBANK / voice_id / "reference.wav"
+    if not ref.exists():
+        raise HTTPException(status_code=404, detail=f"音色 [{voice_id}] 不存在")
+    ref_text = ""
+    rt = VOICEBANK / voice_id / "ref_text.txt"
+    if rt.exists():
+        ref_text = rt.read_text("utf-8").strip()
+    return ref, ref_text
 
 
 @app.post(API_PREFIX + "/tts")
 def tts_endpoint(req: TTSRequest):
-    """文字→语音：用 Qwen3-TTS 袋鼠音色（002.wav）做 zero-shot 克隆。
+    """文字→语音：按 voice_id 音色克隆合成（不传 voice_id 则用当前选中音色，都没有则报错）。
     结果保存为 outputs/tts_*.wav 并返回 URL，便于前端下载与历史持久化。"""
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
+    voice_id = req.voice_id or _load_selected_voice()
+    if not voice_id:
+        raise HTTPException(status_code=400, detail="请先选择音色")
+    ref, _ref_text = _voice_ref(voice_id)
     try:
         from qwen3_tts import tts as qwen_tts
-        wav_bytes = qwen_tts(req.text, text_language=req.text_language,
-                             prompt_text=req.prompt_text)
+        # 走声纹(x-vector)克隆模式：不受参考音频长度拖累，8GB 显存下稳定出声；
+        # ICL 模式只保留在挖掘试听(短切片+文字稿)里使用。
+        wav_bytes = qwen_tts(req.text, ref_audio=str(ref), ref_text="",
+                             language="Chinese" if req.text_language.startswith("zh") else "English")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"TTS 失败: {e}")
     fname = f"tts_{int(time.time() * 1000)}.wav"
@@ -463,42 +503,186 @@ def tts_endpoint(req: TTSRequest):
     d, sr = sf.read(str(out))
     return JSONResponse({
         "ok": True,
+        "voice_id": voice_id,
         "url": f"/api/media/outputs/{fname}",
         "duration_s": round(len(d) / sr, 1),
     })
 
 
-# ---------------- RVC 袋鼠训练集（Qwen3-TTS 批量生成） ----------------
+# ---------------- 音色挖掘（上传视频 → 自动筛音色 → 迭代试听） ----------------
+
+MINE_STATE: dict = {
+    "running": False,
+    "stage": "",       # idle | running | done | error
+    "message": "",
+    "kept": 0,
+    "clusters": [],    # [{cluster,size,members,rep:{name,path,text}}]
+}
+# 试听句池：与素材视频内容无关的全新句子（试听音色迁移能力，避免"复读原视频"）
+PREVIEW_TEXTS = [
+    "今天的市场格外热闹，到处都是新鲜的水果和蔬菜。",
+    "记得明天早上八点开会，材料记得提前发给我。",
+    "这幅画的颜色搭配真让人心情舒畅。",
+    "山间的清晨空气清凉，鸟鸣声此起彼伏。",
+    "他慢慢走进书店，在角落里找到一本旧诗集。",
+    "周末我们骑车去河边，看看落日再回来。",
+]
+
+
+def _load_selected_voice() -> str:
+    """读取当前选中的音色（挖掘保存时写入 selected_voice.json）。"""
+    f = VOICEBANK / "selected_voice.json"
+    if f.exists():
+        try:
+            return str(json.loads(f.read_text("utf-8")).get("voice_id") or "")
+        except Exception:
+            return ""
+    return ""
+
+
+def _mine_worker_thread():
+    """后台挖掘线程：枚举切片 -> 调 worker /analyze。"""
+    MINE_STATE.update(running=True, stage="running", message="正在转写与提取声纹…", kept=0, clusters=[])
+    try:
+        clips = [{"name": p.stem, "path": str(p)} for p in sorted(CLIPS_DIR.glob("*.wav"))]
+        if not clips:
+            raise RuntimeError("没有可用切片，请先在音色工坊解析视频")
+        from qwen3_tts import analyze
+        result = analyze(clips)
+        MINE_STATE.update(running=False, stage="done", message="挖掘完成",
+                          kept=result.get("kept", 0), clusters=result.get("clusters", []),
+                          errors=result.get("errors", []))
+    except Exception as e:
+        MINE_STATE.update(running=False, stage="error", message=str(e))
+
+
+@app.post(API_PREFIX + "/mine/run")
+def mine_run():
+    """对当前全部切片跑音色挖掘（后台执行，前端轮询 /mine/state）。"""
+    if MINE_STATE["running"]:
+        return {"ok": True, "already_running": True}
+    threading.Thread(target=_mine_worker_thread, daemon=True).start()
+    return {"ok": True}
+
+
+@app.get(API_PREFIX + "/mine/state")
+def mine_state():
+    return MINE_STATE
+
+
+class MinePreviewRequest(BaseModel):
+    clip: str            # 切片名（不含 .wav），即候选代表切片
+    text: str = ""       # 试听文本；留空则从新句池轮换（保证与视频原话不同）
+
+
+@app.post(API_PREFIX + "/mine/preview")
+def mine_preview(req: MinePreviewRequest):
+    """用候选切片做参考，合成一句全新文本试听（ICL 模式，转写来自挖掘结果）。"""
+    p = CLIPS_DIR / f"{req.clip}.wav"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"切片不存在: {req.clip}")
+    # 从挖掘结果里取该切片的转写文字稿
+    ref_text = ""
+    for c in MINE_STATE["clusters"]:
+        if c["rep"]["name"] == req.clip:
+            ref_text = c["rep"]["text"]
+            break
+    text = req.text.strip()
+    if not text:
+        idx = (MINE_STATE.get("preview_seq", 0)) % len(PREVIEW_TEXTS)
+        MINE_STATE["preview_seq"] = MINE_STATE.get("preview_seq", 0) + 1
+        text = PREVIEW_TEXTS[idx]
+    try:
+        from qwen3_tts import tts as qwen_tts
+        wav_bytes = qwen_tts(text, ref_audio=str(p), ref_text=ref_text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"试听合成失败: {e}")
+    fname = f"mine_{int(time.time() * 1000)}.wav"
+    out = OUT / fname
+    out.write_bytes(wav_bytes)
+    import soundfile as sf
+    d, sr = sf.read(str(out))
+    return JSONResponse({
+        "ok": True, "clip": req.clip, "text": text,
+        "ref_text": ref_text,
+        "url": f"/api/media/outputs/{fname}",
+        "duration_s": round(len(d) / sr, 1),
+    })
+
+
+class MineSaveRequest(BaseModel):
+    clip: str
+    voice_id: str
+    display_name: str = ""
+    members: list[str] = []   # 可选：把同簇多条一起聚合为参考档案
+
+
+@app.post(API_PREFIX + "/mine/save")
+def mine_save(req: MineSaveRequest):
+    """把满意的候选保存为正式音色：代表切片(可含同簇成员)聚合为 reference.wav + ref_text.txt。
+
+    参考音频只取簇内排名靠前的约 20 秒（ICL 克隆对超长参考既慢又会劣化），
+    成员顺序即挖掘结果的质量排序。
+    """
+    if not is_valid_voice_id(req.voice_id):
+        raise HTTPException(status_code=400, detail="音色 ID 非法")
+    from pydub import AudioSegment
+
+    REF_CAP_MS = 20000
+    members = [req.clip] + [m for m in req.members if m != req.clip]
+    merged = AudioSegment.silent(duration=300)
+    texts = []
+    rep_text = ""
+    for name in members:
+        p = CLIPS_DIR / f"{name}.wav"
+        if not p.exists():
+            continue
+        seg = AudioSegment.from_wav(str(p))
+        merged += seg.set_channels(1).set_frame_rate(22050) + AudioSegment.silent(duration=300)
+        for c in MINE_STATE["clusters"]:
+            rep_name = c.get("rep", {}).get("name")
+            if rep_name == name:
+                texts.append(c["rep"]["text"])
+                if name == req.clip:
+                    rep_text = c["rep"]["text"]
+                break
+        if len(merged) >= REF_CAP_MS:
+            break
+    if len(merged) <= 300:
+        raise HTTPException(status_code=404, detail="候选切片不存在")
+
+    out_dir = VOICEBANK / req.voice_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ref = out_dir / "reference.wav"
+    merged.set_channels(1).set_frame_rate(22050).export(str(ref), format="wav")
+    # 文字稿与参考音频逐句对齐（聚了多条切片就拼全部文字稿），ICL 克隆更准
+    (out_dir / "ref_text.txt").write_text(" ".join(texts) or rep_text, encoding="utf-8")
+    (out_dir / "meta.json").write_text(json.dumps(
+        {"display_name": req.display_name or req.voice_id, "source": "mine"}, ensure_ascii=False),
+        encoding="utf-8")
+    (out_dir / "clips.txt").write_text("\n".join(members), encoding="utf-8")
+    # 保存后设为当前选中音色
+    (VOICEBANK / "selected_voice.json").write_text(
+        json.dumps({"voice_id": req.voice_id}), encoding="utf-8")
+    return {"ok": True, "voice_id": req.voice_id, "duration_s": round(len(merged) / 1000, 1),
+            "clips": len(members)}
+
+
+# ---------------- RVC 训练集（Qwen3-TTS 批量生成） ----------------
 
 RVC_DATASET_DIR = ROOT / "media" / "rvc_dataset"
-# 用户 RVC 整合包（D:\RVC）的训练集目录；导出时不存在会自动创建
-RVC_EXPORT_DIR = Path(r"D:/RVC/dataset_raw/rvc_dataset")
-# 训练完成后的最终产物（实时变声依赖，不可移动/删除）
-RVC_WEIGHTS_DIR = Path(r"D:/RVC/logs/meituan_rat")
+# RVC 整合包与训练产物路径集中由 config 定义（环境变量可覆盖）
+RVC_EXPORT_DIR = cfg.RVC_EXPORT_DIR
+RVC_DEFAULT_EXP = cfg.RVC_DEFAULT_EXP
 
-# 20 句训练语料：与 tts_trial/qwen3_batch_tts.py 保持一致
-RVC_TEXTS = [
-    "怕被其他人知道这家店给你一个",
-    "老板，我要两个烤串，再来一瓶可乐",
-    "今天天气真不错，我们出去走走吧",
-    "一二三四五六七八九十",
-    "这个周末你有什么安排吗",
-    "我跟你说，这家店的汉堡特别好吃",
-    "快点快点，电影马上就要开始了",
-    "谢谢你啊，下次请你吃饭",
-    "别着急，慢慢来，安全第一",
-    "昨天晚上我睡得特别香",
-    "请问地铁站怎么走啊",
-    "他让我转告你，明天开会改到下午",
-    "我们是一家人，不用这么客气",
-    "这个价格也太贵了吧",
-    "手机快没电了，我先挂了啊",
-    "明天早上八点，校门口见",
-    "妈妈做的菜永远是最好吃的",
-    "下雨了，记得带伞",
-    "开饭啦，大家都过来吧",
-    "坚持锻炼，身体才会越来越好",
-]
+
+def _rvc_weights_dir(exp: str | None = None) -> Path:
+    """某实验名（音色 ID）的 RVC 权重目录 logs/<exp>/。"""
+    return cfg.RVC_ROOT / "logs" / (exp or RVC_DEFAULT_EXP)
+
+# 训练语料模板：默认从 data/rvc_texts.txt 读取（可经 VM_RVC_TEXTS_FILE 覆盖为任意音色专用语料）；
+# 文件缺失时回退内置 20 句，保证历史行为不变。
+RVC_TEXTS = cfg.load_rvc_texts()
 
 RVC_GEN_STATE = {"running": False, "total": len(RVC_TEXTS), "done": 0,
                  "current": "", "error": ""}
@@ -506,7 +690,7 @@ RVC_GEN_STATE = {"running": False, "total": len(RVC_TEXTS), "done": 0,
 
 @app.get(API_PREFIX + "/rvc/dataset")
 def list_rvc_dataset():
-    """列出已生成的袋鼠训练语料。"""
+    """列出已生成的训练语料。"""
     import soundfile as sf
     items = []
     if RVC_DATASET_DIR.exists():
@@ -520,11 +704,25 @@ def list_rvc_dataset():
     return {"items": items, "export_dir": str(RVC_EXPORT_DIR)}
 
 
+class RvcGenerateReq(BaseModel):
+    """指定用哪个音色生成语料；不传则用当前选中音色。"""
+    voice_id: str | None = None
+
+
 @app.post(API_PREFIX + "/rvc/dataset/generate")
-def rvc_generate_dataset():
-    """后台线程：用 Qwen3-TTS 逐句生成 20 句袋鼠语料到 media/rvc_dataset/。"""
+def rvc_generate_dataset(req: RvcGenerateReq | None = None):
+    """后台线程：用 Qwen3-TTS 按指定音色逐句生成 20 句语料到 media/rvc_dataset/。
+
+    语料文件名前缀取音色 ID（安全化），便于多音色区分。
+    """
     if RVC_GEN_STATE["running"]:
         raise HTTPException(400, "语料正在生成中，请稍候")
+    body = req or RvcGenerateReq()
+    voice_id = (body.voice_id or _load_selected_voice()).strip()
+    if not voice_id:
+        raise HTTPException(400, "未指定 voice_id，且没有已选中的音色")
+    ref_audio, ref_text = _voice_ref(voice_id)
+    prefix = "rvc_" + re.sub(r"[^0-9A-Za-z_-]", "_", voice_id)
     RVC_DATASET_DIR.mkdir(parents=True, exist_ok=True)
 
     def _job():
@@ -533,8 +731,8 @@ def rvc_generate_dataset():
             from qwen3_tts import tts as qwen_tts
             for i, text in enumerate(RVC_TEXTS, 1):
                 RVC_GEN_STATE["current"] = text
-                wav = qwen_tts(text, text_language="zh")
-                (RVC_DATASET_DIR / f"qwen_kangaroo_{i:03d}.wav").write_bytes(wav)
+                wav = qwen_tts(text, ref_audio=str(ref_audio), ref_text=ref_text)
+                (RVC_DATASET_DIR / f"{prefix}_{i:03d}.wav").write_bytes(wav)
                 RVC_GEN_STATE["done"] = i
         except Exception as e:
             RVC_GEN_STATE["error"] = str(e)
@@ -543,7 +741,7 @@ def rvc_generate_dataset():
             RVC_GEN_STATE["current"] = ""
 
     threading.Thread(target=_job, daemon=True).start()
-    return {"ok": True, "started": True, "total": len(RVC_TEXTS)}
+    return {"ok": True, "started": True, "total": len(RVC_TEXTS), "voice_id": voice_id}
 
 
 @app.get(API_PREFIX + "/rvc/dataset/status")
@@ -553,37 +751,47 @@ def rvc_dataset_status():
 
 
 @app.post(API_PREFIX + "/rvc/dataset/export")
-def export_rvc_dataset():
-    """把生成的语料同步到 RVC 整合包（D:\RVC\dataset_raw\rvc_dataset）。"""
+def export_rvc_dataset(exp_name: str | None = None):
+    """把生成的语料同步到 RVC 整合包（dataset_raw/<exp>/，供该实验名训练用）。"""
     if RVC_GEN_STATE["running"]:
         raise HTTPException(400, "语料生成进行中，完成后才能导出")
     if not RVC_DATASET_DIR.exists():
         raise HTTPException(400, "还没有训练语料，请先生成")
-    dest = RVC_EXPORT_DIR
+    exp = exp_name or RVC_DEFAULT_EXP
+    dest = RVC_EXPORT_DIR.parent / exp
     dest.mkdir(parents=True, exist_ok=True)
     copied = 0
     for f in RVC_DATASET_DIR.glob("*.wav"):
         shutil.copy2(f, dest / f.name)
         copied += 1
-    return {"ok": True, "copied": copied, "dest": str(dest)}
+    # 同步一份到训练驱动默认读取的数据集目录 logs 同级 dataset/<exp>/
+    default_ds = cfg.RVC_ROOT / "dataset" / exp
+    default_ds.mkdir(parents=True, exist_ok=True)
+    for f in RVC_DATASET_DIR.glob("*.wav"):
+        shutil.copy2(f, default_ds / f.name)
+    return {"ok": True, "copied": copied, "dest": str(dest),
+            "train_dataset_dir": str(default_ds), "exp": exp}
 
 
 @app.get(API_PREFIX + "/rvc/model")
-def rvc_model_status():
-    """袋鼠 RVC 模型训练完成状态（供前端「模型已就绪」卡片展示）。"""
-    pth = RVC_WEIGHTS_DIR / "meituan_rat.pth"
-    idx = next(RVC_WEIGHTS_DIR.glob("added_*.index"), None) if RVC_WEIGHTS_DIR.exists() else None
+def rvc_model_status(exp_name: str | None = None):
+    """RVC 模型训练完成状态（供前端「模型已就绪」卡片展示）；可按音色 ID 查询。"""
+    weights_dir = _rvc_weights_dir(exp_name or RVC_DEFAULT_EXP)
+    exp = exp_name or RVC_DEFAULT_EXP
+    pth = weights_dir / f"{exp}.pth"
+    idx = next(weights_dir.glob("added_*.index"), None) if weights_dir.exists() else None
     trained = pth.exists() and idx is not None
     dataset_count = len(list(RVC_DATASET_DIR.glob("*.wav"))) if RVC_DATASET_DIR.exists() else 0
     return {
+        "exp": exp,
         "trained": trained,
         "pth_exists": pth.exists(),
         "index_exists": idx is not None,
         "dataset_count": dataset_count,
-        "weights_dir": str(RVC_WEIGHTS_DIR),
+        "weights_dir": str(weights_dir),
         "dataset_dir": str(RVC_DATASET_DIR),
     }
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=cfg.SERVER_HOST, port=cfg.SERVER_PORT)
