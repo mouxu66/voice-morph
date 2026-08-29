@@ -10,6 +10,7 @@ export interface VoiceInfo {
   display_name?: string;
   reference: string;
   duration_s: number;
+  kind?: "clone" | "finetuned";
 }
 
 export interface VoiceList {

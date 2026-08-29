@@ -68,6 +68,38 @@ python -c "import torch; print(torch.cuda.is_available())"
 
 ---
 
+## 新机器部署（换电脑 / 给别人装）
+
+前端只是界面，推理全在本地 Python 后端里，所以**必须先准备一次后端环境**：
+
+```powershell
+# 1) 一键准备环境（建 .venv、装 GPU 版 PyTorch 与后端依赖）
+powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
+
+# 2) 体检：逐项列出缺什么、缺了怎么补
+.\.venv\Scripts\python.exe tools\doctor.py
+```
+
+- `setup_env.ps1` 默认装 `cu128`。RTX 50 系（Blackwell）若报 kernel 不兼容，改试 `.\tools\setup_env.ps1 -CudaTag cu129`。
+- 应用启动后若后端没起来，会弹窗说明原因并指向 `tools\` 下的脚本，不会只给你一个空界面。
+- 后端运行日志：`%APPDATA%\<应用名>\backend.log`。
+
+可选能力各自独立，缺了不影响其它功能：
+
+| 能力 | 依赖 | 缺了会怎样 |
+|------|------|-----------|
+| 文字转语音 | `qwen-tts` + `tts_models/` 权重 | 「文字转语音」页不可用 |
+| 实时变声 | RVC 整合包（`VM_RVC_ROOT`）+ VB-Audio CABLE | 「实时变声」页不可用 |
+
+### 目录清理
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\cleanup.ps1           # 预演，不删任何东西
+powershell -ExecutionPolicy Bypass -File .\tools\cleanup.ps1 -Apply    # 真的删
+```
+
+---
+
 ## 当前进度（2026-08-27）
 
 ✅ **环境**：Python 3.11 venv、PyTorch 2.9.1+cu128（RTX 5060 CUDA 正常）、ffmpeg、Qwen3-TTS 权重与 venv312 已就位
@@ -112,6 +144,9 @@ npm run electron:dev
 cd web
 npm run electron:build    # 产出 release/win-unpacked/ 和安装包
 ```
+
+安装包内含前端与**后端源码**（`resources/backend/`），但不含 Python 与依赖 ——
+那部分是几个 GB，只能由 `tools\setup_env.ps1` 在目标机器上装一次。
 
 ---
 

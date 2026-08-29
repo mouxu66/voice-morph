@@ -63,14 +63,25 @@ def _save_ckpt(output_dir: str, base_dir: str, args, accelerator, model):
         json.dump(config_dict, f, indent=2, ensure_ascii=False)
 
     # 2) 训练出的 talker 权重（丢掉 speaker_encoder，嵌入写死进 codec_embedding[3000]）
+    # 8G 卡全参训练时系统内存压力大：先空缓存，再逐张搬运，避免 CPU 一次性分配爆掉
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
     unwrapped_model = accelerator.unwrap_model(model)
-    state_dict = {k: v.detach().to("cpu") for k, v in unwrapped_model.state_dict().items()}
-    for k in [k for k in state_dict if k.startswith("speaker_encoder")]:
-        del state_dict[k]
+    raw_sd = unwrapped_model.state_dict()
+    state_dict = {}
+    for k, v in raw_sd.items():
+        if k.startswith("speaker_encoder"):
+            continue  # 嵌入已写死进 codec_embedding，speaker_encoder 不需要保存
+        state_dict[k] = v.detach().to("cpu")
+    del raw_sd
     weight = state_dict['talker.model.codec_embedding.weight']
     state_dict['talker.model.codec_embedding.weight'][3000] = \
         target_speaker_embedding[0].detach().to(weight.device).to(weight.dtype)
     save_file(state_dict, str(dst / "model.safetensors"))
+    del state_dict
+    gc.collect()
+    torch.cuda.empty_cache()
     log(f"[save] {output_dir}")
 
 
@@ -118,7 +129,7 @@ def train():
 
     config = AutoConfig.from_pretrained(MODEL_PATH)
 
-    train_data = open(args.train_jsonl).readlines()
+    train_data = open(args.train_jsonl, encoding="utf-8").readlines()
     train_data = [json.loads(line) for line in train_data]
     dataset = TTSDataset(train_data, qwen3tts.processor, config)
     train_dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True,

@@ -12,9 +12,12 @@
 """
 import json
 import os
+import shutil
 import subprocess
+import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -53,6 +56,49 @@ DEFAULT_EPOCHS = 40
 def _active_exp() -> str:
     """当前生效的 RVC 实验名（音色 ID）：最近一次启动的训练，否则回退默认。"""
     return _state["train"].get("exp") or cfg.RVC_DEFAULT_EXP
+
+
+def _find_pth(exp: str, log_dir: Path) -> Path | None:
+    """找到该实验可用的 RVC 最终权重：优先 <exp>.pth，否则回退 G_<...>.pth。
+
+    RVC 训练脚本落盘文件名是 G_2333333.pth / D_2333333.pth（并非 <exp>.pth），
+    而实时加载、前端 status 都按 <exp>.pth 判定，两者命名不一致会误报“未训练”。
+    这里优先用标准名，缺失时回退到训练自动产出的 G_*.pth，避免手动复制。
+    """
+    p = log_dir / f"{exp}.pth"
+    if p.exists():
+        return p
+    return next(log_dir.glob("G_*.pth"), None)
+
+
+def _ensure_standard_pth(exp: str, log_dir: Path) -> Path | None:
+    """确保拿到可实时推理的权重（rtrvc.get_synthesizer 只认含 weight 键的推理格式）。
+
+    优先 assets/weights/<exp>.pth（推理格式，训练时自动提取）；缺失时从训练
+    检查点 G_*.pth 用 train.process_ckpt.extract_small_model 提取（幂等缓存）。
+    注意：logs/<exp>/<exp>.pth 若只是 G_*.pth 的拷贝（训练格式，键 model/optimizer…），
+    实时加载会 KeyError('weight')，绝不能直接当推理权重用。
+    """
+    infer_pth = RVC_ROOT / "assets" / "weights" / f"{exp}.pth"
+    if infer_pth.exists():
+        return infer_pth
+    ckpt = next(iter(sorted(log_dir.glob("G_*.pth"))), None)
+    if ckpt is None:
+        return None
+    try:
+        sys.path.insert(0, str(RVC_ROOT))
+        os.environ["PYTHONPATH"] = str(RVC_ROOT)
+        os.environ["weight_root"] = str(RVC_ROOT / "assets" / "weights")
+        from train.process_ckpt import extract_small_model
+
+        (RVC_ROOT / "assets" / "weights").mkdir(parents=True, exist_ok=True)
+        extract_small_model(str(ckpt), exp, "48k", 1, f"{exp} RVC v2 48k", "v2")
+        if not infer_pth.exists():
+            return None
+        shutil.copy2(infer_pth, log_dir / f"{exp}.pth")
+        return infer_pth
+    except Exception:
+        return None
 
 
 def _exp_dirs(exp: str | None = None) -> tuple[str, Path, Path]:
@@ -187,12 +233,32 @@ def _auto_clean():
 def _model_status(exp: str | None = None) -> bool | str:
     _, log_dir, _ = _exp_dirs(exp)
     name = exp or _active_exp()
-    pth = log_dir / f"{name}.pth"
+    pth = _find_pth(name, log_dir)
     idx = next(log_dir.glob("added_*.index"), None) if log_dir.exists() else None
-    if not (log_dir.exists() and pth.exists() and idx is not None):
-        return (f"缺少 RVC 音色模型（logs/{name}/{name}.pth 与 index），"
+    if not (log_dir.exists() and pth is not None and idx is not None):
+        return (f"缺少 RVC 音色模型（logs/{name}/ 下没有 .pth 与 index），"
                 f"请先训练该音色")
     return True
+
+
+def _voicebank_dir() -> Path:
+    return cfg.MEDIA_DIR / "voicebank"
+
+
+def _exp_snapshot(exp: str) -> dict:
+    """某个实验（音色 ID）的训练产物快照：权重/索引/语料/训练时间。"""
+    log_dir, dataset_dir = cfg.rvc_exp_dirs(exp)
+    pth = _find_pth(exp, log_dir)
+    idx = next(log_dir.glob("added_*.index"), None) if log_dir.exists() else None
+    mtime = pth.stat().st_mtime if pth is not None and pth.exists() else 0.0
+    return {
+        "pth_exists": pth is not None,
+        "index_exists": idx is not None,
+        "model_ready": pth is not None and idx is not None,
+        "dataset_count": len(list(dataset_dir.glob("*.wav"))) if dataset_dir.exists() else 0,
+        "trained_at": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime else "",
+        "weights_dir": str(log_dir),
+    }
 
 
 # 各阶段在日志中的标记 → (阶段名, 权重%)。顺序即执行顺序，取"最后命中"的阶段。
@@ -205,22 +271,25 @@ _TRAIN_STAGE_MARKERS = [
 ]
 
 
-def _train_progress() -> dict:
+def _train_progress(exp_name: str | None = None) -> dict:
     """解析 logs/<exp>/train_run.log 给出当前阶段/百分比/最近日志行，供前端展示。
 
     done/errored 由日志标记判定；进程退出码记录在 _state["train"]["rc"]。
+    传 exp_name 时看指定音色的训练日志，否则看当前生效实验。
     """
+    exp = exp_name or _active_exp()
     res = {
         # running 取"内存态 OR 进程存活"，服务重启后仍能追踪到外部启动的训练
-        "running": bool(_state["train"]["running"]) or bool(_find_train_pids()),
-        "rc": _state["train"].get("rc"),
+        "running": bool(_state["train"]["running"] and _state["train"].get("exp") == exp)
+                   or bool(_find_train_pids()),
+        "rc": _state["train"].get("rc") if _state["train"].get("exp") == exp else None,
         "done": False, "error": "",
         "stage": "", "stage_index": -1, "total_stages": len(_TRAIN_STAGE_MARKERS),
         "percent": 0.0, "message": "", "log_tail": [],
-        "exp": _active_exp(),
+        "exp": exp,
     }
     total_epochs = int(_state["train"].get("total_epochs") or DEFAULT_EPOCHS)
-    _, log_dir, _ = _exp_dirs()
+    _, log_dir, _ = _exp_dirs(exp)
     train_log = log_dir / "train_run.log"
     if not train_log.exists():
         return res
@@ -312,7 +381,10 @@ def _apply_model_config() -> bool:
     idx = next(log_dir.glob("added_*.index"), None)
     if idx is None:
         return False
-    cfg_json["pth_path"] = str(log_dir / f"{name}.pth").replace("\\", "/")
+    pth = _ensure_standard_pth(name, log_dir)
+    if pth is None:
+        return False
+    cfg_json["pth_path"] = str(pth).replace("\\", "/")
     cfg_json["index_path"] = str(idx).replace("\\", "/")
     cfg_json["f0method"] = "rmvpe"
     cfg_json["sr_type"] = "sr_model"
@@ -351,16 +423,18 @@ router = APIRouter(prefix=API_PREFIX)
 
 
 @router.get("/rvc/live/status")
-def rvc_live_status():
-    model = _model_status()
-    exp, log_dir, dataset_dir = _exp_dirs()
+def rvc_live_status(exp_name: str | None = None):
+    # 传 exp_name 时按指定音色查询（前端选了哪个音色就看哪个）；
+    # 不传则沿用当前生效的实验（最近一次训练/启动的音色）
+    model = _model_status(exp_name)
+    exp, log_dir, dataset_dir = _exp_dirs(exp_name)
     idx = next(log_dir.glob("added_*.index"), None) if log_dir.exists() else None
     return {
         "ok": True,
         "exp": exp,
         "model_ok": model is True,
         "model_detail": model if model is True else None,
-        "pth_exists": (log_dir / f"{exp}.pth").exists(),
+        "pth_exists": _find_pth(exp, log_dir) is not None,
         "index_exists": idx is not None,
         "dataset_count": len(list(dataset_dir.glob("*.wav"))) if dataset_dir.exists() else 0,
         "live_running": _live_proc_alive(),
@@ -368,6 +442,57 @@ def rvc_live_status():
         "last_error": _state["live"].get("error", ""),
         "train_running": _state["train"]["running"],
         "output_device": OUTPUT_DEVICE,
+        "input_device": INPUT_DEVICE,
+    }
+
+
+@router.get("/rvc/voices")
+def rvc_voices():
+    """实时变声可选音色清单（合并两个来源）：
+
+    1. 音色库 media/voicebank/<id>/reference.wav —— 能生成语料、能训练的音色；
+    2. RVC 整合包 logs/<exp>/ 下训练出权重+索引的实验 —— 能直接实时变声的模型。
+
+    两者以「音色 ID == 实验名」对齐，前端据此展示每个音色走到哪一步
+    （未生成语料 / 语料就绪 / 模型就绪），并可用它启动对应模型的实时变声。
+    """
+    items: dict[str, dict] = {}
+
+    bank = _voicebank_dir()
+    if bank.exists():
+        for d in bank.iterdir():
+            if not d.is_dir() or not (d / "reference.wav").exists():
+                continue
+            display = d.name
+            meta = d / "meta.json"
+            if meta.exists():
+                try:
+                    display = str(json.loads(meta.read_text(encoding="utf-8")).get("display_name") or d.name)
+                except Exception:
+                    pass
+            items[d.name] = {"id": d.name, "display_name": display,
+                             "has_reference": True, **_exp_snapshot(d.name)}
+
+    logs = cfg.RVC_ROOT / "logs"
+    if logs.exists():
+        for d in logs.iterdir():
+            if not d.is_dir() or d.name in items:
+                continue
+            snap = _exp_snapshot(d.name)
+            # 音色库里没有、又没训练产物也没语料的目录属于噪音，不展示
+            if not (snap["pth_exists"] or snap["index_exists"] or snap["dataset_count"]):
+                continue
+            items[d.name] = {"id": d.name, "display_name": d.name,
+                             "has_reference": False, **snap}
+
+    voices = sorted(items.values(),
+                    key=lambda v: (not v["model_ready"], not v["has_reference"], v["id"]))
+    return {
+        "voices": voices,
+        "active_exp": _active_exp(),
+        "default_exp": cfg.RVC_DEFAULT_EXP,
+        "rvc_root": str(cfg.RVC_ROOT),
+        "rvc_ready": cfg.RVC_ROOT.exists() and VENV_PY.exists(),
     }
 
 
@@ -483,14 +608,14 @@ def rvc_live_reset():
 
 
 @router.get("/rvc/train/status")
-def rvc_train_status():
-    model = _model_status()
-    _, log_dir, dataset_dir = _exp_dirs()
+def rvc_train_status(exp_name: str | None = None):
+    model = _model_status(exp_name)
+    _, log_dir, dataset_dir = _exp_dirs(exp_name)
     return {
         "ok": True,
         "model_ok": model is True,
         "model_detail": ("" if model is True else model),
-        **_train_progress(),
+        **_train_progress(exp_name),
         "dataset_count": len(list(dataset_dir.glob("*.wav"))) if dataset_dir.exists() else 0,
         "log_dir": str(log_dir),
     }

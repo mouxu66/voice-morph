@@ -19,7 +19,10 @@ tts_trial/venv312/
 web/node_modules/
 web/dist/
 web/release/
+web/release2/
 release/
+*.bak
+变声工坊.lnk
 
 # ===== 第三方 agent skills（安装的工具，非项目代码） =====
 .agents/

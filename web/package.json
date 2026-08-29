@@ -43,8 +43,33 @@
       "dist/**/*",
       "electron/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "dist",
+        "to": "backend/web_dist"
+      },
+      {
+        "from": "../m2_server",
+        "to": "backend/m2_server",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/tests/**",
+          "!**/data/**"
+        ]
+      },
+      {
+        "from": "../tools",
+        "to": "backend/tools"
+      },
+      {
+        "from": "../requirements.txt",
+        "to": "backend/requirements.txt"
+      }
+    ],
     "directories": {
-      "output": "release"
+      "output": "release2"
     },
     "win": {
       "target": "nsis",

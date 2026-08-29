@@ -15,6 +15,7 @@
 启动：
     D:/变声/tts_trial/venv312/Scripts/python.exe qwen3_tts_service.py
 """
+import gc
 import io
 import os
 import time
@@ -41,6 +42,8 @@ WHISPER = None
 WHISPER_SR = 16000
 # prompt 缓存：key=(ref_audio_path, ref_text, x_vector_only) -> prompt 对象
 _PROMPT_CACHE: dict = {}
+# 微调模型缓存：同一时刻只驻留一个 custom_voice 模型（显存换模型走 LRU=1）
+_ALT_MODEL: dict = {"dir": None, "model": None}
 
 
 @app.on_event("startup")
@@ -104,6 +107,9 @@ async def analyze(req: Request):
     """
     body = await req.json()
     clips: list = body.get("clips", [])
+    # 可调参数：sim_threshold 越高分簇越细（挖出更多不同音色）；min_cluster_size 过滤小簇噪声
+    sim_threshold = float(body.get("sim_threshold") or 0.5)
+    min_cluster_size = int(body.get("min_cluster_size") or 1)
     t0 = time.time()
     entries = []
     errors: list[str] = []
@@ -122,7 +128,7 @@ async def analyze(req: Request):
             errors.append(f"{c['name']}: {e}")
 
     # 贪心聚类
-    SIM_THRESHOLD = 0.5
+    SIM_THRESHOLD = sim_threshold
     clusters: list[list[int]] = []
     for i, e in enumerate(entries):
         best, best_sim = None, SIM_THRESHOLD
@@ -152,6 +158,8 @@ async def analyze(req: Request):
                     "text": entries[ranked[0]]["text"]},
         })
     out.sort(key=lambda c: -c["size"])
+    if min_cluster_size > 1:
+        out = [c for c in out if c["size"] >= min_cluster_size]
     return {"clusters": out, "kept": len(entries), "elapsed_s": round(time.time() - t0, 1),
             "errors": errors[:5]}
 
@@ -197,6 +205,70 @@ async def tts(req: Request):
     buf = io.BytesIO()
     sf.write(buf, wavs[0], sr, format="WAV")
     return Response(content=buf.getvalue(), media_type="audio/wav")
+
+
+@app.post("/transcribe")
+async def transcribe_ep(req: Request):
+    """单文件转写：{path} -> {text, quality}。供微调工坊切片转写复用。"""
+    body = await req.json()
+    path = body.get("path", "")
+    if not path or not os.path.isfile(path):
+        return {"error": f"文件不存在: {path}"}
+    try:
+        return _transcribe(path)
+    except Exception as exc:
+        import traceback
+        print(f"[transcribe] FAIL {path}: {exc}\n{traceback.format_exc()}", flush=True)
+        return {"error": str(exc)}
+
+
+def _get_custom_model(model_dir: str):
+    """加载（或取缓存的）custom_voice 微调模型。显存策略：与基座互斥驻留。
+
+    8GB 卡上基座(3.6G)+微调模型(3.6G)+whisper 同时驻留太紧，切换时先释放另一个。
+    """
+    global MODEL
+    if os.path.normpath(model_dir) == os.path.normpath(MODEL_DIR):
+        if MODEL is None:
+            MODEL = Qwen3TTSModel.from_pretrained(
+                MODEL_DIR, device_map="cuda:0", dtype=torch.bfloat16)
+        return MODEL
+    if _ALT_MODEL["dir"] == os.path.normpath(model_dir) and _ALT_MODEL["model"] is not None:
+        return _ALT_MODEL["model"]
+    # 换模型：先卸掉现驻留的（无论基座还是旧微调）
+    if _ALT_MODEL["model"] is not None:
+        _ALT_MODEL.update(dir=None, model=None)
+    if MODEL is not None:
+        MODEL = None
+    gc.collect()
+    torch.cuda.empty_cache()
+    m = Qwen3TTSModel.from_pretrained(model_dir, device_map="cuda:0", dtype=torch.bfloat16)
+    _PROMPT_CACHE.clear()
+    _ALT_MODEL.update(dir=os.path.normpath(model_dir), model=m)
+    return m
+
+
+@app.post("/tts_speaker")
+async def tts_speaker(req: Request):
+    """微调音色合成：{model_dir, speaker, text, language} -> wav 字节。
+
+    与 /tts 互斥使用 GPU 模型槽位；返回头 X-Model-Slot 标明当前驻留模型。
+    """
+    body = await req.json()
+    text = body.get("text", "")
+    language = body.get("language", "Chinese")
+    model_dir = body.get("model_dir", "")
+    speaker = body.get("speaker", "")
+    if not text.strip() or not model_dir or not speaker:
+        return Response(b"", status_code=400)
+    if not os.path.isdir(model_dir):
+        return Response(f"model_dir 不存在: {model_dir}".encode(), status_code=400)
+    m = _get_custom_model(model_dir)
+    wavs, sr = m.generate_custom_voice(text=text, speaker=speaker, language=language)
+    buf = io.BytesIO()
+    sf.write(buf, wavs[0], sr, format="WAV")
+    return Response(content=buf.getvalue(), media_type="audio/wav",
+                    headers={"X-Model-Slot": "custom" if _ALT_MODEL["dir"] else "base"})
 
 
 if __name__ == "__main__":

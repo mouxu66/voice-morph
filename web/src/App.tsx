@@ -9,12 +9,18 @@ import { LiveRoute } from "@/pages/Live/index"
 import { TtsRoute } from "@/pages/Tts/index"
 import { VoicesRoute } from "@/pages/Voices/index"
 import { WorkshopRoute } from "@/pages/Workshop/index"
+import { FtRoute } from "@/pages/Ft/index"
+import { AudiobookRoute } from "@/pages/Audiobook/index"
+import { OfflineVcRoute } from "@/pages/OfflineVc/index"
 
 const pageTitles: Record<string, string> = {
   "/live": "实时变声",
   "/workshop": "音色工坊",
   "/voices": "音色库",
   "/tts": "文字转语音",
+  "/ft": "音色微调",
+  "/audiobook": "有声书工作台",
+  "/offlinevc": "离线变声工作台",
 }
 
 // 服务状态：在线 / 启动中（启动后 45s 内从未连上，视为正在加载模型）/ 离线
@@ -106,14 +112,14 @@ function AppChrome() {
             </Link>
             <span className="hidden h-5 w-px bg-border lg:block" />
             <div>
-              <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">LOCAL VOICE WORKBENCH</p>
+              <p className="hidden font-mono text-xs uppercase tracking-widest text-muted-foreground sm:block">LOCAL VOICE WORKBENCH</p>
               <h1 className="text-sm font-semibold text-foreground">{pageTitle}</h1>
             </div>
           </div>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span className={`h-2 w-2 rounded-full ${online ? "bg-primary animate-pulse" : serviceState === "starting" ? "bg-yellow-500 animate-pulse" : "bg-destructive"}`} />
-              {online ? "本地服务在线" : serviceState === "starting" ? "服务启动中…" : "本地服务离线"}
+              <span className="hidden sm:inline">{online ? "本地服务在线" : serviceState === "starting" ? "服务启动中…" : "本地服务离线"}</span>
             </div>
             <button type="button" onClick={() => setSettingsOpen((open) => !open)} className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-card text-muted-foreground shadow-md transition hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label="打开设置">
               <Settings2 className="h-4 w-4" />
@@ -122,7 +128,7 @@ function AppChrome() {
         </div>
         {settingsOpen && <div className="absolute right-5 top-14 w-44 rounded-lg border border-border bg-card p-2 shadow-lg sm:right-8"><p className="px-2 py-1 text-xs text-muted-foreground">界面主题</p><div className="mt-1 grid grid-cols-3 gap-1">{([['dark', '暗色', Moon], ['light', '亮色', Sun], ['system', '系统', Monitor]] as [ThemeMode, string, typeof Moon][]).map(([mode, label, Icon]) => <button type="button" key={mode} onClick={() => { setStoredTheme(mode); setTheme(mode); setSettingsOpen(false) }} className={`flex flex-col items-center gap-1 rounded-md px-2 py-2 text-xs ${theme === mode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="h-4 w-4" />{label}</button>)}</div></div>}
       </header>
-      <div className="fixed inset-x-0 top-16 z-10 border-b border-border bg-card/80 px-5 py-2 backdrop-blur-xl lg:hidden"><StudioNav /></div>
+      <div className="fixed inset-x-0 top-16 z-10 border-b border-border bg-card/80 py-1.5 backdrop-blur-xl lg:hidden"><StudioNav /></div>
     </>
   )
 }
@@ -147,5 +153,5 @@ export default function App() {
     return () => { alive = false; window.clearInterval(timer) }
   }, [setHealth, setVoices])
 
-  return <div className="min-h-screen bg-gradient-to-br from-background via-background to-card text-foreground"><AppChrome /><main className="min-h-screen pt-16 lg:pl-64"><Routes><Route path="/live" element={<LiveRoute />} /><Route path="/workshop" element={<WorkshopRoute />} /><Route path="/voices" element={<VoicesRoute />} /><Route path="/tts" element={<TtsRoute />} /><Route path="*" element={<Navigate to="/workshop" replace />} /></Routes></main></div>
+  return <div className="min-h-[100dvh] bg-gradient-to-br from-background via-background to-card text-foreground"><AppChrome /><main className="min-h-[100dvh] pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-[7.25rem] lg:pb-0 lg:pl-64 lg:pt-16"><Routes><Route path="/live" element={<LiveRoute />} /><Route path="/workshop" element={<WorkshopRoute />} /><Route path="/voices" element={<VoicesRoute />} /><Route path="/tts" element={<TtsRoute />} /><Route path="/ft" element={<FtRoute />} /><Route path="/audiobook" element={<AudiobookRoute />} /><Route path="/offlinevc" element={<OfflineVcRoute />} /><Route path="*" element={<Navigate to="/workshop" replace />} /></Routes></main></div>
 }

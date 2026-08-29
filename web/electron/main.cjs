@@ -1,6 +1,7 @@
 // Electron 主进程：启动桌面壳 + 拉起 Python 推理后端
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, dialog, shell } = require("electron");
 const { spawn, execFileSync } = require("child_process");
+const http = require("http");
 const path = require("path");
 const fs = require("fs");
 
@@ -8,21 +9,97 @@ const BACKEND_PORT = 8000;
 let backendProc = null;
 let projectRoot = null;
 const PID_FILE = path.join(app.getPath("userData"), "backend.pid");
+// 后端 stdout/stderr 落盘：装到别人机器上出问题时，这是唯一能自查的线索
+const BACKEND_LOG = path.join(app.getPath("userData"), "backend.log");
 
 function resolveProjectRoot() {
   // 优先从本文件位置推导项目根（开发时 __dirname=web/electron，上两级即项目根），
-  // 迁移后自动跟随，不再硬编码盘符。依次兜底 resources/app、用户数据目录，
-  // 最后回退到历史默认 D:\变声。
+  // 迁移后自动跟随，不再硬编码盘符。
+  // 打包安装后后端代码位于 resources/backend/m2_server（见 package.json 的 extraResources），
+  // 因此 resources/backend 也要作为候选根。
+  const res = process.resourcesPath || "";
   const candidates = [
     path.join(__dirname, "..", ".."),
-    path.join(process.resourcesPath, "app"),
+    path.join(res, "backend"),
+    path.join(res, "app"),
     path.join(app.getPath("userData"), "project"),
     "D:\\变声",
   ];
   for (const c of candidates) {
-    if (fs.existsSync(path.join(c, "m2_server", "server.py"))) return c;
+    if (c && fs.existsSync(path.join(c, "m2_server", "server.py"))) return c;
   }
   return path.join(__dirname, "..", "..");
+}
+
+/** 探测后端 /api/health 是否可用 */
+function backendHealthy() {
+  return new Promise((resolve) => {
+    const req = http.get(
+      { host: "127.0.0.1", port: BACKEND_PORT, path: "/api/health", timeout: 2000 },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode === 200);
+      },
+    );
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+async function waitForBackend(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await backendHealthy()) return true;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return backendHealthy();
+}
+
+/**
+ * 后端起不来时给出可操作的提示。
+ * 没有这个提示，别人装完只能看到一个漂亮但什么都不干的前端 —— 这是本应用最容易踩的坑。
+ */
+async function reportBackendTrouble(info) {
+  if (await waitForBackend(45000)) return;
+  const setupPs1 = path.join(projectRoot || "", "tools", "setup_env.ps1");
+  const lines = [
+    `后端代码位置：${projectRoot}`,
+    info.python ? `使用的解释器：${info.python}` : "未找到可用的 Python 解释器",
+    info.reason ? `原因：${info.reason}` : "",
+    "",
+    "本应用的前端只是界面，所有推理都在本地 Python 后端里完成。",
+    "请先准备一次运行环境（只需一次）：",
+    setupPs1 && fs.existsSync(setupPs1)
+      ? `  1. 右键以 PowerShell 运行：${setupPs1}`
+      : "  1. 在项目目录执行：python -m venv .venv 并 pip install -r requirements.txt",
+    "  2. 或手动运行 tools\\doctor.py 查看缺什么",
+    "",
+    `后端日志：${BACKEND_LOG}`,
+  ].filter(Boolean);
+
+  const choice = dialog.showMessageBoxSync({
+    type: "warning",
+    title: "本地推理服务未启动",
+    message: "推理后端没有启动，界面能打开但功能不可用。",
+    detail: lines.join("\n"),
+    buttons: ["打开日志", "查看环境体检步骤", "关闭"],
+    defaultId: 1,
+    cancelId: 2,
+  });
+  if (choice === 0) {
+    if (!fs.existsSync(BACKEND_LOG)) {
+      try {
+        fs.writeFileSync(BACKEND_LOG, "", "utf-8");
+      } catch {}
+    }
+    shell.showItemInFolder(BACKEND_LOG);
+  } else if (choice === 1) {
+    const toolsDir = path.join(projectRoot || "", "tools");
+    if (fs.existsSync(toolsDir)) shell.openPath(toolsDir);
+  }
 }
 
 function portInUse(port) {
@@ -78,11 +155,33 @@ function killProcessTree(pid) {
   } catch {}
 }
 
+/**
+ * 数据目录：安装版后端代码位于 resources 下（只读、随版本覆盖），
+ * media/outputs 等用户数据必须放到可写位置。
+ * 优先级：开发目录自带 media > 历史数据目录 D:\变声 > userData。
+ * 通过 VM_MEDIA_DIR / VM_OUTPUTS_DIR 传给后端（m2_server/config.py 已支持）。
+ */
+const LEGACY_ROOT = "D:\\变声";
+
+function resolveDataRoot(root) {
+  if (fs.existsSync(path.join(root, "media"))) return root;
+  if (fs.existsSync(path.join(LEGACY_ROOT, "media"))) return LEGACY_ROOT;
+  return app.getPath("userData");
+}
+
 async function startBackend(root) {
-  const venvPython = path.join(root, ".venv", "Scripts", "python.exe");
-  const python = fs.existsSync(venvPython) ? venvPython : "python";
+  // python 解释器：优先安装目录自带 .venv（开发态），安装版回退到项目目录 D:\变声\.venv（依赖齐全），
+  // 都没有才用系统 python（依赖可能缺失，仅兜底）
+  const candidates = [
+    path.join(root, ".venv", "Scripts", "python.exe"),
+    path.join(LEGACY_ROOT, ".venv", "Scripts", "python.exe"),
+  ];
+  const found = candidates.find((p) => fs.existsSync(p));
+  const python = found ?? "python";
   const serverPy = path.join(root, "m2_server", "server.py");
-  if (!fs.existsSync(serverPy)) return;
+  if (!fs.existsSync(serverPy)) {
+    return { attempted: false, python: null, reason: `未找到后端代码：${serverPy}` };
+  }
 
   // 解除端口限制：端口被占时，若占用者是我们自己的后端（含上次残留/僵尸），一律清掉再拉起，
   // 避免僵尸进程挡路导致“无法自动拉起”。非本应用拉起的进程（用户手动）才复用。
@@ -95,10 +194,22 @@ async function startBackend(root) {
       await new Promise((r) => setTimeout(r, 1500)); // 等端口释放
     } else {
       console.log(`[backend] 端口 ${BACKEND_PORT} 被外部进程占用，复用之`);
-      return;
+      return { attempted: false, reusedExternal: true, python: null, reason: "" };
     }
   }
 
+  // 每次启动重写日志，避免旧日志误导排查
+  try {
+    fs.writeFileSync(
+      BACKEND_LOG,
+      `[launch] ${new Date().toISOString()} root=${root} python=${python}\n`,
+      "utf-8",
+    );
+  } catch {}
+  const logStream = fs.createWriteStream(BACKEND_LOG, { flags: "a" });
+
+  let spawnError = "";
+  const dataRoot = resolveDataRoot(root);
   backendProc = spawn(python, [serverPy], {
     cwd: path.join(root, "m2_server"),
     env: {
@@ -108,23 +219,44 @@ async function startBackend(root) {
         process.env.PYTHONPATH,
       ].filter(Boolean).join(path.delimiter),
       PYTHONIOENCODING: "utf-8",
+      VM_MEDIA_DIR: path.join(dataRoot, "media"),
+      VM_OUTPUTS_DIR: path.join(dataRoot, "outputs"),
+      // TTS worker 的 venv312 只存在于项目目录（安装包不含），存在则注入给 qwen3_tts.py
+      ...(fs.existsSync(path.join(LEGACY_ROOT, "tts_trial", "venv312"))
+        ? { VM_PROJECT_ROOT: LEGACY_ROOT }
+        : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
   saveBackendPid();
-  backendProc.stdout.on("data", (d) => console.log("[backend]", d.toString().trim()));
-  backendProc.stderr.on("data", (d) => console.log("[backend:err]", d.toString().trim()));
+  const pump = (tag) => (d) => {
+    const text = d.toString();
+    console.log(`[backend${tag}]`, text.trim());
+    try {
+      logStream.write(text);
+    } catch {}
+  };
+  backendProc.stdout.on("data", pump(""));
+  backendProc.stderr.on("data", pump(":err"));
   backendProc.on("exit", (code) => {
     console.log(`[backend] exited with code ${code}`);
+    try {
+      logStream.write(`\n[exit] code=${code}\n`);
+    } catch {}
     backendProc = null;
   });
   // spawn 失败（如 python 不存在）会触发 error，未监听将导致主进程崩溃
   backendProc.on("error", (err) => {
+    spawnError = err.message;
     console.error(`[backend] 启动失败: ${err.message}`);
     console.error(`[backend] 请确认 Python 后端环境就绪（.venv 或系统 python）`);
+    try {
+      logStream.write(`\n[spawn error] ${err.message}\n`);
+    } catch {}
     backendProc = null;
   });
+  return { attempted: true, python, reason: spawnError, reusedExternal: false };
 }
 
 // 关闭时必须把后端也关掉：优先用记录的 pid 整树结束；再兜底 kill 当前 proc
@@ -177,8 +309,10 @@ async function createWindow(root) {
 app.whenReady().then(async () => {
   const root = resolveProjectRoot();
   projectRoot = root;
-  await startBackend(root);
+  const startInfo = await startBackend(root);
   createWindow(root);
+  // 后端探测放在窗口之后异步进行，不阻塞界面出现；探不到才弹提示
+  void reportBackendTrouble(startInfo || {});
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow(root);

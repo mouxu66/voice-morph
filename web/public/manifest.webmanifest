@@ -1,0 +1,13 @@
+{
+  "name": "变声工坊",
+  "short_name": "变声工坊",
+  "description": "本地音色克隆与变声工作台（连接同一局域网内的电脑后端）",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#6366f1",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

@@ -22,6 +22,7 @@ def _str(name: str, default: str) -> str:
 # ---------------- 目录 ----------------
 TTS_MODELS_DIR = _path("VM_TTS_MODELS_DIR", ROOT / "tts_models")
 MEDIA_DIR = _path("VM_MEDIA_DIR", ROOT / "media")
+OUTPUTS_DIR = _path("VM_OUTPUTS_DIR", ROOT / "outputs")
 
 # Qwen3-TTS 模型（Base 变体，可微调）与 tokenizer
 QWEN_MODEL_DIR = _path("VM_QWEN_MODEL_DIR", TTS_MODELS_DIR / "qwen3-tts-1.7b-base")
@@ -34,7 +35,7 @@ TTS_VENV_PY = _path("VM_TTS_VENV_PY", ROOT / "tts_trial" / "venv312" / "Scripts"
 RVC_ROOT = _path("VM_RVC_ROOT", Path("D:/RVC"))
 
 # 默认 RVC 实验名（历史遗留为 meituan_rat；新音色用各自 voice_id 作为 exp 名）
-RVC_DEFAULT_EXP = _str("VM_RVC_EXP", "meituan_rat")
+RVC_DEFAULT_EXP = _str("VM_RVC_EXP", "kangaroo_clean")
 
 # 语料导出目录（RVC 整合包的 dataset_raw）
 RVC_EXPORT_DIR = _path("VM_RVC_EXPORT_DIR", RVC_ROOT / "dataset_raw" / "rvc_dataset")

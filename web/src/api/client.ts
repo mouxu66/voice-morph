@@ -3,7 +3,12 @@ import type { ClipItem, HealthInfo, VideoItem, VoiceInfo } from "../types";
 // 后端统一挂在 /api 前缀下。
 // 开发模式：走 vite proxy（/api -> 8000），用相对地址；
 // 生产模式（electron 打包后 file:// 协议）：直接用绝对地址连本地后端。
-export const BASE = import.meta.env.DEV ? "/api" : "http://127.0.0.1:8000/api";
+// dev(vite 5173) 走代理；Electron(file://) 走本机 8000；手机/局域网(由后端 8000 托管页面)走同源
+export const BASE = import.meta.env.DEV
+  ? "/api"
+  : typeof location !== "undefined" && (location.protocol === "http:" || location.protocol === "https:")
+    ? "/api"
+    : "http://127.0.0.1:8000/api";
 
 // 把后端返回的相对音频路径（如 /media/outputs/x.wav）转成可播放的绝对地址。
 // 生产环境后端返回的 url 是 /api/media/...，这里做兜底拼接。
@@ -134,6 +139,94 @@ export async function sendTts(
   return res.json() as Promise<{ url: string; duration_s: number; voice_id: string }>;
 }
 
+// ---- 有声书工作台（长文 / SRT 逐句合成拼接导出） ----
+
+export type AudiobookSegment = {
+  i: number;
+  text: string;
+  url: string;
+  duration_s: number;
+  failed: boolean;
+};
+
+export type AudiobookStatus = {
+  running: boolean;
+  status: "idle" | "running" | "done" | "cancelled" | "error";
+  mode: "" | "text" | "srt";
+  voice_id: string;
+  done: number;
+  total: number;
+  percent: number;
+  current_text: string;
+  url: string;
+  duration_s: number;
+  error: string;
+  segments: AudiobookSegment[];
+};
+
+export async function runAudiobook(
+  text: string,
+  voiceId: string,
+  gapMs: number
+): Promise<{ ok: boolean; mode: string; total: number; voice_id: string }> {
+  return jsonFetch("/audiobook/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, voice_id: voiceId, gap_ms: gapMs }),
+  });
+}
+
+export async function getAudiobookStatus(): Promise<AudiobookStatus> {
+  return jsonFetch("/audiobook/status");
+}
+
+export async function cancelAudiobook(): Promise<{ ok: boolean; message?: string }> {
+  return jsonFetch("/audiobook/cancel", { method: "POST" });
+}
+
+// ---- 离线变声工作台（录音/音频 → RVC 离线转换 → 导出） ----
+
+export type OfflineVcStatus = {
+  running: boolean;
+  status: "idle" | "running" | "done" | "error";
+  message: string;
+  voice_id: string;
+  url: string;
+  duration_s: number;
+  error: string;
+};
+
+export async function runOfflineVc(
+  file: File,
+  voiceId: string,
+  pitch: number,
+  indexRate: number,
+  denoise: boolean
+): Promise<{ ok: boolean; voice_id: string }> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("voice_id", voiceId);
+  form.append("pitch", String(pitch));
+  form.append("index_rate", String(indexRate));
+  form.append("denoise", String(denoise));
+  const res = await fetch(BASE + "/offlinevc/run", { method: "POST", body: form });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function getOfflineVcStatus(): Promise<OfflineVcStatus> {
+  return jsonFetch("/offlinevc/status");
+}
+
 // ---- 音色挖掘（解析切片 → 自动筛音色 → 迭代试听 → 保存） ----
 
 export type MineCluster = {
@@ -151,8 +244,15 @@ export type MineState = {
   clusters: MineCluster[];
 };
 
-export async function mineRun(): Promise<{ ok: boolean; already_running?: boolean }> {
-  return jsonFetch("/mine/run", { method: "POST" });
+export async function mineRun(params?: {
+  sim_threshold?: number
+  min_cluster_size?: number
+}): Promise<{ ok: boolean; already_running?: boolean }> {
+  return jsonFetch("/mine/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params ?? {}),
+  });
 }
 
 export async function getMineState(): Promise<MineState> {
@@ -227,20 +327,26 @@ export type RvcGenStatus = {
   error: string;
 };
 
-export async function listRvcDataset(): Promise<RvcDatasetInfo> {
-  return jsonFetch<RvcDatasetInfo>("/rvc/dataset");
+export async function listRvcDataset(voiceId?: string): Promise<RvcDatasetInfo> {
+  const qs = voiceId ? `?voice_id=${encodeURIComponent(voiceId)}` : "";
+  return jsonFetch<RvcDatasetInfo>(`/rvc/dataset${qs}`);
 }
 
-export async function generateRvcDataset(): Promise<{ ok: boolean; started: boolean; total: number }> {
-  return jsonFetch("/rvc/dataset/generate", { method: "POST" });
+export async function generateRvcDataset(voiceId: string): Promise<{ ok: boolean; started: boolean; total: number }> {
+  return jsonFetch("/rvc/dataset/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ voice_id: voiceId }),
+  });
 }
 
 export async function getRvcGenStatus(): Promise<RvcGenStatus> {
   return jsonFetch<RvcGenStatus>("/rvc/dataset/status");
 }
 
-export async function exportRvcDataset(): Promise<{ ok: boolean; copied: number; dest: string }> {
-  return jsonFetch("/rvc/dataset/export", { method: "POST" });
+export async function exportRvcDataset(voiceId?: string): Promise<{ ok: boolean; copied: number; dest: string }> {
+  const qs = voiceId ? `?voice_id=${encodeURIComponent(voiceId)}` : "";
+  return jsonFetch(`/rvc/dataset/export${qs}`, { method: "POST" });
 }
 
 // ---- 袋鼠 RVC 模型状态（训练完成后的只读展示） ----
@@ -254,14 +360,43 @@ export type RvcModelStatus = {
   dataset_dir: string;
 };
 
-export async function getRvcModel(): Promise<RvcModelStatus> {
-  return jsonFetch<RvcModelStatus>("/rvc/model");
+export async function getRvcModel(expName?: string): Promise<RvcModelStatus> {
+  const qs = expName ? `?exp_name=${encodeURIComponent(expName)}` : "";
+  return jsonFetch<RvcModelStatus>(`/rvc/model${qs}`);
+}
+
+// ---- RVC 可选音色清单（音色库档案 ∩ RVC 已训练模型） ----
+// 实时页用它做音色选择：只有 model_ready 的音色才能直接变声，
+// 其余的按 dataset_count / has_reference 提示"先生成语料""先训练"。
+
+export type RvcVoice = {
+  id: string;
+  display_name: string;
+  has_reference: boolean;
+  pth_exists: boolean;
+  index_exists: boolean;
+  model_ready: boolean;
+  dataset_count: number;
+  trained_at: string;
+};
+
+export type RvcVoicesInfo = {
+  voices: RvcVoice[];
+  active_exp: string;
+  default_exp: string;
+  rvc_root: string;
+  rvc_ready: boolean;
+};
+
+export async function listRvcVoices(): Promise<RvcVoicesInfo> {
+  return jsonFetch<RvcVoicesInfo>("/rvc/voices");
 }
 
 // ---- RVC 实时变声 / 训练 ----
 
 export type RvcLiveStatus = {
   ok: boolean;
+  exp: string;
   model_ok: boolean;
   model_detail: string | null;
   pth_exists: boolean;
@@ -272,6 +407,7 @@ export type RvcLiveStatus = {
   last_error?: string;
   train_running: boolean;
   output_device: string;
+  input_device: string;
 };
 
 export type RvcStartResult = {
@@ -285,6 +421,7 @@ export type RvcStartResult = {
 
 export type RvcTrainStatus = {
   ok: boolean;
+  exp: string;
   model_ok: boolean;
   model_detail: string;
   running: boolean;
@@ -301,12 +438,14 @@ export type RvcTrainStatus = {
   log_dir: string;
 };
 
-export async function rvcLiveStatus(): Promise<RvcLiveStatus> {
-  return jsonFetch<RvcLiveStatus>("/rvc/live/status");
+export async function rvcLiveStatus(expName?: string): Promise<RvcLiveStatus> {
+  const qs = expName ? `?exp_name=${encodeURIComponent(expName)}` : "";
+  return jsonFetch<RvcLiveStatus>(`/rvc/live/status${qs}`);
 }
 
-export async function rvcLiveStart(): Promise<RvcStartResult> {
-  return jsonFetch<RvcStartResult>("/rvc/live/start", { method: "POST" });
+export async function rvcLiveStart(expName?: string): Promise<RvcStartResult> {
+  const qs = expName ? `?exp_name=${encodeURIComponent(expName)}` : "";
+  return jsonFetch<RvcStartResult>(`/rvc/live/start${qs}`, { method: "POST" });
 }
 
 export async function rvcLiveStop(): Promise<{ ok: boolean; restored?: boolean; error?: string; note?: string }> {
@@ -317,10 +456,133 @@ export async function rvcLiveReset(): Promise<{ ok: boolean; reset?: boolean; er
   return jsonFetch("/rvc/live/reset", { method: "POST" })
 }
 
-export async function rvcTrainStatus(): Promise<RvcTrainStatus> {
-  return jsonFetch<RvcTrainStatus>("/rvc/train/status");
+export async function rvcTrainStatus(expName?: string): Promise<RvcTrainStatus> {
+  const qs = expName ? `?exp_name=${encodeURIComponent(expName)}` : "";
+  return jsonFetch<RvcTrainStatus>(`/rvc/train/status${qs}`);
 }
 
-export async function rvcTrainStart(): Promise<{ ok: boolean; started?: boolean; already_running?: boolean; pid?: number }> {
-  return jsonFetch("/rvc/train/start", { method: "POST" });
+export async function rvcTrainStart(opts?: { expName?: string; epochs?: number }): Promise<{
+  ok: boolean;
+  started?: boolean;
+  already_running?: boolean;
+  pid?: number;
+}> {
+  return jsonFetch("/rvc/train/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ exp_name: opts?.expName, epochs: opts?.epochs }),
+  });
+}
+
+// ---- 音色微调工坊（录音 → 切片转写 → 少样本微调 → 试听 → 入库） ----
+
+export type FtStatus = {
+  stage: "new" | "processing" | "ready" | "training" | "trained" | "published" | "error";
+  voice_id: string;
+  message?: string;
+  error?: string;
+  clips?: number;
+  duration_s?: number;
+  speech_s?: number;
+  anchor?: string;
+  transcripts?: { name: string; text: string; quality: number }[];
+  train?: { pid: number | null; running: boolean; rc: number | null };
+};
+
+export type FtTrainStatus = {
+  stage: string;
+  message: string;
+  error: string;
+  running: boolean;
+  rc: number | null;
+  checkpoint: string | null;
+  log_tail: string[];
+  loss: number | null;
+  epoch: number | null;
+  epochs: number | null;
+  vram_peak: number | null;
+  done?: boolean;
+};
+
+export async function ftUpload(voiceId: string, file: Blob, filename: string): Promise<{ ok: boolean; voice_id: string }> {
+  const form = new FormData();
+  form.append("voice_id", voiceId);
+  form.append("file", file, filename);
+  const res = await fetch(BASE + "/ft/upload", { method: "POST", body: form });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { const b = await res.json(); if (b?.detail) detail = b.detail; } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function getFtStatus(voiceId: string): Promise<FtStatus> {
+  return jsonFetch<FtStatus>(`/ft/status?voice_id=${encodeURIComponent(voiceId)}`);
+}
+
+export async function ftTrain(voiceId: string, epochs = 12): Promise<{ ok: boolean; epochs: number }> {
+  return jsonFetch(`/ft/train?voice_id=${encodeURIComponent(voiceId)}&epochs=${epochs}`, { method: "POST" });
+}
+
+export async function getFtTrainStatus(voiceId: string): Promise<FtTrainStatus> {
+  return jsonFetch<FtTrainStatus>(`/ft/train_status?voice_id=${encodeURIComponent(voiceId)}`);
+}
+
+export async function ftAudition(voiceId: string, text: string): Promise<{ tuned_url: string; xvec_url?: string }> {
+  return jsonFetch(`/ft/audition?voice_id=${encodeURIComponent(voiceId)}&text=${encodeURIComponent(text)}`, { method: "POST" });
+}
+
+export async function ftPublish(voiceId: string, displayName: string): Promise<{ ok: boolean; voice_id: string }> {
+  return jsonFetch(`/ft/publish?voice_id=${encodeURIComponent(voiceId)}&display_name=${encodeURIComponent(displayName)}`, { method: "POST" });
+}
+
+export async function ftDelete(voiceId: string): Promise<{ ok: boolean }> {
+  return jsonFetch(`/ft/${encodeURIComponent(voiceId)}`, { method: "DELETE" });
+}
+
+// ---- A/B 音色对比（盲听 + 声纹相似度评分） ----
+
+export type AbSide = { voice_id: string; url: string; similarity: number };
+
+export type AbResult = {
+  ok: boolean;
+  text: string;
+  A: AbSide;
+  B: AbSide;
+};
+
+export async function abRun(voiceA: string, voiceB: string, text: string): Promise<AbResult> {
+  return jsonFetch("/ab/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ voice_a: voiceA, voice_b: voiceB, text }),
+  });
+}
+
+// ---- 音色包导出 / 导入 ----
+
+/** 音色包下载地址（<a href> 直接下载；includeRvc 附带 RVC 权重，可在别处直接实时变声） */
+export function voicePackUrl(voiceId: string, includeRvc = false): string {
+  return `${BASE}/voicebank/${encodeURIComponent(voiceId)}/export?include_rvc=${includeRvc}`;
+}
+
+export async function importVoicePack(
+  file: File,
+  overwrite = false
+): Promise<{ ok: boolean; voice_id: string; kind: string; rvc_files: number; display_name: string }> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${BASE}/voicebank/import?overwrite=${overwrite}`, { method: "POST", body: form });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
 }
