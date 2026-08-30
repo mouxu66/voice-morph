@@ -37,6 +37,7 @@ from finetune import router as ft_router
 from audiobook import router as audiobook_router
 from cascade import router as cascade_router
 from offline_vc import router as offlinevc_router
+from effects import router as effects_router
 from rvc_live import router as rvc_live_router, _find_pth
 
 warnings.filterwarnings("ignore")
@@ -74,17 +75,31 @@ def is_valid_voice_id(voice_id: str) -> bool:
 
 app = FastAPI(title="变声 · M2 转换服务", version="0.1.0")
 
-# 可选 Bearer Token：仅当配置了 VM_API_TOKEN 时启用，否则完全不拦截（LAN-only 默认）
+# 可选 Token 鉴权：仅当配置了 VM_API_TOKEN 时启用，否则完全不拦截（LAN-only 默认）。
+# 设计要点：
+# - 本机回环(127.0.0.1/::1)永远放行：PC 前端(Electron/vite proxy)、桌宠、全局热键、
+#   子进程都不带 token，启用鉴权不能破坏本机任何链路
+# - 局域网请求需通过以下任一方式：X-API-Key 头 / Authorization: Bearer / api_key 查询参数
+#   （移动端原生音频播放器请求 URL 时带不了自定义 header，所以必须支持查询参数）
 if cfg.API_TOKEN:
     from starlette.middleware.base import BaseHTTPMiddleware
     from fastapi.responses import JSONResponse
 
     class _TokenMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
-            if request.method == "OPTIONS" or request.url.path.endswith("/health"):
+            if request.method == "OPTIONS":
                 return await call_next(request)
-            if request.headers.get("Authorization", "") != f"Bearer {cfg.API_TOKEN}":
-                return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+            client = request.client.host if request.client else ""
+            if client in ("127.0.0.1", "::1", "localhost"):
+                return await call_next(request)
+            token = cfg.API_TOKEN
+            ok = (
+                request.headers.get("X-API-Key", "") == token
+                or request.headers.get("Authorization", "") == f"Bearer {token}"
+                or request.query_params.get("api_key", "") == token
+            )
+            if not ok:
+                return JSONResponse(status_code=401, content={"detail": "unauthorized（需 X-API-Key 头或 api_key 参数）"})
             return await call_next(request)
 
     app.add_middleware(_TokenMiddleware)
@@ -104,6 +119,7 @@ app.include_router(ft_router)
 app.include_router(audiobook_router)
 app.include_router(offlinevc_router)
 app.include_router(cascade_router)
+app.include_router(effects_router)
 
 
 @app.get(API_PREFIX + "/health")
@@ -186,6 +202,26 @@ async def create_voicebank(voice_id: str, request: Request):
 
     # 记录片段清单（供 demo_convert 按片段提取音色向量）
     (out_dir / "clips.txt").write_text("\n".join(clips), encoding="utf-8")
+    # 把来源素材写进 meta（素材库「已用于」徽标的持久依据）
+    meta_p = out_dir / "meta.json"
+    meta: dict = {}
+    if meta_p.exists():
+        try:
+            meta = json.loads(meta_p.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+    if RAW_DIR.exists():
+        sources = sorted(
+            f.name for f in RAW_DIR.iterdir()
+            if f.suffix.lower() in _VIDEO_SUFFIXES
+            and any(name.startswith(_clip_prefix(f.stem)) or name.startswith(f.stem[:12]) for name in clips)
+        )
+        if sources:
+            meta["sources"] = sources
+    try:
+        meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
     # 删除旧的音色向量缓存，下次自动重新提取
     (out_dir / "reference_se.npy").unlink(missing_ok=True)
 
@@ -196,11 +232,107 @@ async def create_voicebank(voice_id: str, request: Request):
 
 @app.get(API_PREFIX + "/raw_videos")
 def list_raw_videos():
+    usage = _raw_video_usage()
     videos = []
     for f in RAW_DIR.iterdir():
         if f.suffix.lower() in (".mp4", ".mkv", ".mov", ".flv", ".webm", ".avi"):
-            videos.append({"name": f.name, "size_mb": round(f.stat().st_size / 1e6, 1)})
+            videos.append({"name": f.name, "size_mb": round(f.stat().st_size / 1e6, 1),
+                           "used_by": usage.get(f.name, [])})
     return {"videos": videos}
+
+
+def _clip_prefix(video_stem: str) -> str:
+    """切片文件名前缀：完整素材名（去文件系统非法字符）。
+
+    旧版用 stem[:12]，两个 video_260828_* 素材会碰撞导致删一个误删另一个的切片。
+    """
+    return re.sub(r'[\\/:*?"<>|]', "", video_stem)[:80]
+
+
+def _raw_video_usage() -> dict[str, list[str]]:
+    """素材名 -> 使用它的音色显示名列表。
+
+    依据：音色 clips.txt 里的片段名以素材切片前缀开头（新旧两种前缀都兼容）。
+    """
+    videos = [f for f in RAW_DIR.iterdir() if f.suffix.lower() in (".mp4", ".mkv", ".mov", ".flv", ".webm", ".avi")] if RAW_DIR.exists() else []
+    usage: dict[str, list[str]] = {f.name: [] for f in videos}
+    if not videos or not VOICEBANK.exists():
+        return usage
+    for vdir in VOICEBANK.iterdir():
+        if not vdir.is_dir():
+            continue
+        clips_txt = vdir / "clips.txt"
+        if not clips_txt.exists():
+            continue
+        try:
+            names = [line.strip() for line in clips_txt.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except Exception:
+            continue
+        if not names:
+            continue
+        try:
+            meta = json.loads((vdir / "meta.json").read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+        label = meta.get("display_name") or vdir.name
+        for f in videos:
+            prefixes = {f.stem[:12], _clip_prefix(f.stem)}
+            if any(any(n.startswith(p) for p in prefixes) for n in names):
+                usage[f.name].append(label)
+    return usage
+
+
+@app.delete(API_PREFIX + "/raw_videos/{name}")
+def delete_raw_video(name: str, force: bool = False):
+    """删除素材及其派生产物（切片/音轨/分离产物/预览）。
+
+    被音色引用时返回 409，确认删除需 force=true（不影响已有音色，
+    只是不能再用该素材重新生成语料）。
+    """
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(400, "非法文件名")
+    p = RAW_DIR / name
+    if not p.exists():
+        raise HTTPException(404, f"素材不存在: {name}")
+    usage = _raw_video_usage().get(name, [])
+    if usage and not force:
+        raise HTTPException(409, f"该素材已被音色使用：{'、'.join(usage)}。删除不影响已有音色，但无法再重新生成语料")
+
+    prefix = _clip_prefix(p.stem)
+    legacy_prefix = p.stem[:12]
+    # 旧版切片用 stem[:12] 命名：若目录里还有其他素材共享该前缀（如 video_260828_*），
+    # legacy 匹配会误删别人的切片——此时只按新前缀清理
+    legacy_safe = not any(
+        v.is_file() and v.suffix.lower() in {".mp4", ".mkv", ".mov", ".webm", ".avi", ".flv", ".ts", ".m4a", ".mp3", ".wav"}
+        and v.stem != p.stem and v.stem[:12] == legacy_prefix
+        for v in RAW_DIR.iterdir()
+    )
+    removed = {"clips": 0, "related": 0}
+
+    def _hit(stem: str) -> bool:
+        return stem.startswith(prefix) or (legacy_safe and stem.startswith(legacy_prefix))
+
+    # 切片
+    if CLIPS_DIR.exists():
+        for c in list(CLIPS_DIR.iterdir()):
+            if c.is_file() and _hit(c.stem):
+                c.unlink(missing_ok=True)
+                removed["clips"] += 1
+    # 音轨 / 分离产物 / 预览（可能带 stem 子目录，一并清）
+    for d_name in ("vocals", "demucs_out", "clip_previews"):
+        d = cfg.MEDIA_DIR / d_name
+        if not d.exists():
+            continue
+        for f in list(d.rglob("*")):
+            if f.is_file() and _hit(f.stem):
+                f.unlink(missing_ok=True)
+                removed["related"] += 1
+        for sub in list(d.iterdir()):
+            if sub.is_dir() and _hit(sub.stem):
+                shutil.rmtree(sub, True)
+                removed["related"] += 1
+    p.unlink()
+    return {"ok": True, **removed, "used_by": usage}
 
 
 def _load_pipeline_module():
@@ -296,7 +428,7 @@ def run_pipeline():
                 vocal = mod.step2_separate(wav, _pipeline_cancel)
                 _update_pipeline(step="slice", percent=base + 24,
                                  message=f"({i + 1}/{total}) 静音检测切分：{v.name}")
-                n = mod.step3_slice(vocal, v.stem[:12], _pipeline_cancel)
+                n = mod.step3_slice(vocal, _clip_prefix(v.stem), _pipeline_cancel)
                 clips += n
                 _update_pipeline(clips=clips)
             _update_pipeline(status="done", step="", percent=100,

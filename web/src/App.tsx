@@ -13,10 +13,12 @@ import { FtRoute } from "@/pages/Ft/index"
 import { AudiobookRoute } from "@/pages/Audiobook/index"
 import { OfflineVcRoute } from "@/pages/OfflineVc/index"
 import { CascadeRoute } from "@/pages/Cascade/index"
+import { EffectsRoute } from "@/pages/Effects/index"
 
 const pageTitles: Record<string, string> = {
   "/live": "实时变声",
   "/cascade": "级联变声",
+  "/effects": "效果器工坊",
   "/workshop": "音色工坊",
   "/voices": "音色库",
   "/tts": "文字转语音",
@@ -68,7 +70,7 @@ function AppChrome() {
     <>
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-border bg-card/75 px-4 py-5 shadow-lg backdrop-blur-xl lg:flex">
         <Link to="/workshop" className="flex items-center gap-3 px-2">
-          <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-md">
+          <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-sky-400 text-primary-foreground shadow-md shadow-primary/30">
             <AudioWaveform className="h-5 w-5" />
           </span>
           <span>
@@ -106,10 +108,11 @@ function AppChrome() {
         </div>
       </aside>
       <header className="fixed inset-x-0 top-0 z-20 border-b border-border bg-background/85 backdrop-blur-xl lg:left-64">
+        <div className="absolute inset-x-0 bottom-0 h-px hairline-gradient opacity-70" aria-hidden="true" />
         <div className="flex h-16 items-center justify-between px-5 sm:px-8">
           <div className="flex items-center gap-4">
             <Link to="/workshop" className="flex items-center gap-2 lg:hidden">
-              <span className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground"><AudioWaveform className="h-4 w-4" /></span>
+              <span className="flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-primary to-sky-400 text-primary-foreground"><AudioWaveform className="h-4 w-4" /></span>
               <span className="text-sm font-semibold">变声工坊</span>
             </Link>
             <span className="hidden h-5 w-px bg-border lg:block" />
@@ -155,5 +158,9 @@ export default function App() {
     return () => { alive = false; window.clearInterval(timer) }
   }, [setHealth, setVoices])
 
-  return <div className="min-h-[100dvh] bg-gradient-to-br from-background via-background to-card text-foreground"><AppChrome /><main className="min-h-[100dvh] pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-[7.25rem] lg:pb-0 lg:pl-64 lg:pt-16"><Routes><Route path="/live" element={<LiveRoute />} /><Route path="/workshop" element={<WorkshopRoute />} /><Route path="/voices" element={<VoicesRoute />} /><Route path="/tts" element={<TtsRoute />} /><Route path="/ft" element={<FtRoute />} /><Route path="/audiobook" element={<AudiobookRoute />} /><Route path="/offlinevc" element={<OfflineVcRoute />} /><Route path="/cascade" element={<CascadeRoute />} /><Route path="*" element={<Navigate to="/workshop" replace />} /></Routes></main></div>
+  return <div className="relative min-h-[100dvh] bg-gradient-to-br from-background via-background to-card text-foreground">
+      {/* 氛围层：纯 CSS 绘制（光晕/工程网格），不拦截交互、不参与布局 */}
+      <div className="pointer-events-none fixed inset-0 z-0 ambient-glow" aria-hidden="true" />
+      <div className="pointer-events-none fixed inset-0 z-0 ambient-grid" aria-hidden="true" />
+      <AppChrome /><main className="relative min-h-[100dvh] pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-[7.25rem] lg:pb-0 lg:pl-64 lg:pt-16"><Routes><Route path="/live" element={<LiveRoute />} /><Route path="/workshop" element={<WorkshopRoute />} /><Route path="/voices" element={<VoicesRoute />} /><Route path="/tts" element={<TtsRoute />} /><Route path="/ft" element={<FtRoute />} /><Route path="/audiobook" element={<AudiobookRoute />} /><Route path="/offlinevc" element={<OfflineVcRoute />} /><Route path="/cascade" element={<CascadeRoute />} /><Route path="/effects" element={<EffectsRoute />} /><Route path="*" element={<Navigate to="/workshop" replace />} /></Routes></main></div>
 }

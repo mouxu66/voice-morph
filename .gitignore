@@ -53,6 +53,9 @@ builder_log.txt
 tts_trial/*.txt
 tts_trial/ft_train_*.jsonl
 
+# ===== 试验归档（诊断 scratch，不入库）=====
+tts_trial/_archive/
+
 # ===== Qwen3-TTS 官方仓库（第三方 clone）=====
 tts_trial/Qwen3-TTS/
 

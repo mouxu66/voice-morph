@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>桌宠</title>
+<style>
+  /* 桌宠渲染器：透明窗，只在角色与气泡区域接收鼠标，其余点击穿透 */
+  html, body {
+    margin: 0; padding: 0; background: transparent;
+    overflow: hidden; user-select: none; cursor: default;
+  }
+  #root {
+    width: 100vw; height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: flex-end;
+  }
+  #bubble {
+    max-width: 200px;
+    margin-bottom: 2px;
+    padding: 6px 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: rgba(255, 255, 255, 0.82);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    font: 12px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: #1e293b;
+    word-break: break-all;
+    display: none;
+  }
+  #bubble.error { border-color: rgba(239, 68, 68, 0.55); background: rgba(254, 226, 226, 0.9); color: #b91c1c; }
+  #bubble .dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    margin-right: 5px; vertical-align: 1px; background: #94a3b8;
+  }
+  #bubble.s-listen  .dot { background: #38bdf8; animation: pulse 1.1s infinite; }
+  #bubble.s-think   .dot { background: #f59e0b; animation: pulse 0.9s infinite; }
+  #bubble.s-play    .dot { background: #10b981; }
+  #bubble.s-build   .dot { background: #a78bfa; animation: pulse 1.3s infinite; }
+  #bubble.s-error   .dot { background: #ef4444; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
+  #pet {
+    width: 150px; height: 150px;
+    cursor: grab;                  /* 拖拽由 JS+IPC 手动实现（app-region 在透明穿透窗上不可靠） */
+    display: flex; align-items: flex-end; justify-content: center;
+  }
+  #pet img { width: 150px; height: 150px; -webkit-user-drag: none; pointer-events: auto; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="bubble"><span class="dot"></span><span id="bubble-text"></span></div>
+  <div id="pet"><img id="sprite" alt="pet" /></div>
+</div>
+<script>
+"use strict";
+
+/**
+ * 级联变声 / 实时变声桌宠：1s 轮询后端，按链路阶段切换动画。
+ *
+ * 级联状态映射（sprite 来自 Ice-teapop/desktop-pet 芙宁娜主题，MIT）：
+ *   未运行   -> idle        待机
+ *   warming  -> building    模型加载中
+ *   capturing-> idle-look   聆听中（你说话时）
+ *   asr/tts  -> thinking    识别/翻译中（你闭嘴后）
+ *   playing  -> conducting  播放中（气泡显示识别文字，确认"翻译完了"）
+ *   error    -> error       出错
+ *
+ * 实时变声（RVC）映射：基础 listening，转写子进程 ASR 中 -> thinking，
+ * 识别出文字 -> listening + 气泡字幕（挂在 /api/rvc/live/status 的 asr_* 字段上）。
+ */
+const API = "http://127.0.0.1:8000/api/cascade/status";
+const LIVE_API = "http://127.0.0.1:8000/api/rvc/live/status";
+
+const SPRITES = {
+  idle:   "svg/idle.svg",
+  listen: "svg/idle-look.svg",
+  think:  "svg/thinking.svg",
+  play:   "svg/conducting.svg",
+  build:  "svg/building.svg",
+  error:  "svg/error.svg",
+};
+const BUBBLE = {
+  idle:   { cls: "",        text: "待机中" },
+  listen: { cls: "s-listen", text: "聆听中…" },
+  think:  { cls: "s-think",  text: "翻译中…" },
+  play:   { cls: "s-play",   text: "" },          // 播放中气泡让位给识别文字
+  build:  { cls: "s-build",  text: "模型加载中…" },
+  error:  { cls: "s-error",  text: "出错了，请查看主窗口" },
+};
+
+const sprite = document.getElementById("sprite");
+const bubble = document.getElementById("bubble");
+const bubbleText = document.getElementById("bubble-text");
+
+let lastKey = null;       // 上次渲染的状态 key
+let lastText = "";        // 当前句识别文字（出现=识别完成，清空=播出结束）
+
+// 预加载所有 sprite，避免首次切换时白屏等待（单个 SVG 最大 ~2.6MB）
+for (const p of Object.values(SPRITES)) { new Image().src = p; }
+
+function setState(key, text) {
+  if (key === lastKey && text === bubbleText.textContent) return;
+  lastKey = key;
+  sprite.src = SPRITES[key];       // 重新赋 src 让 SMIL 动画从头播
+  const info = BUBBLE[key];
+  if (!info) { bubble.style.display = "none"; return; }
+  bubble.className = info.cls;
+  bubble.style.display = "block";
+  bubbleText.textContent = text || info.text;
+}
+
+function render(s) {
+  if (!s.running) { lastText = ""; setState("idle"); return; }
+
+  if (s.child_error || s.stage === "error") { setState("error"); return; }
+  switch (s.stage) {
+    case "warming":
+      setState("build");
+      return;
+    case "asr":
+      setState("think", "识别中…");   // 此刻 last_text 还是上一句，不展示
+      return;
+    case "tts":
+      // ASR 完成进入合成：last_text 即本句识别结果，展示文字 = 「翻译完成」的确认
+      if (s.last_text) lastText = s.last_text;
+      setState("think", lastText ? `「${lastText}」` : "翻译中…");
+      return;
+    case "capturing":
+      // playing 阶段在子进程里只存在几毫秒（同步处理后立刻回到 capturing），
+      // 「正在播出」的真实信号是播放队列积压 queued_s > 0
+      if (s.queued_s > 0.05) {
+        // 轮询可能错过短暂的 tts 阶段，此时用 last_text 兜底
+        if (s.last_text && s.last_text !== lastText) lastText = s.last_text;
+        setState("play", lastText ? `「${lastText}」` : "播放中…");
+      } else {
+        lastText = "";                          // 队列空了 = 播完，回到聆听
+        setState("listen");
+      }
+      return;
+    default:
+      setState("build");   // init 等未知阶段
+  }
+}
+
+function renderLive(l) {
+  // 实时变声模式：基础聆听动画 + 实时字幕（转写子进程挂在 asr_* 字段）
+  if (l.asr_running) {
+    if (l.asr_stage === "transcribing") {
+      setState("think", "识别中…");
+    } else {
+      setState("listen", l.asr_last_text ? `「${l.asr_last_text}」` : "变声中…");
+    }
+  } else {
+    lastText = "";
+    setState("listen", "变身中…");   // 转写子进程未启动：只挂身份牌，不影响变声
+  }
+}
+
+// 预览模式（调试用）：pet.html?mock=1 自动轮播各状态，不依赖后端
+const MOCK = new URLSearchParams(location.search).get("mock") === "1";
+const MOCK_SEQ = [
+  ["listen", "聆听中…"],
+  ["think", "「你好呀」"],
+  ["play", "「你好呀」"],
+  ["idle", ""],
+  ["build", "模型加载中…"],
+  ["error", ""],
+];
+let mockIdx = 0;
+if (MOCK) {
+  const step = () => {
+    const [key, text] = MOCK_SEQ[mockIdx % MOCK_SEQ.length];
+    mockIdx += 1;
+    setState(key, text);
+  };
+  step();
+  setInterval(step, 2500);
+}
+
+async function tick() {
+  if (MOCK) return;
+  let cascadeData = null, live = null;
+  try {
+    const r = await fetch(API, { cache: "no-store" });
+    if (r.ok) cascadeData = await r.json();
+  } catch {}
+  try {
+    const r = await fetch(LIVE_API, { cache: "no-store" });
+    if (r.ok) live = await r.json();
+  } catch {}
+  if (cascadeData && cascadeData.running) {
+    render(cascadeData);
+  } else if (live && live.live_running) {
+    renderLive(live);
+  } else {
+    lastText = "";
+    setState("idle");   // 都没运行 / 后端没起：安静待机，不报错打扰
+  }
+}
+
+// ---------------- 手动拖拽 + 点击穿透 ----------------
+// app-region: drag 与 setIgnoreMouseEvents 组合在透明窗上不可靠，改由 JS 主导：
+// 悬停角色/气泡时关穿透，按下后由主进程按光标屏幕坐标挪窗口。
+let dragging = false;
+const petBox = document.getElementById("pet");
+
+function overInteractive(e) {
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  return !!(el && (el.closest("#pet") || el.closest("#bubble")));
+}
+
+petBox.addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;   // 右键留给上下文菜单
+  dragging = true;
+  window.pet && window.pet.dragStart();
+  e.preventDefault();
+});
+document.addEventListener("mousemove", (e) => {
+  if (dragging) { window.pet && window.pet.dragMove(); return; }
+  window.pet && window.pet.setIgnoreMouse(!overInteractive(e));
+});
+document.addEventListener("mouseup", (e) => {
+  if (!dragging) return;
+  dragging = false;
+  window.pet && window.pet.dragEnd();   // 主进程侧保存位置
+  // 拖拽结束时光标可能已出窗（elementFromPoint 为 null）→ 恢复全穿透
+  window.pet && window.pet.setIgnoreMouse(!overInteractive(e));
+});
+document.documentElement.addEventListener("mouseleave", () => {
+  if (!dragging) window.pet && window.pet.setIgnoreMouse(true);
+});
+window.pet && window.pet.setIgnoreMouse(true);   // 初始全穿透，悬停角色后恢复
+
+void tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

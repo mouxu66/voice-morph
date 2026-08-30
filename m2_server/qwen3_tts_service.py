@@ -100,16 +100,22 @@ def _get_whisper():
     return WHISPER
 
 
-def _transcribe(path: str, vad_filter: bool = True) -> dict:
+def _transcribe(path: str, vad_filter: bool = True, fast: bool = False) -> dict:
     """转写一条切片，返回文字与质量指标（logprob 越接近 0 越好，no_speech 越低越好）。
 
     vad_filter=False 供级联链路使用：子进程已用独立 VAD 分好块，
     whisper 内部过滤器再把短片段整段吞掉的话，调用方无法区分
     「用户真的没说话」和「被过滤器吃掉了」。
+
+    fast=True 供级联实时链路：短句（0.5~6s）用 beam_size=1 + 免时间戳，
+    解码耗时约降一半以上；切片转写/质检等离线场景仍走默认高质量参数。
     """
+    kw = dict(language="zh", vad_filter=vad_filter)
+    if fast:
+        kw.update(beam_size=1, best_of=1, condition_on_previous_text=False,
+                  without_timestamps=True)
     with _GPU_LOCK:
-        segments, _info = _get_whisper().transcribe(path, language="zh",
-                                                    vad_filter=vad_filter)
+        segments, _info = _get_whisper().transcribe(path, **kw)
     texts, logprobs, nospeech = [], [], []
     for s in segments:
         texts.append(s.text)
@@ -292,11 +298,12 @@ async def transcribe_ep(req: Request):
     body = await req.json()
     path = body.get("path", "")
     vad_filter = bool(body.get("vad_filter", True))
+    fast = bool(body.get("fast", False))
     if not path or not os.path.isfile(path):
         return {"error": f"文件不存在: {path}"}
     try:
         return await asyncio.get_running_loop().run_in_executor(
-            None, lambda: _transcribe(path, vad_filter))
+            None, lambda: _transcribe(path, vad_filter, fast))
     except Exception as exc:
         import traceback
         print(f"[transcribe] FAIL {path}: {exc}\n{traceback.format_exc()}", flush=True)

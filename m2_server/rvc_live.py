@@ -43,6 +43,14 @@ VENV_PY = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 # 通用训练驱动（任意音色），train_meituan_rat.py 仅是其兼容包装
 TRAIN_PY = RVC_ROOT / "train_rvc_voice.py"
 AUDIO_PS1 = ROOT / "m2_server" / "audio_config.ps1"
+# 实时转写子进程（桌宠字幕）：复用级联的分块+ASR，只采真麦，无声卡操作
+STREAM_PY = ROOT / "m2_server" / "cascade_stream.py"
+ASR_STATE_FILE = cfg.OUTPUTS_DIR / "live_asr_state.json"
+ASR_RUN_LOG = cfg.OUTPUTS_DIR / "live_asr_run.log"
+# 音色入库自动质检：tools/voice_qc.py 的落盘位置与在跑去重
+QC_PY = ROOT / "tools" / "voice_qc.py"
+QC_DIR = cfg.OUTPUTS_DIR / "qc"
+_QC_INFLIGHT: set[str] = set()
 
 # 真实麦克风与虚拟声卡（由 audio_config.ps1 list 探测确定）
 INPUT_DEVICE = os.environ.get("VM_LIVE_INPUT_DEVICE", "麦克风阵列")
@@ -134,6 +142,55 @@ _state = {
 }
 # realtime_gui 进程探测缓存（1s TTL，见 _find_realtime_pids）
 _pid_cache: dict = {"ts": None, "pids": []}
+# asr-only 转写子进程探测缓存（3s TTL，status/pet 轮询较频繁）
+_asr_pid_cache: dict = {"ts": None, "alive": False}
+
+
+def _find_asr_pids() -> list[int]:
+    """按命令行找出 asr-only 转写子进程（cascade_stream.py --asr-only）。"""
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+             "Where-Object { $_.CommandLine -match 'cascade_stream.+asr-only' } | "
+             "Select-Object -ExpandProperty ProcessId"],
+            capture_output=True, text=True, timeout=20,
+        ).stdout
+        return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
+    except Exception:
+        return []
+
+
+def _asr_proc_alive() -> bool:
+    now = time.time()
+    if _asr_pid_cache["ts"] is None or now - _asr_pid_cache["ts"] > 3.0:
+        _asr_pid_cache.update(ts=now, alive=bool(_find_asr_pids()))
+    return _asr_pid_cache["alive"]
+
+
+def _stop_asr_proc():
+    """查杀实时转写子进程（按命令行匹配，覆盖 pid 丢失场景）。"""
+    _asr_pid_cache["ts"] = None
+    for pid in _find_asr_pids():
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=30)
+        except Exception:
+            pass
+
+
+def _asr_state() -> dict:
+    """读取转写子进程状态文件；running 以进程存活为准（文件可能残留）。"""
+    res = {"running": False, "stage": "", "last_text": "", "chunks": 0,
+           "error": "", "updated_at": ""}
+    if ASR_STATE_FILE.exists():
+        try:
+            data = json.loads(ASR_STATE_FILE.read_text(encoding="utf-8"))
+            res.update({k: data.get(k, res[k]) for k in res})
+        except Exception:
+            pass
+    res["running"] = _asr_proc_alive()
+    return res
 
 
 def _audio(action: str) -> dict:
@@ -280,6 +337,52 @@ def _exp_snapshot(exp: str) -> dict:
     }
 
 
+def _read_qc(exp: str):
+    """读取该音色的质检结果（outputs/qc/<exp>.json）；没有或损坏时返回 None。"""
+    f = QC_DIR / f"{exp}.json"
+    if not f.exists():
+        return None
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _maybe_run_qc(exp: str, log_dir: Path):
+    """训练完成后自动触发音色质检（后台线程，失败静默、绝不影响训练状态）。
+
+    触发条件：质检结果不存在，或旧于最新训练产物（G_*.pth / <exp>.pth / index /
+    推理权重任一更新过都算重训）。质检脚本自身保证"任何失败也写 JSON"，因此
+    失败重试天然被 mtime 比较挡住，不会反复拉起。
+    """
+    try:
+        cands = list(log_dir.glob("G_*.pth")) + list(log_dir.glob("added_*.index")) + [
+            log_dir / f"{exp}.pth", RVC_ROOT / "assets" / "weights" / f"{exp}.pth"]
+        model_mtime = max((p.stat().st_mtime for p in cands if p.exists()), default=0.0)
+        if model_mtime <= 0:
+            return
+        qc_file = QC_DIR / f"{exp}.json"
+        if qc_file.exists() and qc_file.stat().st_mtime >= model_mtime:
+            return
+        if exp in _QC_INFLIGHT:
+            return
+        _QC_INFLIGHT.add(exp)
+
+        def _job():
+            try:
+                subprocess.run(
+                    [sys.executable, str(QC_PY), "--voice", exp],
+                    capture_output=True, timeout=1800)
+            except Exception:
+                pass
+            finally:
+                _QC_INFLIGHT.discard(exp)
+
+        threading.Thread(target=_job, daemon=True).start()
+    except Exception:
+        pass
+
+
 # 各阶段在日志中的标记 → (阶段名, 权重%)。顺序即执行顺序，取"最后命中"的阶段。
 _TRAIN_STAGE_MARKERS = [
     ("数据切分", "预处理切分", 10),
@@ -354,6 +457,9 @@ def _train_progress(exp_name: str | None = None) -> dict:
                        percent=round(min(100.0, max(res["percent"], percent)), 1))
             break
     res["log_tail"] = [ln.rstrip() for ln in seg[-14:] if ln.strip()]
+    # 训练完成 → 自动音色质检（后台线程静默跑，见 _maybe_run_qc）
+    if res["done"]:
+        _maybe_run_qc(exp, log_dir)
     if res["rc"] is None and not res["running"] and not res["done"] and not res["error"]:
         res["message"] = res["message"] or "未运行（可能被中断）"
     return res
@@ -424,6 +530,7 @@ def _live_proc_alive() -> bool:
 def _live_waiter(proc: subprocess.Popen):
     proc.wait()
     # RVC 窗口关闭后自动还原声卡；restore 失败则 reset 兜底，并记录状态供 status 反馈
+    _stop_asr_proc()  # 实时转写子进程跟随实时变声一起退出
     error = ""
     try:
         _audio("restore")
@@ -463,6 +570,8 @@ def rvc_live_status(exp_name: str | None = None):
         "train_running": _state["train"]["running"],
         "output_device": OUTPUT_DEVICE,
         "input_device": INPUT_DEVICE,
+        # 实时转写（桌宠字幕）：running=转写子进程存活；stage/last_text 供桌宠渲染
+        **{f"asr_{k}": v for k, v in _asr_state().items()},
     }
 
 
@@ -491,7 +600,8 @@ def rvc_voices():
                 except Exception:
                     pass
             items[d.name] = {"id": d.name, "display_name": display,
-                             "has_reference": True, **_exp_snapshot(d.name)}
+                             "has_reference": True, "qc": _read_qc(d.name),
+                             **_exp_snapshot(d.name)}
 
     logs = cfg.RVC_ROOT / "logs"
     if logs.exists():
@@ -503,7 +613,7 @@ def rvc_voices():
             if not (snap["pth_exists"] or snap["index_exists"] or snap["dataset_count"]):
                 continue
             items[d.name] = {"id": d.name, "display_name": d.name,
-                             "has_reference": False, **snap}
+                             "has_reference": False, "qc": _read_qc(d.name), **snap}
 
     voices = sorted(items.values(),
                     key=lambda v: (not v["model_ready"], not v["has_reference"], v["id"]))
@@ -584,8 +694,26 @@ def rvc_live_start(exp_name: str | None = None):
 
     _state["live"].update(running=True, pid=proc.pid, error="")
     threading.Thread(target=_live_waiter, args=(proc,), daemon=True).start()
+
+    # 拉起实时转写子进程（桌宠字幕）：只采真麦 + ASR，无声卡操作，失败不影响变声
+    asr_started = False
+    try:
+        if STREAM_PY.exists():
+            ASR_RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
+            asr_log = open(ASR_RUN_LOG, "ab")
+            subprocess.Popen(
+                [str(VENV_PY), str(STREAM_PY), "--asr-only",
+                 "--state-path", str(ASR_STATE_FILE), "--out-dir", str(cfg.OUTPUTS_DIR)],
+                stdout=asr_log, stderr=subprocess.STDOUT,
+            )
+            asr_log.close()
+            asr_started = True
+    except Exception as e:
+        print(f"[live] 实时转写子进程拉起失败（桌宠字幕不可用）: {e}", flush=True)
+
     return JSONResponse({
         "ok": True, "pid": proc.pid, "audio_switched": True,
+        "asr_subtitle": asr_started,
         "output_device": OUTPUT_DEVICE,
         "hint": "已把系统录音设备切到 CABLE Output（微信等应用会用变身后的声音），RVC 窗口已自动开始变声。关闭窗口或点「停止变声」会自动还原声卡",
     })
@@ -605,6 +733,7 @@ def rvc_live_stop():
             pass
     _pid_cache["ts"] = None  # 清缓存，stop 后 status 立即反映真实状态
     _state["live"].update(running=False, pid=None, audio_switched=False)
+    _stop_asr_proc()  # 实时转写子进程跟随实时变声一起退出
     # 还原声卡：restore 失败则 reset 兜底，并真实反馈
     try:
         _audio("restore")

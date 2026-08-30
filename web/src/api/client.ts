@@ -1,4 +1,4 @@
-import type { ClipItem, HealthInfo, VideoItem, VoiceInfo } from "../types";
+import type { ClipItem, HealthInfo, VideoItem, VoiceInfo, VoiceQc } from "../types";
 
 // 后端统一挂在 /api 前缀下。
 // 开发模式：走 vite proxy（/api -> 8000），用相对地址；
@@ -49,6 +49,10 @@ export async function listVoices(): Promise<VoiceInfo[]> {
 export async function listRawVideos(): Promise<VideoItem[]> {
   const data = await jsonFetch<{ videos: VideoItem[] }>("/raw_videos");
   return data.videos;
+}
+
+export async function deleteRawVideo(name: string, force: boolean): Promise<{ ok: boolean; clips: number; related: number }> {
+  return jsonFetch(`/raw_videos/${encodeURIComponent(name)}?force=${force}`, { method: "DELETE" });
 }
 
 export type PipelineStatus = {
@@ -378,6 +382,8 @@ export type RvcVoice = {
   model_ready: boolean;
   dataset_count: number;
   trained_at: string;
+  /** 音色入库自动质检结果（outputs/qc/<id>.json；未质检时为 null） */
+  qc?: VoiceQc | null;
 };
 
 export type RvcVoicesInfo = {
@@ -493,6 +499,10 @@ export type CascadeStatus = {
   last_text: string;
   last_asr_s: number;
   last_tts_s: number;
+  avg_asr_s: number;
+  p95_asr_s: number;
+  avg_tts_s: number;
+  p95_tts_s: number;
   last_audio_s: number;
   last_fast: boolean | null;
   chunks: number;

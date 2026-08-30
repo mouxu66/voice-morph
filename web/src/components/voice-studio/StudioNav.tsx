@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { AudioLines, BookOpen, FlaskConical, Library, Lock, Mic2, Radio, Speech, Waves } from "lucide-react"
+import { AudioLines, BookOpen, FlaskConical, Library, Lock, Mic2, Radio, SlidersHorizontal, Speech, Waves } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 import { listRvcVoices } from "@/api/client"
 
@@ -12,6 +12,7 @@ const items = [
   { path: "/live", label: "实时变声", icon: Radio },
   { path: "/cascade", label: "级联变声", icon: Waves },
   { path: "/offlinevc", label: "离线变声", icon: AudioLines },
+  { path: "/effects", label: "效果器工坊", icon: SlidersHorizontal },
 ]
 
 // 前置依赖：必须先训练出至少一个可用音色（model_ready）才能使用。

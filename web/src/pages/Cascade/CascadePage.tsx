@@ -232,8 +232,8 @@ export function CascadePage(p: ReturnType<typeof useCascade>) {
               </h3>
               <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
                 {running
-                  ? `正在聆听（${s?.input_device || "麦克风"}）。对着麦克风正常说话，说完一句稍候即播出目标音色。`
-                  : "启动后系统录音设备自动切到 CABLE Output；点「停止」自动还原。与「实时变声」互斥，两边不能同时开。"}
+                  ? `正在聆听（${s?.input_device || "麦克风"}）。对着麦克风正常说话，说完一句稍候即播出目标音色。全局热键 Ctrl+Alt+V 可一键停止。`
+                  : "启动后系统录音设备自动切到 CABLE Output；点「停止」自动还原。全局热键 Ctrl+Alt+V 一键启停（复用上次音色与参数），与「实时变声」互斥。"}
               </p>
             </div>
 
@@ -347,8 +347,16 @@ export function CascadePage(p: ReturnType<typeof useCascade>) {
             <div className="grid grid-cols-2 gap-2.5">
               <Stat label="最近滞后" value={hasSession && s?.last_latency_s ? `${s.last_latency_s}s` : "—"} tone={latencyTone(hasSession ? s?.last_latency_s : undefined)} />
               <Stat label="平均滞后" value={hasSession && avgLat ? `${avgLat}s` : "—"} tone={latencyTone(hasSession ? avgLat || undefined : undefined)} />
-              <Stat label="识别耗时" value={hasSession && s?.last_asr_s ? `${s.last_asr_s}s` : "—"} />
-              <Stat label="合成耗时" value={hasSession && s?.last_tts_s ? `${s.last_tts_s}s` : "—"} />
+              <Stat
+                label="识别耗时 avg/p95"
+                value={hasSession && s?.avg_asr_s ? `${s.avg_asr_s}s / ${s.p95_asr_s ?? "—"}s` : "—"}
+                tone={s && s.p95_asr_s > 3 ? "warn" : "default"}
+              />
+              <Stat
+                label="合成耗时 avg/p95"
+                value={hasSession && s?.avg_tts_s ? `${s.avg_tts_s}s / ${s.p95_tts_s ?? "—"}s` : "—"}
+                tone={s && s.p95_tts_s > 4 ? "warn" : "default"}
+              />
               <Stat label="待播积压" value={hasSession && s?.queued_s ? `${s.queued_s}s` : "—"} tone={s && s.queued_s > 6 ? "warn" : "default"} />
               <Stat label="已合成句子" value={hasSession ? String(s?.chunks ?? 0) : "—"} />
             </div>

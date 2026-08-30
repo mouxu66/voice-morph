@@ -17,6 +17,7 @@
   --c-accent: 124 92 240;   /* #7c5cf0 */
   --c-accent-h: 141 113 245; /* #8d71f5 */
   --c-accent-p: 105 76 222; /* #694cde */
+  --c-accent-2: 56 189 248;  /* #38bdf8 渐变副色（暗色主题下更亮） */
 }
 [data-theme="light"] {
   color-scheme: light;
@@ -36,6 +37,7 @@
   --c-accent: 105 76 222;   /* #694cde */
   --c-accent-h: 124 92 240; /* #7c5cf0 */
   --c-accent-p: 88 62 198;  /* #583ec6 */
+  --c-accent-2: 14 165 233;  /* #0ea5e9 亮色主题下沉一档保证对比 */
 }
 
 @tailwind base;
@@ -55,10 +57,35 @@
   ::selection {
     @apply bg-brand-500/30 text-white;
   }
-  /* 细滚动条，贴合深色主题 */
+  /* 滚动条：Firefox + Chromium 双轨细样式，hover 提亮到品牌色 */
   * {
     scrollbar-width: thin;
     scrollbar-color: theme("colors.ink.600") transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--c-border-2) / 0.7);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--c-accent) / 0.55);
+    background-clip: padding-box;
+  }
+  /* 无障碍：用户系统开启"减少动态"时关掉所有动画/过渡 */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }
 
@@ -71,19 +98,83 @@
   .no-scrollbar::-webkit-scrollbar {
     display: none;
   }
+
+  /* ===== 氛围层：纯 CSS 绘制，零网络请求零版权负担 ===== */
+  /* 品牌色径向光晕：右上主光 + 左下补光，营造空间纵深 */
+  .ambient-glow {
+    background:
+      radial-gradient(1100px 520px at 88% -8%, rgb(var(--c-accent) / 0.16), transparent 62%),
+      radial-gradient(760px 460px at -12% 38%, rgb(var(--c-accent-2) / 0.09), transparent 58%);
+  }
+  /* 工程网格：顶部渐隐，呼应"本地工作台"定位 */
+  .ambient-grid {
+    background-image:
+      linear-gradient(rgb(var(--c-border) / 0.4) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(var(--c-border) / 0.4) 1px, transparent 1px);
+    background-size: 44px 44px;
+    -webkit-mask-image: radial-gradient(ellipse 90% 55% at 50% 0%, black 25%, transparent 78%);
+    mask-image: radial-gradient(ellipse 90% 55% at 50% 0%, black 25%, transparent 78%);
+  }
+  /* 品牌渐变发丝线：header 底部的精致高光 */
+  .hairline-gradient {
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgb(var(--c-accent) / 0.75) 30%,
+      rgb(var(--c-accent-2) / 0.75) 70%,
+      transparent
+    );
+  }
+  /* 文字渐变：大标题的强调色 */
+  .text-gradient {
+    background: linear-gradient(100deg, rgb(var(--c-t-200)), rgb(var(--c-accent-h)) 55%, rgb(var(--c-accent-2)));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  /* 加载微光：数据未就绪时的占位条 */
+  .skeleton-shimmer {
+    background: linear-gradient(
+      100deg,
+      rgb(var(--c-surface-2)) 40%,
+      rgb(var(--c-border) / 0.8) 50%,
+      rgb(var(--c-surface-2)) 60%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.8s linear infinite;
+  }
 }
 
 @layer components {
   .glass-panel {
     @apply rounded-2xl border border-ink-700/60 bg-ink-850/80 backdrop-blur-sm;
+    /* 玻璃质感增强：边缘内高光 + 悬浮投影 */
+    box-shadow:
+      inset 0 1px 0 0 rgb(255 255 255 / 0.04),
+      0 4px 24px rgb(0 0 0 / 0.18);
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
+  }
+  .glass-panel:hover {
+    border-color: rgb(var(--c-border-2) / 0.75);
+    box-shadow:
+      inset 0 1px 0 0 rgb(255 255 255 / 0.05),
+      0 8px 32px rgb(0 0 0 / 0.26);
   }
   .btn-primary {
-    @apply inline-flex items-center gap-2 rounded-xl bg-brand-500 px-4 py-2 text-sm font-medium text-white transition
-      hover:bg-brand-400 active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none;
+    @apply inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium text-white transition
+      hover:brightness-110 active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+    /* 渐变主体 + 同色系投影，取代纯色块 */
+    background: linear-gradient(135deg, rgb(var(--c-accent-h)), rgb(var(--c-accent)));
+    box-shadow: 0 2px 12px rgb(var(--c-accent) / 0.35);
+  }
+  .btn-primary:hover {
+    box-shadow: 0 4px 20px rgb(var(--c-accent) / 0.5);
   }
   .btn-ghost {
     @apply inline-flex items-center gap-2 rounded-xl border border-ink-600 px-4 py-2 text-sm font-medium text-slate-300 transition
-      hover:border-ink-600 hover:bg-ink-800 active:scale-[0.98] disabled:opacity-40;
+      hover:border-ink-600 hover:bg-ink-800 active:scale-[0.98] disabled:opacity-40
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
   }
   .chip {
     @apply inline-flex items-center gap-1.5 rounded-full border border-ink-600 px-3 py-1 text-xs text-slate-300;
@@ -92,3 +183,34 @@
     @apply mb-1.5 block text-xs font-medium text-slate-400;
   }
 }
+
+/* ===== 页面级动效：路由切换时各区块逐个上浮（React 换页即重挂载，动画自然重播） ===== */
+main section {
+  animation: rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+main section:nth-child(1) { animation-delay: 0.03s; }
+main section:nth-child(2) { animation-delay: 0.09s; }
+main section:nth-child(3) { animation-delay: 0.15s; }
+main section:nth-child(4) { animation-delay: 0.21s; }
+main section:nth-child(n + 5) { animation-delay: 0.27s; }
+
+/* 内容卡片交互反馈：边框提亮 + 投影加深（不改布局，仅视觉层） */
+main .rounded-2xl.border {
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+main .rounded-2xl.border:hover {
+  border-color: rgb(var(--c-border-2) / 0.8);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.22);
+}
+
+/* ===== keyframes：原生 CSS 直接声明（Tailwind 只在使用 utility 时才输出，
+   上面的 main section / .skeleton-shimmer 是原生引用，必须在此落地） ===== */
+@keyframes rise {
+  0% { opacity: 0; transform: translateY(14px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+

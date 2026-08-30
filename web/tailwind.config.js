@@ -68,6 +68,25 @@ export default {
         body: ["Inter", "system-ui", "sans-serif"],
         mono: ["JetBrains Mono", "ui-monospace", "monospace"],
       },
+      // 动画体系：入场/氛围统一 cubic-bezier，只动 opacity/transform（GPU 合成层）
+      keyframes: {
+        rise: {
+          "0%": { opacity: "0", transform: "translateY(14px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
+        "fade-in": {
+          "0%": { opacity: "0" },
+          "100%": { opacity: "1" },
+        },
+        shimmer: {
+          "0%": { backgroundPosition: "-200% 0" },
+          "100%": { backgroundPosition: "200% 0" },
+        },
+      },
+      animation: {
+        rise: "rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both",
+        "fade-in": "fade-in 0.4s ease-out both",
+      },
     },
   },
   plugins: [require("tailwindcss-animate")],

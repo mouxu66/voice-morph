@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   cancelPipeline,
+  deleteRawVideo,
   getPipelineStatus,
   listClips,
   listRawVideos,
@@ -122,6 +123,23 @@ export function useWorkshop() {
     try { await openFolder("raw_videos") } catch (error) { setErrorMessage(friendlyError(error)) }
   }
 
+  // 删除素材（联动清理切片/音轨等派生产物）。被音色引用时后端要求 force，音色本身不受影响。
+  const deleteVideo = async (name: string, usedBy: string[]) => {
+    setErrorMessage("")
+    try {
+      const res = await deleteRawVideo(name, usedBy.length > 0)
+      setFeedback(usedBy.length
+        ? `已删除素材（音色「${usedBy.join("、")}」不受影响）`
+        : `已删除素材${res.clips ? `及 ${res.clips} 个切片` : ""}${res.related ? `、${res.related} 个中间文件` : ""}`)
+      await loadWorkshop()
+    } catch (error) {
+      setErrorMessage(friendlyError(error, "删除素材失败"))
+      // 前端展示的引用数据可能已过期（如别处刚完成一次克隆）：刷新列表拿到最新 used_by，
+      // 卡片按钮会升级为「仍要删除」，用户确认后再点一次即可强删——避免 409 死循环
+      await loadWorkshop()
+    }
+  }
+
   // RVC 训练集导出（带当前采纳片段）
   const exportRvc = async () => {
     setErrorMessage("")
@@ -184,6 +202,7 @@ export function useWorkshop() {
     reviewMode, setReviewMode, selectedClips, selectedItems, selectedDuration, decisions,
     pipeline, startPipeline, stopPipeline, resetPipeline,
     uploading, uploadProgress, dragging, setDragging, fileInputRef, handleFiles, openRawFolder, exportRvc,
+    deleteVideo,
     loadWorkshop, toggleClip, clearSelectedClips, setDecision,
     clipAudioUrl: (clip: ClipItem) => mediaUrl(`/media/clips/${clip.name}.wav`),
   }

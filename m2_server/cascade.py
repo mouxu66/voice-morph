@@ -117,6 +117,7 @@ class CascadeStartReq(BaseModel):
     ref_text: str = ""
     chunk_max_s: float | None = None
     silence_ms: int | None = None
+    prime_s: float | None = None  # 播放预缓冲秒数（越大越抗抖动、首块越晚出声）
     mode: str = "stream"  # stream=按句流式 | whole=等整段说完（低打断感、高延迟）
 
 
@@ -178,6 +179,20 @@ def cascade_start(req: CascadeStartReq | None = None):
            "--out-dir", str(cfg.OUTPUTS_DIR)]
     if body.silence_ms:
         cmd += ["--silence-ms", str(body.silence_ms)]
+    if body.prime_s is not None:
+        cmd += ["--prime-s", str(body.prime_s)]
+
+    # 存档本次启动参数：全局热键一键重启时复用（否则只能用默认音色）
+    try:
+        (cfg.OUTPUTS_DIR / "cascade_last_start.json").write_text(
+            json.dumps({
+                "voice_id": body.voice_id, "ref_audio": ref_audio,
+                "ref_text": body.ref_text, "chunk_max_s": chunk_max_s,
+                "silence_ms": body.silence_ms, "prime_s": body.prime_s,
+                "mode": body.mode,
+            }, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
     logf = open(RUN_LOG, "ab")
     try:
         proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=logf,
@@ -263,6 +278,16 @@ def cascade_stop():
                              "fallback_failed": True})
 
 
+@router.get("/cascade/last-start")
+def cascade_last_start():
+    """上次启动参数（供全局热键等外部调用方复用）。"""
+    try:
+        return json.loads(
+            (cfg.OUTPUTS_DIR / "cascade_last_start.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 @router.get("/cascade/status")
 def cascade_status():
     alive = _cascade_alive()
@@ -284,6 +309,11 @@ def cascade_status():
         "last_text": child.get("last_text", ""),
         "last_asr_s": child.get("last_asr_s", 0.0),
         "last_tts_s": child.get("last_tts_s", 0.0),
+        # 分阶段耗时统计（最近 30 块 avg/p95，供前端定位瓶颈）
+        "avg_asr_s": child.get("avg_asr_s", 0.0),
+        "p95_asr_s": child.get("p95_asr_s", 0.0),
+        "avg_tts_s": child.get("avg_tts_s", 0.0),
+        "p95_tts_s": child.get("p95_tts_s", 0.0),
         "last_audio_s": child.get("last_audio_s", 0.0),
         "last_fast": child.get("last_fast"),
         "chunks": child.get("chunks", 0),

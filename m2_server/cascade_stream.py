@@ -60,10 +60,29 @@ STATE = {
     "last_text": "", "last_asr_s": 0.0, "last_tts_s": 0.0, "last_audio_s": 0.0,
     "last_fast": None, "chunks": 0, "dropped": 0,
     "avg_latency_s": 0.0, "last_latency_s": 0.0, "queued_s": 0.0,
+    # 分阶段耗时统计（最近 30 块）：识别/合成的 avg 与 p95
+    "avg_asr_s": 0.0, "p95_asr_s": 0.0, "avg_tts_s": 0.0, "p95_tts_s": 0.0,
     "input_device": "", "output_device": "",
     "error": "", "updated_at": "",
 }
 _latencies: deque = deque(maxlen=20)
+_asr_hist: deque = deque(maxlen=30)
+_tts_hist: deque = deque(maxlen=30)
+
+
+def _p95(xs) -> float:
+    if not xs:
+        return 0.0
+    s = sorted(xs)
+    return float(s[min(len(s) - 1, int(round(0.95 * (len(s) - 1))))])
+
+
+def _update_stage_stats(which: str, val: float):
+    """记录一次分阶段耗时并刷新 STATE 的 avg/p95（which: asr|tts）。"""
+    hist = _asr_hist if which == "asr" else _tts_hist
+    hist.append(val)
+    STATE[f"avg_{which}_s"] = round(sum(hist) / len(hist), 2)
+    STATE[f"p95_{which}_s"] = round(_p95(hist), 2)
 
 
 def _write_state():
@@ -291,8 +310,11 @@ class Worker:
         raise RuntimeError("等待 8001 worker 就绪超时（模型加载失败？）")
 
     def asr(self, path: str) -> dict:
+        # fast=True：短句用 beam_size=1 + 免时间戳，短块延迟约降一半，
+        # 长句识别质量差异可忽略（级联块长 0.5~6s）
         r = requests.post(self.base + "/transcribe",
-                          json={"path": path, "vad_filter": False}, timeout=120)
+                          json={"path": path, "vad_filter": False, "fast": True},
+                          timeout=120)
         r.raise_for_status()
         data = r.json()
         if "error" in data:
@@ -388,6 +410,7 @@ class Cascade:
         sf.write(str(self.tmp_wav), pcm, SR_IN, subtype="PCM_16")
         tr = self.worker.asr(str(self.tmp_wav))
         asr_s = time.time() - t0
+        _update_stage_stats("asr", asr_s)
         text = (tr.get("text") or "").strip()
         STATE.update(last_asr_s=round(asr_s, 2), last_text=text)
         if not text:
@@ -399,6 +422,7 @@ class Cascade:
         t0 = time.time()
         audio, sr, fast = self.worker.tts(text, self.args.ref_audio, self.args.ref_text)
         tts_s = time.time() - t0
+        _update_stage_stats("tts", tts_s)
         if sr != SR_OUT:
             audio = _resample(audio, sr, SR_OUT)
         STATE.update(last_tts_s=round(tts_s, 2), last_fast=fast,
@@ -568,6 +592,72 @@ def run_file(args):
     print(f"[cascade] 输出: {out}", flush=True)
 
 
+def run_live_asr(args):
+    """asr-only 模式：真麦 → VAD 分块 → ASR(8001) → 状态文件（无 TTS/播放/声卡操作）。
+
+    供实时变声（RVC）期间挂桌宠实时字幕用：RVC 自己占真麦与 CABLE，本模式
+    只共享采集真麦（WASAPI 共享模式允许多客户端），转写结果写独立状态文件，
+    由 /api/rvc/live/status 合并返回。绝不碰声卡配置，绝不采 CABLE。
+    """
+    dev_in = find_device(INPUT_KEYWORD, is_input=True)
+    name_in = sd.query_devices(dev_in)["name"]
+    if "cable" in name_in.lower():
+        raise RuntimeError(f"输入设备解析到了 {name_in}，会造成回环，拒绝启动")
+    STATE.update(input_device=name_in, output_device="(asr-only)")
+    print(f"[live-asr] 输入: {name_in}", flush=True)
+
+    worker = Worker(args.worker)
+    _set_stage("warming")
+    worker.wait_ready()
+    tmp_wav = Path(args.out_dir) / "live_asr_tmp.wav"
+    tmp_wav.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(tmp_wav), np.zeros(SR_IN, dtype=np.float32), SR_IN, subtype="PCM_16")
+    worker.asr(str(tmp_wav))  # whisper 懒加载预热
+    print("[live-asr] ASR 预热完成", flush=True)
+
+    vad_det = _make_det(args)
+    chunker = Chunker(silence_ms=args.silence_ms, chunk_max_s=args.chunk_max_s,
+                      min_chunk_s=args.min_chunk_s)
+    q: queue.Queue = queue.Queue()
+
+    def in_cb(indata, frames, time_info, status):
+        q.put(indata[:, 0].copy())
+
+    def gen():
+        while True:
+            yield q.get().astype(np.float32) / 32768.0, time.time()
+
+    def transcribe(pcm: np.ndarray):
+        _set_stage("transcribing")
+        t0 = time.time()
+        sf.write(str(tmp_wav), pcm, SR_IN, subtype="PCM_16")
+        tr = worker.asr(str(tmp_wav))
+        text = (tr.get("text") or "").strip()
+        STATE.update(last_asr_s=round(time.time() - t0, 2))
+        if text:
+            STATE.update(last_text=text, error="")
+            STATE["chunks"] += 1
+            print(f"[live-asr] 「{text}」 ({time.time() - t0:.2f}s)", flush=True)
+        _write_state()
+        _set_stage("capturing")
+
+    _set_stage("capturing")
+    with sd.InputStream(device=dev_in, samplerate=SR_IN, channels=1,
+                        dtype="int16", blocksize=FRAME_N, callback=in_cb):
+        for frame, ts in gen():
+            out = chunker.feed(frame, vad_det(frame), ts)
+            if out is not None:
+                pcm, _ = out
+                try:
+                    transcribe(pcm)
+                except SystemExit:
+                    raise
+                except Exception as e:
+                    STATE["error"] = f"{type(e).__name__}: {e}"[:300]
+                    _write_state()
+                    print(f"[live-asr] 转写失败: {e}", flush=True)
+
+
 def main():
     p = argparse.ArgumentParser(description="级联变声子进程（录音→ASR→TTS）")
     p.add_argument("--ref-audio", default="D:/变声/tts_models/ref/meituan_rat_002.wav")
@@ -581,6 +671,8 @@ def main():
     p.add_argument("--state-path", default="")
     p.add_argument("--out-dir", default="")
     p.add_argument("--file", default="", help="文件模式：处理该 wav 而非麦克风")
+    p.add_argument("--asr-only", action="store_true",
+                   help="只转写不合成不播放（实时变声期间的桌宠字幕），无声卡操作")
     args = p.parse_args()
 
     base = Path(__file__).resolve().parent.parent
@@ -591,7 +683,9 @@ def main():
         else Path(args.out_dir) / "cascade_state.json"
 
     try:
-        if args.file:
+        if args.asr_only:
+            run_live_asr(args)
+        elif args.file:
             run_file(args)
         else:
             run_live(args)
