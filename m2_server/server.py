@@ -35,6 +35,7 @@ from pydantic import BaseModel
 import config as cfg
 from finetune import router as ft_router
 from audiobook import router as audiobook_router
+from cascade import router as cascade_router
 from offline_vc import router as offlinevc_router
 from rvc_live import router as rvc_live_router, _find_pth
 
@@ -102,6 +103,7 @@ app.include_router(rvc_live_router)
 app.include_router(ft_router)
 app.include_router(audiobook_router)
 app.include_router(offlinevc_router)
+app.include_router(cascade_router)
 
 
 @app.get(API_PREFIX + "/health")

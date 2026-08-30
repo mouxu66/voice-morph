@@ -52,6 +52,25 @@ CREATE_NEW_CONSOLE = 0x00000010
 
 DEFAULT_EPOCHS = 40
 
+# 实时变声基线参数。每次「开始变声」都会写入 RVC 的 config.json，保证起点一致、可复现；
+# GUI 里的滑杆仍可在本轮会话内热调（realtime_gui 支持热更新），下次启动回到基线。
+#
+# 为什么需要它：config.json 会持久化 GUI 上次的滑杆值，实验性的坏值会一直留着。
+# 实测踩到的组合是 block_time=0.13 / crossfade_length=0.08 —— 淡入淡出占分块的 62%，
+# 而 RVC 默认值是 0.05/0.25 = 20%。占比过高会产生明显的重叠涂抹（重影、相位感）；
+# 同时 block_time 只有默认的一半，hubert/f0 上下文不足，音色更容易发飘发怪。
+# rms_mix_rate 取 0.25 是为了和离线链路 offline_vc_infer.py 对齐——离线在 0.25 下听感最好。
+REALTIME_TUNING = {
+    "block_time": 0.25,        # RVC 默认；分块越长上下文越足，artifacts 越少
+    "crossfade_length": 0.05,  # RVC 默认；占 block_time 的 20%，避免重叠涂抹
+    "extra_time": 2.5,         # RVC 默认；额外推理上下文
+    "rms_mix_rate": 0.25,      # 与离线链路一致（离线 0.25 时听感最佳）
+    "index_rate": 0.5,         # 与离线 A/B 一致
+    "threhold": -60.0,
+    "sr_type": "sr_model",
+    "f0method": "rmvpe",
+}
+
 
 def _active_exp() -> str:
     """当前生效的 RVC 实验名（音色 ID）：最近一次启动的训练，否则回退默认。"""
@@ -370,7 +389,7 @@ def _resolve_device_names() -> tuple[str, str] | None:
 
 
 def _apply_model_config() -> bool:
-    """把 RVC 实时配置预填为当前音色模型；设备字段每次都用枚举出的精确全名覆盖。"""
+    """把 RVC 实时配置预填为当前音色模型 + 基线参数；设备字段用枚举出的精确全名覆盖。"""
     name, log_dir, _ = _exp_dirs()
     cfg_json = {}
     if CONFIG_JSON.exists():
@@ -386,8 +405,9 @@ def _apply_model_config() -> bool:
         return False
     cfg_json["pth_path"] = str(pth).replace("\\", "/")
     cfg_json["index_path"] = str(idx).replace("\\", "/")
-    cfg_json["f0method"] = "rmvpe"
-    cfg_json["sr_type"] = "sr_model"
+    # 基线参数统一覆盖：否则 GUI 上次遗留的实验性滑杆值会一直生效，
+    # 而"实时听起来怪"绝大多数是这些参数导致的，不是模型问题。
+    cfg_json.update(REALTIME_TUNING)
     # 设备必须用枚举出的精确全名；解析失败时保留旧值（GUI 至少能用上次可用的配置）
     resolved = _resolve_device_names()
     if resolved:
@@ -498,6 +518,11 @@ def rvc_voices():
 
 @router.post("/rvc/live/start")
 def rvc_live_start(exp_name: str | None = None):
+    # 级联变声与实时变声互斥：两者抢 GPU 且都要占 CABLE（反向检查在 cascade.start）
+    from cascade import _cascade_alive
+    if _cascade_alive():
+        raise HTTPException(status_code=409,
+                            detail="级联变声正在运行，请先停止（两者抢 GPU 且都占 CABLE）")
     if _live_proc_alive():
         return JSONResponse({"ok": True, "already_running": True, "pid": _state["live"]["pid"]})
     # 允许切换到指定音色的模型（校验其权重与索引都存在后才写配置）

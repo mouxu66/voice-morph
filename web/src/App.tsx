@@ -12,9 +12,11 @@ import { WorkshopRoute } from "@/pages/Workshop/index"
 import { FtRoute } from "@/pages/Ft/index"
 import { AudiobookRoute } from "@/pages/Audiobook/index"
 import { OfflineVcRoute } from "@/pages/OfflineVc/index"
+import { CascadeRoute } from "@/pages/Cascade/index"
 
 const pageTitles: Record<string, string> = {
   "/live": "实时变声",
+  "/cascade": "级联变声",
   "/workshop": "音色工坊",
   "/voices": "音色库",
   "/tts": "文字转语音",
@@ -153,5 +155,5 @@ export default function App() {
     return () => { alive = false; window.clearInterval(timer) }
   }, [setHealth, setVoices])
 
-  return <div className="min-h-[100dvh] bg-gradient-to-br from-background via-background to-card text-foreground"><AppChrome /><main className="min-h-[100dvh] pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-[7.25rem] lg:pb-0 lg:pl-64 lg:pt-16"><Routes><Route path="/live" element={<LiveRoute />} /><Route path="/workshop" element={<WorkshopRoute />} /><Route path="/voices" element={<VoicesRoute />} /><Route path="/tts" element={<TtsRoute />} /><Route path="/ft" element={<FtRoute />} /><Route path="/audiobook" element={<AudiobookRoute />} /><Route path="/offlinevc" element={<OfflineVcRoute />} /><Route path="*" element={<Navigate to="/workshop" replace />} /></Routes></main></div>
+  return <div className="min-h-[100dvh] bg-gradient-to-br from-background via-background to-card text-foreground"><AppChrome /><main className="min-h-[100dvh] pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-[7.25rem] lg:pb-0 lg:pl-64 lg:pt-16"><Routes><Route path="/live" element={<LiveRoute />} /><Route path="/workshop" element={<WorkshopRoute />} /><Route path="/voices" element={<VoicesRoute />} /><Route path="/tts" element={<TtsRoute />} /><Route path="/ft" element={<FtRoute />} /><Route path="/audiobook" element={<AudiobookRoute />} /><Route path="/offlinevc" element={<OfflineVcRoute />} /><Route path="/cascade" element={<CascadeRoute />} /><Route path="*" element={<Navigate to="/workshop" replace />} /></Routes></main></div>
 }

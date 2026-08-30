@@ -96,6 +96,9 @@ async def offlinevc_run(
             raise HTTPException(status_code=500, detail="RVC 运行环境缺失")
         if _live_proc_alive():
             raise HTTPException(status_code=409, detail="实时变声正在运行，请先停止后再离线转换（避免争抢显卡）")
+        from cascade import _cascade_alive
+        if _cascade_alive():
+            raise HTTPException(status_code=409, detail="级联变声正在运行，请先停止后再离线转换（避免争抢显卡）")
 
         OFFLINEVC_STATE.update(
             running=True, status="running", message="已提交",

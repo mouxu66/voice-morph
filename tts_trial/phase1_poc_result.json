@@ -1,0 +1,30 @@
+{
+  "target_text": "巴黎罗，我要掏你炉子了，今天不给你送外卖，你的奶茶已经凉了，麻烦你下楼取一下。",
+  "orig_greedy_s": 18.9,
+  "orig_greedy_frames": 101,
+  "eager_greedy_codes_match": false,
+  "eager_greedy_frames": 103,
+  "graph_greedy_codes_match": false,
+  "graph_greedy_frames": 103,
+  "graph_vs_eager_match": true,
+  "custom_eager_sampling_s": 15.34,
+  "graph_greedy_s": 3.73,
+  "orig_sampling_s": 18.55,
+  "per_frame_ms": {
+    "orig_sampling": 183.7,
+    "custom_eager_sampling": 151.9,
+    "graph_greedy": 36.9
+  },
+  "speedup": {
+    "eager_vs_orig": 1.21,
+    "graph_vs_orig": 4.97,
+    "graph_vs_eager": 4.11
+  },
+  "audio_s": 7.68,
+  "rtf": {
+    "orig": 0.414,
+    "eager": 0.501,
+    "graph": 2.06
+  },
+  "gpu_mem_mb": 4530
+}

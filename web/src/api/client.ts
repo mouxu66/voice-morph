@@ -474,6 +474,73 @@ export async function rvcTrainStart(opts?: { expName?: string; epochs?: number }
   });
 }
 
+// ---- 级联变声（录音 → ASR → 文字 → TTS → 虚拟声卡） ----
+// 走文字中转：源说话人的口音/发音习惯不进入输出，只保留目标音色。
+// 与 RVC 实时变声互斥（同抢 GPU 与 CABLE 设备），后端会返回 409。
+
+export type CascadeStage =
+  | "idle" | "init" | "warming" | "capturing" | "asr" | "tts" | "playing" | "error";
+
+export type CascadeStatus = {
+  ok: boolean;
+  running: boolean;
+  pid: number | null;
+  stage: CascadeStage | string;
+  worker_ready: boolean;
+  warming: boolean;
+  audio_switched: boolean;
+  last_error: string;
+  last_text: string;
+  last_asr_s: number;
+  last_tts_s: number;
+  last_audio_s: number;
+  last_fast: boolean | null;
+  chunks: number;
+  dropped: number;
+  avg_latency_s: number;
+  last_latency_s: number;
+  queued_s: number;
+  input_device: string;
+  output_device: string;
+  child_error: string;
+  updated_at: string;
+};
+
+export type CascadeStartResult = {
+  ok: boolean;
+  warming?: boolean;
+  already_running?: boolean;
+  pid?: number;
+  output_device?: string;
+  chunk_max_s?: number;
+  mode?: string;
+  hint?: string;
+};
+
+export async function cascadeStart(opts?: {
+  voiceId?: string;
+  chunkMaxS?: number;
+  mode?: "stream" | "whole";
+}): Promise<CascadeStartResult> {
+  return jsonFetch<CascadeStartResult>("/cascade/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      voice_id: opts?.voiceId ?? null,
+      chunk_max_s: opts?.mode === "whole" ? null : (opts?.chunkMaxS ?? null),
+      mode: opts?.mode ?? "stream",
+    }),
+  });
+}
+
+export async function cascadeStop(): Promise<{ ok: boolean; restored?: boolean; error?: string; note?: string }> {
+  return jsonFetch("/cascade/stop", { method: "POST" })
+}
+
+export async function cascadeStatus(): Promise<CascadeStatus> {
+  return jsonFetch<CascadeStatus>("/cascade/status")
+}
+
 // ---- 音色微调工坊（录音 → 切片转写 → 少样本微调 → 试听 → 入库） ----
 
 export type FtStatus = {

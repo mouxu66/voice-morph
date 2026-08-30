@@ -1,0 +1,74 @@
+{
+  "target_text": "巴黎罗，我要掏你炉子了，今天不给你送外卖，你的奶茶已经凉了，麻烦你下楼取一下。",
+  "prompt_build_s": 2.56,
+  "runs": [
+    {
+      "total_s": 18.86,
+      "audio_s": 7.36,
+      "rtf": 0.39,
+      "frames": 92,
+      "prefill_s": 0.055,
+      "talker_generate_s": 18.76,
+      "per_frame_ms": {
+        "talker_fwd_total": 200.5,
+        "|_predictor_generate(15fwd)": 148.3,
+        "| |_pred_fwd_15steps": 131.7,
+        "| | |_pred_model_5layer": 129.1,
+        "|_talker_model_28layer": 51.7,
+        "|_residual(emb/cat/head/pos)": 0.4
+      },
+      "outer_hf_overhead_ms_per_frame": 2.8,
+      "inner_hf_overhead_ms_per_frame": 16.6,
+      "pred_fwd_count(expect 15*frames)": 1380,
+      "tokenizer_decode_s": 0.09
+    },
+    {
+      "total_s": 19.61,
+      "audio_s": 7.44,
+      "rtf": 0.379,
+      "frames": 93,
+      "prefill_s": 0.115,
+      "talker_generate_s": 19.49,
+      "per_frame_ms": {
+        "talker_fwd_total": 205.5,
+        "|_predictor_generate(15fwd)": 151.8,
+        "| |_pred_fwd_15steps": 134.7,
+        "| | |_pred_model_5layer": 132.0,
+        "|_talker_model_28layer": 53.9,
+        "|_residual(emb/cat/head/pos)": -0.2
+      },
+      "outer_hf_overhead_ms_per_frame": 2.8,
+      "inner_hf_overhead_ms_per_frame": 17.0,
+      "pred_fwd_count(expect 15*frames)": 1395,
+      "tokenizer_decode_s": 0.12
+    },
+    {
+      "total_s": 18.91,
+      "audio_s": 7.36,
+      "rtf": 0.389,
+      "frames": 92,
+      "prefill_s": 0.055,
+      "talker_generate_s": 18.83,
+      "per_frame_ms": {
+        "talker_fwd_total": 201.3,
+        "|_predictor_generate(15fwd)": 149.4,
+        "| |_pred_fwd_15steps": 132.6,
+        "| | |_pred_model_5layer": 129.9,
+        "|_talker_model_28layer": 51.5,
+        "|_residual(emb/cat/head/pos)": 0.5
+      },
+      "outer_hf_overhead_ms_per_frame": 2.8,
+      "inner_hf_overhead_ms_per_frame": 16.7,
+      "pred_fwd_count(expect 15*frames)": 1380,
+      "tokenizer_decode_s": 0.08
+    }
+  ],
+  "micro": {
+    "talker_step_eager_ms(incl predictor15)": 205.54,
+    "predictor_inner_gen_ms(15steps)": 145.79,
+    "talker_model_28layer_step_ms": 59.76,
+    "predictor_model_5layer_step_ms": 9.59,
+    "theoretical_floor_s": 18.96
+  },
+  "gpu_mem_mb": 4269
+}

@@ -34,8 +34,9 @@ TTS_VENV_PY = _path("VM_TTS_VENV_PY", ROOT / "tts_trial" / "venv312" / "Scripts"
 # RVC 整合包根目录
 RVC_ROOT = _path("VM_RVC_ROOT", Path("D:/RVC"))
 
-# 默认 RVC 实验名（历史遗留为 meituan_rat；新音色用各自 voice_id 作为 exp 名）
-RVC_DEFAULT_EXP = _str("VM_RVC_EXP", "kangaroo_clean")
+# 默认 RVC 实验名（新音色用各自 voice_id 作为 exp 名）
+# meituan_rat 是 2026-08-29 固定源 A/B（源=用户本人录音，pitch=0）中选定的最佳音色。
+RVC_DEFAULT_EXP = _str("VM_RVC_EXP", "meituan_rat")
 
 # 语料导出目录（RVC 整合包的 dataset_raw）
 RVC_EXPORT_DIR = _path("VM_RVC_EXPORT_DIR", RVC_ROOT / "dataset_raw" / "rvc_dataset")

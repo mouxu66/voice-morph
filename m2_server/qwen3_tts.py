@@ -9,8 +9,10 @@
 之所以走子进程：主进程在 .venv(torch2.9)，Qwen3-TTS 需 venv312(torch2.8cu129)，
 不能同进程 import；用常驻 worker 避免每次请求都重新加载 4GB 模型。
 """
+import atexit
 import json
 import os
+import socket
 import subprocess
 import threading
 import time
@@ -32,21 +34,159 @@ _lock = threading.Lock()
 _proc = None
 _ready = False
 
+_NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW，避免弹黑窗
+
+
+def _health_ok(timeout: float = 2.0) -> bool:
+    try:
+        with urllib.request.urlopen(BASE + "/health", timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _port_bound(host: str = "127.0.0.1", port: int = PORT) -> bool:
+    """端口是否已被占用（不关心对方是否健康）。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex((host, port)) == 0
+
+
+def _pids_on_port(port: int = PORT) -> list:
+    """列出正在 LISTEN 该端口的 PID。"""
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
+                             text=True, timeout=10, creationflags=_NO_WINDOW).stdout
+    except Exception:
+        return []
+    pids = []
+    for line in out.splitlines():
+        if f":{port}" not in line or "LISTENING" not in line.upper():
+            continue
+        try:
+            pid = int(line.split()[-1])
+        except (ValueError, IndexError):
+            continue
+        if pid:
+            pids.append(pid)
+    return sorted(set(pids))
+
+
+def _cmdline_of(pid: int) -> str:
+    """取进程命令行。
+
+    必须优先 PowerShell CIM：wmic 已在 Win11 24H2+ 被移除，用它会导致
+    _is_our_worker 恒为 False，僵尸 worker 清理逻辑彻底失效（实测踩到）。
+    """
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
+            capture_output=True, text=True, timeout=20, encoding="utf-8",
+            errors="ignore", creationflags=_NO_WINDOW)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout
+    except Exception:
+        pass
+    try:  # 老系统回退
+        r = subprocess.run(
+            ["wmic", "process", "where", f"ProcessId={pid}", "get",
+             "CommandLine", "/format:list"],
+            capture_output=True, text=True, timeout=15, encoding="utf-8",
+            errors="ignore", creationflags=_NO_WINDOW)
+        return r.stdout or ""
+    except Exception:
+        return ""
+
+
+def _is_our_worker(pid: int) -> bool:
+    """只回收我们自己拉起的 worker，绝不误伤占用 8001 的其他程序。"""
+    if pid == os.getpid():
+        return False
+    return "qwen3_tts_service.py" in _cmdline_of(pid)
+
+
+def _kill_pid(pid: int) -> None:
+    try:
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True,
+                       timeout=15, creationflags=_NO_WINDOW)
+    except Exception:
+        pass
+
+
+def _terminate_proc() -> None:
+    """彻底回收本进程拉起的 worker。
+
+    关键：绝不能只把 _proc 置 None（旧实现就是这么做的），那会让 worker 变成
+    孤儿继续霸占 8001，导致之后每次重启都在加载完 4GB 模型后 bind 失败(10048)。
+    """
+    global _proc
+    if _proc is None:
+        return
+    try:
+        _proc.terminate()
+    except Exception:
+        pass
+    try:
+        _proc.wait(timeout=10)
+    except Exception:
+        try:
+            _proc.kill()
+        except Exception:
+            pass
+    _proc = None
+
+
+def shutdown_worker() -> None:
+    """供外部（如 server 关闭、清理脚本）显式回收 worker。"""
+    global _ready
+    _ready = False
+    _terminate_proc()
+
+
+atexit.register(_terminate_proc)
+
+
+def _clear_stuck_worker() -> None:
+    """端口被占但 /health 不通 = 卡死的僵尸 worker（多因 GPU 被挤占、模型加载挂起）。
+
+    它会让新 worker 在加载完模型后 bind 才撞上 10048，白白浪费 10~30s 与 4GB 显存，
+    必须先清掉再拉新的。
+    """
+    for pid in _pids_on_port():
+        if _is_our_worker(pid):
+            print(f"[qwen3_tts] 清理占用 {PORT} 的僵尸 worker PID={pid}", flush=True)
+            _kill_pid(pid)
+    for _ in range(30):  # 等端口真正释放，最多 30s
+        if not _port_bound():
+            return
+        time.sleep(1)
+
 
 def _ensure_worker():
     global _proc, _ready
-    if _ready:
+    if _ready and _health_ok():
         return
     with _lock:
-        if _ready:
+        if _ready and _health_ok():
             return
-        # 端口已被占用（可能是上次残留/外部已起），直接复用
-        try:
-            urllib.request.urlopen(BASE + "/health", timeout=2)
+        _ready = False
+        # 端口已被占用且健康（上次残留/外部已起/其他实例），直接复用
+        if _health_ok():
             _ready = True
             return
-        except Exception:
-            pass
+        # 端口被占但不健康：僵尸 worker，先清场，否则新 worker 必然 10048
+        if _port_bound():
+            _clear_stuck_worker()
+            if _health_ok():
+                _ready = True
+                return
+            # 清不掉 = 端口被别的程序占着。此时拉起必然 10048，
+            # 与其白等 10~30s 加载 4GB 模型后失败，不如立刻报清楚。
+            if _port_bound():
+                raise RuntimeError(
+                    f"端口 {PORT} 被其他程序占用（PID={_pids_on_port()}），"
+                    f"Qwen3-TTS worker 无法启动，请先关闭该进程")
         if not os.path.exists(VENV312):
             raise RuntimeError(f"找不到 venv312 解释器: {VENV312}")
         _logf = open(os.path.join(os.path.dirname(WORKER), "worker_run.log"), "ab")
@@ -55,40 +195,56 @@ def _ensure_worker():
             cwd=os.path.dirname(WORKER),
             stdout=_logf,
             stderr=subprocess.STDOUT,
-            creationflags=0x08000000,  # CREATE_NO_WINDOW，避免弹黑窗
+            creationflags=_NO_WINDOW,
         )
-        # 模型加载较慢（约 10~30s），轮询 /health 直到就绪
+        # 模型加载较慢（约 10~30s，GPU 被挤占时更久），轮询 /health 直到就绪
         deadline = time.time() + 240
         while time.time() < deadline:
-            try:
-                urllib.request.urlopen(BASE + "/health", timeout=2)
+            if _health_ok():
                 _ready = True
-                break
-            except Exception:
-                if _proc.poll() is not None:
-                    raise RuntimeError("Qwen3-TTS worker 进程意外退出")
-                time.sleep(2)
-        if not _ready:
-            raise RuntimeError("Qwen3-TTS worker 启动超时（模型加载失败？）")
+                return
+            if _proc.poll() is not None:
+                _terminate_proc()  # 已退出也要回收，避免残留句柄
+                raise RuntimeError(
+                    "Qwen3-TTS worker 进程意外退出（详见 m2_server/worker_run.log）")
+            time.sleep(2)
+        # 超时必须杀掉自己拉起的进程：否则它会继续占着 8001，让之后每次尝试都 10048
+        _terminate_proc()
+        raise RuntimeError(
+            "Qwen3-TTS worker 启动超时（模型加载失败？检查 GPU 是否被其他程序占用）")
+
+
+def _is_timeout(exc: Exception) -> bool:
+    """区分"worker 忙/卡"与"worker 已死"——两者的处置方式完全相反。"""
+    reason = getattr(exc, "reason", exc)
+    return isinstance(reason, (socket.timeout, TimeoutError))
 
 
 def _post(path: str, payload: dict, timeout: int) -> bytes:
-    req = urllib.request.Request(
-        BASE + path, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
-    except (urllib.error.URLError, OSError):
-        # worker 可能已被杀（如手动清理/崩溃）：重置状态，重新拉起再试一次
-        global _ready, _proc
-        with _lock:
-            _ready = False
-            _proc = None
-        _ensure_worker()
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
+    body = json.dumps(payload).encode("utf-8")
+    for attempt in (1, 2):
+        req = urllib.request.Request(
+            BASE + path, data=body, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError:
+            raise  # worker 明确返回的业务错误（如 400），不该重启 worker
+        except (urllib.error.URLError, OSError) as e:
+            # 超时说明 worker 还活着只是在忙（如长文本走 WDDM 慢路径），
+            # 此时重启只会再花 10~30s 重载 4GB 模型，雪上加霜——直接抛给上层
+            if _is_timeout(e):
+                raise RuntimeError(
+                    f"Qwen3-TTS worker 响应超时（>{timeout}s）；worker 仍在运行，"
+                    f"未重启。若为长文本，请拆短后重试") from e
+            if attempt == 2:
+                raise
+            # 连不上 = worker 已被杀或崩溃，才重置并重拉
+            global _ready
+            with _lock:
+                _ready = False
+            _ensure_worker()
+    raise RuntimeError("unreachable")
 
 
 def analyze(clips: list[dict], sim_threshold: float | None = None,

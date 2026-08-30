@@ -15,9 +15,11 @@
 启动：
     D:/变声/tts_trial/venv312/Scripts/python.exe qwen3_tts_service.py
 """
+import asyncio
 import gc
 import io
 import os
+import threading
 import time
 
 import numpy as np
@@ -44,6 +46,38 @@ WHISPER_SR = 16000
 _PROMPT_CACHE: dict = {}
 # 微调模型缓存：同一时刻只驻留一个 custom_voice 模型（显存换模型走 LRU=1）
 _ALT_MODEL: dict = {"dir": None, "model": None}
+# CUDA Graph 加速引擎（fast_tts.py）：VM_FAST_TTS=0 关闭；请求体 {"fast": false} 单次关闭
+FAST_TTS = os.environ.get("VM_FAST_TTS", "1") == "1"
+_FAST: dict = {"eng": None, "model_id": None}
+# GPU 串行锁：端点把推理放进线程池并行执行（避免堵死事件循环），GPU 调用必须互斥
+_GPU_LOCK = threading.Lock()
+
+
+def _get_fast_engine():
+    """懒建 CUDA Graph 引擎；跟随当前驻留的基座 MODEL（换模型后自动重建）。"""
+    if MODEL is None:
+        return None
+    if _FAST["eng"] is None or _FAST["model_id"] != id(MODEL):
+        _release_fast_engine()
+        try:
+            from fast_tts import FastVoiceCloneEngine
+            _FAST.update(eng=FastVoiceCloneEngine(MODEL), model_id=id(MODEL))
+            print("[fast_tts] engine ready (CUDA Graph)", flush=True)
+        except Exception as exc:
+            import traceback
+            print(f"[fast_tts] engine init FAIL: {exc}\n{traceback.format_exc()}",
+                  flush=True)
+            _FAST.update(eng=None, model_id=None)
+    return _FAST["eng"]
+
+
+def _release_fast_engine():
+    """释放引擎（图与 StaticCache 会钉住模型权重，换驻留模型前必须调用）。"""
+    if _FAST["eng"] is not None:
+        _FAST.update(eng=None, model_id=None)
+        gc.collect()
+        torch.cuda.empty_cache()
+        print("[fast_tts] engine released", flush=True)
 
 
 @app.on_event("startup")
@@ -55,7 +89,7 @@ def _load():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": 5}
+    return {"status": "ok", "version": 6, "fast_tts": _FAST["eng"] is not None}
 
 
 def _get_whisper():
@@ -66,9 +100,16 @@ def _get_whisper():
     return WHISPER
 
 
-def _transcribe(path: str) -> dict:
-    """转写一条切片，返回文字与质量指标（logprob 越接近 0 越好，no_speech 越低越好）。"""
-    segments, _info = _get_whisper().transcribe(path, language="zh", vad_filter=True)
+def _transcribe(path: str, vad_filter: bool = True) -> dict:
+    """转写一条切片，返回文字与质量指标（logprob 越接近 0 越好，no_speech 越低越好）。
+
+    vad_filter=False 供级联链路使用：子进程已用独立 VAD 分好块，
+    whisper 内部过滤器再把短片段整段吞掉的话，调用方无法区分
+    「用户真的没说话」和「被过滤器吃掉了」。
+    """
+    with _GPU_LOCK:
+        segments, _info = _get_whisper().transcribe(path, language="zh",
+                                                    vad_filter=vad_filter)
     texts, logprobs, nospeech = [], [], []
     for s in segments:
         texts.append(s.text)
@@ -88,7 +129,9 @@ def _speaker_embedding(path: str) -> np.ndarray:
     该路径在 A/B 试听脚本中实测稳定；直接调 model.extract_speaker_embedding
     会遇到 bf16 CUDA tensor 转 numpy 的兼容坑。
     """
-    prompt = MODEL.create_voice_clone_prompt(ref_audio=path, ref_text=".", x_vector_only_mode=True)
+    with _GPU_LOCK:
+        prompt = MODEL.create_voice_clone_prompt(ref_audio=path, ref_text=".",
+                                                 x_vector_only_mode=True)
     item = prompt[0] if isinstance(prompt, list) else prompt
     emb = item.ref_spk_embedding
     if torch.is_tensor(emb):
@@ -106,6 +149,11 @@ async def analyze(req: Request):
     每簇代表切片 = 质量分最高且靠近簇质心的成员。
     """
     body = await req.json()
+    return await asyncio.get_running_loop().run_in_executor(
+        None, lambda: _analyze_blocking(body))
+
+
+def _analyze_blocking(body: dict) -> dict:
     clips: list = body.get("clips", [])
     # 可调参数：sim_threshold 越高分簇越细（挖出更多不同音色）；min_cluster_size 过滤小簇噪声
     sim_threshold = float(body.get("sim_threshold") or 0.5)
@@ -172,6 +220,27 @@ def _build_prompt(ref_audio: str, ref_text: str, xvec_only: bool):
     return _PROMPT_CACHE[key]
 
 
+def _tts_blocking(text: str, language: str, ref_audio: str, ref_text: str,
+                  gen_kwargs: dict, use_fast: bool):
+    """同步 GPU 推理（由端点放进线程池执行）：fast 优先，失败回退原版 generate_voice_clone。"""
+    with _GPU_LOCK:
+        prompt = _build_prompt(ref_audio, ref_text, not ref_text.strip())
+        if use_fast:
+            eng = _get_fast_engine()
+            if eng is not None:
+                try:
+                    wavs, sr = eng.generate(text=[text], language=[language],
+                                            voice_clone_prompt=prompt, **gen_kwargs)
+                    return wavs, sr, True
+                except Exception as exc:
+                    eng.stats["fallbacks"] += 1
+                    print(f"[tts] fast path FAIL -> fallback: "
+                          f"{type(exc).__name__}: {exc}", flush=True)
+        wavs, sr = MODEL.generate_voice_clone(
+            text=[text], language=[language], voice_clone_prompt=prompt, **gen_kwargs)
+        return wavs, sr, False
+
+
 @app.post("/emb")
 async def emb(req: Request):
     """声纹提取：path -> 归一化说话人嵌入（与克隆同一编码器）。用于相似度评估。"""
@@ -198,13 +267,23 @@ async def tts(req: Request):
     ref_text = body.get("ref_text", "")
     if not text.strip() or not ref_audio:
         return Response(b"", status_code=400)
-    xvec_only = not ref_text.strip()
-    prompt = _build_prompt(ref_audio, ref_text, xvec_only)
-    wavs, sr = MODEL.generate_voice_clone(
-        text=[text], language=[language], voice_clone_prompt=prompt)
+    # 生成参数按需透传（性能调优用）。
+    # do_sample=False 走贪心：省掉逐步 top-k 采样的 Python 开销；
+    # 级联实时链路对首包延迟敏感时值得一试，代价是韵律多样性略降。
+    gen_kwargs = {}
+    for k in ("do_sample", "use_cache", "max_new_tokens", "top_k", "temperature"):
+        if body.get(k) is not None:
+            gen_kwargs[k] = body[k]
+    use_fast = FAST_TTS and body.get("fast", True)
+    # GPU 推理放线程池执行：async 端点里同步推理会堵死整个事件循环
+    # （级联流式时 /health /transcribe /状态查询全卡死，坑 5）
+    wavs, sr, fast_used = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: _tts_blocking(text, language, ref_audio, ref_text,
+                                    gen_kwargs, use_fast))
     buf = io.BytesIO()
     sf.write(buf, wavs[0], sr, format="WAV")
-    return Response(content=buf.getvalue(), media_type="audio/wav")
+    return Response(content=buf.getvalue(), media_type="audio/wav",
+                    headers={"X-Fast-TTS": "1" if fast_used else "0"})
 
 
 @app.post("/transcribe")
@@ -212,10 +291,12 @@ async def transcribe_ep(req: Request):
     """单文件转写：{path} -> {text, quality}。供微调工坊切片转写复用。"""
     body = await req.json()
     path = body.get("path", "")
+    vad_filter = bool(body.get("vad_filter", True))
     if not path or not os.path.isfile(path):
         return {"error": f"文件不存在: {path}"}
     try:
-        return _transcribe(path)
+        return await asyncio.get_running_loop().run_in_executor(
+            None, lambda: _transcribe(path, vad_filter))
     except Exception as exc:
         import traceback
         print(f"[transcribe] FAIL {path}: {exc}\n{traceback.format_exc()}", flush=True)
@@ -235,7 +316,8 @@ def _get_custom_model(model_dir: str):
         return MODEL
     if _ALT_MODEL["dir"] == os.path.normpath(model_dir) and _ALT_MODEL["model"] is not None:
         return _ALT_MODEL["model"]
-    # 换模型：先卸掉现驻留的（无论基座还是旧微调）
+    # 换模型：先卸掉现驻留的（无论基座还是旧微调）；fast 引擎钉着基座权重，必须先放
+    _release_fast_engine()
     if _ALT_MODEL["model"] is not None:
         _ALT_MODEL.update(dir=None, model=None)
     if MODEL is not None:
@@ -246,6 +328,13 @@ def _get_custom_model(model_dir: str):
     _PROMPT_CACHE.clear()
     _ALT_MODEL.update(dir=os.path.normpath(model_dir), model=m)
     return m
+
+
+def _tts_speaker_blocking(model_dir: str, speaker: str, text: str, language: str):
+    """微调音色合成（同步 GPU 推理，线程池执行）。"""
+    with _GPU_LOCK:
+        m = _get_custom_model(model_dir)
+        return m.generate_custom_voice(text=text, speaker=speaker, language=language)
 
 
 @app.post("/tts_speaker")
@@ -263,8 +352,8 @@ async def tts_speaker(req: Request):
         return Response(b"", status_code=400)
     if not os.path.isdir(model_dir):
         return Response(f"model_dir 不存在: {model_dir}".encode(), status_code=400)
-    m = _get_custom_model(model_dir)
-    wavs, sr = m.generate_custom_voice(text=text, speaker=speaker, language=language)
+    wavs, sr = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: _tts_speaker_blocking(model_dir, speaker, text, language))
     buf = io.BytesIO()
     sf.write(buf, wavs[0], sr, format="WAV")
     return Response(content=buf.getvalue(), media_type="audio/wav",

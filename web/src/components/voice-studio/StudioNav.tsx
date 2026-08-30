@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { AudioLines, BookOpen, FlaskConical, Library, Lock, Mic2, Radio, Speech } from "lucide-react"
+import { AudioLines, BookOpen, FlaskConical, Library, Lock, Mic2, Radio, Speech, Waves } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 import { listRvcVoices } from "@/api/client"
 
@@ -10,6 +10,7 @@ const items = [
   { path: "/tts", label: "文字转语音", icon: Speech },
   { path: "/audiobook", label: "有声书", icon: BookOpen },
   { path: "/live", label: "实时变声", icon: Radio },
+  { path: "/cascade", label: "级联变声", icon: Waves },
   { path: "/offlinevc", label: "离线变声", icon: AudioLines },
 ]
 

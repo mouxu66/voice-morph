@@ -21,8 +21,11 @@ def test_defaults_point_to_sensible_locations():
 def test_rvc_texts_loaded_from_bundled_file():
     import config
     texts = config.load_rvc_texts()
-    assert isinstance(texts, list) and len(texts) == 20
+    # 只断言下界：语料会随音色迭代扩充（已从通用 20 句扩到外卖场景 100+ 句），
+    # 写死条数会让每次扩充语料都误报失败。
+    assert isinstance(texts, list) and len(texts) >= 20
     assert all(isinstance(t, str) and t.strip() for t in texts)
+    assert len(set(texts)) == len(texts), "语料不应有重复句"
 
 
 def test_env_override(monkeypatch):

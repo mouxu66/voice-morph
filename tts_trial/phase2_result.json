@@ -1,0 +1,69 @@
+{
+  "ref_audio": "D:/变声/tts_models/ref/meituan_rat_002.wav",
+  "text": "巴黎罗，我要掏你炉子了，今天不给你送外卖，你的奶茶已经凉了，麻烦你下楼取一下。",
+  "A_greedy": {
+    "orig_s": 20.18,
+    "fast_s": 3.7,
+    "speedup": 5.45,
+    "orig_frames": 101,
+    "fast_frames": 103,
+    "first_diff_frame": 8,
+    "prefix_match_ratio": 0.0792,
+    "orig_audio_s": 8.08,
+    "fast_audio_s": 8.24,
+    "sim_ref_vs_orig": 0.9825,
+    "sim_ref_vs_fast": 0.9798,
+    "sim_orig_vs_fast": 0.9954
+  },
+  "B_greedy_rp105": {
+    "orig_frames": 97,
+    "fast_frames": 105,
+    "first_diff_frame": 5,
+    "sim_ref_vs_fast": 0.9799
+  },
+  "C_sampling_timing": {
+    "audio_s": 8.24,
+    "orig_median_s": 19.92,
+    "fast_median_s": 3.72,
+    "speedup": 5.36,
+    "rtf_orig": 0.414,
+    "rtf_fast": 2.216,
+    "sim_ref_vs_fast_sampling": 0.984
+  },
+  "D_multi_request": {
+    "ok": [
+      true,
+      true,
+      true
+    ],
+    "audio_s": [
+      2.88,
+      6.8,
+      5.52
+    ],
+    "graphs": 2
+  },
+  "E_long": {
+    "audio_s": 25.92,
+    "gen_median_s": 11.29,
+    "rtf": 2.295,
+    "frames": 324,
+    "peak_mem_mb": 5003,
+    "sim_ref_vs_fast_long": 0.9796
+  },
+  "F_icl": {
+    "ref_text": "趴北其他人知道這家店,給你一個",
+    "audio_s": 7.2,
+    "sim_ref_vs_fast": 0.9831
+  },
+  "G_fallback": {
+    "ok": true,
+    "reason": "top_p<1.0 未支持 (top_p=0.9, subtalker_top_p=1.0)"
+  },
+  "engine_stats": {
+    "requests": 17,
+    "fallbacks": 0,
+    "graph_rebuilds": 2
+  },
+  "gpu_total_mem_mb": 4296
+}
