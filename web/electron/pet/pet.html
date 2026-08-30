@@ -45,13 +45,24 @@
     cursor: grab;                  /* 拖拽由 JS+IPC 手动实现（app-region 在透明穿透窗上不可靠） */
     display: flex; align-items: flex-end; justify-content: center;
   }
-  #pet img { width: 150px; height: 150px; -webkit-user-drag: none; pointer-events: auto; }
+  /* 精灵图动画：<div> + WebP 背景 + steps() 关键帧（替代原 SVG 内 SMIL）。
+     帧横向拼接，每帧 150px；--n 帧数由 JS 按状态注入。 */
+  #pet #sprite {
+    width: 150px; height: 150px;
+    -webkit-user-drag: none; pointer-events: auto;
+    background-repeat: no-repeat;
+    animation: pet-steps 5.5s steps(37) infinite;   /* 默认 idle，运行时被 JS 覆盖 */
+  }
+  @keyframes pet-steps {
+    from { background-position-x: 0; }
+    to   { background-position-x: calc(var(--n, 37) * 150px * -1); }
+  }
 </style>
 </head>
 <body>
 <div id="root">
   <div id="bubble"><span class="dot"></span><span id="bubble-text"></span></div>
-  <div id="pet"><img id="sprite" alt="pet" /></div>
+  <div id="pet"><div id="sprite"></div></div>
 </div>
 <script>
 "use strict";
@@ -74,12 +85,21 @@ const API = "http://127.0.0.1:8000/api/cascade/status";
 const LIVE_API = "http://127.0.0.1:8000/api/rvc/live/status";
 
 const SPRITES = {
-  idle:   "svg/idle.svg",
-  listen: "svg/idle-look.svg",
-  think:  "svg/thinking.svg",
-  play:   "svg/conducting.svg",
-  build:  "svg/building.svg",
-  error:  "svg/error.svg",
+  idle:   "svg/idle.webp",
+  listen: "svg/idle-look.webp",
+  think:  "svg/thinking.webp",
+  play:   "svg/conducting.webp",
+  build:  "svg/building.webp",
+  error:  "svg/error.webp",
+};
+// 每个状态的帧数 / 单轮周期(s)，驱动 CSS steps 动画（原 SVG 内为逐帧离散平移 SMIL）
+const SPRITE_ANIM = {
+  idle:   { frames: 37, dur: 5.5 },
+  listen: { frames: 37, dur: 5.5 },
+  think:  { frames: 37, dur: 5.5 },
+  play:   { frames: 22, dur: 5.5 },
+  build:  { frames: 16, dur: 4.0 },
+  error:  { frames: 37, dur: 5.5 },
 };
 const BUBBLE = {
   idle:   { cls: "",        text: "待机中" },
@@ -97,13 +117,18 @@ const bubbleText = document.getElementById("bubble-text");
 let lastKey = null;       // 上次渲染的状态 key
 let lastText = "";        // 当前句识别文字（出现=识别完成，清空=播出结束）
 
-// 预加载所有 sprite，避免首次切换时白屏等待（单个 SVG 最大 ~2.6MB）
+// 预加载所有 sprite，避免首次切换时白屏等待（WebP，单个最大 ~0.5MB）
 for (const p of Object.values(SPRITES)) { new Image().src = p; }
 
 function setState(key, text) {
   if (key === lastKey && text === bubbleText.textContent) return;
   lastKey = key;
-  sprite.src = SPRITES[key];       // 重新赋 src 让 SMIL 动画从头播
+  // 切背景图 + 注入帧数/周期，重启 steps 动画（等价于原 SMIL 从头播）
+  const anim = SPRITE_ANIM[key] || { frames: 1, dur: 5.5 };
+  sprite.style.backgroundImage = `url("${SPRITES[key]}")`;
+  sprite.style.backgroundSize = (anim.frames * 150) + "px 150px";
+  sprite.style.setProperty("--n", String(anim.frames));
+  sprite.style.animation = `pet-steps ${anim.dur}s steps(${anim.frames}) infinite`;
   const info = BUBBLE[key];
   if (!info) { bubble.style.display = "none"; return; }
   bubble.className = info.cls;
