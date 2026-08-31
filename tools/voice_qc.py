@@ -149,14 +149,17 @@ def run_dataset(dataset_dir: Path) -> dict:
            "duration_max_s": None, "duration_median_s": None,
            "max_dbfs": None, "dbfs_median": None,
            "speech_rate": None, "chars": 0, "transcribed": 0,
-           "transcribe_errors": 0, "warnings": [], "error": None}
+           "transcribe_errors": 0, "warnings": [], "error": None,
+           "error_stage": None}
     if not dataset_dir.exists():
         res["error"] = f"数据集目录不存在: {dataset_dir}"
+        res["error_stage"] = "数据集目录"
         return res
     wavs = sorted(dataset_dir.glob("*.wav"))
     res["clips"] = len(wavs)
     if not wavs:
         res["error"] = f"数据集目录没有 wav: {dataset_dir}"
+        res["error_stage"] = "数据集读取"
         return res
 
     durs, dbfs, bad = [], [], 0
@@ -172,6 +175,7 @@ def run_dataset(dataset_dir: Path) -> dict:
         res["warnings"].append(f"{bad} 个文件读取失败")
     if not durs:
         res["error"] = "没有可读取的 wav"
+        res["error_stage"] = "数据集读取"
         return res
     durs.sort()
     dbfs.sort()
@@ -288,18 +292,23 @@ def _pick_emb_ref(exp: str, test_in: Path, self_convert: bool) -> Path | None:
 
 def run_voice(exp: str) -> dict:
     res = {"items": {}, "score": None, "pass": None, "input": "", "output": "",
-           "emb_ref": "", "self_convert": False, "error": None}
+           "emb_ref": "", "self_convert": False, "error": None,
+           "error_stage": None, "hint": None}
 
     try:
         _get_json(WORKER + "/health", timeout=10)
     except Exception as e:
-        res["error"] = f"worker 8001 未启动（{e}），ASR/声纹指标不可用"
+        res["error"] = f"声纹/转写服务（worker 8001）未启动（{e}），ASR/声纹指标不可用"
+        res["error_stage"] = "声纹·转写服务"
+        res["hint"] = "请在「离线变声」或「级联」页确认 8001 worker 已启动，再触发质检"
         return res
 
     pth = _find_infer_pth(exp)
     if pth is None:
         res["error"] = (f"音色 [{exp}] 没有可推理的 RVC 权重"
                         f"（assets/weights/{exp}.pth 缺失且无法从 G_*.pth 提取）")
+        res["error_stage"] = "RVC 权重"
+        res["hint"] = "先完成该音色的 RVC 训练，或确认 assets/weights 下的权重文件存在"
         return res
     log_dir = cfg.RVC_ROOT / "logs" / exp
     index = next(iter(sorted(log_dir.glob("added_*.index"))), None)
@@ -307,6 +316,8 @@ def run_voice(exp: str) -> dict:
     test_in, self_convert = _pick_test_input(exp)
     if test_in is None:
         res["error"] = "找不到测试音频（其他音色参考/切片/自身数据集都没有 3~30s 的 wav）"
+        res["error_stage"] = "测试音频"
+        res["hint"] = "为该音色准备一段 3~30 秒的参考/测试音频（voicebank 参考、clips 或数据集切片）"
         return res
     emb_ref = _pick_emb_ref(exp, test_in, self_convert)
     res.update(input=str(test_in), self_convert=self_convert,
@@ -323,6 +334,8 @@ def run_voice(exp: str) -> dict:
         capture_output=True, text=True, timeout=300)
     if r.returncode != 0 or not in_16k.exists():
         res["error"] = f"ffmpeg 预处理失败: {r.stderr.strip()[:300]}"
+        res["error_stage"] = "音频预处理"
+        res["hint"] = "确认 ffmpeg 已安装并加入系统 PATH"
         return res
 
     # RVC 离线推理：整段文件级链路（RVC venv 子进程），pitch=0 保持源音高
@@ -337,6 +350,8 @@ def run_voice(exp: str) -> dict:
     if r.returncode != 0 or not out_path.exists():
         tail = (r.stderr or r.stdout or "").strip().splitlines()[-3:]
         res["error"] = "RVC 推理失败: " + " | ".join(tail)[-400:]
+        res["error_stage"] = "RVC 推理"
+        res["hint"] = "查看 RVC 训练日志，确认权重未损坏、显存充足，且推理链路无异常"
         return res
     res["output"] = str(out_path)
 
@@ -436,7 +451,7 @@ def _print_summary(exp: str, data: dict):
     ds = data.get("dataset")
     if ds:
         if ds.get("error"):
-            print(f"数据集预检失败: {ds['error']}")
+            print(f"数据集预检失败（{ds.get('error_stage') or '未知'}）: {ds['error']}")
         else:
             print(f"数据集: {ds.get('clips')} 条 / {ds.get('total_s')}s，"
                   f"时长 max {ds.get('duration_max_s')}s · median {ds.get('duration_median_s')}s，"
@@ -446,7 +461,9 @@ def _print_summary(exp: str, data: dict):
     v = data.get("voice")
     if v:
         if v.get("error"):
-            print(f"变声验收失败: {v['error']}")
+            print(f"变声验收失败（{v.get('error_stage') or '未知'}）: {v['error']}")
+            if v.get("hint"):
+                print(f"  → 排查建议: {v['hint']}")
         else:
             for k, it in v.get("items", {}).items():
                 print(f"  {k}: {it['detail']}  ->  {'PASS' if it['pass'] else 'FAIL'}")
@@ -469,7 +486,7 @@ def main():
         try:
             payload = run_dataset(Path(args.dataset))
         except Exception as e:
-            payload = {"error": f"{type(e).__name__}: {e}", "warnings": []}
+            payload = {"error": f"{type(e).__name__}: {e}", "error_stage": "未知", "warnings": []}
         if payload.get("error"):
             failed = True
         _write_section(exp, "dataset", payload)
@@ -480,7 +497,8 @@ def main():
         try:
             payload = run_voice(exp)
         except Exception as e:
-            payload = {"error": f"{type(e).__name__}: {e}", "items": {},
+            payload = {"error": f"{type(e).__name__}: {e}", "error_stage": "未知",
+                       "hint": "质检脚本意外崩溃，查看控制台堆栈定位", "items": {},
                        "score": None, "pass": None}
         if payload.get("error"):
             failed = True

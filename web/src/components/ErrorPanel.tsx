@@ -1,0 +1,57 @@
+import { useState } from "react"
+import { AlertTriangle, Check, Copy } from "lucide-react"
+
+/**
+ * 统一报错卡片：像普通网页一样把「哪里出错 + 完整错误原文」摊开，
+ * 并附一键复制，方便用户直接把报错拿去问自己的 AI 求根因。
+ *
+ * - title：发生在哪一步 / 哪个功能（告诉用户「哪里」有问题）
+ * - detail：完整的错误原文（不截断，可滚动、可选中）
+ * - hint：可选的排查建议
+ */
+export function ErrorPanel({
+  title, detail, hint, className = "",
+}: {
+  title: string
+  detail?: string | null
+  hint?: string | null
+  className?: string
+}) {
+  const [copied, setCopied] = useState(false)
+  const text = [title, detail, hint ? `排查建议：${hint}` : null]
+    .filter(Boolean)
+    .join("\n")
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* 剪贴板不可用时忽略，用户仍可手动选中复制 */
+    }
+  }
+  return (
+    <div
+      className={`flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm text-destructive ${className}`}
+    >
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold">{title}</p>
+        {detail ? (
+          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-foreground/90">
+            {detail}
+          </pre>
+        ) : null}
+        {hint ? <p className="mt-1.5 text-xs text-muted-foreground">💡 {hint}</p> : null}
+      </div>
+      <button
+        type="button"
+        onClick={copy}
+        title="复制完整报错，可粘贴给 AI 分析根因"
+        className="shrink-0 rounded-md border border-destructive/30 bg-background/40 px-2 py-1 text-destructive transition hover:bg-destructive/10"
+      >
+        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      </button>
+    </div>
+  )
+}

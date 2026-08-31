@@ -5,6 +5,7 @@ import type { AbResult } from "@/api/client"
 import type { VoiceInfo } from "@/types"
 import { StudioAudioPlayer } from "./StudioAudioPlayer"
 import { cn } from "@/lib/utils"
+import { ErrorPanel } from "@/components/ErrorPanel"
 
 type Tag = "A" | "B"
 
@@ -121,7 +122,7 @@ export function AbCompareCard({ voices, backendUp }: { voices: VoiceInfo[]; back
           {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Scale className="h-4 w-4" />}
           {running ? "合成中…（约 1–2 分钟）" : "开始盲听对比"}
         </button>
-        {error && <span className="text-xs text-destructive">{error}</span>}
+        {error && <ErrorPanel title="A/B 对比合成失败" detail={error} className="mt-2" />}
       </div>
 
       {result && (

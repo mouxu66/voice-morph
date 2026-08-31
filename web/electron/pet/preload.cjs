@@ -1,4 +1,4 @@
-// 桌宠窗口 preload：只暴露点击穿透开关与手动拖拽给渲染器
+// 桌宠窗口 preload：只暴露点击穿透开关、手动拖拽与页面导览订阅给渲染器
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("pet", {
@@ -7,4 +7,15 @@ contextBridge.exposeInMainWorld("pet", {
   dragStart: () => ipcRenderer.send("pet:drag-start"),
   dragMove: () => ipcRenderer.send("pet:drag-move"),
   dragEnd: () => ipcRenderer.send("pet:drag-end"),
+  // 页面导览：主进程在切页时把「页面介绍 + 动作编排」推过来
+  onGuide: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on("pet:guide", handler);
+    return () => ipcRenderer.removeListener("pet:guide", handler);
+  },
+  // 快捷面板：单击角色发最近合成 / 输入文字合成后发送（可指定音色）/ 历史重发 / 实时变声开关
+  sendLast: () => ipcRenderer.send("pet:send-last"),
+  sendText: (text, voiceId) => ipcRenderer.send("pet:send-text", String(text || "").slice(0, 500), String(voiceId || "")),
+  sendWav: (wav) => ipcRenderer.send("pet:send-wav", String(wav || "")),
+  liveToggle: () => ipcRenderer.send("pet:live-toggle"),
 });

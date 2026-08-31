@@ -16,6 +16,7 @@ import {
 import type { ReactNode } from "react"
 import type { useCascade } from "@/pages/Cascade/useCascade"
 import { cn } from "@/lib/utils"
+import { ErrorPanel } from "@/components/ErrorPanel"
 
 const STAGE_LABEL: Record<string, string> = {
   idle: "未启动",
@@ -149,10 +150,7 @@ export function CascadePage(p: ReturnType<typeof useCascade>) {
 
       <main className="mx-auto max-w-7xl space-y-8 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
         {errorText && (
-          <p className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs leading-5 text-destructive">
-            <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-            {errorText}。可重试启动；仍失败请查看 outputs/cascade_run.log。
-          </p>
+          <ErrorPanel title="级联变声异常" detail={errorText} hint="可重试启动；仍失败请查看 outputs/cascade_run.log 的完整日志" />
         )}
 
         {/* 01 选音色 */}
@@ -414,16 +412,11 @@ export function CascadePage(p: ReturnType<typeof useCascade>) {
         </div>
 
         {p.feedback && (
-          <p
-            className={cn(
-              "rounded-xl border px-4 py-3 text-xs leading-5",
-              p.feedback.tone === "ok" && "border-emerald-500/30 bg-emerald-500/10 text-emerald-600",
-              p.feedback.tone === "error" && "border-destructive/30 bg-destructive/10 text-destructive",
-              p.feedback.tone === "info" && "border-border bg-card/70 text-card-foreground",
-            )}
-          >
-            {p.feedback.text}
-          </p>
+          p.feedback.tone === "error"
+            ? <ErrorPanel title="级联操作失败" detail={p.feedback.text} />
+            : <p className={cn("rounded-xl border px-4 py-3 text-xs leading-5",
+                p.feedback.tone === "ok" && "border-emerald-500/30 bg-emerald-500/10 text-emerald-600",
+                p.feedback.tone === "info" && "border-border bg-card/70 text-card-foreground")}>{p.feedback.text}</p>
         )}
       </main>
     </div>

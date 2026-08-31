@@ -14,10 +14,12 @@
     display: flex; flex-direction: column;
     align-items: center; justify-content: flex-end;
   }
+
+  /* ---------------- 气泡 ---------------- */
   #bubble {
-    max-width: 200px;
-    margin-bottom: 2px;
-    padding: 6px 10px;
+    max-width: 204px;
+    margin-bottom: 4px;
+    padding: 7px 10px 8px;
     border-radius: 12px;
     border: 1px solid rgba(148, 163, 184, 0.35);
     background: rgba(255, 255, 255, 0.82);
@@ -28,22 +30,92 @@
     word-break: break-all;
     display: none;
   }
-  #bubble.error { border-color: rgba(239, 68, 68, 0.55); background: rgba(254, 226, 226, 0.9); color: #b91c1c; }
+  /* 注意：类名是 s-error（与 BUBBLE.error.cls 对齐），早期写成 .error 导致红底从未生效 */
+  #bubble.s-error { border-color: rgba(239, 68, 68, 0.55); background: rgba(254, 226, 226, 0.9); color: #b91c1c; }
+  /* 导览气泡：头部标题 + 正文逐字打字 + 底部句子进度 */
+  #bubble.guide {
+    border-color: rgba(56, 189, 248, 0.55);
+    background: rgba(240, 249, 255, 0.9);
+    cursor: pointer;
+  }
+  #head { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; }
+  #title { font-weight: 600; font-size: 12px; letter-spacing: .3px; }
   #bubble .dot {
     display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-    margin-right: 5px; vertical-align: 1px; background: #94a3b8;
+    flex: 0 0 auto; background: #94a3b8;
   }
   #bubble.s-listen  .dot { background: #38bdf8; animation: pulse 1.1s infinite; }
   #bubble.s-think   .dot { background: #f59e0b; animation: pulse 0.9s infinite; }
   #bubble.s-play    .dot { background: #10b981; }
   #bubble.s-build   .dot { background: #a78bfa; animation: pulse 1.3s infinite; }
   #bubble.s-error   .dot { background: #ef4444; }
+  #bubble.guide     .dot { background: #0ea5e9; }
   @keyframes pulse { 50% { opacity: 0.35; } }
 
+  #text { min-height: 18px; }
+
+  #foot { display: none; margin-top: 5px; align-items: center; gap: 4px; }
+  #bubble.guide #foot { display: flex; }
+  #steps { display: flex; gap: 3px; margin-right: auto; }
+  #steps i {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: rgba(14, 116, 144, 0.25); transition: background .2s;
+  }
+  #steps i.on { background: #0284c7; }
+  #hint { font-size: 10px; color: #64748b; }
+
+  /* ---------------- 快捷面板：悬停角色浮现，输入文字合成发送 / 实时变声开关 ---------------- */
+  #panel {
+    display: none;
+    width: 204px;
+    margin-bottom: 4px;
+    padding: 8px;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: rgba(255, 255, 255, 0.88);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    font: 12px/1.4 "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: #1e293b;
+  }
+  #panel input {
+    width: 100%; box-sizing: border-box;
+    padding: 5px 8px; border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.5); outline: none;
+    font: inherit; background: #fff; color: inherit;
+  }
+  #panel input:focus { border-color: #0ea5e9; }
+  #panel .row { display: flex; gap: 6px; margin-top: 6px; }
+  #panel button {
+    flex: 1; padding: 5px 0; border-radius: 8px;
+    border: 1px solid rgba(14, 165, 233, 0.45);
+    background: rgba(14, 165, 233, 0.12); color: #0369a1;
+    font: inherit; cursor: pointer; white-space: nowrap;
+  }
+  #panel button:hover { background: rgba(14, 165, 233, 0.22); }
+  #panel button:disabled { opacity: 0.5; cursor: default; }
+  #panel button.live-on { border-color: rgba(16, 185, 129, 0.55); background: rgba(16, 185, 129, 0.14); color: #047857; }
+  #panel select {
+    flex: 1; min-width: 0; padding: 5px 6px; border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.5); outline: none;
+    font: inherit; font-size: 11px; background: #fff; color: inherit;
+  }
+  #panel select:focus { border-color: #0ea5e9; }
+  #panel #recent { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+  #panel .hitem {
+    padding: 2px 8px; border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.4); background: #f1f5f9;
+    font-size: 10.5px; color: #475569; cursor: pointer; white-space: nowrap;
+  }
+  #panel .hitem:hover { border-color: #0284c7; color: #0369a1; background: #e0f2fe; }
+  #panel .hempty { font-size: 10.5px; color: #94a3b8; }
+
+  /* ---------------- 角色 ---------------- */
   #pet {
     width: 150px; height: 150px;
     cursor: grab;                  /* 拖拽由 JS+IPC 手动实现（app-region 在透明穿透窗上不可靠） */
     display: flex; align-items: flex-end; justify-content: center;
+    transform-origin: 50% 85%;
   }
   /* 精灵图动画：<div> + WebP 背景 + steps() 关键帧（替代原 SVG 内 SMIL）。
      帧横向拼接，每帧 150px；--n 帧数由 JS 按状态注入。 */
@@ -51,35 +123,89 @@
     width: 150px; height: 150px;
     -webkit-user-drag: none; pointer-events: auto;
     background-repeat: no-repeat;
-    animation: pet-steps 5.5s steps(37) infinite;   /* 默认 idle，运行时被 JS 覆盖 */
+    will-change: background-position;   /* 提示合成层，减少逐帧重绘掉帧 */
+    transform: translateZ(0);
+    animation: pet-steps 3.0s steps(37) infinite;   /* 默认 idle，运行时被 JS 覆盖 */
   }
   @keyframes pet-steps {
     from { background-position-x: 0; }
     to   { background-position-x: calc(var(--n, 37) * 150px * -1); }
   }
+
+  /* 页面专属动作：挂在 #pet 外层，与精灵图自身的逐帧动画互不干扰 */
+  #pet.m-pop   { animation: m-pop .62s cubic-bezier(.34,1.56,.64,1) 2; }
+  #pet.m-wave  { animation: m-wave 1.5s ease-in-out infinite; }
+  #pet.m-lean  { animation: m-lean 2.4s ease-in-out infinite; }
+  #pet.m-nod   { animation: m-nod 1.3s ease-in-out infinite; }
+  #pet.m-sway  { animation: m-sway 3.2s ease-in-out infinite; }
+  #pet.m-jump  { animation: m-jump .95s cubic-bezier(.3,.7,.4,1) infinite; }
+  #pet.m-twirl { animation: m-twirl 2.4s ease-in-out infinite; }
+  @keyframes m-pop   { 0%,100% { transform: scale(1); } 45% { transform: scale(1.14) translateY(-6px); } }
+  @keyframes m-wave  { 0%,100% { transform: rotate(-7deg); } 50% { transform: rotate(7deg); } }
+  @keyframes m-lean  { 0%,100% { transform: translateX(-7px) rotate(-4deg); } 50% { transform: translateX(7px) rotate(4deg); } }
+  @keyframes m-nod   { 0%,100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(5px) rotate(6deg); } }
+  @keyframes m-sway  { 0%,100% { transform: translateX(-6px); } 50% { transform: translateX(6px); } }
+  @keyframes m-jump  { 0%,55%,100% { transform: translateY(0) scaleY(1); } 22% { transform: translateY(-20px) scaleY(1.06); } 40% { transform: translateY(0) scaleY(.93); } }
+  @keyframes m-twirl { 0%,72%,100% { transform: rotate(0) scale(1); } 30% { transform: rotate(180deg) scale(1.05) translateY(-10px); } }
+  /* —— 二期动作：甩头 / 漂浮 / 扭动 / 转身 / Q弹 / 跳舞 —— */
+  #pet.m-shake  { animation: m-shake .6s ease-in-out infinite; }
+  #pet.m-float  { animation: m-float 2.6s ease-in-out infinite; }
+  #pet.m-wiggle { animation: m-wiggle .5s ease-in-out infinite; }
+  #pet.m-flip   { animation: m-flip 1.6s ease-in-out infinite; }
+  #pet.m-bounce { animation: m-bounce 1.0s ease-in-out infinite; }
+  #pet.m-dance  { animation: m-dance 1.8s ease-in-out infinite; }
+  @keyframes m-shake  { 0%,100% { transform: translateX(0) rotate(0); } 20% { transform: translateX(-6px) rotate(-4deg); } 40% { transform: translateX(6px) rotate(4deg); } 60% { transform: translateX(-5px) rotate(-3deg); } 80% { transform: translateX(5px) rotate(3deg); } }
+  @keyframes m-float  { 0%,100% { transform: translateY(0) rotate(0); } 50% { transform: translateY(-12px) rotate(2deg); } }
+  @keyframes m-wiggle { 0%,100% { transform: rotate(0) scale(1); } 25% { transform: rotate(-8deg) scale(1.03); } 75% { transform: rotate(8deg) scale(1.03); } }
+  @keyframes m-flip   { 0%,100% { transform: scaleX(1); } 50% { transform: scaleX(-1); } }
+  @keyframes m-bounce { 0%,100% { transform: translateY(0) scale(1,1); } 30% { transform: translateY(-16px) scale(.96,1.06); } 55% { transform: translateY(0) scale(1.08,.9); } 70% { transform: translateY(0) scale(.97,1.03); } }
+  @keyframes m-dance  { 0%,100% { transform: rotate(0) translateY(0); } 15% { transform: rotate(-9deg) translateY(-8px); } 30% { transform: rotate(9deg) translateY(0); } 45% { transform: rotate(-9deg) translateY(-8px); } 60% { transform: rotate(9deg) translateY(0); } 75% { transform: rotate(-6deg) translateY(-6px); } }
+  /* —— 三期动作：侧耳倾听 / 忙碌干活（状态联动，见 STATE_MOTION） —— */
+  #pet.m-ear   { animation: m-ear 2.2s ease-in-out infinite; }
+  #pet.m-work  { animation: m-work 1.2s ease-in-out infinite; }
+  @keyframes m-ear   { 0%,100% { transform: rotate(0) translateX(0); } 40% { transform: rotate(-10deg) translateX(7px); } 60% { transform: rotate(-10deg) translateX(7px); } }
+  @keyframes m-work  { 0%,100% { transform: translateY(0) rotate(0); } 25% { transform: translateY(-3px) rotate(-2deg); } 50% { transform: translateY(0) rotate(0); } 75% { transform: translateY(-3px) rotate(2deg); } }
+  /* —— 四期动作：打瞌睡（点头） / 耳朵抖动（倾听时的细节） —— */
+  #pet.m-sleepy    { animation: m-sleepy 3.2s ease-in-out infinite; }
+  #pet.m-ear-twitch { animation: m-ear-twitch .5s ease-in-out; }
+  @keyframes m-sleepy { 0%,8% { transform: rotate(0) translateY(0); } 55% { transform: rotate(-13deg) translateY(6px); } 62% { transform: rotate(2deg) translateY(0); } 70% { transform: rotate(-13deg) translateY(6px); } 77% { transform: rotate(2deg) translateY(0); } 100% { transform: rotate(-13deg) translateY(6px); } }
+  @keyframes m-ear-twitch { 0%,100% { transform: rotate(0) translateX(0); } 15%,35%,55%,75% { transform: rotate(-6deg) translateX(4px); } 25%,45%,65%,85% { transform: rotate(6deg) translateX(-4px); } }
 </style>
 </head>
 <body>
 <div id="root">
-  <div id="bubble"><span class="dot"></span><span id="bubble-text"></span></div>
+  <div id="panel">
+    <input id="say" placeholder="输入文字，回车发微信语音" maxlength="200" />
+    <div class="row">
+      <select id="voiceSel" title="合成用的音色（默认=主界面当前选中）"></select>
+      <button id="send" type="button" title="用选中音色合成，并录成微信语音消息">合成并发送</button>
+      <button id="live" type="button" title="开关 RVC 实时变声（微信把 CABLE Output 当麦克风）">实时变声</button>
+    </div>
+    <div id="recent" title="最近发送的语音，点一下重发"></div>
+  </div>
+  <div id="bubble">
+    <div id="head"><span class="dot"></span><span id="title"></span></div>
+    <div id="text"></div>
+    <div id="foot"><span id="steps"></span><span id="hint">点我跳过</span></div>
+  </div>
   <div id="pet"><div id="sprite"></div></div>
 </div>
 <script>
 "use strict";
 
 /**
- * 级联变声 / 实时变声桌宠：1s 轮询后端，按链路阶段切换动画。
+ * 桌宠渲染器，两种工作模式：
  *
- * 级联状态映射（sprite 来自 Ice-teapop/desktop-pet 芙宁娜主题，MIT）：
- *   未运行   -> idle        待机
- *   warming  -> building    模型加载中
- *   capturing-> idle-look   聆听中（你说话时）
- *   asr/tts  -> thinking    识别/翻译中（你闭嘴后）
- *   playing  -> conducting  播放中（气泡显示识别文字，确认"翻译完了"）
- *   error    -> error       出错
+ * 1) 状态模式（默认）：1s 轮询后端，按链路阶段切换动画。
+ *    级联：未运行->idle / warming->build / capturing->listen / asr|tts->think /
+ *          播放队列积压->play（气泡显示识别文字）/ error->error
+ *    实时变声（RVC）：基础 listen，转写中->think，识别到文字->气泡字幕
  *
- * 实时变声（RVC）映射：基础 listening，转写子进程 ASR 中 -> thinking，
- * 识别出文字 -> listening + 气泡字幕（挂在 /api/rvc/live/status 的 asr_* 字段上）。
+ * 2) 导览模式：主进程在前端切页时推来 { title, lines, action, motion, duration }，
+ *    桌宠临时现身为该页做一次介绍（头部标题 + 正文逐字打字 + 句子进度点），
+ *    并播放该页专属动作，讲完自动退回状态模式。变声运行中不让导览抢镜。
+ *
+ * sprite 来自 Ice-teapop/desktop-pet 芙宁娜主题（MIT）。
  */
 const API = "http://127.0.0.1:8000/api/cascade/status";
 const LIVE_API = "http://127.0.0.1:8000/api/rvc/live/status";
@@ -94,48 +220,143 @@ const SPRITES = {
 };
 // 每个状态的帧数 / 单轮周期(s)，驱动 CSS steps 动画（原 SVG 内为逐帧离散平移 SMIL）
 const SPRITE_ANIM = {
-  idle:   { frames: 37, dur: 5.5 },
-  listen: { frames: 37, dur: 5.5 },
-  think:  { frames: 37, dur: 5.5 },
-  play:   { frames: 22, dur: 5.5 },
-  build:  { frames: 16, dur: 4.0 },
-  error:  { frames: 37, dur: 5.5 },
+  idle:   { frames: 37, dur: 3.0 },
+  listen: { frames: 37, dur: 3.0 },
+  think:  { frames: 37, dur: 3.0 },
+  play:   { frames: 22, dur: 1.8 },
+  build:  { frames: 16, dur: 1.4 },
+  error:  { frames: 37, dur: 3.0 },
 };
 const BUBBLE = {
-  idle:   { cls: "",        text: "待机中" },
-  listen: { cls: "s-listen", text: "聆听中…" },
-  think:  { cls: "s-think",  text: "翻译中…" },
-  play:   { cls: "s-play",   text: "" },          // 播放中气泡让位给识别文字
-  build:  { cls: "s-build",  text: "模型加载中…" },
-  error:  { cls: "s-error",  text: "出错了，请查看主窗口" },
+  // 桌宠现在默认常驻，待机时只留角色安静待着，别把「待机中」一直糊在屏幕上
+  idle:   { cls: "",          title: "待机",     text: "待机中", hidden: true },
+  listen: { cls: "s-listen",  title: "我在听",   text: "你说，我听着～" },
+  think:  { cls: "s-think",   title: "工作中",   text: "听懂啦，正在处理…" },
+  play:   { cls: "s-play",    title: "正在播",   text: "" },          // 播放中气泡让位给识别文字
+  build:  { cls: "s-build",   title: "准备中",   text: "模型加载中…" },
+  error:  { cls: "s-error",   title: "出错",     text: "出错了，请查看主窗口" },
 };
+// 状态→动作映射：让「倾听 / 干活」有对应的肢体语言
+// build=准备中(轻晃) / listen=侧耳倾听 / think·play=忙碌干活 / error=甩头
+const STATE_MOTION = { build: "wiggle", listen: "ear", think: "work", play: "work", error: "shake" };
+const MOTIONS = ["pop", "wave", "lean", "nod", "sway", "jump", "twirl",
+  "shake", "float", "wiggle", "flip", "bounce", "dance", "ear", "work", "sleepy", "ear-twitch"];
 
+const petBox = document.getElementById("pet");
 const sprite = document.getElementById("sprite");
 const bubble = document.getElementById("bubble");
-const bubbleText = document.getElementById("bubble-text");
+const titleEl = document.getElementById("title");
+const textEl = document.getElementById("text");
+const stepsEl = document.getElementById("steps");
 
 let lastKey = null;       // 上次渲染的状态 key
 let lastText = "";        // 当前句识别文字（出现=识别完成，清空=播出结束）
+let statusBusy = false;   // 级联/实时变声是否在运行（运行中不让导览打断）
+let guide = null;         // 导览播放中的状态
+let guideTimers = [];
+let typingTimer = null;
 
 // 预加载所有 sprite，避免首次切换时白屏等待（WebP，单个最大 ~0.5MB）
 for (const p of Object.values(SPRITES)) { new Image().src = p; }
 
-function setState(key, text) {
-  if (key === lastKey && text === bubbleText.textContent) return;
-  lastKey = key;
-  // 切背景图 + 注入帧数/周期，重启 steps 动画（等价于原 SMIL 从头播）
-  const anim = SPRITE_ANIM[key] || { frames: 1, dur: 5.5 };
-  sprite.style.backgroundImage = `url("${SPRITES[key]}")`;
+// ---------------- 通用渲染 ----------------
+function setSprite(key, motion) {
+  const anim = SPRITE_ANIM[key] || SPRITE_ANIM.idle;
+  sprite.style.backgroundImage = `url("${SPRITES[key] || SPRITES.idle}")`;
   sprite.style.backgroundSize = (anim.frames * 150) + "px 150px";
   sprite.style.setProperty("--n", String(anim.frames));
   sprite.style.animation = `pet-steps ${anim.dur}s steps(${anim.frames}) infinite`;
-  const info = BUBBLE[key];
-  if (!info) { bubble.style.display = "none"; return; }
-  bubble.className = info.cls;
-  bubble.style.display = "block";
-  bubbleText.textContent = text || info.text;
+  setMotion(motion);
 }
 
+function setMotion(motion) {
+  petBox.classList.remove(...MOTIONS.map((m) => "m-" + m));
+  if (!motion) return;
+  petBox.classList.add("m-" + motion);
+  // 重新触发一次动画（连续两页用同一个动作时也要有反应）
+  void petBox.offsetWidth;
+}
+
+function setState(key, text) {
+  if (guide) return;                       // 导览播放中，状态轮询不抢气泡
+  if (key === lastKey && text === textEl.textContent) return;
+  lastKey = key;
+  setSprite(key, STATE_MOTION[key] || null);
+  const info = BUBBLE[key];
+  if (!info || (info.hidden && !text)) { bubble.style.display = "none"; return; }
+  bubble.className = info.cls;
+  bubble.style.display = "block";
+  titleEl.textContent = info.title;
+  textEl.classList.remove("typing");
+  textEl.textContent = text || info.text;
+}
+
+// ---------------- 页面导览 ----------------
+/** 单句停留时长：够读完，又不至于让人等（含后续打字时间） */
+function lineMs(line) {
+  return Math.min(4200, Math.max(2200, 1500 + line.length * 110));
+}
+
+function typeText(text) {
+  if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
+  textEl.classList.remove("typing");
+  textEl.textContent = text;
+}
+
+function clearGuide() {
+  guideTimers.forEach(clearTimeout);
+  guideTimers = [];
+  clearInterval(typingTimer);
+  typingTimer = null;
+  guide = null;
+}
+
+function endGuide() {
+  if (!guide) return;
+  clearGuide();
+  setMotion(null);
+  lastKey = null;             // 强制下一帧重画状态气泡
+  void tick();
+}
+
+function playGuide(g) {
+  clearGuide();
+  const lines = Array.isArray(g.lines) ? g.lines.filter(Boolean) : [];
+  if (!lines.length) return;
+  guide = g;
+  lastKey = null;
+  setSprite(g.action || "idle", g.motion || "pop");
+
+  bubble.className = "guide";
+  bubble.style.display = "block";
+  titleEl.textContent = g.title || "这一页";
+  stepsEl.innerHTML = lines.map(() => "<i></i>").join("");
+
+  let at = 0;
+  lines.forEach((line, i) => {
+    guideTimers.push(setTimeout(() => {
+      if (!guide) return;
+      Array.from(stepsEl.children).forEach((el, k) => el.classList.toggle("on", k === i));
+      typeText(line);
+    }, at));
+    at += lineMs(line);
+  });
+  guideTimers.push(setTimeout(endGuide, at + 1000));
+}
+
+// 主进程在切页时推送；变声运行中静默丢弃（不打断状态展示）
+if (window.pet && window.pet.onGuide) {
+  window.pet.onGuide((g) => {
+    if (statusBusy || !g) return;
+    playGuide(g);
+  });
+}
+// 点气泡跳过导览
+bubble.addEventListener("click", () => {
+  if (guide) endGuide();
+});
+
+// ---------------- 状态轮询 ----------------
 function render(s) {
   if (!s.running) { lastText = ""; setState("idle"); return; }
 
@@ -145,12 +366,12 @@ function render(s) {
       setState("build");
       return;
     case "asr":
-      setState("think", "识别中…");   // 此刻 last_text 还是上一句，不展示
+      setState("think", "听懂啦…");   // 此刻 last_text 还是上一句，不展示
       return;
     case "tts":
-      // ASR 完成进入合成：last_text 即本句识别结果，展示文字 = 「翻译完成」的确认
+      // ASR 完成进入合成：last_text 即本句识别结果，展示文字 = 「听懂了的确认」
       if (s.last_text) lastText = s.last_text;
-      setState("think", lastText ? `「${lastText}」` : "翻译中…");
+      setState("think", lastText ? `「${lastText}」` : "正在合声…");
       return;
     case "capturing":
       // playing 阶段在子进程里只存在几毫秒（同步处理后立刻回到 capturing），
@@ -158,10 +379,10 @@ function render(s) {
       if (s.queued_s > 0.05) {
         // 轮询可能错过短暂的 tts 阶段，此时用 last_text 兜底
         if (s.last_text && s.last_text !== lastText) lastText = s.last_text;
-        setState("play", lastText ? `「${lastText}」` : "播放中…");
+        setState("play", lastText ? `「${lastText}」` : "正在播…");
       } else {
-        lastText = "";                          // 队列空了 = 播完，回到聆听
-        setState("listen");
+        lastText = "";                          // 队列空了 = 播完，回到「我在听」
+        setState("listen", "我在听 · 你继续说");
       }
       return;
     default:
@@ -170,42 +391,54 @@ function render(s) {
 }
 
 function renderLive(l) {
-  // 实时变声模式：基础聆听动画 + 实时字幕（转写子进程挂在 asr_* 字段）
+  // 实时变声模式：基础「我在听」动画 + 实时字幕（转写子进程挂在 asr_* 字段）
   if (l.asr_running) {
     if (l.asr_stage === "transcribing") {
-      setState("think", "识别中…");
+      setState("think", "听懂啦…");
     } else {
-      setState("listen", l.asr_last_text ? `「${l.asr_last_text}」` : "变声中…");
+      setState("listen", l.asr_last_text ? `「${l.asr_last_text}」` : "变声中 · 我听着");
     }
   } else {
     lastText = "";
-    setState("listen", "变身中…");   // 转写子进程未启动：只挂身份牌，不影响变声
+    setState("listen", "变声中 · 我听着");   // 转写子进程未启动：只挂身份牌，不影响变声
   }
 }
 
 // 预览模式（调试用）：pet.html?mock=1 自动轮播各状态，不依赖后端
 const MOCK = new URLSearchParams(location.search).get("mock") === "1";
 const MOCK_SEQ = [
-  ["listen", "聆听中…"],
-  ["think", "「你好呀」"],
-  ["play", "「你好呀」"],
-  ["idle", ""],
-  ["build", "模型加载中…"],
-  ["error", ""],
+  { state: "listen", text: "聆听中…" },
+  { state: "think", text: "「你好呀」" },
+  { state: "play", text: "「你好呀」" },
+  { state: "idle", text: "" },
+  { state: "build", text: "模型加载中…" },
+  { state: "error", text: "" },
 ];
 let mockIdx = 0;
 if (MOCK) {
+  // 调试模式下也能预览页面导览：pet.html?mock=1 时 6s 后自动演一遍「音色工坊」
   const step = () => {
-    const [key, text] = MOCK_SEQ[mockIdx % MOCK_SEQ.length];
+    if (guide) return;
+    const m = MOCK_SEQ[mockIdx % MOCK_SEQ.length];
     mockIdx += 1;
-    setState(key, text);
+    setState(m.state, m.text);
   };
   step();
   setInterval(step, 2500);
+  setTimeout(() => {
+    playGuide({
+      title: "音色工坊",
+      lines: ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"],
+      action: "build",
+      motion: "pop",
+      duration: 8000,
+    });
+  }, 6000);
 }
 
 async function tick() {
   if (MOCK) return;
+  if (guide) return;              // 导览期间不打断
   let cascadeData = null, live = null;
   try {
     const r = await fetch(API, { cache: "no-store" });
@@ -215,6 +448,14 @@ async function tick() {
     const r = await fetch(LIVE_API, { cache: "no-store" });
     if (r.ok) live = await r.json();
   } catch {}
+  statusBusy = Boolean((cascadeData && cascadeData.running) || (live && live.live_running));
+  // 空闲计时：任何变声在跑就归零，否则记连续空闲起点（供「打盹」演出用）
+  idleSince = statusBusy ? 0 : (idleSince || Date.now());
+  // 快捷面板上的实时变声开关随真实状态走（面板隐藏时改了也不影响）
+  if (live && typeof live.live_running === "boolean") {
+    liveBtn.textContent = live.live_running ? "变声中 · 关" : "实时变声";
+    liveBtn.classList.toggle("live-on", live.live_running);
+  }
   if (cascadeData && cascadeData.running) {
     render(cascadeData);
   } else if (live && live.live_running) {
@@ -223,27 +464,126 @@ async function tick() {
     lastText = "";
     setState("idle");   // 都没运行 / 后端没起：安静待机，不报错打扰
   }
+  // 倾听细节：在听时偶尔抖一下耳朵（短暂打断 ear 动作，随后恢复）
+  if (lastKey === "listen" && !guide && !earTwitching && Date.now() - lastEarTwitch > 8000) {
+    earTwitching = true;
+    lastEarTwitch = Date.now();
+    setMotion("ear-twitch");
+    setTimeout(() => {
+      earTwitching = false;
+      if (lastKey === "listen" && !guide) setMotion(STATE_MOTION.listen || "ear");
+    }, 600);
+  }
 }
 
 // ---------------- 手动拖拽 + 点击穿透 ----------------
 // app-region: drag 与 setIgnoreMouseEvents 组合在透明窗上不可靠，改由 JS 主导：
 // 悬停角色/气泡时关穿透，按下后由主进程按光标屏幕坐标挪窗口。
 let dragging = false;
-const petBox = document.getElementById("pet");
+let movedFar = false;    // 本次按下是否拖出了死区（区分单击 vs 拖拽）
+let downX = 0, downY = 0;
+
+// ---------------- 快捷面板：悬停角色浮现 ----------------
+const panel = document.getElementById("panel");
+const sayEl = document.getElementById("say");
+const sendBtn = document.getElementById("send");
+const liveBtn = document.getElementById("live");
+const voiceSel = document.getElementById("voiceSel");
+const recentEl = document.getElementById("recent");
+const VOICE_KEY = "pet_voice_id";
+let panelTimer = null;
+
+function showPanel() {
+  if (panelTimer) { clearTimeout(panelTimer); panelTimer = null; }
+  panel.style.display = "block";
+  refreshPanel();   // 每次浮现刷新：音色下拉 + 最近发送
+}
+function schedulePanelHide() {
+  if (!panelTimer) panelTimer = setTimeout(() => {
+    panel.style.display = "none";
+    panelTimer = null;
+  }, 500);
+}
+petBox.addEventListener("mouseenter", showPanel);
+petBox.addEventListener("mouseleave", schedulePanelHide);
+panel.addEventListener("mouseenter", showPanel);
+panel.addEventListener("mouseleave", schedulePanelHide);
+
+// 音色下拉：/api/voices 里挑有参考音频的（没参考的 RVC 模型合不了 TTS）
+async function loadVoices() {
+  try {
+    const r = await fetch("http://127.0.0.1:8000/api/voices", { cache: "no-store" });
+    if (!r.ok) return;
+    const j = await r.json();
+    const usable = (j.voices || []).filter((v) => v.has_reference);
+    const saved = localStorage.getItem(VOICE_KEY) || "";
+    const cur = voiceSel.value || saved;
+    const opts = [new Option("主界面选中", "")];
+    for (const v of usable) opts.push(new Option(v.display_name || v.id, v.id));
+    voiceSel.innerHTML = "";
+    opts.forEach((o) => voiceSel.add(o));
+    voiceSel.value = usable.some((v) => v.id === cur) ? cur : "";
+  } catch {}
+}
+
+// 最近发送：后端 /api/wechat/history，点一条重发
+async function loadRecent() {
+  try {
+    const r = await fetch("http://127.0.0.1:8000/api/wechat/history", { cache: "no-store" });
+    if (!r.ok) return;
+    const j = await r.json();
+    const items = (j.items || []).slice(0, 5);
+    recentEl.innerHTML = items.length
+      ? items.map((it) => {
+          const t = new Date(it.ts * 1000);
+          const hm = `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+          return `<span class="hitem" data-wav="${it.wav}" title="重发 ${it.wav}（${it.duration_s}s）">${hm} · ${it.duration_s}s</span>`;
+        }).join("")
+      : '<span class="hempty">还没发过语音</span>';
+  } catch {}
+}
+recentEl.addEventListener("click", (e) => {
+  const it = e.target.closest(".hitem");
+  if (it && window.pet && window.pet.sendWav) window.pet.sendWav(it.dataset.wav);
+});
+
+function refreshPanel() { loadVoices(); loadRecent(); }
+
+function doSendText() {
+  const text = sayEl.value.trim();
+  if (!text || !window.pet) return;
+  const voiceId = voiceSel.value || "";
+  if (voiceId) localStorage.setItem(VOICE_KEY, voiceId);   // 记住上次选的音色
+  if (window.pet.sendText) { window.pet.sendText(text, voiceId); sayEl.value = ""; }
+  sendBtn.disabled = true;
+  setTimeout(() => { sendBtn.disabled = false; refreshPanel(); }, 25000);   // TTS+录音发送可能要十几秒
+}
+sendBtn.addEventListener("click", doSendText);
+sayEl.addEventListener("keydown", (e) => { if (e.key === "Enter") doSendText(); });
+liveBtn.addEventListener("click", () => {
+  if (window.pet && window.pet.liveToggle) window.pet.liveToggle();
+});
 
 function overInteractive(e) {
   const el = document.elementFromPoint(e.clientX, e.clientY);
-  return !!(el && (el.closest("#pet") || el.closest("#bubble")));
+  return !!(el && (el.closest("#pet") || el.closest("#bubble") || el.closest("#panel")));
 }
 
 petBox.addEventListener("mousedown", (e) => {
   if (e.button !== 0) return;   // 右键留给上下文菜单
   dragging = true;
+  movedFar = false;
+  downX = e.screenX; downY = e.screenY;
   window.pet && window.pet.dragStart();
   e.preventDefault();
 });
 document.addEventListener("mousemove", (e) => {
-  if (dragging) { window.pet && window.pet.dragMove(); return; }
+  if (dragging) {
+    // 6px 死区：没拖出死区不算拖拽，mouseup 时按「单击角色」处理
+    if (!movedFar && Math.hypot(e.screenX - downX, e.screenY - downY) > 6) movedFar = true;
+    if (movedFar) { window.pet && window.pet.dragMove(); }
+    return;
+  }
   window.pet && window.pet.setIgnoreMouse(!overInteractive(e));
 });
 document.addEventListener("mouseup", (e) => {
@@ -252,11 +592,44 @@ document.addEventListener("mouseup", (e) => {
   window.pet && window.pet.dragEnd();   // 主进程侧保存位置
   // 拖拽结束时光标可能已出窗（elementFromPoint 为 null）→ 恢复全穿透
   window.pet && window.pet.setIgnoreMouse(!overInteractive(e));
+  // 单击角色（没拖动）＝ 把最近一次合成的语音发进微信
+  if (!movedFar && e.button === 0 && window.pet && window.pet.sendLast) {
+    window.pet.sendLast();
+  }
 });
 document.documentElement.addEventListener("mouseleave", () => {
   if (!dragging) window.pet && window.pet.setIgnoreMouse(true);
 });
 window.pet && window.pet.setIgnoreMouse(true);   // 初始全穿透，悬停角色后恢复
+
+// ---------------- 待机小剧场 + 打盹 ----------------
+// 闲着的时候自言自语 + 随机来一段动作，让桌宠「活着」；
+// 长时间没人理（2.5 分钟+）还会随机打瞌睡（zZZ…）。
+// 只在真正空闲（无级联/实时变声、无导览、状态为 idle）时触发，点气泡可跳过。
+const IDLE_SKITS = [
+  { lines: ["戳一下我，语音就飞进微信～"], action: "idle", motion: "wiggle" },
+  { lines: ["悬停我可以打字发语音哦"], action: "idle", motion: "wave" },
+  { lines: ["看好了——", "转身！"], action: "idle", motion: "flip" },
+  { lines: ["Q弹Q弹的～"], action: "idle", motion: "bounce" },
+  { lines: ["飘啊飘～"], action: "listen", motion: "float" },
+  { lines: ["今天也要开心呀！"], action: "play", motion: "dance" },
+  { lines: ["别摇啦，头都晕了…"], action: "error", motion: "shake" },
+  { lines: ["Ctrl+Alt+V 随时启停变声"], action: "think", motion: "nod" },
+];
+const DOZE_SKIT = { lines: ["zZZ…"], action: "listen", motion: "sleepy" };
+let nextSkitAt = Date.now() + 30000;   // 出现半分钟后开始第一次
+let idleSince = 0;                     // 连续空闲起点（ms），非 idle 时归零
+let lastEarTwitch = 0;                 // 上次耳朵抖动时间（倾听时的小细节）
+let earTwitching = false;
+setInterval(() => {
+  if (guide || statusBusy || lastKey !== "idle") return;
+  const now = Date.now();
+  if (now < nextSkitAt) return;
+  const dozy = idleSince && now - idleSince > 150000 && Math.random() < 0.5;   // 闲久了的打盹
+  nextSkitAt = now + (dozy ? 90000 : 45000) + Math.random() * 45000;
+  const s = dozy ? DOZE_SKIT : IDLE_SKITS[Math.floor(Math.random() * IDLE_SKITS.length)];
+  playGuide({ title: dozy ? "打盹" : "闲聊", lines: s.lines, action: s.action, motion: s.motion, duration: dozy ? 9000 : 6000 });
+}, 5000);
 
 void tick();
 setInterval(tick, 1000);

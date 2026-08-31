@@ -1,4 +1,4 @@
-import type { ClipItem, HealthInfo, VideoItem, VoiceInfo, VoiceQc } from "../types";
+import type { ClipItem, DiagnoseInfo, HealthInfo, VideoItem, VoiceInfo, VoiceQc } from "../types";
 
 // 后端统一挂在 /api 前缀下。
 // 开发模式：走 vite proxy（/api -> 8000），用相对地址；
@@ -37,6 +37,11 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 
 export async function getHealth(): Promise<HealthInfo> {
   return jsonFetch<HealthInfo>("/health");
+}
+
+/** 环境体检：检查 ffmpeg / RVC 整合包 / 默认音色权重 / CUDA / TTS 模型 等本机依赖 */
+export async function diagnose(): Promise<DiagnoseInfo> {
+  return jsonFetch<DiagnoseInfo>("/diagnose");
 }
 
 export async function listVoices(): Promise<VoiceInfo[]> {
@@ -244,6 +249,8 @@ export type MineState = {
   running: boolean;
   stage: "idle" | "running" | "done" | "error";
   message: string;
+  /** 挖掘过程中逐条切片的失败原因（后端会写入但此前前端未展示） */
+  errors?: string[];
   kept: number;
   clusters: MineCluster[];
 };

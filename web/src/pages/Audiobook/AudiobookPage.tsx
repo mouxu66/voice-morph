@@ -10,6 +10,7 @@ import {
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
+import { ErrorPanel } from "@/components/ErrorPanel"
 import { mediaUrl } from "@/api/client"
 import type { useAudiobook } from "@/pages/Audiobook/useAudiobook"
 
@@ -116,14 +117,10 @@ export function AudiobookPage(p: ReturnType<typeof useAudiobook>) {
               </div>
             )}
             {p.errorMessage && (
-              <div className="mt-5 flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-xs text-destructive">
-                <CircleAlert className="h-4 w-4" />{p.errorMessage}
-              </div>
+              <ErrorPanel title="有声书任务失败" detail={p.errorMessage} />
             )}
             {st?.error && (
-              <div className="mt-5 flex items-center gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2.5 text-xs text-yellow-600">
-                <CircleAlert className="h-4 w-4" />{st.error}
-              </div>
+              <ErrorPanel title="有声书合成异常" detail={st.error} />
             )}
 
             {st?.running && (

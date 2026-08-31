@@ -211,11 +211,11 @@ def _audio(action: str) -> dict:
     out = (proc.stdout or "").strip()
     if not out:
         err = (proc.stderr or "").strip()
-        raise RuntimeError(f"audio_config {action} 无输出: {err[:300]}")
+        raise RuntimeError(f"audio_config {action} 无输出: {err[:1500]}")
     try:
         data = json.loads(out)
     except json.JSONDecodeError:
-        raise RuntimeError(f"audio_config {action} 输出非 JSON: {out[:300]}")
+        raise RuntimeError(f"audio_config {action} 输出非 JSON: {out[:1500]}")
     if not data.get("ok"):
         errs = data.get("errors")
         if isinstance(errs, list) and errs:

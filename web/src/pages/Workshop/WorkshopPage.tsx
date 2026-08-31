@@ -5,6 +5,7 @@ import type { useWorkshop } from "@/pages/Workshop/useWorkshop"
 import type { VideoItem } from "@/types"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { StudioEmpty } from "@/components/voice-studio/StudioEmpty"
+import { ErrorPanel } from "@/components/ErrorPanel"
 
 function VideoCard({ video, onDelete }: { video: VideoItem; onDelete: () => void }) {
   const [confirming, setConfirming] = useState(false)
@@ -44,7 +45,7 @@ export function WorkshopPage(p: ReturnType<typeof useWorkshop>) {
     </div>}
 
     {p.feedback && <div className="mt-4 flex items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5 text-xs text-primary animate-in fade-in slide-in-from-top-2 duration-300"><CircleAlert className="h-3.5 w-3.5" />{p.feedback}</div>}
-    {p.errorMessage && <div className="mt-4 flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-xs text-destructive"><CircleAlert className="h-3.5 w-3.5" />{p.errorMessage}</div>}
+    {p.errorMessage && <ErrorPanel title="音色工坊操作失败" detail={p.errorMessage} />}
 
     {/* 素材列表 + 拖拽上传 */}
     <div className="mt-6 space-y-3">

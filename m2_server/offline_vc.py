@@ -131,7 +131,7 @@ def _ovc_worker(raw_path: Path, voice_id: str, pth: Path,
                "-af", af + "aresample=16000", "-ac", "1", str(in_path)]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if r.returncode != 0 or not in_path.exists():
-            raise RuntimeError(f"ffmpeg 预处理失败: {r.stderr.strip()[:300]}")
+            raise RuntimeError(f"ffmpeg 预处理失败: {r.stderr.strip()[:1500]}")
 
         OFFLINEVC_STATE.update(message="RVC 推理中…（整段单次推理，几十秒到几分钟）")
         cmd = [str(RVC_VENV_PY), str(INFER_PY),

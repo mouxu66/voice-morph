@@ -15,6 +15,7 @@ import { useState } from "react"
 import { Link } from "react-router-dom"
 import { mediaUrl } from "@/api/client"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
+import { ErrorPanel } from "@/components/ErrorPanel"
 import type { useOfflineVc } from "@/pages/OfflineVc/useOfflineVc"
 
 const PITCH_PRESETS: [string, number][] = [
@@ -187,14 +188,10 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
             </div>
 
             {p.errorMessage && (
-              <div className="mt-5 flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-xs text-destructive">
-                <CircleAlert className="h-4 w-4" />{p.errorMessage}
-              </div>
+              <ErrorPanel title="离线变声操作失败" detail={p.errorMessage} />
             )}
             {st?.error && (
-              <div className="mt-5 flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-xs text-destructive">
-                <CircleAlert className="h-4 w-4" />{st.error}
-              </div>
+              <ErrorPanel title="离线变声转换失败" detail={st.error} />
             )}
             {!p.errorMessage && !st?.error && st?.running && (
               <div className="mt-5 flex items-center gap-2 rounded-md border border-primary/30 bg-primary/10 px-3 py-2.5 text-xs text-primary">
@@ -257,7 +254,7 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
                           </a>
                         </>
                       ) : it.status === "error" ? (
-                        <span className="text-destructive">{it.error || "失败"}</span>
+                        <span className="rounded border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-destructive">{it.error || "失败"}</span>
                       ) : it.status === "running" ? (
                         <span className="text-primary">转换中…</span>
                       ) : (

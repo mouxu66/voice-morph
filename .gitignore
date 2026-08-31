@@ -67,3 +67,7 @@ tts_trial/ft_samples/
 # ===== 工作记录 =====
 .workbuddy/
 m2_server/data/
+# ===== asar 打包工作区（可由 extract_asar.cjs 重建）=====
+.asar_tmp/
+voice-morph-desktop/
+web/dist_old_bak*/

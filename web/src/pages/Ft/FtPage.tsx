@@ -1,11 +1,12 @@
 import { useRef } from "react";
 import {
-  ArrowRight, BookOpenText, CheckCircle2, CircleAlert, ListMusic,
+  ArrowRight, BookOpenText, CheckCircle2, ListMusic,
   Loader2, Mic, Square, Upload, Wand2,
 } from "lucide-react";
 import { SCRIPT_SENTENCES, useFt } from "@/pages/Ft/useFt";
 import { mediaUrl } from "@/api/client";
 import { useAppStore } from "@/store/useAppStore";
+import { ErrorPanel } from "@/components/ErrorPanel";
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
@@ -65,9 +66,7 @@ export function FtPage(props: ReturnType<typeof useFt>) {
       </div>
 
       {error && (
-        <div className="mt-4 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />{error}
-        </div>
+        <ErrorPanel title="微调流程出错" detail={error} />
       )}
 
       {/* 历史微调音色 */}
@@ -189,7 +188,7 @@ export function FtPage(props: ReturnType<typeof useFt>) {
               </div>
             </div>
           )}
-          {trainStatus.error && <p className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{trainStatus.error}</p>}
+          {trainStatus.error && <ErrorPanel title="RVC 训练失败" detail={trainStatus.error} />}
           {trainStatus.log_tail.length > 0 && (
             <pre className="mt-3 max-h-40 overflow-y-auto rounded-lg border border-border bg-background p-3 font-mono text-[11px] leading-5 text-muted-foreground">{trainStatus.log_tail.join("\n")}</pre>
           )}
@@ -237,8 +236,7 @@ export function FtPage(props: ReturnType<typeof useFt>) {
 
       {stage === "error" && status?.error && (
         <div className={`${card} mt-6`}>
-          <p className="flex items-center gap-2 text-sm font-medium text-destructive"><CircleAlert className="h-4 w-4" />处理失败</p>
-          <p className="mt-2 text-sm text-muted-foreground">{status.error}</p>
+          <ErrorPanel title="微调处理失败" detail={status.error} />
           <button type="button" onClick={resetFlow} className={`${btn} mt-4 border border-border bg-card`}>重新开始</button>
         </div>
       )}

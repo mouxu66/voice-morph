@@ -653,7 +653,7 @@ def run_live_asr(args):
                 except SystemExit:
                     raise
                 except Exception as e:
-                    STATE["error"] = f"{type(e).__name__}: {e}"[:300]
+                    STATE["error"] = f"{type(e).__name__}: {e}"[:1500]
                     _write_state()
                     print(f"[live-asr] 转写失败: {e}", flush=True)
 
@@ -690,13 +690,13 @@ def main():
         else:
             run_live(args)
     except SystemExit as e:
-        STATE.update(running=False, stage="error", error=str(e)[:300])
+        STATE.update(running=False, stage="error", error=str(e)[:1500])
         _write_state()
         raise
     except Exception as e:
         import traceback
         traceback.print_exc()
-        STATE.update(running=False, stage="error", error=f"{type(e).__name__}: {e}"[:300])
+        STATE.update(running=False, stage="error", error=f"{type(e).__name__}: {e}"[:1500])
         _write_state()
         raise
     finally:

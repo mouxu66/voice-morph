@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 import type { ReactNode } from "react"
 import type { useLive } from "@/pages/Live/useLive"
+import { ErrorPanel } from "@/components/ErrorPanel"
 import { LiveLevelMeter } from "@/components/voice-studio/LiveLevelMeter"
 import { RvcChainDiagram } from "@/components/voice-studio/RvcChainDiagram"
 import { RvcVoicePicker } from "@/components/voice-studio/RvcVoicePicker"
@@ -244,10 +245,7 @@ export function LivePage(p: ReturnType<typeof useLive>) {
               </p>
             )}
             {!p.liveOn && p.liveStatus?.last_error && (
-              <p className="flex items-start gap-2 text-xs leading-5 text-destructive">
-                <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                上次还原声卡失败：{p.liveStatus.last_error}。请点左侧栏「一键恢复音频」重试。
-              </p>
+              <ErrorPanel title="上次还原声卡失败" detail={p.liveStatus.last_error} hint="请点左侧栏「一键恢复音频」重试" />
             )}
           </section>
 
@@ -391,9 +389,7 @@ export function LivePage(p: ReturnType<typeof useLive>) {
                 </div>
               )}
               {!trainRunning && p.trainStatus?.error && (
-                <div className="ml-10 -mt-3 mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] leading-4 text-destructive">
-                  上次训练失败：{p.trainStatus.error}
-                </div>
+                <ErrorPanel title="上次 RVC 训练失败" detail={p.trainStatus.error} />
               )}
 
               <PipelineStep
@@ -438,23 +434,15 @@ export function LivePage(p: ReturnType<typeof useLive>) {
         )}
 
         {p.genStatus?.error && (
-          <p className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs leading-5 text-destructive">
-            <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-            语料生成失败：{p.genStatus.error}
-          </p>
+          <ErrorPanel title="语料生成失败" detail={p.genStatus.error} />
         )}
 
         {p.feedback && (
-          <p
-            className={cn(
-              "rounded-xl border px-4 py-3 text-xs leading-5",
-              p.feedback.tone === "ok" && "border-emerald-500/30 bg-emerald-500/10 text-emerald-600",
-              p.feedback.tone === "error" && "border-destructive/30 bg-destructive/10 text-destructive",
-              p.feedback.tone === "info" && "border-border bg-card/70 text-card-foreground",
-            )}
-          >
-            {p.feedback.text}
-          </p>
+          p.feedback.tone === "error"
+            ? <ErrorPanel title="实时变声操作失败" detail={p.feedback.text} />
+            : <p className={cn("rounded-xl border px-4 py-3 text-xs leading-5",
+                p.feedback.tone === "ok" && "border-emerald-500/30 bg-emerald-500/10 text-emerald-600",
+                p.feedback.tone === "info" && "border-border bg-card/70 text-card-foreground")}>{p.feedback.text}</p>
         )}
       </main>
     </div>

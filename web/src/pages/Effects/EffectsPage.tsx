@@ -15,6 +15,7 @@ import {
 import type { useEffects } from "@/pages/Effects/useEffects"
 import type { FxMeta, FxStep } from "@/pages/Effects/useEffects"
 import { cn } from "@/lib/utils"
+import { ErrorPanel } from "@/components/ErrorPanel"
 
 /** 效果图标映射：后端目录的 icon 字段 → lucide 组件（新增效果改两处即可） */
 const FX_ICONS: Record<string, typeof Music4> = {
@@ -302,16 +303,11 @@ export function EffectsPage(p: ReturnType<typeof useEffects>) {
           )}
 
           {p.feedback && (
-            <p
-              className={cn(
-                "mt-4 rounded-xl border px-4 py-3 text-xs leading-5",
-                p.feedback.tone === "ok" && "border-emerald-500/30 bg-emerald-500/10 text-emerald-600",
-                p.feedback.tone === "error" && "border-destructive/30 bg-destructive/10 text-destructive",
-                p.feedback.tone === "info" && "border-border bg-card/70 text-card-foreground",
-              )}
-            >
-              {p.feedback.text}
-            </p>
+            p.feedback.tone === "error"
+              ? <ErrorPanel title="效果应用失败" detail={p.feedback.text} />
+              : <p className={cn("mt-4 rounded-xl border px-4 py-3 text-xs leading-5",
+                  p.feedback.tone === "ok" && "border-emerald-500/30 bg-emerald-500/10 text-emerald-600",
+                  p.feedback.tone === "info" && "border-border bg-card/70 text-card-foreground")}>{p.feedback.text}</p>
           )}
         </section>
 

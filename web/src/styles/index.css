@@ -214,3 +214,25 @@ main .rounded-2xl.border:hover {
   100% { background-position: 200% 0; }
 }
 
+/* ===== 页面内导览桌宠动画（PetGuide.tsx）====== */
+@keyframes pet-steps {
+  from { background-position-x: 0; }
+  to { background-position-x: calc(var(--steps-total, 3552px) * -1); }
+}
+
+.m-pop   { animation: m-pop .62s cubic-bezier(.34,1.56,.64,1) 2; }
+.m-wave  { animation: m-wave 1.5s ease-in-out infinite; }
+.m-lean  { animation: m-lean 2.4s ease-in-out infinite; }
+.m-nod   { animation: m-nod 1.3s ease-in-out infinite; }
+.m-sway  { animation: m-sway 3.2s ease-in-out infinite; }
+.m-jump  { animation: m-jump .95s cubic-bezier(.3,.7,.4,1) infinite; }
+.m-twirl { animation: m-twirl 2.4s ease-in-out infinite; }
+
+@keyframes m-pop   { 0%,100% { transform: scale(1); } 45% { transform: scale(1.14) translateY(-6px); } }
+@keyframes m-wave  { 0%,100% { transform: rotate(-7deg); } 50% { transform: rotate(7deg); } }
+@keyframes m-lean  { 0%,100% { transform: translateX(-7px) rotate(-4deg); } 50% { transform: translateX(7px) rotate(4deg); } }
+@keyframes m-nod   { 0%,100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(5px) rotate(6deg); } }
+@keyframes m-sway  { 0%,100% { transform: translateX(-6px); } 50% { transform: translateX(6px); } }
+@keyframes m-jump  { 0%,55%,100% { transform: translateY(0) scaleY(1); } 22% { transform: translateY(-20px) scaleY(1.06); } 40% { transform: translateY(0) scaleY(.93); } }
+@keyframes m-twirl { 0%,72%,100% { transform: rotate(0) scale(1); } 30% { transform: rotate(180deg) scale(1.05) translateY(-10px); } }
+

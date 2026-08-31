@@ -39,6 +39,7 @@ from cascade import router as cascade_router
 from offline_vc import router as offlinevc_router
 from effects import router as effects_router
 from rvc_live import router as rvc_live_router, _find_pth
+from wechat_voice import router as wechat_router
 
 warnings.filterwarnings("ignore")
 
@@ -120,12 +121,117 @@ app.include_router(audiobook_router)
 app.include_router(offlinevc_router)
 app.include_router(cascade_router)
 app.include_router(effects_router)
+app.include_router(wechat_router)
 
 
 @app.get(API_PREFIX + "/health")
 def health():
     import torch
     return {"status": "ok", "cuda": torch.cuda.is_available()}
+
+
+@app.get(API_PREFIX + "/diagnose")
+def diagnose():
+    """环境体检：并行检查本机推理所需的各项依赖，返回勾叉清单。
+
+    前端据此展示「哪里缺」，每项带 detail（现状）与 hint（怎么修）。
+    后端能响应本接口本身就说明「本地推理服务」已在线（故 backend 项恒 ok）。
+    """
+    import shutil
+    import torch
+
+    items: list[dict] = []
+
+    # 1) 本地推理服务（能响应 /diagnose 说明本身已在线）
+    items.append({
+        "key": "backend", "ok": True, "label": "本地推理服务",
+        "detail": f"已连接 · 端口 {cfg.SERVER_PORT}", "hint": "",
+    })
+
+    # 2) ffmpeg（音频预处理/导出依赖）
+    ff = shutil.which("ffmpeg")
+    if ff:
+        items.append({"key": "ffmpeg", "ok": True, "label": "ffmpeg", "detail": ff, "hint": ""})
+    else:
+        items.append({
+            "key": "ffmpeg", "ok": False, "label": "ffmpeg",
+            "detail": "未在 PATH 中找到 ffmpeg",
+            "hint": "安装 ffmpeg 并加入 PATH；Windows 可用 `winget install ffmpeg` 或 `scoop install ffmpeg`。",
+        })
+
+    # 3) Qwen3-TTS 模型 + 分词器
+    qwen_ok = cfg.QWEN_MODEL_DIR.exists() and (cfg.QWEN_MODEL_DIR / "config.json").exists()
+    tok_ok = cfg.QWEN_TOKENIZER_DIR.exists()
+    if qwen_ok and tok_ok:
+        items.append({
+            "key": "tts_models", "ok": True, "label": "Qwen3-TTS 模型/分词器",
+            "detail": str(cfg.QWEN_MODEL_DIR), "hint": "",
+        })
+    else:
+        miss = []
+        if not qwen_ok:
+            miss.append("模型目录缺失或没有 config.json")
+        if not tok_ok:
+            miss.append("分词器目录缺失")
+        items.append({
+            "key": "tts_models", "ok": False, "label": "Qwen3-TTS 模型/分词器",
+            "detail": "；".join(miss),
+            "hint": f"确认 VM_QWEN_MODEL_DIR（{cfg.QWEN_MODEL_DIR}）与 VM_QWEN_TOKENIZER_DIR（{cfg.QWEN_TOKENIZER_DIR}）已下载解压到位。",
+        })
+
+    # 4) RVC 整合包根目录（实时变声依赖）
+    if cfg.RVC_ROOT.exists():
+        looks = (
+            (cfg.RVC_ROOT / "rvc").exists()
+            or (cfg.RVC_ROOT / "infer").exists()
+            or (cfg.RVC_ROOT / "logs").exists()
+            or (cfg.RVC_ROOT / "tools").exists()
+        )
+        items.append({
+            "key": "rvc_root", "ok": True, "label": "RVC 整合包",
+            "detail": str(cfg.RVC_ROOT)
+            + ("" if looks else "（未识别到 rvc/logs 等典型子目录，请确认路径正确）"),
+            "hint": "" if looks else "该目录缺少 RVC 典型结构，实时变声可能无法工作。",
+        })
+    else:
+        items.append({
+            "key": "rvc_root", "ok": False, "label": "RVC 整合包",
+            "detail": f"目录不存在：{cfg.RVC_ROOT}",
+            "hint": "设置环境变量 VM_RVC_ROOT 指向 RVC 整合包根目录（含 rvc/infer/tools 等）。实时变声依赖它。",
+        })
+
+    # 5) 默认音色 RVC 权重（pth + index）
+    weights_dir = _rvc_weights_dir(RVC_DEFAULT_EXP)
+    pth = _find_pth(RVC_DEFAULT_EXP, weights_dir)
+    idx = next(weights_dir.glob("added_*.index"), None) if weights_dir.exists() else None
+    if pth and idx:
+        items.append({
+            "key": "rvc_weights", "ok": True, "label": f"RVC 权重（{RVC_DEFAULT_EXP}）",
+            "detail": str(pth), "hint": "",
+        })
+    else:
+        items.append({
+            "key": "rvc_weights", "ok": False, "label": f"RVC 权重（{RVC_DEFAULT_EXP}）",
+            "detail": f"未找到训练好的 .pth 或 .index（{weights_dir}）",
+            "hint": "该音色还没训练 RVC 模型：先在「音色微调」生成语料并训练，或在 RVC 整合包里完成训练。无权重时实时变声不可用，但 TTS/离线变声仍可用。",
+        })
+
+    # 6) GPU / CUDA（仅告警，不阻断 CPU 推理）
+    cuda = torch.cuda.is_available()
+    if cuda:
+        try:
+            dev = torch.cuda.get_device_name(0)
+        except Exception:
+            dev = "未知 GPU"
+        items.append({"key": "cuda", "ok": True, "label": "GPU / CUDA", "detail": dev, "hint": ""})
+    else:
+        items.append({
+            "key": "cuda", "ok": False, "warn": True, "label": "GPU / CUDA",
+            "detail": "未检测到可用 GPU，将退回 CPU 推理（非常慢）",
+            "hint": "确认已安装对应 CUDA 版本的 PyTorch 且显卡驱动正常；可运行 `nvidia-smi` 验证。",
+        })
+
+    return {"all_ok": all(i["ok"] for i in items), "cuda": cuda, "items": items}
 
 
 # ---------------- 音色库 ----------------
@@ -139,24 +245,58 @@ def _read_meta(meta_path: Path) -> dict:
 
 @app.get(API_PREFIX + "/voices")
 def list_voices():
+    """音色库清单（合并两个来源，与 /rvc/voices 保持一致）：
+
+    1. media/voicebank/<id>/reference.wav —— 音色库档案（有参考音频）；
+    2. <RVC_ROOT>/logs/<exp>/ —— RVC 实验目录（有训练产物或语料的）。
+
+    前端音色页据此展示统一视图；RVC 模型音色额外携带 model_ready / trained_at 等字段。
+    """
     import json
     from pydub import AudioSegment
-    voices = []
+    items: dict[str, dict] = {}
+
+    # 来源 1：音色库档案
     for d in VOICEBANK.iterdir():
         ref = d / "reference.wav"
-        if d.is_dir() and ref.exists():
-            # 显示名优先取 meta.json 的 display_name（如「美团袋鼠」），否则回退 ID
-            display = d.name
-            meta = _read_meta(meta_path) if (meta_path := d / "meta.json").exists() else {}
-            if meta.get("display_name"):
-                display = str(meta["display_name"])
-            voices.append({
+        if not d.is_dir() or not ref.exists():
+            continue
+        display = d.name
+        meta = _read_meta(meta_path) if (meta_path := d / "meta.json").exists() else {}
+        if meta.get("display_name"):
+            display = str(meta["display_name"])
+        items[d.name] = {
+            "id": d.name,
+            "display_name": display,
+            "reference": ref.name,
+            "duration_s": round(len(AudioSegment.from_wav(str(ref))) / 1000, 1),
+            "kind": meta.get("kind") or "clone",
+            "has_reference": True,
+            **_rvc_exp_snapshot(d.name),
+        }
+
+    # 来源 2：RVC 实验目录（有模型/语料但不在音色库里的）
+    rvc_logs = cfg.RVC_ROOT / "logs"
+    if rvc_logs.exists():
+        for d in rvc_logs.iterdir():
+            if not d.is_dir() or d.name in items:
+                continue
+            snap = _rvc_exp_snapshot(d.name)
+            # 无训练产物也无语料的噪音目录不展示
+            if not (snap["pth_exists"] or snap["index_exists"] or snap["dataset_count"]):
+                continue
+            items[d.name] = {
                 "id": d.name,
-                "display_name": display,
-                "reference": ref.name,
-                "duration_s": round(len(AudioSegment.from_wav(str(ref))) / 1000, 1),
-                "kind": meta.get("kind") or "clone",
-            })
+                "display_name": d.name,
+                "reference": "",
+                "duration_s": 0,
+                "kind": "rvc_model",
+                "has_reference": False,
+                **snap,
+            }
+
+    voices = sorted(items.values(),
+                    key=lambda v: (not v.get("model_ready"), not v.get("has_reference", True), v["id"]))
     return {"voices": voices}
 
 
@@ -994,6 +1134,23 @@ RVC_DEFAULT_EXP = cfg.RVC_DEFAULT_EXP
 def _rvc_weights_dir(exp: str | None = None) -> Path:
     """某实验名（音色 ID）的 RVC 权重目录 logs/<exp>/。"""
     return cfg.RVC_ROOT / "logs" / (exp or RVC_DEFAULT_EXP)
+
+
+def _rvc_exp_snapshot(exp: str) -> dict:
+    """某个实验（音色 ID）的训练产物快照：权重/索引/语料/训练时间。"""
+    from datetime import datetime
+    log_dir, dataset_dir = cfg.rvc_exp_dirs(exp)
+    pth = _find_pth(exp, log_dir)
+    idx = next(log_dir.glob("added_*.index"), None) if log_dir.exists() else None
+    mtime = pth.stat().st_mtime if pth is not None and pth.exists() else 0.0
+    return {
+        "pth_exists": pth is not None,
+        "index_exists": idx is not None,
+        "model_ready": pth is not None and idx is not None,
+        "dataset_count": len(list(dataset_dir.glob("*.wav"))) if dataset_dir.exists() else 0,
+        "trained_at": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime else "",
+        "weights_dir": str(log_dir),
+    }
 
 # 训练语料模板：默认从 data/rvc_texts.txt 读取（可经 VM_RVC_TEXTS_FILE 覆盖为任意音色专用语料）；
 # 文件缺失时回退内置 20 句，保证历史行为不变。
