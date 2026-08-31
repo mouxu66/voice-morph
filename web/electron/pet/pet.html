@@ -109,6 +109,14 @@
   }
   #panel .hitem:hover { border-color: #0284c7; color: #0369a1; background: #e0f2fe; }
   #panel .hempty { font-size: 10.5px; color: #94a3b8; }
+  /* 面板状态行：合成/发送结果直接显示在这里，不只看气泡 */
+  #panel #status {
+    margin-top: 5px; font-size: 10.5px; line-height: 1.4;
+    color: #64748b; word-break: break-all; display: none;
+  }
+  #panel #status.show { display: block; }
+  #panel #status.ok  { color: #047857; }
+  #panel #status.err { color: #b91c1c; }
 
   /* ---------------- 角色 ---------------- */
   #pet {
@@ -179,8 +187,10 @@
     <div class="row">
       <select id="voiceSel" title="合成用的音色（默认=主界面当前选中）"></select>
       <button id="send" type="button" title="用选中音色合成，并录成微信语音消息">合成并发送</button>
-      <button id="live" type="button" title="开关 RVC 实时变声（微信把 CABLE Output 当麦克风）">实时变声</button>
+      <button id="preview" type="button" title="只合成并试听，满意再点发送">试听</button>
+      <button id="live" type="button" title="开关 RVC 实时变声（微信把 CABLE Output 当麦克风）">变声</button>
     </div>
+    <div id="status"></div>
     <div id="recent" title="最近发送的语音，点一下重发"></div>
   </div>
   <div id="bubble">
@@ -489,6 +499,8 @@ const sayEl = document.getElementById("say");
 const sendBtn = document.getElementById("send");
 const liveBtn = document.getElementById("live");
 const voiceSel = document.getElementById("voiceSel");
+const previewBtn = document.getElementById("preview");
+const statusEl = document.getElementById("status");
 const recentEl = document.getElementById("recent");
 const VOICE_KEY = "pet_voice_id";
 let panelTimer = null;
@@ -549,20 +561,77 @@ recentEl.addEventListener("click", (e) => {
 
 function refreshPanel() { loadVoices(); loadRecent(); }
 
+// ---------------- 试听 / 发送 / 结果反馈 ----------------
+let lastPreview = null;      // { wav, url, duration_s } 最近一次试听的合成产物
+let previewAudio = null;
+
+function setStatus(text, cls) {
+  statusEl.textContent = text || "";
+  statusEl.className = cls ? ("show " + cls) : "";
+}
+
+function doPreview() {
+  const text = sayEl.value.trim();
+  if (!text || !window.pet || !window.pet.previewText) return;
+  const voiceId = voiceSel.value || "";
+  if (voiceId) localStorage.setItem(VOICE_KEY, voiceId);
+  setStatus("合成中…");
+  previewBtn.disabled = true;
+  setTimeout(() => { previewBtn.disabled = false; }, 60000);
+  window.pet.previewText(text, voiceId);
+}
+
 function doSendText() {
   const text = sayEl.value.trim();
-  if (!text || !window.pet) return;
-  const voiceId = voiceSel.value || "";
-  if (voiceId) localStorage.setItem(VOICE_KEY, voiceId);   // 记住上次选的音色
-  if (window.pet.sendText) { window.pet.sendText(text, voiceId); sayEl.value = ""; }
+  if (!window.pet) return;
+  // 有试听产物就直接发它（试听→发送两步走），否则一步到位「合成并发送」
+  if (lastPreview && window.pet.sendWav) {
+    setStatus(`发送中（${lastPreview.duration_s || "?"}s），别动键鼠…`);
+    window.pet.sendWav(lastPreview.wav);
+    lastPreview = null;
+  } else {
+    if (!text) return;
+    const voiceId = voiceSel.value || "";
+    if (voiceId) localStorage.setItem(VOICE_KEY, voiceId);   // 记住上次选的音色
+    setStatus("合成并发送中，别动键鼠…");
+    if (window.pet.sendText) { window.pet.sendText(text, voiceId); sayEl.value = ""; }
+  }
   sendBtn.disabled = true;
   setTimeout(() => { sendBtn.disabled = false; refreshPanel(); }, 25000);   // TTS+录音发送可能要十几秒
 }
+previewBtn.addEventListener("click", doPreview);
 sendBtn.addEventListener("click", doSendText);
 sayEl.addEventListener("keydown", (e) => { if (e.key === "Enter") doSendText(); });
 liveBtn.addEventListener("click", () => {
   if (window.pet && window.pet.liveToggle) window.pet.liveToggle();
 });
+
+// 主进程回传：合成产物 → 自动播放
+if (window.pet && window.pet.onPreviewResult) {
+  window.pet.onPreviewResult((r) => {
+    if (!r || !r.ok) { setStatus("合成失败：" + ((r && r.error) || "未知错误"), "err"); return; }
+    lastPreview = { wav: r.wav, url: r.url, duration_s: r.duration_s };
+    setStatus(`已合成 ${r.duration_s || "?"}s，试听中…满意就点「发送」`, "ok");
+    try {
+      if (previewAudio) previewAudio.pause();
+      previewAudio = new Audio(r.url);
+      previewAudio.onended = () => setStatus(lastPreview ? `试听完毕，点「发送」发出去` : "", "ok");
+      void previewAudio.play();
+    } catch {
+      setStatus(`合成完成（${r.duration_s || "?"}s），但播放失败`, "err");
+    }
+  });
+}
+
+// 主进程回传：发送结果 → 面板状态行直接给结论
+if (window.pet && window.pet.onSendResult) {
+  window.pet.onSendResult((r) => {
+    if (!r) return;
+    if (r.ok) setStatus(`已发到微信 ✓（${r.duration_s || "?"}s）`, "ok");
+    else setStatus("发送失败：" + (r.error || "未知错误"), "err");
+    refreshPanel();
+  });
+}
 
 function overInteractive(e) {
   const el = document.elementFromPoint(e.clientX, e.clientY);

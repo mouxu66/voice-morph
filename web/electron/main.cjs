@@ -499,10 +499,44 @@ function petGuideSent(data) {
 /**
  * 发送微信语音消息的公共尾部：调 /api/wechat/send_voice（切麦克风→CABLE Output、
  * 模拟微信官方语音输入、播放、Enter 发送、还原声卡）。执行期间用户别动键鼠/微信。
+ * 结果同时推给桌宠面板（pet:send-result），面板底部直接显示 ✓/✗，不只看气泡。
  */
 function sendWechatWav(wavName) {
   backendPost("/api/wechat/send_voice", { wav: wavName }, (data, code) => {
-    if (data.ok) { petGuideSent(data); } else { petGuideFail(data.error || `HTTP ${code}`); }
+    const err = data.error || data.detail || `HTTP ${code}`;
+    if (data.ok) { petGuideSent(data); } else { petGuideFail(err); }
+    if (petWin) {
+      petWin.webContents.send("pet:send-result",
+        data.ok ? { ok: true, duration_s: data.duration_s } : { ok: false, error: String(err) });
+    }
+  });
+}
+
+/** 桌宠快捷面板「试听」：只合成不发送，产物信息回传面板供播放。 */
+function previewWechatTextFromPet(text, voiceId) {
+  if (!petWin || !text) return;
+  showPetGuide({
+    title: "试听",
+    lines: ["先合一段给你听听～"],
+    action: "think", motion: "work", duration: 6000,
+  });
+  backendPost("/api/tts", { text, text_language: "zh", voice_id: voiceId || "" }, (data, code) => {
+    if (!data.ok || !data.url) {
+      const err = (data.detail && String(data.detail)) || `HTTP ${code}`;
+      petGuideFail(err);
+      petWin.webContents.send("pet:preview-result", { ok: false, error: String(err) });
+      return;
+    }
+    const wav = String(data.url).split("/").pop();
+    petWin.webContents.send("pet:preview-result", {
+      ok: true, wav, duration_s: data.duration_s,
+      url: `http://127.0.0.1:${BACKEND_PORT}${data.url}`,
+    });
+    showPetGuide({
+      title: "试听",
+      lines: [`好了（${data.duration_s || "?"}秒），听听看`, "满意就点「发送」"],
+      action: "play", motion: "nod", duration: 8000,
+    });
   });
 }
 
@@ -697,6 +731,7 @@ function createPetWindow() {
   ipcMain.on("pet:send-last", () => sendWechatVoiceFromPet());
   ipcMain.on("pet:send-text", (_e, text, voiceId) => sendWechatTextFromPet(String(text || "").trim(), String(voiceId || "")));
   ipcMain.on("pet:send-wav", (_e, wav) => sendWechatWav(String(wav || "")));   // 历史记录重发
+  ipcMain.on("pet:preview", (_e, text, voiceId) => previewWechatTextFromPet(String(text || "").trim(), String(voiceId || "")));
   ipcMain.on("pet:live-toggle", () => toggleLiveFromPet());
 
   // 右键菜单：显隐策略 + 页面导览 + 隐藏
