@@ -11,55 +11,83 @@
   }
   #root {
     width: 100vw; height: 100vh;
+    box-sizing: border-box;
     display: flex; flex-direction: column;
     align-items: center; justify-content: flex-end;
+    padding: 8px 8px 10px;              /* 窗口内留边，让角色不至于贴边/顶到屏幕角 */
   }
 
   /* ---------------- 气泡 ---------------- */
   #bubble {
     max-width: 204px;
-    margin-bottom: 4px;
-    padding: 7px 10px 8px;
-    border-radius: 12px;
-    border: 1px solid rgba(148, 163, 184, 0.35);
-    background: rgba(255, 255, 255, 0.82);
-    backdrop-filter: blur(8px);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    margin-bottom: 6px;
+    padding: 9px 12px 10px;
+    border-radius: 16px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    background: linear-gradient(160deg, rgba(255,255,255,0.92), rgba(248,250,252,0.88));
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    box-shadow:
+      0 8px 24px rgba(15, 23, 42, 0.14),
+      0 2px 6px rgba(15, 23, 42, 0.06),
+      inset 0 1px 0 rgba(255,255,255,0.85);
     font: 12px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
-    color: #1e293b;
+    color: #0f172a;
     word-break: break-all;
     display: none;
   }
+  /* 气泡底部小三角（引导感） */
+  #bubble::after {
+    content: "";
+    position: absolute;
+    left: 26px; bottom: -7px;
+    width: 14px; height: 14px;
+    transform: rotate(45deg);
+    background: inherit;
+    border-right: 1px solid rgba(148, 163, 184, 0.28);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+    box-shadow: 3px 3px 6px rgba(15, 23, 42, 0.05);
+    border-bottom-right-radius: 3px;
+  }
+  #bubble { position: relative; }
   /* 注意：类名是 s-error（与 BUBBLE.error.cls 对齐），早期写成 .error 导致红底从未生效 */
-  #bubble.s-error { border-color: rgba(239, 68, 68, 0.55); background: rgba(254, 226, 226, 0.9); color: #b91c1c; }
+  #bubble.s-error {
+    border-color: rgba(239, 68, 68, 0.45);
+    background: linear-gradient(160deg, rgba(254,226,226,0.95), rgba(254,202,202,0.9));
+    color: #b91c1c;
+  }
   /* 导览气泡：头部标题 + 正文逐字打字 + 底部句子进度 */
   #bubble.guide {
-    border-color: rgba(56, 189, 248, 0.55);
-    background: rgba(240, 249, 255, 0.9);
+    border-color: rgba(56, 189, 248, 0.5);
+    background: linear-gradient(160deg, rgba(240,249,255,0.95), rgba(224,242,254,0.9));
+    box-shadow:
+      0 8px 24px rgba(14, 116, 144, 0.16),
+      inset 0 1px 0 rgba(255,255,255,0.9);
     cursor: pointer;
   }
-  #head { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; }
+  #head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
   #title { font-weight: 600; font-size: 12px; letter-spacing: .3px; }
   #bubble .dot {
-    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
     flex: 0 0 auto; background: #94a3b8;
+    box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.16);
   }
-  #bubble.s-listen  .dot { background: #38bdf8; animation: pulse 1.1s infinite; }
-  #bubble.s-think   .dot { background: #f59e0b; animation: pulse 0.9s infinite; }
-  #bubble.s-play    .dot { background: #10b981; }
-  #bubble.s-build   .dot { background: #a78bfa; animation: pulse 1.3s infinite; }
-  #bubble.s-error   .dot { background: #ef4444; }
-  #bubble.guide     .dot { background: #0ea5e9; }
+  #bubble.s-listen  .dot { background: #38bdf8; box-shadow: 0 0 0 3px rgba(56,189,248,0.18); animation: pulse 1.1s infinite; }
+  #bubble.s-think   .dot { background: #f59e0b; box-shadow: 0 0 0 3px rgba(245,158,11,0.18); animation: pulse 0.9s infinite; }
+  #bubble.s-play    .dot { background: #10b981; box-shadow: 0 0 0 3px rgba(16,185,129,0.18); }
+  #bubble.s-build   .dot { background: #a78bfa; box-shadow: 0 0 0 3px rgba(167,139,250,0.18); animation: pulse 1.3s infinite; }
+  #bubble.s-error   .dot { background: #ef4444; box-shadow: 0 0 0 3px rgba(239,68,68,0.18); }
+  #bubble.guide     .dot { background: #0ea5e9; box-shadow: 0 0 0 3px rgba(14,165,233,0.18); }
   @keyframes pulse { 50% { opacity: 0.35; } }
 
   #text { min-height: 18px; }
 
-  #foot { display: none; margin-top: 5px; align-items: center; gap: 4px; }
+  #foot { display: none; margin-top: 6px; align-items: center; gap: 5px; }
   #bubble.guide #foot { display: flex; }
-  #steps { display: flex; gap: 3px; margin-right: auto; }
+  #steps { display: flex; gap: 4px; margin-right: auto; }
   #steps i {
-    width: 5px; height: 5px; border-radius: 50%;
-    background: rgba(14, 116, 144, 0.25); transition: background .2s;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: rgba(14, 116, 144, 0.22); transition: background .2s;
   }
   #steps i.on { background: #0284c7; }
   #hint { font-size: 10px; color: #64748b; }
@@ -68,51 +96,69 @@
   #panel {
     display: none;
     width: 204px;
-    margin-bottom: 4px;
-    padding: 8px;
-    border-radius: 12px;
-    border: 1px solid rgba(148, 163, 184, 0.35);
-    background: rgba(255, 255, 255, 0.88);
-    backdrop-filter: blur(8px);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    margin-bottom: 6px;
+    padding: 10px;
+    border-radius: 16px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    background: linear-gradient(165deg, rgba(255,255,255,0.94), rgba(241,245,249,0.9));
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    box-shadow:
+      0 10px 28px rgba(15, 23, 42, 0.16),
+      0 2px 8px rgba(15, 23, 42, 0.07),
+      inset 0 1px 0 rgba(255,255,255,0.9);
     font: 12px/1.4 "Segoe UI", "Microsoft YaHei", sans-serif;
-    color: #1e293b;
+    color: #0f172a;
   }
   #panel input {
     width: 100%; box-sizing: border-box;
-    padding: 5px 8px; border-radius: 8px;
-    border: 1px solid rgba(148, 163, 184, 0.5); outline: none;
-    font: inherit; background: #fff; color: inherit;
+    padding: 7px 10px; border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.4); outline: none;
+    font: inherit; background: rgba(255,255,255,0.85); color: inherit;
+    transition: border-color .15s, box-shadow .15s;
   }
-  #panel input:focus { border-color: #0ea5e9; }
-  #panel .row { display: flex; gap: 6px; margin-top: 6px; }
+  #panel input::placeholder { color: #94a3b8; }
+  #panel input:focus { border-color: #38bdf8; box-shadow: 0 0 0 3px rgba(56,189,248,0.16); }
+  #panel .row { display: flex; gap: 6px; margin-top: 8px; }
   #panel button {
-    flex: 1; padding: 5px 0; border-radius: 8px;
-    border: 1px solid rgba(14, 165, 233, 0.45);
-    background: rgba(14, 165, 233, 0.12); color: #0369a1;
-    font: inherit; cursor: pointer; white-space: nowrap;
+    flex: 1; padding: 6px 0; border-radius: 10px;
+    border: 1px solid rgba(14, 165, 233, 0.4);
+    background: linear-gradient(160deg, rgba(14,165,233,0.14), rgba(56,189,248,0.1));
+    color: #0369a1;
+    font: inherit; font-weight: 500; cursor: pointer; white-space: nowrap;
+    transition: transform .08s, background .15s, box-shadow .15s;
   }
-  #panel button:hover { background: rgba(14, 165, 233, 0.22); }
-  #panel button:disabled { opacity: 0.5; cursor: default; }
-  #panel button.live-on { border-color: rgba(16, 185, 129, 0.55); background: rgba(16, 185, 129, 0.14); color: #047857; }
+  #panel button:hover {
+    background: linear-gradient(160deg, rgba(14,165,233,0.24), rgba(56,189,248,0.16));
+    box-shadow: 0 2px 8px rgba(14,165,233,0.2);
+  }
+  #panel button:active { transform: translateY(1px); }
+  #panel button:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+  #panel button.live-on {
+    border-color: rgba(16, 185, 129, 0.5);
+    background: linear-gradient(160deg, rgba(16,185,129,0.18), rgba(16,185,129,0.1));
+    color: #047857;
+  }
   #panel select {
-    flex: 1; min-width: 0; padding: 5px 6px; border-radius: 8px;
-    border: 1px solid rgba(148, 163, 184, 0.5); outline: none;
-    font: inherit; font-size: 11px; background: #fff; color: inherit;
+    flex: 1; min-width: 0; padding: 6px 7px; border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.4); outline: none;
+    font: inherit; font-size: 11px; background: rgba(255,255,255,0.85); color: inherit;
   }
-  #panel select:focus { border-color: #0ea5e9; }
-  #panel #recent { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+  #panel select:focus { border-color: #38bdf8; box-shadow: 0 0 0 3px rgba(56,189,248,0.16); }
+  #panel #recent { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
   #panel .hitem {
-    padding: 2px 8px; border-radius: 999px;
-    border: 1px solid rgba(148, 163, 184, 0.4); background: #f1f5f9;
+    padding: 3px 9px; border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.35); background: rgba(241,245,249,0.8);
     font-size: 10.5px; color: #475569; cursor: pointer; white-space: nowrap;
+    transition: border-color .15s, background .15s, color .15s;
   }
   #panel .hitem:hover { border-color: #0284c7; color: #0369a1; background: #e0f2fe; }
   #panel .hempty { font-size: 10.5px; color: #94a3b8; }
   /* 面板状态行：合成/发送结果直接显示在这里，不只看气泡 */
   #panel #status {
-    margin-top: 5px; font-size: 10.5px; line-height: 1.4;
+    margin-top: 7px; font-size: 10.5px; line-height: 1.45;
     color: #64748b; word-break: break-all; display: none;
+    border-top: 1px solid rgba(148,163,184,0.18); padding-top: 6px;
   }
   #panel #status.show { display: block; }
   #panel #status.ok  { color: #047857; }
@@ -120,11 +166,42 @@
 
   /* ---------------- 角色 ---------------- */
   #pet {
+    position: relative;
     width: 150px; height: 150px;
     cursor: grab;                  /* 拖拽由 JS+IPC 手动实现（app-region 在透明穿透窗上不可靠） */
     display: flex; align-items: flex-end; justify-content: center;
     transform-origin: 50% 85%;
+    /* 角色脚下的椭圆投影，给「落地感」 */
+    filter: drop-shadow(0 6px 10px rgba(15, 23, 42, 0.18));
   }
+  /* 背景装饰光晕：径向渐变 + 细腻边框，让透明窗里角色不「飘」在裸桌面上 */
+  #pet::before {
+    content: "";
+    position: absolute;
+    inset: 4px;
+    border-radius: 50%;
+    background:
+      radial-gradient(50% 50% at 50% 78%, rgba(56,189,248,0.10), transparent 70%),
+      radial-gradient(38% 32% at 50% 92%, rgba(15,23,42,0.10), transparent 80%);
+    box-shadow:
+      inset 0 0 0 1px rgba(148,163,184,0.18),
+      inset 0 -6px 16px rgba(56,189,248,0.05);
+    pointer-events: none;
+    z-index: 0;
+  }
+  /* 光晕里的一点柔和高光（左上），增强立体感 */
+  #pet::after {
+    content: "";
+    position: absolute;
+    inset: 18px auto auto 22px;
+    width: 26px; height: 16px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 40% 40%, rgba(255,255,255,0.55), transparent 70%);
+    filter: blur(2px);
+    pointer-events: none;
+    z-index: 0;
+  }
+  #pet #sprite { position: relative; z-index: 1; }
   /* 精灵图动画：<div> + WebP 背景 + steps() 关键帧（替代原 SVG 内 SMIL）。
      帧横向拼接，每帧 150px；--n 帧数由 JS 按状态注入。 */
   #pet #sprite {
@@ -182,6 +259,11 @@
 </head>
 <body>
 <div id="root">
+  <div id="bubble">
+    <div id="head"><span class="dot"></span><span id="title"></span></div>
+    <div id="text"></div>
+    <div id="foot"><span id="steps"></span><span id="hint">点我跳过</span></div>
+  </div>
   <div id="panel">
     <input id="say" placeholder="输入文字，回车发微信语音" maxlength="200" />
     <div class="row">
@@ -192,11 +274,6 @@
     </div>
     <div id="status"></div>
     <div id="recent" title="最近发送的语音，点一下重发"></div>
-  </div>
-  <div id="bubble">
-    <div id="head"><span class="dot"></span><span id="title"></span></div>
-    <div id="text"></div>
-    <div id="foot"><span id="steps"></span><span id="hint">点我跳过</span></div>
   </div>
   <div id="pet"><div id="sprite"></div></div>
 </div>
@@ -265,6 +342,8 @@ let statusBusy = false;   // 级联/实时变声是否在运行（运行中不�
 let guide = null;         // 导览播放中的状态
 let guideTimers = [];
 let typingTimer = null;
+let backendOffline = false;   // 后端是否失联（两个状态接口都拉不到）
+let offlineHintedAt = 0;      // 上次离线提示的时刻，避免每 1s 反复弹气泡刷屏
 
 // 预加载所有 sprite，避免首次切换时白屏等待（WebP，单个最大 ~0.5MB）
 for (const p of Object.values(SPRITES)) { new Image().src = p; }
@@ -361,9 +440,12 @@ if (window.pet && window.pet.onGuide) {
     playGuide(g);
   });
 }
-// 点气泡跳过导览
+// 点气泡：导览中=跳过；后端离线=打开后端日志；否则无操作
 bubble.addEventListener("click", () => {
-  if (guide) endGuide();
+  if (guide) { endGuide(); return; }
+  if (backendOffline && window.pet && window.pet.showBackendLog) {
+    window.pet.showBackendLog();
+  }
 });
 
 // ---------------- 状态轮询 ----------------
@@ -450,14 +532,39 @@ async function tick() {
   if (MOCK) return;
   if (guide) return;              // 导览期间不打断
   let cascadeData = null, live = null;
+  let anyOk = false;
   try {
     const r = await fetch(API, { cache: "no-store" });
-    if (r.ok) cascadeData = await r.json();
+    if (r.ok) { cascadeData = await r.json(); anyOk = true; }
   } catch {}
   try {
     const r = await fetch(LIVE_API, { cache: "no-store" });
-    if (r.ok) live = await r.json();
+    if (r.ok) { live = await r.json(); anyOk = true; }
   } catch {}
+  // —— 后端健康：两个状态接口全挂 = 后端失联。离线时切 error 精灵 + 气泡提示
+  // （不刷屏：离线只提示一次，恢复在线时再提示一次「回来啦」）——
+  const wasOffline = backendOffline;
+  backendOffline = !anyOk;
+  if (backendOffline && !wasOffline) {
+    offlineHintedAt = Date.now();
+    lastKey = null;                 // 强制重画气泡，让「离线」立刻上屏
+    setSprite("error", "shake");
+    bubble.className = "s-error";
+    bubble.style.display = "block";
+    titleEl.textContent = "后端离线";
+    textEl.textContent = "后端没起来，先开主程序（点此看日志）";
+    return;                         // 直接跳过状态机，避免用空数据渲染「待机」
+  }
+  if (wasOffline && !backendOffline) {
+    // 后端恢复：给一句「回来啦」反馈，10s 后自然回到状态机
+    offlineHintedAt = Date.now();
+    setState("idle");
+    bubble.className = "s-play";
+    bubble.style.display = "block";
+    titleEl.textContent = "后端在线";
+    textEl.textContent = "回来啦，随时可以用～";
+    setTimeout(() => { if (!backendOffline && !guide) { lastKey = null; void tick(); } }, 3000);
+  }
   statusBusy = Boolean((cascadeData && cascadeData.running) || (live && live.live_running));
   // 空闲计时：任何变声在跑就归零，否则记连续空闲起点（供「打盹」演出用）
   idleSince = statusBusy ? 0 : (idleSince || Date.now());
@@ -586,14 +693,14 @@ function doSendText() {
   if (!window.pet) return;
   // 有试听产物就直接发它（试听→发送两步走），否则一步到位「合成并发送」
   if (lastPreview && window.pet.sendWav) {
-    setStatus(`发送中（${lastPreview.duration_s || "?"}s），别动键鼠…`);
+    setStatus(`发送中… 屏幕顶部会弹出提示，按提示按住 Alt`, "ok");
     window.pet.sendWav(lastPreview.wav);
     lastPreview = null;
   } else {
     if (!text) return;
     const voiceId = voiceSel.value || "";
     if (voiceId) localStorage.setItem(VOICE_KEY, voiceId);   // 记住上次选的音色
-    setStatus("合成并发送中，别动键鼠…");
+    setStatus("合成中… 完成后屏幕顶部会提示你按 Alt", "ok");
     if (window.pet.sendText) { window.pet.sendText(text, voiceId); sayEl.value = ""; }
   }
   sendBtn.disabled = true;
@@ -691,7 +798,7 @@ let idleSince = 0;                     // 连续空闲起点（ms），非 idle 
 let lastEarTwitch = 0;                 // 上次耳朵抖动时间（倾听时的小细节）
 let earTwitching = false;
 setInterval(() => {
-  if (guide || statusBusy || lastKey !== "idle") return;
+  if (guide || statusBusy || lastKey !== "idle" || backendOffline) return;   // 后端离线时不待机表演
   const now = Date.now();
   if (now < nextSkitAt) return;
   const dozy = idleSince && now - idleSince > 150000 && Math.random() < 0.5;   // 闲久了的打盹

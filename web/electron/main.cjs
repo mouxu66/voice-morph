@@ -454,6 +454,109 @@ function petGuideActive() {
   return Date.now() < petGuideUntil;
 }
 
+// ---------------- 置顶提示横幅（发微信语音时的分阶段引导） ----------------
+// 桌宠气泡太小，用户切到微信窗口后看不见、也不知道什么时候该按 Alt。
+// 这里用独立的置顶透明窗口，横跨屏幕顶部居中显示大号引导 + 倒计时 + 进度条，
+// 全程浮在微信之上、鼠标点击穿透，不挡任何操作。
+let altHintWin = null;
+let altHintReady = false;
+let altHintTimer = null;
+let altHintPending = null;   // 窗口未加载完时缓存最后一条，did-finish-load 后补发
+
+function ensureAltHintWindow() {
+  if (altHintWin && !altHintWin.isDestroyed()) return;
+  const { workArea } = screen.getPrimaryDisplay();
+  const width = 560, height = 190;
+  const x = workArea.x + Math.round((workArea.width - width) / 2);
+  const y = workArea.y + Math.round(workArea.height * 0.04);
+  altHintWin = new BrowserWindow({
+    width, height, x, y,
+    transparent: true, frame: false, resizable: false,
+    alwaysOnTop: true, skipTaskbar: true, hasShadow: false,
+    focusable: false, show: false, // 不抢焦点，用 showInactive 静默展示
+    webPreferences: {
+      preload: path.join(PET_DIR, "alt-hint-preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  altHintWin.setAlwaysOnTop(true, "screen-saver");
+  altHintWin.setIgnoreMouseEvents(true);   // 鼠标点击穿透：提示只是"看"的，不挡操作
+  altHintWin.loadFile(path.join(PET_DIR, "alt-hint.html"));
+  altHintWin.webContents.once("did-finish-load", () => {
+    altHintReady = true;
+    if (altHintPending) { altHintWin.webContents.send("alt-hint:update", altHintPending); altHintPending = null; }
+  });
+  altHintWin.on("closed", () => { altHintWin = null; altHintReady = false; altHintPending = null; });
+}
+
+function altHintSend(payload) {
+  if (!altHintWin || altHintWin.isDestroyed()) return;
+  if (!altHintReady) { altHintPending = payload; return; }
+  altHintWin.webContents.send("alt-hint:update", payload);
+}
+
+/**
+ * 显示/更新置顶提示横幅。
+ * payload: { stage: "prep"|"press"|"release"|"done", sub, remainS, progress }
+ *  - prep:    准备播放（提醒先切到微信）
+ *  - press:   按住 Alt 说话（红点脉冲 + 大号 Alt）
+ *  - release: 松开 Alt 已发送
+ *  - done:    收尾
+ */
+function showAltHint(payload) {
+  ensureAltHintWindow();
+  if (altHintWin && !altHintWin.isVisible()) altHintWin.showInactive();
+  altHintSend(payload);
+}
+
+function hideAltHint() {
+  if (altHintTimer) { clearInterval(altHintTimer); altHintTimer = null; }
+  if (altHintWin && !altHintWin.isDestroyed()) altHintWin.hide();
+}
+
+/**
+ * 启动「按住 Alt → 松开」倒计时引导。knownDurationS 未知时先转圈等待，响应返回后收尾。
+ * @param {number|null} knownDurationS 本次播放的音频时长（已知则做精确倒计时）
+ * @param {number} leadS              静音头秒数（后端实际值，默认 2.0）
+ * @param {Function} onFinish         播放结束回调（收到响应时调用，先于 release 展示）
+ */
+function runAltHintCountdown(knownDurationS, leadS, onFinish) {
+  if (altHintTimer) { clearInterval(altHintTimer); altHintTimer = null; }
+  const APPLY_EST_S = 1.2;            // 后端切声卡估算耗时
+  const prepMs = Math.max(600, APPLY_EST_S * 1000);
+  const durationS = Number(knownDurationS) || 0;
+  const pressTotalS = leadS + durationS;
+  // 阶段1：准备（先给 1.2s，让用户意识到"要开始录了"）
+  showAltHint({ stage: "prep", sub: "音频马上开始，请先切到微信聊天窗口", remainS: Math.ceil(prepMs / 1000) });
+  const prepTimer = setTimeout(() => {
+    if (!knownDurationS) {
+      // 不知道时长：无精确倒计时，进入"按住 Alt"，进度条转圈（-1 表示不确定）
+      showAltHint({ stage: "press", sub: "听到声音就说明在录了，说完松开 <b>Alt</b>", remainS: null, progress: -1 });
+      return;
+    }
+    // 阶段2：按住 Alt（精确倒计时 = 静音头 + 音频时长）
+    const pressStart = Date.now();
+    altHintTimer = setInterval(() => {
+      const el = (Date.now() - pressStart) / 1000;
+      const remain = Math.max(0, Math.ceil(pressTotalS - el));
+      const progress = Math.min(1, el / pressTotalS);
+      showAltHint({ stage: "press", sub: "录音中… 说完松开 <b>Alt</b> 即发送", remainS: remain, progress });
+      if (el >= pressTotalS) { clearInterval(altHintTimer); altHintTimer = null; }
+    }, 100);
+    showAltHint({ stage: "press", sub: "录音中… 说完松开 <b>Alt</b> 即发送", remainS: Math.ceil(pressTotalS), progress: 0 });
+  }, prepMs);
+  // 播放结束（响应返回）：无论倒计时走到哪，直接收尾"松开 Alt"
+  const finish = () => {
+    clearTimeout(prepTimer);
+    if (altHintTimer) { clearInterval(altHintTimer); altHintTimer = null; }
+    showAltHint({ stage: "release", sub: "语音已发送到微信，去确认一下吧", progress: 1 });
+    setTimeout(() => hideAltHint(), 4000);
+    if (onFinish) onFinish();
+  };
+  return finish;
+}
+
 /** 后端 POST 通用封装：拿到解析后的 JSON（解析失败给空对象）+ 状态码 + 原文。 */
 function backendPost(pathname, payload, cb, timeoutMs = 120000) {
   const body = JSON.stringify(payload || {});
@@ -491,25 +594,51 @@ function petGuideSent(data) {
   const moves = ["dance", "flip", "bounce", "jump", "twirl", "pop"];
   showPetGuide({
     title: "微信语音",
-    lines: [`发出去了！（${data.duration_s || "?"}秒语音）`, "去微信看看吧"],
+    lines: [`已松开 Alt，语音应已发出（${data.duration_s || "?"}秒）`, "去微信确认一下"],
     action: "play", motion: moves[Math.floor(Math.random() * moves.length)], duration: 9000,
   });
 }
 
 /**
- * 发送微信语音消息的公共尾部：调 /api/wechat/send_voice（切麦克风→CABLE Output、
- * 模拟微信官方语音输入、播放、Enter 发送、还原声卡）。执行期间用户别动键鼠/微信。
- * 结果同时推给桌宠面板（pet:send-result），面板底部直接显示 ✓/✗，不只看气泡。
+ * 发送微信语音消息的公共尾部：调 /api/wechat/play_to_cable（切麦克风→CABLE Output、
+ * 播放 wav 到 CABLE Input、还原声卡）。不模拟 Alt 键 —— 由用户自己在微信里按 Alt 录。
+ * 旧 send_voice 会自动模拟 Alt，但软件模拟的 Alt 在很多微信版本/环境下不触发录音，
+ * 导致静默"成功"而微信什么也没收到。现在老老实实告诉用户"音频已放到 CABLE，请自己按 Alt"。
+ * @param {string|null} wavName       要播放的 wav 文件名（null=最近合成）
+ * @param {number|null} knownDurationS 已知音频时长（发送前已合成则传，精确倒计时）
  */
-function sendWechatWav(wavName) {
-  backendPost("/api/wechat/send_voice", { wav: wavName }, (data, code) => {
+function sendWechatWav(wavName, knownDurationS) {
+  const LEAD_S = 1.5;   // 静音头：给用户足够时间切到微信并按住 Alt（太长会录进大段空白）
+  // 立即启动置顶提示横幅（准备→按住 Alt→松开），无需等后端响应
+  const finishAltHint = runAltHintCountdown(
+    Number.isFinite(knownDurationS) ? knownDurationS : null,
+    LEAD_S,
+    null,
+  );
+  backendPost("/api/wechat/play_to_cable", { wav: wavName, lead_s: LEAD_S }, (data, code) => {
     const err = data.error || data.detail || `HTTP ${code}`;
-    if (data.ok) { petGuideSent(data); } else { petGuideFail(err); }
+    if (data.ok) {
+      // 播放已完成 → 立即收尾提示「松开 Alt，已发送」
+      if (finishAltHint) finishAltHint();
+      showPetGuide({
+        title: "已发送",
+        lines: [
+          `音频已播放到 CABLE（${data.duration_s || "?"}s，含 ${data.lead_s || LEAD_S}s 静音头）`,
+          "如果微信没收到，请确认按住 Alt 录音时微信是前台",
+        ],
+        action: "play", motion: "work", duration: 9000,
+      });
+    } else {
+      hideAltHint();
+      petGuideFail(err);
+    }
     if (petWin) {
       petWin.webContents.send("pet:send-result",
-        data.ok ? { ok: true, duration_s: data.duration_s } : { ok: false, error: String(err) });
+        data.ok
+          ? { ok: true, duration_s: data.duration_s, hint: data.hint }
+          : { ok: false, error: String(err) });
     }
-  });
+  }, 180000);
 }
 
 /** 桌宠快捷面板「试听」：只合成不发送，产物信息回传面板供播放。 */
@@ -545,10 +674,122 @@ function sendWechatVoiceFromPet() {
   if (!petWin) return;
   showPetGuide({
     title: "微信语音",
-    lines: ["我把最近的合成语音录进微信～", "这几秒别动鼠标和微信窗口"],
+    lines: ["我把最近的合成语音录进微信～", "会按住 Alt 录、松开就发，这几秒别动键鼠"],
     action: "think", motion: "work", duration: 8000,
   });
   sendWechatWav(null);
+}
+
+/** 桌宠「录当前声音→挖掘音色」：loopback 内录系统播出声（抖音/视频），自动解析+挖掘。 */
+const CAPTURE_SECONDS = 15;
+function captureMineFromPet() {
+  showPetGuide({
+    title: "音色挖掘",
+    lines: [`接下来 ${CAPTURE_SECONDS} 秒，把想抓的声音播出来`, "直接抓系统声音，不用麦克风"],
+    action: "listen", motion: "float", duration: CAPTURE_SECONDS * 1000,
+  });
+  backendPost("/api/capture/loopback", { seconds: CAPTURE_SECONDS, auto: true }, (data, code) => {
+    if (code !== 200 || !data.ok) {
+      showPetGuide({
+        title: "音色挖掘",
+        lines: [String(data.detail || "录制失败，看看后端起没起").slice(0, 60)],
+        action: "error", motion: "shake", duration: 8000,
+      });
+      return;
+    }
+    if (data.auto === false) {
+      showPetGuide({
+        title: "已保存素材",
+        lines: [String(data.note || "素材已存，去音色库手动挖掘"), ""],
+        action: "think", motion: "work", duration: 8000,
+      });
+      return;
+    }
+    showPetGuide({
+      title: "音色挖掘",
+      lines: ["录好了！正在去人声、切片、挖掘候选", "完成后我叫你，稍等～"],
+      action: "think", motion: "work", duration: 8000,
+    });
+    pollMineResult();
+  }, CAPTURE_SECONDS * 1000 + 45000);
+}
+
+/** 轮询挖掘状态直到结束（或超时），结果用桌宠气泡播报。 */
+function pollMineResult() {
+  let done = false;
+  const timer = setInterval(async () => {
+    if (done) return;
+    const st = await _httpJson("GET", "/api/mine/state");
+    if (!st || !st.json || st.json.running) return;
+    done = true;
+    clearInterval(timer);
+    if (st.json.stage === "done") {
+      const n = (st.json.clusters || []).length;
+      showPetGuide({
+        title: "挖掘完成",
+        lines: n
+          ? [`挖出 ${n} 个候选音色`, "去「音色库」页试听，满意就保存"]
+          : ["没挖出候选：素材里可能没人声或太杂", "换段内容再试一次"],
+        action: n ? "play" : "error", motion: n ? "nod" : "shake", duration: 10000,
+      });
+    } else if (st.json.stage === "error") {
+      showPetGuide({
+        title: "挖掘失败",
+        lines: [String(st.json.message || "未知错误").slice(0, 60)],
+        action: "error", motion: "shake", duration: 8000,
+      });
+    }
+  }, 3000);
+  setTimeout(() => { done = true; clearInterval(timer); }, 10 * 60 * 1000);
+}
+
+/**
+ * 桌宠「手动发变声语音」：切微信录音到 CABLE + 确保实时变声运行，
+ * 然后用户自己在微信里按住 Alt 说话、松开发送。全程不自动按键。
+ */
+function manualWechatFromPet() {
+  if (!petWin) return;
+  showPetGuide({
+    title: "变声发语音",
+    lines: ["准备中：切微信录音 + 开实时变声…"],
+    action: "build", motion: "work", duration: 8000,
+  });
+  showAltHint({
+    stage: "prep",
+    sub: "正在准备变声，马上就好，请先切到微信聊天窗口",
+    remainS: 3,
+  });
+  backendPost("/api/wechat/manual_send", {}, (data, code) => {
+    if (!data.ok) {
+      hideAltHint();
+      petGuideFail((data.error || data.detail) || `HTTP ${code}`);
+      return;
+    }
+    showPetGuide({
+      title: "变声发语音",
+      lines: [String(data.hint || "微信录音已切好，变声运行中"),
+              String(data.hint2 || "去微信按住 Alt 说话，说完松开就发出")],
+      action: "listen", motion: "work", duration: 15000,
+    });
+    // 手动变声：按住 Alt 说话、说完松开发送，横幅给出持续倒计时引导
+    showAltHint({
+      stage: "press",
+      sub: "现在按住 <b>Alt</b>，对着麦克风说话，说完松开即发送",
+      remainS: 15, progress: 0,
+    });
+    let t = 15;
+    if (altHintTimer) { clearInterval(altHintTimer); altHintTimer = null; }
+    altHintTimer = setInterval(() => {
+      t -= 1;
+      if (t <= 0) {
+        if (altHintTimer) { clearInterval(altHintTimer); altHintTimer = null; }
+        showAltHint({ stage: "done", sub: "引导结束，可再按需重发", progress: 1 });
+        setTimeout(() => hideAltHint(), 2500);
+        return;
+      }
+      showAltHint({ stage: "press", sub: "按住 <b>Alt</b> 说话，说完松开即发送", remainS: t, progress: 1 - t / 15 });
+    }, 1000);
+  }, 90000);
 }
 
 /** 桌宠快捷面板：输入文字 → 先 TTS 合成（指定音色，空则用当前选中）→ 再录进微信。 */
@@ -559,18 +800,25 @@ function sendWechatTextFromPet(text, voiceId) {
     lines: [`合成中：「${text.slice(0, 12)}${text.length > 12 ? "…" : ""}」`],
     action: "think", motion: "work", duration: 6000,
   });
+  // 合成也要一两秒~几十秒，先亮横幅告知流程，避免用户干等
+  showAltHint({
+    stage: "prep",
+    sub: "正在合成语音，请稍候… 完成后屏幕顶部会引导你按 <b>Alt</b>",
+    remainS: null, progress: -1,
+  });
   backendPost("/api/tts", { text, text_language: "zh", voice_id: voiceId || "" }, (data, code) => {
     if (!data.ok || !data.url) {
+      hideAltHint();
       petGuideFail((data.detail && String(data.detail).replace(/^.*detail="?/i, "")) || `TTS HTTP ${code}`);
       return;
     }
     const wav = String(data.url).split("/").pop();
     showPetGuide({
       title: "微信语音",
-      lines: [`合成好了（${data.duration_s || "?"}秒），录进微信…`, "别动鼠标和微信窗口"],
+      lines: [`合成好了（${data.duration_s || "?"}秒），录进微信…`, "马上切到微信，听提示按 Alt"],
       action: "think", motion: "work", duration: 8000,
     });
-    sendWechatWav(wav);
+    sendWechatWav(wav, Number(data.duration_s) || null);
   });
 }
 
@@ -643,7 +891,7 @@ function petVisible() {
 function createPetWindow() {
   petPref = loadPetPref();
   const { workArea } = screen.getPrimaryDisplay();
-  const width = 220, height = 300;
+  const width = 220, height = 480;
   const x = Number.isFinite(petPref.x) ? petPref.x : workArea.x + workArea.width - width - 24;
   const y = Number.isFinite(petPref.y) ? petPref.y : workArea.y + workArea.height - height - 8;
   petWin = new BrowserWindow({
@@ -740,6 +988,10 @@ function createPetWindow() {
     Menu.buildFromTemplate([
       { label: "发送微信语音（用最近合成）",
         click() { sendWechatVoiceFromPet(); } },
+      { label: "手动发变声语音（自己说话）",
+        click() { manualWechatFromPet(); } },
+      { label: `录制当前声音 → 挖掘音色（${CAPTURE_SECONDS}秒）`,
+        click() { captureMineFromPet(); } },
       { type: "separator" },
       { label: "常驻显示", type: "radio", checked: petPref.mode === "always",
         click() { petPref.mode = "always"; savePetPref(); } },

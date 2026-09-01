@@ -23,4 +23,6 @@ contextBridge.exposeInMainWorld("pet", {
   sendWav: (wav) => ipcRenderer.send("pet:send-wav", String(wav || "")),
   previewText: (text, voiceId) => ipcRenderer.send("pet:preview", String(text || "").slice(0, 500), String(voiceId || "")),
   liveToggle: () => ipcRenderer.send("pet:live-toggle"),
+  // 查看后端日志：后端离线时在气泡上点一下，主进程在文件管理器里定位 backend.log
+  showBackendLog: () => ipcRenderer.invoke("backend:show-log"),
 });

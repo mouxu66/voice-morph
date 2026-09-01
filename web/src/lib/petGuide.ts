@@ -24,6 +24,12 @@ export const GUIDES: Record<string, PageGuide> = {
     action: "build",
     motion: "pop",
   },
+  "/discover": {
+    title: "发掘音色",
+    lines: ["听到喜欢的声音？", "右键我可以内录抖音，", "视频音频也能投喂我。"],
+    action: "listen",
+    motion: "float",
+  },
   "/ft": {
     title: "音色微调",
     lines: ["想更像本人，就在这练。", "朗读 60 句，训专属音色。", "对比试听，满意再入库。"],
@@ -37,40 +43,22 @@ export const GUIDES: Record<string, PageGuide> = {
     motion: "wave",
   },
   "/tts": {
-    title: "文字转语音",
-    lines: ["选个音色念一段话。", "写完点生成就能试听，", "还能送去离线变声加工。"],
+    title: "语音合成",
+    lines: ["选个音色念一段话。", "长文稿切「有声书」模式，", "按句合成自动拼接。"],
     action: "play",
     motion: "nod",
   },
-  "/audiobook": {
-    title: "有声书工作台",
-    lines: ["长文稿交给我就行。", "按句合成再自动拼接，", "导入 SRT 能对上字幕。"],
-    action: "listen",
-    motion: "float",
-  },
   "/live": {
     title: "实时变声",
-    lines: ["想让微信里直接变声？", "训完三步，大约半小时，", "模型就绪就能开嗓。"],
+    lines: ["两个模式随你挑。", "RVC 低延迟像换嗓，", "级联换人味更足。"],
     action: "play",
     motion: "bounce",
   },
-  "/cascade": {
-    title: "级联变声",
-    lines: ["说完一句，换嗓播出。", "先转成文字再重新合成，", "Ctrl+Alt+V 随时启停。"],
-    action: "play",
-    motion: "flip",
-  },
   "/offlinevc": {
-    title: "离线变声",
-    lines: ["录好的音频，整段换声。", "音质比实时更稳，", "多文件还能排队批量转。"],
+    title: "离线工坊",
+    lines: ["录好的音频交给我。", "先「离线变声」换嗓，", "再「效果器」加混响电音。"],
     action: "build",
     motion: "wiggle",
-  },
-  "/effects": {
-    title: "效果器工坊",
-    lines: ["最后加点味道。", "混响、电话音、机器人，", "顺序能拖，参数随你调。"],
-    action: "think",
-    motion: "dance",
   },
 }
 
