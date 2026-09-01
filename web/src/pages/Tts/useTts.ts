@@ -6,6 +6,8 @@ import { loadHistory, prependHistory, STORAGE_KEYS } from "@/lib/history"
 
 export const TTS_MAX_LENGTH = 300
 export const TTS_HISTORY_LIMIT = 5
+// 长文分段 ICL 的段长（字符），>0 启用分段，见 worker VM_TTS_SEG_CHARS
+export const TTS_SEG_CHARS = 60
 
 export type TtsLanguage = "zh" | "en"
 
@@ -24,6 +26,8 @@ export function useTts() {
   const [text, setText] = useState("")
   const [textLanguage, setTextLanguageState] = useState<TtsLanguage>("zh")
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  // 风格参考 ICL：""=不启用；非空=用该音色 reference 作风格参考并走长文分段
+  const [styleRefVoice, setStyleRefVoice] = useState("")
   const [synthesizing, setSynthesizing] = useState(false)
   const [slowHint, setSlowHint] = useState("")
   const [errorMessage, setErrorMessage] = useState("")
@@ -48,7 +52,9 @@ export function useTts() {
     setSlowHint("")
     const slowTimer = window.setTimeout(() => setSlowHint("正在合成…首次使用需加载语音模型，可能要等一两分钟"), SLOW_HINT_MS)
     try {
-      const result = await sendTts(trimmed, textLanguage, selectedVoiceId)
+      const result = await sendTts(trimmed, textLanguage, selectedVoiceId,
+                                   styleRefVoice || undefined,
+                                   styleRefVoice ? TTS_SEG_CHARS : 0)
       const item: TtsHistoryItem = {
         id: `${Date.now()}`,
         text: trimmed,
@@ -64,7 +70,7 @@ export function useTts() {
       setSlowHint("")
       setSynthesizing(false)
     }
-  }, [text, textLanguage, backendUp, synthesizing, selectedVoiceId])
+  }, [text, textLanguage, backendUp, synthesizing, selectedVoiceId, styleRefVoice])
 
   const textLength = text.length
   const overLimit = textLength > TTS_MAX_LENGTH
@@ -81,6 +87,8 @@ export function useTts() {
     setTextLanguage,
     advancedOpen,
     toggleAdvanced,
+    styleRefVoice,
+    setStyleRefVoice,
     synthesizing,
     slowHint,
     errorMessage,

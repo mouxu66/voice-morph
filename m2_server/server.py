@@ -949,6 +949,13 @@ class TTSRequest(BaseModel):
     text: str
     text_language: str = "zh"
     voice_id: str = ""
+    # 风格参考 ICL + 长文分段：
+    #   style_ref_voice=用哪个音色的 reference 作风格参考(安全白名单，server 解析为磁盘路径)
+    #   style_ref=直接给风格音频路径(可选)；seg_chars>0 时按句分段合成
+    style_ref_voice: str = ""
+    style_ref: str = ""
+    style_ref_text: str = ""
+    seg_chars: int = 0
 
 
 @app.post(API_PREFIX + "/tts")
@@ -965,9 +972,24 @@ def tts_endpoint(req: TTSRequest):
         from qwen3_tts import tts as qwen_tts
         # 优先 ICL 语气克隆(ref_text 有内容即走 ICL，音色/语气最贴原视频)；
         # ref_text 为空才回退纯声纹(x-vector)模式。6.4s 参考音 + 真实文字稿在 8GB 显存已验证可跑。
-        wav_bytes = qwen_tts(req.text, ref_audio=str(ref), ref_text=_ref_text,
-                             language="Chinese" if req.text_language.startswith("zh") else "English",
-                             voice_id=voice_id)
+        # 传了 style_ref 时改用风格参考 ICL + 长文分段(seg_chars>0)，见 worker /tts。
+        kw = dict(text=req.text, ref_audio=str(ref), ref_text=_ref_text,
+                  language="Chinese" if req.text_language.startswith("zh") else "English",
+                  voice_id=voice_id)
+        if req.style_ref_voice:
+            sref, srtext = voice_ref(req.style_ref_voice)  # 安全白名单：非法/不存在抛 400/404
+            kw["style_ref"] = str(sref)
+            if srtext:
+                kw["style_ref_text"] = srtext
+            if req.seg_chars > 0:
+                kw["seg_chars"] = req.seg_chars
+        elif req.style_ref:
+            kw["style_ref"] = req.style_ref
+            if req.style_ref_text:
+                kw["style_ref_text"] = req.style_ref_text
+            if req.seg_chars > 0:
+                kw["seg_chars"] = req.seg_chars
+        wav_bytes = qwen_tts(**kw)
     except HTTPException:
         raise
     except Exception as e:

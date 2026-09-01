@@ -162,15 +162,25 @@ export async function openFolder(kind: "raw_videos" | "clips" | "outputs" | "voi
 // ---- 文字转语音 ----
 
 // 后端保存 wav 并返回 {url, duration_s}，URL 可持久化、可下载。
+// styleRefVoice/segChars：风格参考 ICL + 长文分段（styleRefVoice=用该音色 reference 作风格参考）
 export async function sendTts(
   text: string,
   textLanguage: "zh" | "en",
-  voiceId: string
+  voiceId: string,
+  styleRefVoice?: string,
+  segChars?: number
 ): Promise<{ url: string; duration_s: number; voice_id: string }> {
+  const payload: Record<string, string | number> = {
+    text,
+    text_language: textLanguage,
+    voice_id: voiceId,
+  };
+  if (styleRefVoice) payload.style_ref_voice = styleRefVoice;
+  if (segChars && segChars > 0) payload.seg_chars = segChars;
   const res = await fetch(BASE + "/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, text_language: textLanguage, voice_id: voiceId }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     let detail = res.statusText;

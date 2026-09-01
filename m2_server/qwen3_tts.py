@@ -269,9 +269,13 @@ post = _post
 
 
 def tts(text: str, ref_audio: str, ref_text: str = "", language: str = "Chinese",
-        voice_id: str = "") -> bytes:
+        voice_id: str = "", style_ref: str = "", style_ref_text: str = "",
+        seg_chars: int = 0) -> bytes:
     """按音色合成：普通音色走克隆（ref_text 空则 x-vector 声纹模式）；
-    微调音色（voicebank/<id>/meta.json kind=finetuned）自动分流到 /tts_speaker。"""
+    微调音色（voicebank/<id>/meta.json kind=finetuned）自动分流到 /tts_speaker。
+
+    style_ref/style_ref_text/seg_chars：风格参考 ICL + 长文分段（见 worker /tts）。
+    """
     _ensure_worker()
     if voice_id:
         meta_p = os.path.join(PROJECT_ROOT, "media", "voicebank", voice_id, "meta.json")
@@ -283,5 +287,12 @@ def tts(text: str, ref_audio: str, ref_text: str = "", language: str = "Chinese"
             return _post("/tts_speaker", {"model_dir": meta["model_dir"],
                                           "speaker": meta.get("speaker") or voice_id,
                                           "text": text, "language": language}, timeout=900)
-    return _post("/tts", {"text": text, "language": language,
-                          "ref_audio": ref_audio, "ref_text": ref_text}, timeout=900)
+    payload: dict = {"text": text, "language": language,
+                     "ref_audio": ref_audio, "ref_text": ref_text}
+    if style_ref:
+        payload["style_ref"] = style_ref
+        if style_ref_text:
+            payload["style_ref_text"] = style_ref_text
+        if seg_chars > 0:
+            payload["seg_chars"] = seg_chars
+    return _post("/tts", payload, timeout=900)

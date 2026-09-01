@@ -19,6 +19,7 @@ import asyncio
 import gc
 import io
 import os
+import re
 import threading
 import time
 
@@ -51,6 +52,9 @@ FAST_TTS = os.environ.get("VM_FAST_TTS", "1") == "1"
 # ICL 克隆参考音频时长上限：超长参考（>10s）既慢又会劣化，且文字稿与音频错位时
 # 模型会照着长参考拖长输出、生成乱叫。超限自动截前段 + 文字稿按比例截断。
 REF_MAX_S = float(os.environ.get("VM_REF_MAX_S", "10.0"))
+# 长文 ICL 分段上限（字符）：>0 时按句切段、逐段复用同一短风格参考合成再拼接，
+# 规避"长文本单次 ICL 生成"在 8GB 显存上的崩溃/乱叫；VM_TTS_SEG_CHARS=0 关闭。
+_SEG_MAX_CHARS = int(os.environ.get("VM_TTS_SEG_CHARS", "60"))
 _FAST: dict = {"eng": None, "model_id": None}
 # GPU 串行锁：端点把推理放进线程池并行执行（避免堵死事件循环），GPU 调用必须互斥
 _GPU_LOCK = threading.Lock()
@@ -277,6 +281,78 @@ def _tts_blocking(text: str, language: str, ref_audio: str, ref_text: str,
         return wavs, sr, False
 
 
+def _split_segments(text: str, max_chars: int = _SEG_MAX_CHARS) -> list:
+    """把长文按句尾标点切分成适合单次 ICL 生成的段，超长句再硬切。
+
+    - 参考音频是"短风格参考"，每段都复用同一个 prompt，保证整段音色/节奏一致；
+    - 单段不过长，避免一次生成过大导致 8GB 显存崩溃或 WDDM 慢路径。
+    """
+    if max_chars <= 0:
+        return [text]
+    norm = re.sub(r"\s+", " ", (text or "")).strip()
+    if not norm:
+        return []
+    parts = re.split(r"(?<=[。！？!?…；;,])", norm)
+    segs, cur = [], ""
+    for p in parts:
+        if not p:
+            continue
+        if cur and len(cur) + len(p) > max_chars:
+            segs.append(cur)
+            cur = p
+        else:
+            cur += p
+    if cur:
+        segs.append(cur)
+    # 无标点的超长句：按字符硬切，保证单段长度可控
+    out = []
+    for s in segs:
+        while len(s) > max_chars:
+            out.append(s[:max_chars])
+            s = s[max_chars:]
+        if s:
+            out.append(s)
+    return out
+
+
+def _tts_style_blocking(text: str, language: str, style_audio: str,
+                        style_text: str, gen_kwargs: dict, use_fast: bool,
+                        seg_chars: int = _SEG_MAX_CHARS):
+    """风格参考 ICL 合成：音频未带文字稿则先 whisper 转写，再按段复用同一
+    短风格参考逐段生成并拼接。返回 (wav, sr, n_segs, fast_used)。
+
+    注意：不要在这里整体包 _GPU_LOCK——_transcribe 与 _tts_blocking 内部
+    各自会再取 _GPU_LOCK（threading.Lock 不可重入），外层再取会死锁。
+    """
+    if not (style_text or "").strip():
+        tr = _transcribe(style_audio)  # 自带 _GPU_LOCK
+        style_text = (tr.get("text") or "").strip()
+        if not style_text:
+            style_text = "占位"
+    key = (style_audio, style_text, False)
+    with _GPU_LOCK:
+        if key not in _PROMPT_CACHE:
+            sa, st = _trim_ref(style_audio, style_text)  # ≤REF_MAX_S，规避长参考 ICL 崩溃
+            _PROMPT_CACHE[key] = MODEL.create_voice_clone_prompt(
+                ref_audio=sa, ref_text=st, x_vector_only_mode=False)
+    segs = _split_segments(text, seg_chars)
+    sr = None
+    wavs_all = []
+    fast_used = False
+    for seg in segs:
+        if seg.strip() == "":
+            continue
+        w, s, fu = _tts_blocking(seg, language, style_audio,
+                                 style_text, gen_kwargs, use_fast)
+        wavs_all.append(w[0])
+        sr = s
+        fast_used = fast_used or fu
+    if sr is None:
+        return [np.zeros(0, dtype=np.float32)], 24000, 0, False
+    # 返回 list（包一层），与端点 sf.write(buf, wavs[0], sr) 的取数组约定对齐
+    return [np.concatenate(wavs_all)], sr, len(wavs_all), fast_used
+
+
 @app.post("/emb")
 async def emb(req: Request):
     """声纹提取：path -> 归一化说话人嵌入（与克隆同一编码器）。用于相似度评估。"""
@@ -295,13 +371,23 @@ async def emb(req: Request):
 
 @app.post("/tts")
 async def tts(req: Request):
-    """动态克隆合成：text + language + ref_audio + ref_text(可空则 x-vector 模式) -> wav 字节。"""
+    """动态克隆合成：text + language + ref_audio + ref_text(可空则 x-vector 模式) -> wav 字节。
+
+    新增「风格参考 ICL」：style_ref 提供一段≤10s 风格音频 + 可选 style_ref_text(缺省自动
+    whisper 转写)，走 ICL 并按 seg_chars 分段逐段合成后拼接——用于让长文也带上指定
+    情感/节奏，同时规避长文本单次 ICL 的 8GB 崩溃/乱叫。
+    """
     body = await req.json()
     text = body.get("text", "")
     language = body.get("language", "Chinese")
     ref_audio = body.get("ref_audio", "")
     ref_text = body.get("ref_text", "")
-    if not text.strip() or not ref_audio:
+    style_ref = body.get("style_ref", "")
+    style_text = body.get("style_ref_text", "")
+    seg_chars = int(body.get("seg_chars") or 0)
+    if not text.strip():
+        return Response(b"", status_code=400)
+    if not (ref_audio or style_ref):
         return Response(b"", status_code=400)
     # 生成参数按需透传（性能调优用）。
     # do_sample=False 走贪心：省掉逐步 top-k 采样的 Python 开销；
@@ -311,11 +397,17 @@ async def tts(req: Request):
         if body.get(k) is not None:
             gen_kwargs[k] = body[k]
     use_fast = FAST_TTS and body.get("fast", True)
-    # GPU 推理放线程池执行：async 端点里同步推理会堵死整个事件循环
-    # （级联流式时 /health /transcribe /状态查询全卡死，坑 5）
-    wavs, sr, fast_used = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: _tts_blocking(text, language, ref_audio, ref_text,
-                                    gen_kwargs, use_fast))
+    if style_ref.strip() and os.path.isfile(style_ref):
+        seg = seg_chars if seg_chars > 0 else _SEG_MAX_CHARS
+        wavs, sr, n_segs, fast_used = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: _tts_style_blocking(text, language, style_ref, style_text,
+                                              gen_kwargs, use_fast, seg))
+    else:
+        # GPU 推理放线程池执行：async 端点里同步推理会堵死整个事件循环
+        # （级联流式时 /health /transcribe /状态查询全卡死，坑 5）
+        wavs, sr, fast_used = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: _tts_blocking(text, language, ref_audio, ref_text,
+                                        gen_kwargs, use_fast))
     buf = io.BytesIO()
     sf.write(buf, wavs[0], sr, format="WAV")
     return Response(content=buf.getvalue(), media_type="audio/wav",
