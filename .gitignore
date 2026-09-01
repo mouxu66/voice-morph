@@ -62,6 +62,9 @@ _trash_20260831/
 # ===== Qwen3-TTS 官方仓库（第三方 clone）=====
 tts_trial/Qwen3-TTS/
 
+# ===== Seed-VC 官方仓库（第三方 clone，含自带 venv）=====
+seed_vc/
+
 # ===== 微调数据/产物（大文件不入库）=====
 tts_trial/ft_data/
 tts_trial/ft_output/
