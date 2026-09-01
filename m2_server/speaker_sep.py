@@ -213,6 +213,38 @@ def _assign_clips(clip_paths: list[Path], sound16: Path, segs: list[list]) -> li
     return out
 
 
+def main_center(audio: Path) -> tuple[int | None, "np.ndarray | None", dict]:
+    """返回（主说话人 id，其中心声纹，元信息），供切片质检做"说话人一致性"判定。
+
+    主说话人 = 有效语音总时长最长者；中心声纹 = 其各分段 pcm 的 CAM++ 声纹均值
+    （L2 归一化，与 `_sv_embed` 同一空间，可直接点乘求余弦）。
+
+    失败一律返回 (None, None, meta)——质检里声纹维度缺失只是不参与判分，不判废。
+    """
+    audio = Path(audio)
+    meta: dict = {"n_speakers": 0}
+    if not audio.exists():
+        return None, None, meta
+    try:
+        tmp16 = _resample16k(audio)
+        res = _get_diar()(audio=str(tmp16))
+        seg_raw = (res or {}).get("text") or []
+        if not seg_raw:
+            return None, None, meta
+        segs: list[list] = [[float(st), float(ed), int(spk)] for st, ed, spk in seg_raw]
+        dur: dict[int, float] = {}
+        for st, ed, spk in segs:
+            dur[spk] = dur.get(spk, 0.0) + max(0.0, ed - st)
+        if not dur:
+            return None, None, meta
+        main = max(dur, key=lambda s: dur[s])
+        meta = {"n_speakers": len(dur), "durations": {str(k): round(v, 2) for k, v in dur.items()}}
+        centers = _speaker_centers(_read16k(tmp16), segs)
+        return main, centers.get(main), meta
+    except Exception:  # noqa: BLE001
+        return None, None, meta
+
+
 def _speaker_centers(audio16k: np.ndarray, segs: list[list]) -> dict[int, np.ndarray]:
     """每个说话人的中心声纹（其分段 pcm 平均后再归一化）。"""
     pool: dict[int, list[np.ndarray]] = {}

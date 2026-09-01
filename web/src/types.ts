@@ -81,10 +81,20 @@ export interface VideoItem {
   used_by?: string[];
 }
 
+/** 切片质检结果（P1-1，后端 clip_qc 产出，随 GET /clips 一起返回） */
+export interface ClipQc {
+  score: number;
+  grade: "A" | "B" | "C" | "D";
+  reasons: string[];
+  duration_s: number;
+  spk_sim?: number | null;
+}
+
 export interface ClipItem {
   name: string;
   duration_s: number;
   loudness_dbfs: number;
+  qc?: ClipQc;
 }
 
 export interface PipelineProgress {

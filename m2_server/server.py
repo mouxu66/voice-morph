@@ -67,6 +67,7 @@ PIPELINE_STATE = {
     "percent": 0,
     "clips": 0,
     "error": "",
+    "qc": {},          # 流水线跑完后的切片质检汇总（clip_qc.score_prefixes 产出）
 }
 _pipeline_cancel = threading.Event()
 _pipeline_lock = threading.Lock()
@@ -312,12 +313,26 @@ async def delete_voice(voice_id: str):
 
 @app.post(API_PREFIX + "/voicebank")
 async def create_voicebank(voice_id: str, request: Request):
-    """用勾选的片段生成参考音频。body: clips=name1&clips=name2..."""
+    """用勾选的片段生成参考音频。body: clips=name1&clips=name2...
+
+    自动优选：不传 clips 而传 auto=1 时，按切片质检分数从高到低自动挑够
+    target_s 秒（默认 30，精细档建议 60）——对应 P1-1 的"建库自动优选"。
+    """
     import io
     from pydub import AudioSegment
 
     form = await request.form()
     clips = form.getlist("clips")
+    auto = str(form.get("auto") or "") in ("1", "true", "True")
+    target_s = float(form.get("target_s") or 0) or 30.0
+    if not clips and auto:
+        try:
+            import clip_qc
+            clips, picked_s = clip_qc.recommend(target_s)
+        except Exception:  # noqa: BLE001
+            clips, picked_s = [], 0.0
+        if not clips:
+            raise HTTPException(400, "没有可自动优选的切片：请先跑流水线并做切片质检")
     if not clips:
         raise HTTPException(400, "请至少提供一个片段名")
     if not is_valid_voice_id(voice_id):
@@ -363,7 +378,8 @@ async def create_voicebank(voice_id: str, request: Request):
     # 删除旧的音色向量缓存，下次自动重新提取
     (out_dir / "reference_se.npy").unlink(missing_ok=True)
 
-    return {"ok": True, "voice_id": voice_id, "duration_s": round(len(merged) / 1000, 1)}
+    return {"ok": True, "voice_id": voice_id, "duration_s": round(len(merged) / 1000, 1),
+            "auto": auto, "picked": len(clips)}
 
 
 # ---------------- M1 素材流水线 ----------------
@@ -610,7 +626,10 @@ def _pipeline_job(videos: list[Path]):
             clips += n
             _update_pipeline(clips=clips)
         _update_pipeline(status="done", step="", percent=100,
-                         message=f"流水线完成，共切出 {clips} 个片段")
+                         message=f"流水线完成，共切出 {clips} 个片段（正在质检…）")
+        # 切片质检：后台静默跑，失败不影响流水线结果
+        prefixes = [_clip_prefix(v.stem) for v in videos]
+        threading.Thread(target=_qc_after_pipeline, args=(prefixes,), daemon=True).start()
     except Exception as e:
         if type(e).__name__ == "PipelineCancelled":
             _update_pipeline(status="cancelled", step="", message="已取消，已完成的片段会保留")
@@ -618,6 +637,26 @@ def _pipeline_job(videos: list[Path]):
             _update_pipeline(status="error", step="", message="流水线出错", error=str(e))
     finally:
         _update_pipeline(running=False)
+
+
+def _qc_after_pipeline(prefixes: list[str]):
+    """流水线跑完后自动给切片打分（后台线程，静默失败）。
+
+    只算客观指标，不含"说话人一致性"——那需要 diarization，较重；用户点了
+    「说话人分离」之后再跑 `POST /clips/qc` 会补上这个最强维度并覆盖缓存。
+    """
+    try:
+        import clip_qc
+        summary = clip_qc.score_prefixes(prefixes, CLIPS_DIR)
+        _update_pipeline(qc=summary)
+        if summary.get("total"):
+            _update_pipeline(
+                message=f"流水线完成，切片 {summary['total']} 条，"
+                        f"质检可用（A/B）{summary['ok']} 条"
+                        f"（A {summary['grades']['A']} / B {summary['grades']['B']} / "
+                        f"C {summary['grades']['C']} / D {summary['grades']['D']}）")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @app.post(API_PREFIX + "/pipeline/run")
@@ -670,17 +709,25 @@ def cancel_pipeline():
 @app.get(API_PREFIX + "/clips")
 def list_clips():
     from pydub import AudioSegment
+    try:
+        import clip_qc
+        qc = clip_qc.load_all()
+    except Exception:  # 质检结果读不到不影响列表本身（无质检时前端退化为按响度筛选）
+        qc = {}
     clips = []
     for f in sorted(CLIPS_DIR.glob("*.wav")):
         try:
             a = AudioSegment.from_wav(str(f))
-            clips.append({
-                "name": f.stem,
-                "duration_s": round(len(a) / 1000, 1),
-                "loudness_dbfs": round(a.max_dBFS, 1),
-            })
         except Exception:
             continue
+        item = {
+            "name": f.stem,
+            "duration_s": round(len(a) / 1000, 1),
+            "loudness_dbfs": round(a.max_dBFS, 1),
+        }
+        if f.stem in qc:
+            item["qc"] = qc[f.stem]
+        clips.append(item)
     return {"clips": clips}
 
 
@@ -735,6 +782,51 @@ def diarize_clips(file: str = Query(..., description="素材文件名或切片�
         return speaker_sep.analyze_clips(paths)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, str(e))
+
+
+@app.post(API_PREFIX + "/clips/qc")
+def qc_clips(file: str = Query(..., description="素材文件名或切片前缀"),
+             spk: bool = Query(True, description="是否计算说话人一致性（需跑一次 diarization，较慢）"),
+             force: bool = Query(False, description="忽略缓存重算")):
+    """给某素材的切片做质量打分（P1-1）。
+
+    维度：时长 / 响度 / 削波 / 中段静音 / 底噪 SNR，可选「说话人一致性」（复用 CAM++
+    声纹，需先定位纯人声轨跑 diarization，较慢，但能抓住他人声与 BGM 残留）。
+
+    越过硬判废线的切片直接判 D 并给出人话原因；结果落盘
+    `outputs/clip_qc/<prefix>.json`，并合并进 `GET /clips` 的返回。
+    """
+    import clip_qc
+    import numpy as np
+    import speaker_sep
+    stem = Path(file).stem if file and file != "/" else ""
+    prefix = _clip_prefix(stem) if stem else ""
+    prefixes = {p for p in (prefix, stem[:12] if stem else "") if p}
+    paths = [f for f in CLIPS_DIR.glob("*.wav")
+             if any(f.stem.startswith(p) for p in prefixes)]
+    if not paths:
+        raise HTTPException(404, f"「{file}」没有可质检的切片，请先对其运行流水线。")
+
+    center = None
+    main_spk = None
+    if spk:
+        cached = clip_qc.load_material(prefix or stem)
+        if cached and cached.get("center") and not force:
+            center = np.asarray(cached["center"], dtype=float)
+            main_spk = cached.get("main_spk")
+        else:
+            vocal = _locate_vocals(stem)
+            if vocal:
+                main_spk, center, _meta = speaker_sep.main_center(vocal)
+    try:
+        payload = clip_qc.score_material(prefix or stem, paths, spk_center=center,
+                                         force=force, main_spk=main_spk)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"切片质检失败：{e}")
+    return {"ok": True, "prefix": payload["prefix"], "count": payload["count"],
+            "grades": payload["grades"], "ok_count": payload["ok_count"],
+            "has_spk": payload["has_spk"], "main_spk": payload["main_spk"],
+            "updated_at": payload["updated_at"]}
 
 
 @app.get(API_PREFIX + "/export/rvc")

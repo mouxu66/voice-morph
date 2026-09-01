@@ -124,6 +124,24 @@ export async function diarizeClips(file: string): Promise<DiarizeResult> {
   return jsonFetch<DiarizeResult>(`/clips/diarize?file=${encodeURIComponent(file)}`, { method: "POST" });
 }
 
+export type QcSummary = {
+  ok: boolean;
+  prefix: string;
+  count: number;
+  grades: { A: number; B: number; C: number; D: number };
+  ok_count: number;
+  has_spk: boolean;
+  main_spk: number | null;
+  updated_at: string;
+};
+
+/** 对某素材的切片做质检打分（spk=true 时会先跑一次说话人分离，较慢但能剔除他人声） */
+export async function qcClips(file: string, spk = true, force = false): Promise<QcSummary> {
+  return jsonFetch<QcSummary>(
+    `/clips/qc?file=${encodeURIComponent(file)}&spk=${spk ? 1 : 0}&force=${force ? 1 : 0}`,
+    { method: "POST" });
+}
+
 /** 上传视频素材到 media/raw_videos/（拖拽/选择） */
 export async function uploadVideo(file: File, onProgress?: (p: number) => void): Promise<{ ok: boolean; name: string; size_mb: number }> {
   const form = new FormData();

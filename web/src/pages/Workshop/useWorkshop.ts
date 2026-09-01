@@ -5,6 +5,7 @@ import {
   diarizeClips,
   getPipelineStatus,
   listClips,
+  qcClips,
   listRawVideos,
   mediaUrl,
   openFolder,
@@ -36,6 +37,11 @@ export function useWorkshop() {
   const [diarFor, setDiarFor] = useState<string>("")
   const [diarBusy, setDiarBusy] = useState(false)
   const [speakerFilter, setSpeakerFilter] = useState<number | null>(null)
+
+  // 切片质检（P1-1）：等级筛选 + 按分排序
+  const [gradeFilter, setGradeFilter] = useState<"全部" | "合格" | "A" | "B" | "C" | "D">("全部")
+  const [qcBusy, setQcBusy] = useState(false)
+  const [qcFor, setQcFor] = useState<string>("")
 
   // 流水线（后台运行 + 轮询进度）
   const [pipeline, setPipeline] = useState<PipelineStatus>(IDLE_PIPELINE)
@@ -165,6 +171,44 @@ export function useWorkshop() {
     }
   }, [])
 
+  // 切片质检：按 P1-1 的指标打分，并顺带补齐"说话人一致性"（默认开启，会跑一次分离）
+  const runQc = useCallback(async (file: string, spk = true) => {
+    setErrorMessage("")
+    setQcBusy(true)
+    try {
+      const res = await qcClips(file, spk)
+      setQcFor(file)
+      setFeedback(`「${file}」质检完成：${res.count} 条切片，可用（A/B）${res.ok_count} 条`
+        + (res.has_spk ? "（含声纹一致性校验）" : "（无声纹维度，可先做说话人分离再质检）"))
+      await loadWorkshop()
+    } catch (error) {
+      setErrorMessage(friendlyError(error, "切片质检失败"))
+    } finally {
+      setQcBusy(false)
+    }
+  }, [loadWorkshop])
+
+  // 自动优选：按质检分数从高到低勾选，凑够 target 秒（默认 30，对应零样本门槛）
+  const autoPick = useCallback((target = 30) => {
+    const ranked = clips
+      .filter((c) => c.qc && (c.qc.grade === "A" || c.qc.grade === "B"))
+      .sort((a, b) => (b.qc?.score ?? 0) - (a.qc?.score ?? 0))
+    if (!ranked.length) {
+      setErrorMessage("还没有质检结果，请先对素材做一次切片质检")
+      return
+    }
+    clearSelectedClips()
+    let total = 0
+    const picked: string[] = []
+    for (const c of ranked) {
+      picked.push(c.name)
+      total += c.duration_s
+      if (total >= target) break
+    }
+    picked.forEach((name) => toggleClip(name))
+    setFeedback(`已自动勾选 ${picked.length} 条高分切片，共 ${total.toFixed(1)}s（目标 ${target}s）`)
+  }, [clips, clearSelectedClips, toggleClip])
+
   // RVC 训练集导出（带当前采纳片段）
   const exportRvc = async () => {
     setErrorMessage("")
@@ -195,16 +239,31 @@ export function useWorkshop() {
     if (diar) for (const c of diar.clips) if (c.spk != null) m[c.name] = c.spk
     return m
   }, [diar])
-  const visibleClips = useMemo(() => clips.filter((clip) => {
-    const quality = clip.loudness_dbfs >= -18 && clip.loudness_dbfs <= -8 ? "推荐" : "需检查"
-    if (qualityFilter !== "全部" && quality !== qualityFilter) return false
-    if (reviewMode === "精审" && decisions[clip.name]) return false
-    // 说话人过滤只对已做分离的素材生效（clipSpk 仅含该素材切片）
-    if (speakerFilter != null && diar) {
-      if (clipSpk[clip.name] !== speakerFilter) return false
-    }
-    return true
-  }), [clips, decisions, qualityFilter, reviewMode, speakerFilter, diar, clipSpk])
+  const visibleClips = useMemo(() => {
+    const list = clips.filter((clip) => {
+      const quality = clip.loudness_dbfs >= -18 && clip.loudness_dbfs <= -8 ? "推荐" : "需检查"
+      if (qualityFilter !== "全部" && quality !== qualityFilter) return false
+      if (reviewMode === "精审" && decisions[clip.name]) return false
+      // 说话人过滤只对已做分离的素材生效（clipSpk 仅含该素材切片）
+      if (speakerFilter != null && diar) {
+        if (clipSpk[clip.name] !== speakerFilter) return false
+      }
+      // 质检等级：未质检的切片只在"全部"下出现
+      if (gradeFilter !== "全部") {
+        const grade = clip.qc?.grade
+        if (!grade) return false
+        if (gradeFilter === "合格" ? !(grade === "A" || grade === "B") : grade !== gradeFilter) return false
+      }
+      return true
+    })
+    // 有质检分数的排前面、按分降序——高分切片就是最该听的几条
+    return list.sort((a, b) => {
+      if (a.qc && b.qc && a.qc.score !== b.qc.score) return b.qc.score - a.qc.score
+      if (a.qc && !b.qc) return -1
+      if (!a.qc && b.qc) return 1
+      return a.name.localeCompare(b.name)
+    })
+  }, [clips, decisions, qualityFilter, reviewMode, speakerFilter, diar, clipSpk, gradeFilter])
 
   // 精审快捷键：A 采纳 / R 驳回
   const setDecision = useCallback((clipName: string, decision: "采纳" | "驳回") => {
@@ -240,6 +299,7 @@ export function useWorkshop() {
     deleteVideo,
     loadWorkshop, toggleClip, clearSelectedClips, setDecision,
     diar, diarFor, diarBusy, speakerFilter, setSpeakerFilter, runDiarize,
+    gradeFilter, setGradeFilter, qcBusy, qcFor, runQc, autoPick,
     clipAudioUrl: (clip: ClipItem) => mediaUrl(`/media/clips/${clip.name}.wav`),
   }
 }
