@@ -22,6 +22,12 @@ export function useVoices() {
   // 批量导入文件夹：上传 -> 解析切片 -> 自动挖掘
   const [importing, setImporting] = useState(false)
   const [importMessage, setImportMessage] = useState("")
+  // 麦克风录音：MediaRecorder 录完自动进入 解析+挖掘 流程
+  const [recording, setRecording] = useState(false)
+  const [recordSeconds, setRecordSeconds] = useState(0)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const recordTimerRef = useRef<number | null>(null)
+  const recordChunksRef = useRef<Blob[]>([])
 
   const loadVoices = useCallback(async () => {
     setLoading(true); setErrorMessage("")
@@ -60,10 +66,8 @@ export function useVoices() {
     }
   }, [mineSim, mineMinCluster])
 
-  // 批量导入文件夹：webkitdirectory 选择 → 逐个上传 → 解析切片（管线）→ 自动按当前参数挖掘
-  const importFolder = useCallback(async (files: File[] | undefined) => {
-    const media = (files ?? []).filter((f) => /\.(mp4|mkv|mov|flv|webm|avi|wav|mp3|m4a|flac|ogg|aac|wma)$/i.test(f.name))
-    if (!media.length) { setErrorMessage("所选文件夹里没有可用的音频/视频文件"); return }
+  // 多渠道音源共用流程：上传素材 → 解析切片 → 自动按当前参数挖掘
+  const ingestFiles = useCallback(async (media: File[], verbLabel: string) => {
     setImporting(true)
     setErrorMessage(""); setFeedback(""); setPreview(null)
     try {
@@ -91,14 +95,66 @@ export function useVoices() {
       setMine((s) => ({ ...s, running: true, stage: "running", message: "正在转写与提取声纹…" }))
       await mineRun({ sim_threshold: mineSim, min_cluster_size: mineMinCluster })
       setImportMessage("")
-      setFeedback(`已导入 ${media.length} 个文件，切片完成，正在挖掘音色`)
+      setFeedback(`已${verbLabel} ${media.length} 个文件，切片完成，正在挖掘音色`)
     } catch (error) {
       setImportMessage("")
-      setErrorMessage(friendlyError(error, "批量导入失败"))
+      setErrorMessage(friendlyError(error, "导入失败"))
     } finally {
       setImporting(false)
     }
   }, [mineSim, mineMinCluster])
+
+  // 批量导入文件夹：webkitdirectory 选择 → 共用导入流程
+  const importFolder = useCallback(async (files: File[] | undefined) => {
+    const media = (files ?? []).filter((f) => /\.(mp4|mkv|mov|flv|webm|avi|wav|mp3|m4a|flac|ogg|aac|wma)$/i.test(f.name))
+    if (!media.length) { setErrorMessage("所选文件夹里没有可用的音频/视频文件"); return }
+    await ingestFiles(media, "导入")
+  }, [ingestFiles])
+
+  // 选择单个/多个音视频文件（音频文件、录音文件等，不限于文件夹）
+  const importFiles = useCallback(async (files: File[] | undefined) => {
+    const media = (files ?? []).filter((f) => /\.(mp4|mkv|mov|flv|webm|avi|wav|mp3|m4a|flac|ogg|aac|wma)$/i.test(f.name))
+    if (!media.length) { setErrorMessage("没有可用的音频/视频文件"); return }
+    await ingestFiles(media, "导入")
+  }, [ingestFiles])
+
+  // 开始麦克风录音：MediaRecorder 输出 audio/webm，直接当素材走现有上传链路
+  const startRecording = useCallback(async () => {
+    setErrorMessage(""); setFeedback("")
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : ""
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
+      recordChunksRef.current = []
+      rec.ondataavailable = (e) => { if (e.data.size) recordChunksRef.current.push(e.data) }
+      rec.start(1000)
+      recorderRef.current = rec
+      setRecording(true)
+      setRecordSeconds(0)
+      recordTimerRef.current = window.setInterval(() => setRecordSeconds((s) => s + 1), 1000)
+    } catch (error) {
+      setErrorMessage(friendlyError(error, "无法访问麦克风，请检查系统与浏览器麦克风权限"))
+    }
+  }, [])
+
+  // 停止录音：合成 webm 文件（命名为 recording_时间戳），进入 解析+挖掘 流程
+  const stopRecording = useCallback(async () => {
+    const rec = recorderRef.current
+    if (!rec) return
+    if (recordTimerRef.current) { window.clearInterval(recordTimerRef.current); recordTimerRef.current = null }
+    setRecording(false)
+    const blob = await new Promise<Blob>((resolve) => {
+      rec.onstop = () => resolve(new Blob(recordChunksRef.current, { type: rec.mimeType || "audio/webm" }))
+      rec.stop()
+    })
+    rec.stream.getTracks().forEach((t) => t.stop())
+    recorderRef.current = null
+    if (blob.size < 1000) { setErrorMessage("录音太短，没有捕捉到内容"); return }
+    const ext = (rec.mimeType || blob.type).includes("ogg") ? "ogg" : "webm"
+    const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)
+    const file = new File([blob], `recording_${stamp}.${ext}`, { type: blob.type })
+    await ingestFiles([file], "录入")
+  }, [ingestFiles])
 
   const selectedDuration = useMemo(() =>
     clips.filter((clip) => selectedClips.has(clip.name)).reduce((sum, clip) => sum + clip.duration_s, 0),
@@ -181,6 +237,7 @@ export function useVoices() {
     audioUrl: (voice: VoiceInfo) => mediaUrl(`/media/voicebank/${voice.id}/${voice.reference}`),
     mine, startMine, previewing, preview, tryPreview, saveCandidate,
     mineSim, setMineSim, mineMinCluster, setMineMinCluster,
-    importing, importMessage, importFolder,
+    importing, importMessage, importFolder, importFiles,
+    recording, recordSeconds, startRecording, stopRecording,
   }
 }
