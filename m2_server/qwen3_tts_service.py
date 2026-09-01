@@ -48,6 +48,9 @@ _PROMPT_CACHE: dict = {}
 _ALT_MODEL: dict = {"dir": None, "model": None}
 # CUDA Graph 加速引擎（fast_tts.py）：VM_FAST_TTS=0 关闭；请求体 {"fast": false} 单次关闭
 FAST_TTS = os.environ.get("VM_FAST_TTS", "1") == "1"
+# ICL 克隆参考音频时长上限：超长参考（>10s）既慢又会劣化，且文字稿与音频错位时
+# 模型会照着长参考拖长输出、生成乱叫。超限自动截前段 + 文字稿按比例截断。
+REF_MAX_S = float(os.environ.get("VM_REF_MAX_S", "10.0"))
 _FAST: dict = {"eng": None, "model_id": None}
 # GPU 串行锁：端点把推理放进线程池并行执行（避免堵死事件循环），GPU 调用必须互斥
 _GPU_LOCK = threading.Lock()
@@ -218,9 +221,36 @@ def _analyze_blocking(body: dict) -> dict:
             "errors": errors[:5]}
 
 
+def _trim_ref(ref_audio: str, ref_text: str) -> tuple:
+    """ICL 模式参考音频超长时截前段，文字稿按比例截断（避免错位拖长/乱叫）。
+
+    x-vector 模式只取声纹、与参考长度无关，不截。
+    """
+    if REF_MAX_S <= 0 or not os.path.isfile(ref_audio):
+        return ref_audio, ref_text
+    try:
+        d, sr = sf.read(ref_audio)
+    except Exception:
+        return ref_audio, ref_text
+    dur = len(d) / sr
+    if dur <= REF_MAX_S:
+        return ref_audio, ref_text
+    n = int(REF_MAX_S * sr)
+    tmp = os.path.join(os.path.dirname(ref_audio),
+                       f"_trim_{int(time.time() * 1000)}_{os.getpid()}.wav")
+    sf.write(tmp, d[:n], sr, format="WAV")
+    if ref_text:
+        keep = max(int(len(ref_text) * REF_MAX_S / dur), 4)
+        ref_text = ref_text[:keep]
+    print(f"[tts] 参考音频 {dur:.1f}s 超长，截断到 {REF_MAX_S:.1f}s（文字稿同步截断）", flush=True)
+    return tmp, ref_text
+
+
 def _build_prompt(ref_audio: str, ref_text: str, xvec_only: bool):
     key = (ref_audio, ref_text, xvec_only)
     if key not in _PROMPT_CACHE:
+        if not xvec_only:
+            ref_audio, ref_text = _trim_ref(ref_audio, ref_text)
         _PROMPT_CACHE[key] = MODEL.create_voice_clone_prompt(
             ref_audio=ref_audio, ref_text=ref_text or "占位", x_vector_only_mode=xvec_only)
     return _PROMPT_CACHE[key]
