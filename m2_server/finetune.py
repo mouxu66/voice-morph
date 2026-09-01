@@ -32,7 +32,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 import config as cfg
-from common import is_valid_voice_id
+from common import is_valid_voice_id, find_ffmpeg
 
 router = APIRouter(prefix="/api")
 
@@ -149,7 +149,7 @@ def _process(voice_id: str, raw_path: Path):
         wav24 = _vdir(voice_id) / "full_24k.wav"
         _set_status(voice_id, stage="processing", message="转码 24kHz 单声道…")
         subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-i", str(raw_path),
+            [find_ffmpeg(), "-y", "-v", "error", "-i", str(raw_path),
              "-ar", "24000", "-ac", "1", str(wav24)],
             check=True, capture_output=True)
 

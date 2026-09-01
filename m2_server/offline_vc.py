@@ -19,7 +19,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 import config as cfg
-from common import MAX_UPLOAD_BYTES
+from common import MAX_UPLOAD_BYTES, find_ffmpeg
 from rvc_common import ensure_infer_pth
 from rvc_live import _live_proc_alive
 
@@ -99,7 +99,7 @@ def _ovc_worker(raw_path: Path, voice_id: str, pth: Path,
         OFFLINEVC_STATE.update(message="音频预处理中…")
         # 统一转 16k 单声道 wav；denoise 时加 afftdn 降噪（nf 越低压得越狠）
         af = "afftdn=nf=-25," if denoise else ""
-        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(raw_path),
+        cmd = [find_ffmpeg(), "-y", "-loglevel", "error", "-i", str(raw_path),
                "-af", af + "aresample=16000", "-ac", "1", str(in_path)]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if r.returncode != 0 or not in_path.exists():

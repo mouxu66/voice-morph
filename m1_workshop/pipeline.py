@@ -47,11 +47,35 @@ CLIP_MAX_MS = 10000     # 片段最长 10 秒
 DEMUCS_MODEL = "htdemucs"  # 想要更好分离质量换 "htdemucs_ft"（更慢）
 
 
+def _ffmpeg() -> str:
+    """定位完整 ffmpeg，避免被编辑器精简版（缺 wav muxer）顶掉。
+
+    优先复用 m2_server/common.find_ffmpeg；独立作为脚本运行时本地回退。"""
+    try:
+        from common import find_ffmpeg
+        return find_ffmpeg()
+    except ImportError:
+        pass
+    import os
+    import shutil
+    p = os.environ.get("FFMPEG_PATH") or ""
+    if p and Path(p).exists():
+        return p
+    pkgs = Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
+    if pkgs.is_dir():
+        for d in sorted(pkgs.iterdir(), reverse=True):
+            if "ffmpeg" in d.name.lower():
+                for e in d.glob("*/bin/ffmpeg.exe"):
+                    if e.exists():
+                        return str(e)
+    return shutil.which("ffmpeg") or "ffmpeg"
+
+
 def step1_extract(video: Path, cancel_event=None) -> Path:
     """视频 → 44.1k 单声道 wav 音轨"""
     out = VOCALS / f"{video.stem}.wav"
     _run_or_cancel(
-        ["ffmpeg", "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "44100", str(out)],
+        [_ffmpeg(), "-y", "-i", str(video), "-vn", "-ac", "1", "-ar", "44100", str(out)],
         cancel_event=cancel_event, desc=f"ffmpeg {video.name}",
     )
     print(f"[提取] {video.name} ✓ -> {out.name}")

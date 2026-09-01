@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from common import find_ffmpeg
+
 # 静音判定阈值（RMS，线性 0~1）：低于此视为静音帧
 _SILENCE_RMS = 0.008      # ≈ -42 dBFS
 _FRAME_S = 0.02           # 20ms 分帧
@@ -22,7 +24,7 @@ def _extract_audio(video: Path, out_wav: Path) -> bool:
     """ffmpeg 提取 16k 单声道 wav；失败返回 False。"""
     try:
         r = subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(video),
+            [find_ffmpeg(), "-y", "-loglevel", "error", "-i", str(video),
              "-vn", "-ac", "1", "-ar", "16000", str(out_wav)],
             capture_output=True, text=True, timeout=300)
         return r.returncode == 0 and out_wav.exists()

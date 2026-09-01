@@ -4,7 +4,9 @@
 避免「同一规则四处定义、改一处漏三处」。
 """
 import json
+import os
 import re
+import shutil
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -48,3 +50,43 @@ def selected_voice() -> str:
         except Exception:
             return ""
     return ""
+
+
+_FFMPEG_CACHE = None
+
+
+def find_ffmpeg() -> str:
+    """返回可用的完整 ffmpeg 可执行路径（进程内缓存，只解析一次）。
+
+    优先级：环境变量 FFMPEG_PATH → winget 完整 build → PATH（剔除编辑器精简版）→ "ffmpeg"。
+    在 Windows 下，PATH 常被编辑器自带的精简 ffmpeg（如 TRAE 的 app/bin/ffmpeg.exe）
+    顶到最前，这种裁剪版缺 lavfi / wav muxer，一遇到提轨就报
+    "Unable to choose an output format for *.wav"，故这里显式挑选完整版。"""
+    global _FFMPEG_CACHE
+    if _FFMPEG_CACHE is not None:
+        return _FFMPEG_CACHE
+
+    cand = os.environ.get("FFMPEG_PATH") or ""
+    if cand and Path(cand).exists():
+        _FFMPEG_CACHE = cand
+        return cand
+
+    pkgs = Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
+    if pkgs.is_dir():
+        for d in sorted(pkgs.iterdir(), reverse=True):
+            if "ffmpeg" not in d.name.lower():
+                continue
+            # 完整 build 常 pack 在子目录（如 ffmpeg-9.0-full_build/bin/ffmpeg.exe），用 glob 覆盖
+            for exe in d.glob("*/bin/ffmpeg.exe"):
+                if exe.exists():
+                    _FFMPEG_CACHE = str(exe)
+                    return str(exe)
+
+    for name in ("ffmpeg.exe", "ffmpeg"):
+        w = shutil.which(name)
+        if w and "TRAE SOLO CN" not in w:
+            _FFMPEG_CACHE = w
+            return w
+
+    _FFMPEG_CACHE = shutil.which("ffmpeg") or "ffmpeg"
+    return _FFMPEG_CACHE
