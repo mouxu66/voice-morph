@@ -684,6 +684,59 @@ def list_clips():
     return {"clips": clips}
 
 
+def _locate_vocals(stem: str) -> Path | None:
+    """定位某素材的纯人声轨：demucs 分离产物优先，其次 vocals/ 下的 44.1k 升轨。
+
+    素材 stem 与切片前缀可能不同（去掉非法字符/截断），用多候选匹配。
+    """
+    cands = {stem, _clip_prefix(stem), stem[:12]} if stem else set()
+    demucs = cfg.MEDIA_DIR / "demucs_out"
+    if demucs.is_dir():
+        for model in demucs.iterdir():
+            if not model.is_dir():
+                continue
+            for sub in model.iterdir():
+                if not sub.is_dir():
+                    continue
+                if any(sub.name == c or sub.name.startswith(c) for c in cands):
+                    v = sub / "vocals.wav"
+                    if v.exists():
+                        return v
+    for c in cands:
+        v = cfg.MEDIA_DIR / "vocals" / f"{c}.wav"
+        if v.exists():
+            return v
+    return None
+
+
+@app.post(API_PREFIX + "/clips/diarize")
+def diarize_clips(file: str = Query(..., description="素材文件名或切片前缀，用于定位该素材的切片")):
+    """对指定素材做说话人分离，推荐主说话人（辅助从多人/BGM 混音素材挑音色）。
+
+    有纯人声轨时走 CAM++ 完整 diarization（VAD+分块声纹+HDBSCAN 聚类，输出按时间的说话人
+    分段，并把切片分派到对应说话人）；无音轨时回退为纯切片声纹聚类。
+
+    纯本地、Apache-2.0、免认证，首次运行自动下载模型并缓存。
+    """
+    import speaker_sep
+    stem = Path(file).stem if file and file != "/" else ""
+    prefixes = {stem[:12] if stem else ""}
+    if stem:
+        prefixes.add(_clip_prefix(stem))
+    prefixes.discard("")
+    paths = [f for f in CLIPS_DIR.glob("*.wav")
+             if any(f.stem.startswith(p) for p in prefixes)]
+    if not paths:
+        raise HTTPException(404, f"「{file}」没有可分析的切片，请先对其运行流水线。")
+    try:
+        vocal = _locate_vocals(stem)
+        if vocal:
+            return speaker_sep.analyze_audio(vocal, paths)
+        return speaker_sep.analyze_clips(paths)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, str(e))
+
+
 @app.get(API_PREFIX + "/export/rvc")
 def export_rvc(request: Request):
     """把片段打包成 RVC 训练集 zip（可选 ?clips=a&clips=b 只导出指定片段）。

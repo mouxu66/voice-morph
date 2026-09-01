@@ -88,6 +88,42 @@ export async function listClips(): Promise<ClipItem[]> {
   return data.clips;
 }
 
+// ---- 说话人分离（CAM++ diarization） ----
+
+export type DiarSpeaker = {
+  id: number;
+  label: string;
+  duration: number;
+  segment_count: number;
+  ratio: number;
+  is_main: boolean;
+};
+export type DiarSegment = {
+  start: number;
+  end: number;
+  duration: number;
+  spk: number;
+  label: string;
+  is_main: boolean;
+};
+export type DiarClip = { name: string; spk: number | null };
+export type DiarizeResult = {
+  ok: boolean;
+  analyzed: number;
+  n_speakers: number;
+  main_speaker: number;
+  main_label: string;
+  speakers: DiarSpeaker[];
+  segments: DiarSegment[];
+  clips: DiarClip[];
+  model?: string;
+};
+
+/** 对某素材做说话人分离，返回说话人列表 + 每个切片的说话人标签（按主说话人推荐） */
+export async function diarizeClips(file: string): Promise<DiarizeResult> {
+  return jsonFetch<DiarizeResult>(`/clips/diarize?file=${encodeURIComponent(file)}`, { method: "POST" });
+}
+
 /** 上传视频素材到 media/raw_videos/（拖拽/选择） */
 export async function uploadVideo(file: File, onProgress?: (p: number) => void): Promise<{ ok: boolean; name: string; size_mb: number }> {
   const form = new FormData();

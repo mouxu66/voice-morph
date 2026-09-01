@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   cancelPipeline,
   deleteRawVideo,
+  diarizeClips,
   getPipelineStatus,
   listClips,
   listRawVideos,
@@ -9,6 +10,7 @@ import {
   openFolder,
   runPipeline,
   uploadVideo,
+  type DiarizeResult,
   type PipelineStatus,
 } from "@/api/client"
 import { useAppStore } from "@/store/useAppStore"
@@ -28,6 +30,12 @@ export function useWorkshop() {
   const [qualityFilter, setQualityFilter] = useState<"全部" | "推荐" | "需检查">("全部")
   const [reviewMode, setReviewMode] = useState<"初筛" | "精审">("初筛")
   const [decisions, setDecisions] = useState<Record<string, "采纳" | "驳回">>({})
+
+  // 说话人分离（CAM++ diarization）
+  const [diar, setDiar] = useState<DiarizeResult | null>(null)
+  const [diarFor, setDiarFor] = useState<string>("")
+  const [diarBusy, setDiarBusy] = useState(false)
+  const [speakerFilter, setSpeakerFilter] = useState<number | null>(null)
 
   // 流水线（后台运行 + 轮询进度）
   const [pipeline, setPipeline] = useState<PipelineStatus>(IDLE_PIPELINE)
@@ -140,6 +148,23 @@ export function useWorkshop() {
     }
   }
 
+  // 说话人分离：对某素材跑 CAM++ diarization，得到各说话人 + 每个切片的归属
+  const runDiarize = useCallback(async (file: string) => {
+    setErrorMessage("")
+    setDiarBusy(true)
+    try {
+      const result = await diarizeClips(file)
+      setDiar(result)
+      setDiarFor(file)
+      setSpeakerFilter(null)
+      setFeedback(`「${file}」识别出 ${result.n_speakers} 位说话人，主说话人推荐：${result.main_label}`)
+    } catch (error) {
+      setErrorMessage(friendlyError(error, "说话人分离失败"))
+    } finally {
+      setDiarBusy(false)
+    }
+  }, [])
+
   // RVC 训练集导出（带当前采纳片段）
   const exportRvc = async () => {
     setErrorMessage("")
@@ -164,12 +189,22 @@ export function useWorkshop() {
 
   const selectedItems = useMemo(() => clips.filter((clip) => selectedClips.has(clip.name)), [clips, selectedClips])
   const selectedDuration = selectedItems.reduce((total, clip) => total + clip.duration_s, 0)
+  // 说话人分离结果里，切片名 -> 说话人 id（仅当前分析素材的切片）
+  const clipSpk = useMemo(() => {
+    const m: Record<string, number> = {}
+    if (diar) for (const c of diar.clips) if (c.spk != null) m[c.name] = c.spk
+    return m
+  }, [diar])
   const visibleClips = useMemo(() => clips.filter((clip) => {
     const quality = clip.loudness_dbfs >= -18 && clip.loudness_dbfs <= -8 ? "推荐" : "需检查"
     if (qualityFilter !== "全部" && quality !== qualityFilter) return false
     if (reviewMode === "精审" && decisions[clip.name]) return false
+    // 说话人过滤只对已做分离的素材生效（clipSpk 仅含该素材切片）
+    if (speakerFilter != null && diar) {
+      if (clipSpk[clip.name] !== speakerFilter) return false
+    }
     return true
-  }), [clips, decisions, qualityFilter, reviewMode])
+  }), [clips, decisions, qualityFilter, reviewMode, speakerFilter, diar, clipSpk])
 
   // 精审快捷键：A 采纳 / R 驳回
   const setDecision = useCallback((clipName: string, decision: "采纳" | "驳回") => {
@@ -204,6 +239,7 @@ export function useWorkshop() {
     uploading, uploadProgress, dragging, setDragging, fileInputRef, handleFiles, openRawFolder, exportRvc,
     deleteVideo,
     loadWorkshop, toggleClip, clearSelectedClips, setDecision,
+    diar, diarFor, diarBusy, speakerFilter, setSpeakerFilter, runDiarize,
     clipAudioUrl: (clip: ClipItem) => mediaUrl(`/media/clips/${clip.name}.wav`),
   }
 }
