@@ -21,20 +21,20 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 import config as cfg
+from common import is_valid_voice_id, selected_voice, voice_ref
 
-VOICEBANK = cfg.MEDIA_DIR / "voicebank"
 OUT = cfg.OUTPUTS_DIR
 OUT.mkdir(exist_ok=True)
-
-_VOICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 router = APIRouter(prefix="/api")
 
 
 # ---------------- 文本切分 ----------------
 
-# 中文按句末标点切；英文按 .!? 切（后跟空白或行尾）
-_SENT_END = re.compile(r"(?<=[。！？；!?])|(?<=[.](?=\s)|[!](?=\s)|[?](?=\s))")
+# 中文按全角句末标点切；英文按 .!? 切（必须后跟空白，避免 U.S.A / 3.14 误切）。
+# 注意：全角分支只能含全角标点——半角 !? 若混入会不检查后续空白就切分，
+# 导致 "Hi!" 被拆成 "Hi"，碎片拼句时与下一句单词粘连（如 HiBye）。
+_SENT_END = re.compile(r"(?<=[。！？；])|(?<=[.!?](?=\s))")
 _MAX_SENT = 80    # 单句超过这个字数则在逗号处二次切分
 _MIN_SENT = 4     # 碎片短于这个字数并入下一句
 _SUB_SENT = re.compile(r"(?<=[，、,])")
@@ -48,7 +48,7 @@ def split_sentences(text: str) -> list[str]:
     for s in raw:
         if not s:
             continue
-        buf = (buf + s) if not buf else buf
+        buf += s  # 无条件拼接：buf 未达到 _MIN_SENT 时绝不能丢句（旧实现会在此时静默丢弃 s）
         if len(buf) >= _MIN_SENT:
             parts.append(buf)
             buf = ""
@@ -141,33 +141,16 @@ def _detect_lang(s: str) -> str:
     return "Chinese" if cjk * 2 >= len(s.strip()) else "English"
 
 
-def _voice_ref(voice_id: str) -> Path:
-    ref = VOICEBANK / voice_id / "reference.wav"
-    if not ref.exists():
-        raise HTTPException(status_code=404, detail=f"音色 [{voice_id}] 不存在")
-    return ref
-
-
-def _selected_voice() -> str:
-    f = VOICEBANK / "selected_voice.json"
-    if f.exists():
-        try:
-            return str(json.loads(f.read_text("utf-8")).get("voice_id") or "")
-        except Exception:
-            return ""
-    return ""
-
-
 @router.post("/audiobook/run")
 async def audiobook_run(req: AudiobookRequest):
     """提交有声书合成任务。文本自动识别 SRT（含 --> 时间轴）或普通长文。"""
     with _ab_lock:
         if AUDIOBOOK_STATE["running"]:
             raise HTTPException(status_code=409, detail="已有任务在跑，先取消或等待完成")
-        voice_id = req.voice_id or _selected_voice()
-        if not voice_id or not _VOICE_ID_RE.match(voice_id):
+        voice_id = req.voice_id or selected_voice()
+        if not voice_id or not is_valid_voice_id(voice_id):
             raise HTTPException(status_code=400, detail="请先指定合法音色")
-        _voice_ref(voice_id)  # 前置校验，避免起线程后才发现音色不存在
+        voice_ref(voice_id)  # 前置校验，避免起线程后才发现音色不存在
 
         mode = "srt" if looks_like_srt(req.text) else "text"
         if mode == "srt":
@@ -200,7 +183,7 @@ def _audiobook_worker(jobs, voice_id: str, gap_ms: int, mode: str):
     from pydub import AudioSegment
     from qwen3_tts import tts as qwen_tts
 
-    ref = _voice_ref(voice_id)
+    ref = voice_ref(voice_id)[0]
     stamp = int(time.time() * 1000)
     pieces: list[AudioSegment] = []
     gap = AudioSegment.silent(duration=gap_ms, frame_rate=24000)
@@ -268,10 +251,14 @@ def _audiobook_worker(jobs, voice_id: str, gap_ms: int, mode: str):
         final.export(str(final_path), format="wav")
         import soundfile as sf
         d, sr = sf.read(str(final_path))
+        duration_s = round(len(d) / sr, 1)
+        from history import register as history_register
+        history_register("audiobook", voice_id, fname, f"/api/media/outputs/{fname}",
+                         duration_s, input_text="")
         AUDIOBOOK_STATE.update(
             running=False, status="done", percent=100, current_text="",
             url=f"/api/media/outputs/{fname}",
-            duration_s=round(len(d) / sr, 1),
+            duration_s=duration_s,
             error="" if not failed else f"{failed} 句合成失败（以静音占位）",
         )
     except Exception as e:

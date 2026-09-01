@@ -371,6 +371,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 
 import config as cfg  # noqa: E402
+from common import MAX_UPLOAD_BYTES  # noqa: E402
 import soundfile as sf  # noqa: E402
 
 router = APIRouter(prefix="/api/effects")
@@ -397,9 +398,13 @@ async def effects_apply(file: UploadFile = File(...), chain: str = "[]"):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"chain 解析失败: {e}")
 
+    if (file.size or 0) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝处理")
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="空文件")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝处理")
     try:
         import io
         data, sr = sf.read(io.BytesIO(raw), dtype="float32", always_2d=False)
@@ -412,6 +417,10 @@ async def effects_apply(file: UploadFile = File(...), chain: str = "[]"):
     stem = Path(file.filename or "audio").stem
     out_path = cfg.OUTPUTS_DIR / f"fx_{stem}.wav"
     sf.write(str(out_path), out, sr, subtype="PCM_16")
+
+    from history import register as history_register
+    history_register("fx", "", out_path.name, f"/api/media/outputs/{out_path.name}",
+                     len(out) / sr, params={"chain": steps})
 
     headers = {"X-Fx-Skipped": "; ".join(skipped) or "0"}
     return FileResponse(str(out_path), media_type="audio/wav", headers=headers)

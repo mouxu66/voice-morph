@@ -1,13 +1,33 @@
-# M2 转换服务依赖（核心运行时）
+# M2 转换服务依赖（主环境 .venv · 核心运行时）
 # PyTorch 需单独用 cu128 索引安装（见 README）：
 #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 torch
 torchaudio
 numpy
+scipy
+soundfile
 pydub
 fastapi
 uvicorn[standard]
 python-multipart
+pydantic
+requests
 
 # 音频处理
 demucs          # 人声分离（去 BGM）
+
+# 可选能力（缺了对应功能降级，不影响主流程）
+librosa         # 变声效果器 pitch/speed；缺失时这两个效果直通
+webrtcvad       # 级联变声 VAD 分句；缺失时回退能量 VAD
+pyaudiowpatch   # 桌宠「录当前声音」WASAPI 内录；缺失时桌宠入口报错提示
+
+# 测试
+pytest
+httpx
+
+# 说明
+# 1) Qwen3-TTS worker（m2_server/qwen3_tts_service.py）跑在独立环境
+#    tts_trial/venv312（torch2.8+cu129），依赖见 tts_trial/Qwen3-TTS/。
+# 2) 实时/离线变声与微信语音播放（rvc_live / cascade_stream / offline_vc /
+#    wechat_voice 的子进程部分）跑在 D:\RVC\.venv，额外需要 sounddevice /
+#    soundfile / numpy / requests（README「新机器部署」章节有说明）。

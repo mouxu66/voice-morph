@@ -19,6 +19,8 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 import config as cfg
+from common import MAX_UPLOAD_BYTES
+from rvc_common import ensure_infer_pth
 from rvc_live import _live_proc_alive
 
 OUT = cfg.OUTPUTS_DIR
@@ -27,41 +29,6 @@ INFER_PY = Path(__file__).resolve().parent / "offline_vc_infer.py"
 RVC_VENV_PY = cfg.RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 
 router = APIRouter(prefix="/api")
-
-
-def _find_infer_pth(voice_id: str) -> Path | None:
-    """找该音色可直接推理的 RVC 权重。
-
-    logs/ 下的 <id>.pth / G_*.pth 是训练检查点（键 model/optimizer/…，无 weight），
-    rtrvc.get_synthesizer 读它会 KeyError('weight')。推理格式权重在
-    assets/weights/<id>.pth（训练时自动提取）。缺失时用 RVC 自带的
-    train.process_ckpt.extract_small_model 从训练检查点提取一份（幂等缓存）。
-    """
-    infer_pth = cfg.RVC_ROOT / "assets" / "weights" / f"{voice_id}.pth"
-    if infer_pth.exists():
-        return infer_pth
-
-    log_dir = cfg.RVC_ROOT / "logs" / voice_id
-    ckpt = next(iter(sorted(log_dir.glob("G_*.pth"))), None)
-    if ckpt is None:
-        return None
-    try:
-        import os
-        import shutil
-        import sys
-
-        sys.path.insert(0, str(cfg.RVC_ROOT))
-        os.environ["PYTHONPATH"] = str(cfg.RVC_ROOT)
-        from train.process_ckpt import extract_small_model
-
-        (cfg.RVC_ROOT / "assets" / "weights").mkdir(parents=True, exist_ok=True)
-        extract_small_model(str(ckpt), voice_id, "48k", 1, f"{voice_id} RVC v2 48k", "v2")
-        if not infer_pth.exists():
-            return None
-        shutil.copy2(infer_pth, log_dir / f"{voice_id}.pth")
-        return infer_pth
-    except Exception:
-        return None
 
 OFFLINEVC_STATE: dict = {
     "running": False,
@@ -89,7 +56,7 @@ async def offlinevc_run(
             raise HTTPException(status_code=409, detail="已有转换任务在跑，请稍候")
         if not voice_id:
             raise HTTPException(status_code=400, detail="请先选择音色")
-        pth = _find_infer_pth(voice_id)
+        pth = ensure_infer_pth(voice_id)
         if pth is None:
             raise HTTPException(status_code=404, detail=f"音色 [{voice_id}] 没有可推理的 RVC 模型，先到实时变声页训练")
         if not RVC_VENV_PY.exists():
@@ -107,7 +74,12 @@ async def offlinevc_run(
 
     stamp = int(time.time() * 1000)
     raw_path = OUT / f"ovc_src_{stamp}{Path(file.filename or 'a.wav').suffix or '.wav'}"
-    raw_path.write_bytes(await file.read())
+    if (file.size or 0) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝转换")
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝转换")
+    raw_path.write_bytes(raw)
     threading.Thread(
         target=_ovc_worker,
         args=(raw_path, voice_id, pth, pitch, index_rate, denoise, stamp),
@@ -146,10 +118,16 @@ def _ovc_worker(raw_path: Path, voice_id: str, pth: Path,
             raise RuntimeError("RVC 推理失败: " + " | ".join(tail)[-400:])
 
         d, sr = sf.read(str(out_path))
+        duration_s = round(len(d) / sr, 1)
+        from history import register as history_register
+        history_register("offlinevc", voice_id, out_path.name,
+                         f"/api/media/outputs/{out_path.name}", duration_s,
+                         params={"pitch": pitch, "index_rate": index_rate,
+                                 "denoise": denoise})
         OFFLINEVC_STATE.update(
             running=False, status="done", message="完成",
             url=f"/api/media/outputs/{out_path.name}",
-            duration_s=round(len(d) / sr, 1), error="",
+            duration_s=duration_s, error="",
         )
     except Exception as e:
         OFFLINEVC_STATE.update(running=False, status="error", message="",

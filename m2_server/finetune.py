@@ -32,13 +32,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 import config as cfg
-
-# 与 server.py 的 is_valid_voice_id 同规则（独立实现避免循环导入）
-_VOICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-def is_valid_voice_id(voice_id: str) -> bool:
-    return bool(voice_id) and bool(_VOICE_ID_RE.match(voice_id))
+from common import is_valid_voice_id
 
 router = APIRouter(prefix="/api")
 

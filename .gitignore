@@ -56,6 +56,9 @@ tts_trial/ft_train_*.jsonl
 # ===== 试验归档（诊断 scratch，不入库）=====
 tts_trial/_archive/
 
+# ===== 临时垃圾（删除脚本时的临时产物，不入库）=====
+_trash_20260831/
+
 # ===== Qwen3-TTS 官方仓库（第三方 clone）=====
 tts_trial/Qwen3-TTS/
 

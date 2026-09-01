@@ -33,12 +33,16 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 import config as cfg
+from common import MAX_UPLOAD_BYTES, is_valid_voice_id, selected_voice, voice_ref
+from history import register as history_register
+from history_api import router as history_router
 from finetune import router as ft_router
 from audiobook import router as audiobook_router
 from cascade import router as cascade_router
 from offline_vc import router as offlinevc_router
 from effects import router as effects_router
-from rvc_live import router as rvc_live_router, _find_pth
+from rvc_common import exp_snapshot, find_pth
+from rvc_live import router as rvc_live_router
 from wechat_voice import router as wechat_router
 
 warnings.filterwarnings("ignore")
@@ -66,13 +70,6 @@ PIPELINE_STATE = {
 }
 _pipeline_cancel = threading.Event()
 _pipeline_lock = threading.Lock()
-
-# 音色 ID 白名单：仅允许字母/数字/下划线/连字符，杜绝路径穿越（如 .. 或 /）
-_VOICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-def is_valid_voice_id(voice_id: str) -> bool:
-    return bool(voice_id) and bool(_VOICE_ID_RE.match(voice_id))
 
 app = FastAPI(title="变声 · M2 转换服务", version="0.1.0")
 
@@ -122,6 +119,7 @@ app.include_router(offlinevc_router)
 app.include_router(cascade_router)
 app.include_router(effects_router)
 app.include_router(wechat_router)
+app.include_router(history_router)
 
 
 @app.get(API_PREFIX + "/health")
@@ -201,8 +199,8 @@ def diagnose():
         })
 
     # 5) 默认音色 RVC 权重（pth + index）
-    weights_dir = _rvc_weights_dir(RVC_DEFAULT_EXP)
-    pth = _find_pth(RVC_DEFAULT_EXP, weights_dir)
+    weights_dir = cfg.rvc_exp_dirs(RVC_DEFAULT_EXP)[0]
+    pth = find_pth(RVC_DEFAULT_EXP, weights_dir)
     idx = next(weights_dir.glob("added_*.index"), None) if weights_dir.exists() else None
     if pth and idx:
         items.append({
@@ -272,7 +270,7 @@ def list_voices():
             "duration_s": round(len(AudioSegment.from_wav(str(ref))) / 1000, 1),
             "kind": meta.get("kind") or "clone",
             "has_reference": True,
-            **_rvc_exp_snapshot(d.name),
+            **exp_snapshot(d.name),
         }
 
     # 来源 2：RVC 实验目录（有模型/语料但不在音色库里的）
@@ -281,7 +279,7 @@ def list_voices():
         for d in rvc_logs.iterdir():
             if not d.is_dir() or d.name in items:
                 continue
-            snap = _rvc_exp_snapshot(d.name)
+            snap = exp_snapshot(d.name)
             # 无训练产物也无语料的噪音目录不展示
             if not (snap["pth_exists"] or snap["index_exists"] or snap["dataset_count"]):
                 continue
@@ -370,6 +368,38 @@ async def create_voicebank(voice_id: str, request: Request):
 
 # ---------------- M1 素材流水线 ----------------
 
+def _video_meta(name: str) -> dict:
+    """读取素材打标结果 media/raw_videos/<name>.meta.json；不存在返回 {}。"""
+    mp = RAW_DIR / f"{name}.meta.json"
+    if mp.exists():
+        try:
+            return json.loads(mp.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _start_tagging(name: str) -> None:
+    """后台线程：对素材打标（FRD F2），写 meta.json。失败不阻断上传。"""
+    def _job():
+        from tagging import tag_video
+        src = RAW_DIR / name
+        if not src.exists():
+            return  # 素材已被删，静默终止
+        meta = {"tagging": True, "tagged_at": int(time.time())}
+        (RAW_DIR / f"{name}.meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        result = tag_video(src, tmp_dir=cfg.MEDIA_DIR / "_tag_tmp")
+        result["tagged_at"] = int(time.time())
+        try:
+            (RAW_DIR / f"{name}.meta.json").write_text(
+                json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception:
+            pass
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
 @app.get(API_PREFIX + "/raw_videos")
 def list_raw_videos():
     usage = _raw_video_usage()
@@ -377,8 +407,23 @@ def list_raw_videos():
     for f in RAW_DIR.iterdir():
         if f.suffix.lower() in (".mp4", ".mkv", ".mov", ".flv", ".webm", ".avi"):
             videos.append({"name": f.name, "size_mb": round(f.stat().st_size / 1e6, 1),
-                           "used_by": usage.get(f.name, [])})
+                           "used_by": usage.get(f.name, []),
+                           "meta": _video_meta(f.name)})
     return {"videos": videos}
+
+
+@app.post(API_PREFIX + "/raw_videos/{name}/tag")
+def tag_raw_video(name: str):
+    """对已存在素材强制（重新）打标。文件不存在返回 404。"""
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(400, "非法文件名")
+    p = RAW_DIR / name
+    if not p.exists():
+        raise HTTPException(404, f"素材不存在: {name}")
+    if p.suffix.lower() not in _VIDEO_SUFFIXES and p.suffix.lower() not in _AUDIO_SUFFIXES:
+        raise HTTPException(400, "该文件不是可打标的音视频素材")
+    _start_tagging(name)
+    return {"ok": True, "name": name, "tagging": True}
 
 
 def _clip_prefix(video_stem: str) -> str:
@@ -505,10 +550,15 @@ async def upload_video(file: UploadFile = File(...)):
     if dest.exists():
         raise HTTPException(409, f"同名文件已存在：{file.filename}")
     RAW_DIR.mkdir(parents=True, exist_ok=True)
+    if (file.size or 0) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"文件过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝上传")
     data = await file.read()
     if not data:
         raise HTTPException(400, "文件为空")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"文件过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝上传")
     dest.write_bytes(data)
+    _start_tagging(file.filename)  # 后台打标（FRD F2），不阻塞上传响应
     return {"ok": True, "name": file.filename, "size_mb": round(len(data) / 1e6, 1)}
 
 
@@ -536,52 +586,57 @@ def open_folder(req: OpenFolderRequest):
     return {"ok": True, "path": str(d)}
 
 
+def _pipeline_job(videos: list[Path]):
+    """流水线任务体：逐个素材 提轨→去BGM→切片，进度写 PIPELINE_STATE。
+
+    独立成模块级函数，便于 /pipeline/run 与桌宠内录（capture）复用。"""
+    try:
+        mod = _load_pipeline_module()
+        total = len(videos)
+        clips = 0
+        for i, v in enumerate(videos):
+            if _pipeline_cancel.is_set():
+                raise mod.PipelineCancelled()
+            base = round((i / total) * 88)
+            _update_pipeline(step="extract", percent=base + 2,
+                             message=f"({i + 1}/{total}) 提取音轨：{v.name}")
+            wav = mod.step1_extract(v, _pipeline_cancel)
+            _update_pipeline(step="separate", percent=base + 12,
+                             message=f"({i + 1}/{total}) 去除背景音乐：{v.name}（首次需下载模型，较慢）")
+            vocal = mod.step2_separate(wav, _pipeline_cancel)
+            _update_pipeline(step="slice", percent=base + 24,
+                             message=f"({i + 1}/{total}) 静音检测切分：{v.name}")
+            n = mod.step3_slice(vocal, _clip_prefix(v.stem), _pipeline_cancel)
+            clips += n
+            _update_pipeline(clips=clips)
+        _update_pipeline(status="done", step="", percent=100,
+                         message=f"流水线完成，共切出 {clips} 个片段")
+    except Exception as e:
+        if type(e).__name__ == "PipelineCancelled":
+            _update_pipeline(status="cancelled", step="", message="已取消，已完成的片段会保留")
+        else:
+            _update_pipeline(status="error", step="", message="流水线出错", error=str(e))
+    finally:
+        _update_pipeline(running=False)
+
+
 @app.post(API_PREFIX + "/pipeline/run")
 def run_pipeline():
     """后台启动 M1 流水线，前端轮询 /pipeline/status 获取分步进度"""
     if PIPELINE_STATE["running"]:
         raise HTTPException(400, "流水线正在运行中，请稍候")
+    # 视频与音频素材统一进流水线（音频文件 ffmpeg -vn 提轨同样有效，可来自上传/录音等多种渠道）
     videos = [f for f in RAW_DIR.iterdir()
-              if f.suffix.lower() in (".mp4", ".mkv", ".mov", ".flv", ".webm", ".avi")]
+              if f.suffix.lower() in _VIDEO_SUFFIXES or f.suffix.lower() in _AUDIO_SUFFIXES]
     if not videos:
-        raise HTTPException(400, "media/raw_videos/ 里没有视频素材，请先上传或放入素材")
+        raise HTTPException(400, "media/raw_videos/ 里没有视频/音频素材，请先上传或放入素材")
 
     _pipeline_cancel.clear()
     _update_pipeline(
         running=True, status="running", step="prepare",
         message=f"准备处理 {len(videos)} 个视频…", percent=1, clips=0, error="")
 
-    def _job():
-        try:
-            mod = _load_pipeline_module()
-            total = len(videos)
-            clips = 0
-            for i, v in enumerate(videos):
-                if _pipeline_cancel.is_set():
-                    raise mod.PipelineCancelled()
-                base = round((i / total) * 88)
-                _update_pipeline(step="extract", percent=base + 2,
-                                 message=f"({i + 1}/{total}) 提取音轨：{v.name}")
-                wav = mod.step1_extract(v, _pipeline_cancel)
-                _update_pipeline(step="separate", percent=base + 12,
-                                 message=f"({i + 1}/{total}) 去除背景音乐：{v.name}（首次需下载模型，较慢）")
-                vocal = mod.step2_separate(wav, _pipeline_cancel)
-                _update_pipeline(step="slice", percent=base + 24,
-                                 message=f"({i + 1}/{total}) 静音检测切分：{v.name}")
-                n = mod.step3_slice(vocal, _clip_prefix(v.stem), _pipeline_cancel)
-                clips += n
-                _update_pipeline(clips=clips)
-            _update_pipeline(status="done", step="", percent=100,
-                             message=f"流水线完成，共切出 {clips} 个片段")
-        except Exception as e:
-            if type(e).__name__ == "PipelineCancelled":
-                _update_pipeline(status="cancelled", step="", message="已取消，已完成的片段会保留")
-            else:
-                _update_pipeline(status="error", step="", message="流水线出错", error=str(e))
-        finally:
-            _update_pipeline(running=False)
-
-    threading.Thread(target=_job, daemon=True).start()
+    threading.Thread(target=_pipeline_job, args=(videos,), daemon=True).start()
     return {"ok": True, "started": True}
 
 
@@ -724,6 +779,86 @@ def audio_restore():
     return _run_audio_config("restore")
 
 
+# ---------------- 音频设备诊断还原看板（FRD F4） ----------------
+# 实时/级联变声启动前的前置校验 + 异常残留的自动巡检还原。
+# 巡检只处理「有备份但无变声进程」这一种残留（绝不擅改用户手动设置）。
+
+_AUDIO_BACKUP = Path(os.environ.get("LOCALAPPDATA", "")) / "rvc_audio_backup.txt"
+AUDIO_AUDIT_INTERVAL_S = float(os.environ.get("VM_AUDIO_AUDIT_S", "30"))
+
+_AUDIO_AUDIT = {"auto_restored": [], "last_error": ""}
+_audit_lock = threading.Lock()
+_audit_started = False
+
+
+def _backup_exists() -> bool:
+    return _AUDIO_BACKUP.exists()
+
+
+def _any_voice_alive() -> bool:
+    from cascade import _cascade_alive
+    from rvc_live import _live_proc_alive
+    return bool(_cascade_alive() or _live_proc_alive())
+
+
+def _audio_stale() -> bool:
+    """有备份残留但无变声进程 = 异常残留，需要自动还原。"""
+    return _backup_exists() and not _any_voice_alive()
+
+
+@app.get(API_PREFIX + "/audio/dashboard")
+def audio_dashboard():
+    """音频设备诊断看板：当前设备 + 是否残留异常 + 自动还原事件列表。"""
+    status = _run_audio_config("status")
+    with _audit_lock:
+        return {
+            "ok": True,
+            "devices": status if isinstance(status, dict) else {},
+            "backup_exists": _backup_exists(),
+            "stale": _audio_stale(),
+            "auto_restored": list(_AUDIO_AUDIT["auto_restored"]),
+            "last_error": _AUDIO_AUDIT["last_error"],
+        }
+
+
+def _audit_once():
+    """执行一次巡检：有残留则还原（restore 失败走 reset 兜底）。返回事件 dict 或 None。"""
+    if not _audio_stale():
+        return None
+    data = _run_audio_config("restore")
+    ok = bool(data.get("ok"))
+    action = "restore"
+    if not ok:
+        data2 = _run_audio_config("reset")
+        ok = bool(data2.get("ok"))
+        action = "reset"
+    event = {"ts": int(time.time()), "action": action, "result": "ok" if ok else "fail"}
+    with _audit_lock:
+        _AUDIO_AUDIT["auto_restored"].append(event)
+        _AUDIO_AUDIT["auto_restored"] = _AUDIO_AUDIT["auto_restored"][-20:]
+        _AUDIO_AUDIT["last_error"] = "" if ok else str(data.get("error") or "还原失败")
+    return event
+
+
+def _audio_audit_loop():
+    """后台巡检：有备份残留且无变声进程时自动还原。"""
+    while True:
+        time.sleep(AUDIO_AUDIT_INTERVAL_S)
+        try:
+            _audit_once()
+        except Exception as e:
+            with _audit_lock:
+                _AUDIO_AUDIT["last_error"] = str(e)
+
+
+def _start_audio_audit():
+    global _audit_started
+    if _audit_started:
+        return
+    _audit_started = True
+    threading.Thread(target=_audio_audit_loop, daemon=True).start()
+
+
 # ---------------- 静态音频 ----------------
 
 @app.get(API_PREFIX + "/media/{kind}/{name:path}")
@@ -748,30 +883,16 @@ class TTSRequest(BaseModel):
     voice_id: str = ""
 
 
-def _voice_ref(voice_id: str) -> tuple[Path, str]:
-    """读取音色档案的参考音频与文字稿（ref_text.txt 可缺省）。"""
-    if not is_valid_voice_id(voice_id):
-        raise HTTPException(status_code=400, detail="voice_id 非法")
-    ref = VOICEBANK / voice_id / "reference.wav"
-    if not ref.exists():
-        raise HTTPException(status_code=404, detail=f"音色 [{voice_id}] 不存在")
-    ref_text = ""
-    rt = VOICEBANK / voice_id / "ref_text.txt"
-    if rt.exists():
-        ref_text = rt.read_text("utf-8").strip()
-    return ref, ref_text
-
-
 @app.post(API_PREFIX + "/tts")
 def tts_endpoint(req: TTSRequest):
     """文字→语音：按 voice_id 音色克隆合成（不传 voice_id 则用当前选中音色，都没有则报错）。
     结果保存为 outputs/tts_*.wav 并返回 URL，便于前端下载与历史持久化。"""
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
-    voice_id = req.voice_id or _load_selected_voice()
+    voice_id = req.voice_id or selected_voice()
     if not voice_id:
         raise HTTPException(status_code=400, detail="请先选择音色")
-    ref, _ref_text = _voice_ref(voice_id)
+    ref, _ref_text = voice_ref(voice_id)
     try:
         from qwen3_tts import tts as qwen_tts
         # 优先 ICL 语气克隆(ref_text 有内容即走 ICL，音色/语气最贴原视频)；
@@ -788,11 +909,14 @@ def tts_endpoint(req: TTSRequest):
     out.write_bytes(wav_bytes)
     import soundfile as sf
     d, sr = sf.read(str(out))
+    duration_s = round(len(d) / sr, 1)
+    history_register("tts", voice_id, fname, f"/api/media/outputs/{fname}",
+                     duration_s, input_text=req.text)
     return JSONResponse({
         "ok": True,
         "voice_id": voice_id,
         "url": f"/api/media/outputs/{fname}",
-        "duration_s": round(len(d) / sr, 1),
+        "duration_s": duration_s,
     })
 
 
@@ -814,17 +938,6 @@ PREVIEW_TEXTS = [
     "他慢慢走进书店，在角落里找到一本旧诗集。",
     "周末我们骑车去河边，看看落日再回来。",
 ]
-
-
-def _load_selected_voice() -> str:
-    """读取当前选中的音色（挖掘保存时写入 selected_voice.json）。"""
-    f = VOICEBANK / "selected_voice.json"
-    if f.exists():
-        try:
-            return str(json.loads(f.read_text("utf-8")).get("voice_id") or "")
-        except Exception:
-            return ""
-    return ""
 
 
 def _mine_worker_thread(params: dict | None = None):
@@ -897,11 +1010,14 @@ def mine_preview(req: MinePreviewRequest):
     out.write_bytes(wav_bytes)
     import soundfile as sf
     d, sr = sf.read(str(out))
+    duration_s = round(len(d) / sr, 1)
+    history_register("mine", "", fname, f"/api/media/outputs/{fname}",
+                     duration_s, input_text=text)
     return JSONResponse({
         "ok": True, "clip": req.clip, "text": text,
         "ref_text": ref_text,
         "url": f"/api/media/outputs/{fname}",
-        "duration_s": round(len(d) / sr, 1),
+        "duration_s": duration_s,
     })
 
 
@@ -963,6 +1079,65 @@ def mine_save(req: MineSaveRequest):
             "clips": len(members)}
 
 
+# ---------------- 桌宠一键内录（loopback 抓系统正在播的声音 → 解析挖掘） ----------------
+
+CAPTURE_STATE: dict = {"recording": False, "message": "", "file": ""}
+
+
+class CaptureLoopbackRequest(BaseModel):
+    seconds: float = 15.0   # 录制时长（3~120 秒）
+    auto: bool = True       # 录完自动跑 流水线（demucs 去BGM+切片）+ 音色挖掘
+
+
+def _capture_auto_worker(files: list[Path]):
+    """内录后的自动流程：流水线 → 音色挖掘，进度走现有 PIPELINE_STATE / MINE_STATE。"""
+    try:
+        _pipeline_job(files)
+        if PIPELINE_STATE.get("status") == "done":
+            _mine_worker_thread()
+    except Exception as e:   # 后台流程：记录即可，不中断服务
+        print(f"[capture] 自动解析/挖掘失败: {e}")
+
+
+@app.post(API_PREFIX + "/capture/loopback")
+def capture_loopback(req: CaptureLoopbackRequest | None = None):
+    """桌宠「录制当前声音」：WASAPI loopback 内录系统播出声 → 存 raw_videos →（可选）自动挖掘。
+
+    同步录制 seconds 秒后返回（调用方 HTTP 超时要大于该时长）；auto 流程转后台，
+    桌宠/前端通过 /pipeline/status 与 /mine/state 跟踪进度。
+    """
+    req = req or CaptureLoopbackRequest()
+    seconds = max(3.0, min(float(req.seconds), 120.0))
+    if CAPTURE_STATE["recording"]:
+        raise HTTPException(400, "正在录制中，请稍候")
+    if req.auto and PIPELINE_STATE["running"]:
+        raise HTTPException(400, "流水线正在运行，稍后再录")
+    from loopback_capture import LoopbackError, record_loopback
+
+    name = f"capture_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+    dest = RAW_DIR / name
+    CAPTURE_STATE.update(recording=True, message=f"内录 {seconds:g} 秒…", file=name)
+    try:
+        record_loopback(seconds, dest)
+    except LoopbackError as e:
+        CAPTURE_STATE.update(recording=False, message=str(e), file="")
+        raise HTTPException(500, f"内录失败: {e}")
+    except Exception as e:
+        CAPTURE_STATE.update(recording=False, message=str(e), file="")
+        raise HTTPException(500, f"内录失败: {e}")
+    CAPTURE_STATE.update(recording=False, message="录制完成", file=name)
+    if not req.auto:
+        return {"ok": True, "file": name, "seconds": seconds, "auto": False}
+    if PIPELINE_STATE["running"]:
+        return {"ok": True, "file": name, "seconds": seconds, "auto": False,
+                "note": "流水线忙，已保存素材但未自动挖掘"}
+    _pipeline_cancel.clear()
+    _update_pipeline(running=True, status="running", step="prepare",
+                     message="准备解析内录素材…", percent=1, clips=0, error="")
+    threading.Thread(target=_capture_auto_worker, args=([dest],), daemon=True).start()
+    return {"ok": True, "file": name, "seconds": seconds, "auto": True}
+
+
 # ---------------- A/B 音色对比（盲听评分） ----------------
 
 # 声纹嵌入缓存：path -> (mtime, emb)，同一参考音频不反复送 worker 提取
@@ -1001,7 +1176,7 @@ def ab_run(req: AbRunRequest):
 
     results = {}
     for tag, vid in (("A", req.voice_a), ("B", req.voice_b)):
-        ref, _ = _voice_ref(vid)
+        ref, _ = voice_ref(vid)
         # 强制 x-vector 声纹模式（ref_text 置空）：A/B 考察的是音色相似度本身，
         # 且长参考 ICL 在 8GB 卡上会跌进 WDDM 共享内存慢路径（20s 参考要 20 分钟+）
         wav = qwen_tts(text, ref_audio=str(ref), ref_text="", voice_id=vid)
@@ -1069,7 +1244,11 @@ async def import_voice_pack(file: UploadFile = File(...), overwrite: bool = Fals
     import io
     import zipfile
 
+    if (file.size or 0) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"音色包过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝导入")
     raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"音色包过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝导入")
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
     except zipfile.BadZipFile:
@@ -1131,26 +1310,7 @@ RVC_EXPORT_DIR = cfg.RVC_EXPORT_DIR
 RVC_DEFAULT_EXP = cfg.RVC_DEFAULT_EXP
 
 
-def _rvc_weights_dir(exp: str | None = None) -> Path:
-    """某实验名（音色 ID）的 RVC 权重目录 logs/<exp>/。"""
-    return cfg.RVC_ROOT / "logs" / (exp or RVC_DEFAULT_EXP)
 
-
-def _rvc_exp_snapshot(exp: str) -> dict:
-    """某个实验（音色 ID）的训练产物快照：权重/索引/语料/训练时间。"""
-    from datetime import datetime
-    log_dir, dataset_dir = cfg.rvc_exp_dirs(exp)
-    pth = _find_pth(exp, log_dir)
-    idx = next(log_dir.glob("added_*.index"), None) if log_dir.exists() else None
-    mtime = pth.stat().st_mtime if pth is not None and pth.exists() else 0.0
-    return {
-        "pth_exists": pth is not None,
-        "index_exists": idx is not None,
-        "model_ready": pth is not None and idx is not None,
-        "dataset_count": len(list(dataset_dir.glob("*.wav"))) if dataset_dir.exists() else 0,
-        "trained_at": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime else "",
-        "weights_dir": str(log_dir),
-    }
 
 # 训练语料模板：默认从 data/rvc_texts.txt 读取（可经 VM_RVC_TEXTS_FILE 覆盖为任意音色专用语料）；
 # 文件缺失时回退内置 20 句，保证历史行为不变。
@@ -1192,10 +1352,10 @@ def rvc_generate_dataset(req: RvcGenerateReq | None = None):
     if RVC_GEN_STATE["running"]:
         raise HTTPException(400, "语料正在生成中，请稍候")
     body = req or RvcGenerateReq()
-    voice_id = (body.voice_id or _load_selected_voice()).strip()
+    voice_id = (body.voice_id or selected_voice()).strip()
     if not voice_id:
         raise HTTPException(400, "未指定 voice_id，且没有已选中的音色")
-    ref_audio, ref_text = _voice_ref(voice_id)
+    ref_audio, ref_text = voice_ref(voice_id)
     prefix = "rvc_" + re.sub(r"[^0-9A-Za-z_-]", "_", voice_id)
     RVC_DATASET_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1258,9 +1418,9 @@ def export_rvc_dataset(exp_name: str | None = None, voice_id: str | None = None)
 @app.get(API_PREFIX + "/rvc/model")
 def rvc_model_status(exp_name: str | None = None):
     """RVC 模型训练完成状态（供前端「模型已就绪」卡片展示）；可按音色 ID 查询。"""
-    weights_dir = _rvc_weights_dir(exp_name or RVC_DEFAULT_EXP)
     exp = exp_name or RVC_DEFAULT_EXP
-    pth = _find_pth(exp, weights_dir)
+    weights_dir = cfg.rvc_exp_dirs(exp)[0]
+    pth = find_pth(exp, weights_dir)
     idx = next(weights_dir.glob("added_*.index"), None) if weights_dir.exists() else None
     trained = pth is not None and idx is not None
     # 语料数按该实验自己的训练集目录统计（与 /rvc/voices 口径一致），
@@ -1295,4 +1455,5 @@ if _web_dist is not None:
 
 
 if __name__ == "__main__":
+    _start_audio_audit()  # 音频设备残留自动巡检（FRD F4）
     uvicorn.run(app, host=cfg.SERVER_HOST, port=cfg.SERVER_PORT)

@@ -12,12 +12,10 @@
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -30,6 +28,7 @@ except ImportError:  # 兜底：直接以模块方式运行时
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
     import config as cfg
+from rvc_common import ensure_infer_pth, exp_snapshot, find_pth
 
 API_PREFIX = "/api"
 
@@ -83,49 +82,6 @@ REALTIME_TUNING = {
 def _active_exp() -> str:
     """当前生效的 RVC 实验名（音色 ID）：最近一次启动的训练，否则回退默认。"""
     return _state["train"].get("exp") or cfg.RVC_DEFAULT_EXP
-
-
-def _find_pth(exp: str, log_dir: Path) -> Path | None:
-    """找到该实验可用的 RVC 最终权重：优先 <exp>.pth，否则回退 G_<...>.pth。
-
-    RVC 训练脚本落盘文件名是 G_2333333.pth / D_2333333.pth（并非 <exp>.pth），
-    而实时加载、前端 status 都按 <exp>.pth 判定，两者命名不一致会误报“未训练”。
-    这里优先用标准名，缺失时回退到训练自动产出的 G_*.pth，避免手动复制。
-    """
-    p = log_dir / f"{exp}.pth"
-    if p.exists():
-        return p
-    return next(log_dir.glob("G_*.pth"), None)
-
-
-def _ensure_standard_pth(exp: str, log_dir: Path) -> Path | None:
-    """确保拿到可实时推理的权重（rtrvc.get_synthesizer 只认含 weight 键的推理格式）。
-
-    优先 assets/weights/<exp>.pth（推理格式，训练时自动提取）；缺失时从训练
-    检查点 G_*.pth 用 train.process_ckpt.extract_small_model 提取（幂等缓存）。
-    注意：logs/<exp>/<exp>.pth 若只是 G_*.pth 的拷贝（训练格式，键 model/optimizer…），
-    实时加载会 KeyError('weight')，绝不能直接当推理权重用。
-    """
-    infer_pth = RVC_ROOT / "assets" / "weights" / f"{exp}.pth"
-    if infer_pth.exists():
-        return infer_pth
-    ckpt = next(iter(sorted(log_dir.glob("G_*.pth"))), None)
-    if ckpt is None:
-        return None
-    try:
-        sys.path.insert(0, str(RVC_ROOT))
-        os.environ["PYTHONPATH"] = str(RVC_ROOT)
-        os.environ["weight_root"] = str(RVC_ROOT / "assets" / "weights")
-        from train.process_ckpt import extract_small_model
-
-        (RVC_ROOT / "assets" / "weights").mkdir(parents=True, exist_ok=True)
-        extract_small_model(str(ckpt), exp, "48k", 1, f"{exp} RVC v2 48k", "v2")
-        if not infer_pth.exists():
-            return None
-        shutil.copy2(infer_pth, log_dir / f"{exp}.pth")
-        return infer_pth
-    except Exception:
-        return None
 
 
 def _exp_dirs(exp: str | None = None) -> tuple[str, Path, Path]:
@@ -309,7 +265,7 @@ def _auto_clean():
 def _model_status(exp: str | None = None) -> bool | str:
     _, log_dir, _ = _exp_dirs(exp)
     name = exp or _active_exp()
-    pth = _find_pth(name, log_dir)
+    pth = find_pth(name, log_dir)
     idx = next(log_dir.glob("added_*.index"), None) if log_dir.exists() else None
     if not (log_dir.exists() and pth is not None and idx is not None):
         return (f"缺少 RVC 音色模型（logs/{name}/ 下没有 .pth 与 index），"
@@ -319,22 +275,6 @@ def _model_status(exp: str | None = None) -> bool | str:
 
 def _voicebank_dir() -> Path:
     return cfg.MEDIA_DIR / "voicebank"
-
-
-def _exp_snapshot(exp: str) -> dict:
-    """某个实验（音色 ID）的训练产物快照：权重/索引/语料/训练时间。"""
-    log_dir, dataset_dir = cfg.rvc_exp_dirs(exp)
-    pth = _find_pth(exp, log_dir)
-    idx = next(log_dir.glob("added_*.index"), None) if log_dir.exists() else None
-    mtime = pth.stat().st_mtime if pth is not None and pth.exists() else 0.0
-    return {
-        "pth_exists": pth is not None,
-        "index_exists": idx is not None,
-        "model_ready": pth is not None and idx is not None,
-        "dataset_count": len(list(dataset_dir.glob("*.wav"))) if dataset_dir.exists() else 0,
-        "trained_at": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime else "",
-        "weights_dir": str(log_dir),
-    }
 
 
 def _read_qc(exp: str):
@@ -506,7 +446,7 @@ def _apply_model_config() -> bool:
     idx = next(log_dir.glob("added_*.index"), None)
     if idx is None:
         return False
-    pth = _ensure_standard_pth(name, log_dir)
+    pth = ensure_infer_pth(name)
     if pth is None:
         return False
     cfg_json["pth_path"] = str(pth).replace("\\", "/")
@@ -561,7 +501,7 @@ def rvc_live_status(exp_name: str | None = None):
         "exp": exp,
         "model_ok": model is True,
         "model_detail": model if model is True else None,
-        "pth_exists": _find_pth(exp, log_dir) is not None,
+        "pth_exists": find_pth(exp, log_dir) is not None,
         "index_exists": idx is not None,
         "dataset_count": len(list(dataset_dir.glob("*.wav"))) if dataset_dir.exists() else 0,
         "live_running": _live_proc_alive(),
@@ -601,14 +541,14 @@ def rvc_voices():
                     pass
             items[d.name] = {"id": d.name, "display_name": display,
                              "has_reference": True, "qc": _read_qc(d.name),
-                             **_exp_snapshot(d.name)}
+                             **exp_snapshot(d.name)}
 
     logs = cfg.RVC_ROOT / "logs"
     if logs.exists():
         for d in logs.iterdir():
             if not d.is_dir() or d.name in items:
                 continue
-            snap = _exp_snapshot(d.name)
+            snap = exp_snapshot(d.name)
             # 音色库里没有、又没训练产物也没语料的目录属于噪音，不展示
             if not (snap["pth_exists"] or snap["index_exists"] or snap["dataset_count"]):
                 continue
