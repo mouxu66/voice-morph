@@ -64,12 +64,12 @@ export function useWorkshop() {
 
   useEffect(() => { void loadWorkshop() }, [loadWorkshop, backendUp])
 
-  const startPipeline = async () => {
+  const startPipeline = async (files?: string[]) => {
     setErrorMessage("")
     setFeedback("")
     try {
-      await runPipeline()
-      setPipeline({ ...IDLE_PIPELINE, running: true, status: "running", percent: 1, message: "正在启动流水线…" })
+      await runPipeline(files)
+      setPipeline({ ...IDLE_PIPELINE, running: true, status: "running", percent: 1, message: files?.length ? `只处理 ${files.length} 个素材…` : "正在启动流水线…" })
       pollRef.current = window.setInterval(async () => {
         try {
           const st = await getPipelineStatus()

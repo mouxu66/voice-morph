@@ -70,8 +70,9 @@ export type PipelineStatus = {
   error: string;
 };
 
-export async function runPipeline(): Promise<{ ok: boolean; started: boolean }> {
-  return jsonFetch("/pipeline/run", { method: "POST" });
+export async function runPipeline(files?: string[]): Promise<{ ok: boolean; started: boolean }> {
+  const qs = files && files.length ? "?" + files.map((f) => `file=${encodeURIComponent(f)}`).join("&") : "";
+  return jsonFetch(`/pipeline/run${qs}`, { method: "POST" });
 }
 
 export async function getPipelineStatus(): Promise<PipelineStatus> {

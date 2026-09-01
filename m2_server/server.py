@@ -26,7 +26,7 @@ import warnings
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -621,23 +621,38 @@ def _pipeline_job(videos: list[Path]):
 
 
 @app.post(API_PREFIX + "/pipeline/run")
-def run_pipeline():
-    """后台启动 M1 流水线，前端轮询 /pipeline/status 获取分步进度"""
+def run_pipeline(file: list[str] | None = Query(default=None)):
+    """后台启动 M1 流水线，前端轮询 /pipeline/status 获取分步进度。
+
+    file 可传一个或多个素材文件名，指定时只处理这些素材（文件名相对 media/raw_videos，
+    允许用 URL 编码或原始中文名）；不传则处理目录内全部视频/音频素材。"""
     if PIPELINE_STATE["running"]:
         raise HTTPException(400, "流水线正在运行中，请稍候")
-    # 视频与音频素材统一进流水线（音频文件 ffmpeg -vn 提轨同样有效，可来自上传/录音等多种渠道）
-    videos = [f for f in RAW_DIR.iterdir()
-              if f.suffix.lower() in _VIDEO_SUFFIXES or f.suffix.lower() in _AUDIO_SUFFIXES]
+    if file:
+        videos: list[Path] = []
+        for name in file:
+            p = RAW_DIR / Path(name).name
+            if not p.exists():
+                raise HTTPException(404, f"素材不存在：{name}")
+            if p.suffix.lower() not in _VIDEO_SUFFIXES and p.suffix.lower() not in _AUDIO_SUFFIXES:
+                raise HTTPException(400, f"仅支持视频/音频格式：{name}")
+            videos.append(p)
+        scope = "、".join(v.name for v in videos)
+    else:
+        # 视频与音频素材统一进流水线（音频文件 ffmpeg -vn 提轨同样有效，可来自上传/录音等多种渠道）
+        videos = [f for f in RAW_DIR.iterdir()
+                  if f.suffix.lower() in _VIDEO_SUFFIXES or f.suffix.lower() in _AUDIO_SUFFIXES]
+        scope = f"全部 {len(videos)} 个素材"
     if not videos:
         raise HTTPException(400, "media/raw_videos/ 里没有视频/音频素材，请先上传或放入素材")
 
     _pipeline_cancel.clear()
     _update_pipeline(
         running=True, status="running", step="prepare",
-        message=f"准备处理 {len(videos)} 个视频…", percent=1, clips=0, error="")
+        message=f"准备处理 {scope}…", percent=1, clips=0, error="")
 
     threading.Thread(target=_pipeline_job, args=(videos,), daemon=True).start()
-    return {"ok": True, "started": True}
+    return {"ok": True, "started": True, "scope": scope}
 
 
 @app.get(API_PREFIX + "/pipeline/status")

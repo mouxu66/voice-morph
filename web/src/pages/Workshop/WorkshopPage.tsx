@@ -7,10 +7,10 @@ import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { StudioEmpty } from "@/components/voice-studio/StudioEmpty"
 import { ErrorPanel } from "@/components/ErrorPanel"
 
-function VideoCard({ video, onDelete }: { video: VideoItem; onDelete: () => void }) {
+function VideoCard({ video, onDelete, onProcessOne, disabled }: { video: VideoItem; onDelete: () => void; onProcessOne: () => void; disabled: boolean }) {
   const [confirming, setConfirming] = useState(false)
   const usedBy = video.used_by ?? []
-  return <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-background/60 p-3"><FileVideo2 className="h-5 w-5 shrink-0 text-primary" /><div className="min-w-0 flex-1"><p className="truncate text-sm text-card-foreground">{video.name}</p><p className="mt-1 font-mono text-xs text-muted-foreground">{video.size_mb.toFixed(1)} MB · 已就绪</p>{usedBy.length > 0 && <p className="mt-1.5 inline-block rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">已用于：{usedBy.join("、")}</p>}</div>{confirming ? <div className="flex shrink-0 flex-col gap-1"><button type="button" onClick={onDelete} className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-white transition hover:opacity-90">{usedBy.length ? "仍要删除" : "确认删除"}</button><button type="button" onClick={() => setConfirming(false)} className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground">取消</button></div> : <button type="button" onClick={() => setConfirming(true)} title="删除素材及其切片/中间文件" className="shrink-0 rounded-md border border-border p-1.5 text-muted-foreground transition hover:border-destructive hover:text-destructive"><Trash2 className="h-3.5 w-3.5" /></button>}</div>
+  return <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-background/60 p-3"><FileVideo2 className="h-5 w-5 shrink-0 text-primary" /><div className="min-w-0 flex-1"><p className="truncate text-sm text-card-foreground">{video.name}</p><p className="mt-1 font-mono text-xs text-muted-foreground">{video.size_mb.toFixed(1)} MB · 已就绪</p>{usedBy.length > 0 && <p className="mt-1.5 inline-block rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">已用于：{usedBy.join("、")}</p>}</div>{confirming ? <div className="flex shrink-0 flex-col gap-1"><button type="button" onClick={onDelete} className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-white transition hover:opacity-90">{usedBy.length ? "仍要删除" : "确认删除"}</button><button type="button" onClick={() => setConfirming(false)} className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground">取消</button></div> : <div className="flex shrink-0 items-center gap-1"><button type="button" onClick={onProcessOne} disabled={disabled} title="仅处理此素材（不碰其它视频）" className="shrink-0 rounded-md border border-border p-1.5 text-primary transition hover:border-primary disabled:pointer-events-none disabled:opacity-40"><Play className="h-3.5 w-3.5" /></button><button type="button" onClick={() => setConfirming(true)} title="删除素材及其切片/中间文件" className="shrink-0 rounded-md border border-border p-1.5 text-muted-foreground transition hover:border-destructive hover:text-destructive"><Trash2 className="h-3.5 w-3.5" /></button></div>}</div>
 }
 
 const stages = ["批量初筛", "精细审核", "送入音色库"]
@@ -49,7 +49,7 @@ export function WorkshopPage(p: ReturnType<typeof useWorkshop>) {
 
     {/* 素材列表 + 拖拽上传 */}
     <div className="mt-6 space-y-3">
-      {p.videos.length ? <div className="grid gap-3 sm:grid-cols-2">{p.videos.map((video) => <VideoCard key={video.name} video={video} onDelete={() => void p.deleteVideo(video.name, video.used_by ?? [])} />)}</div> : <StudioEmpty title="还没有视频素材" description="拖拽视频到下方区域，或点击选择文件上传，也可以打开素材文件夹手动放入。" onRetry={p.loadWorkshop} />}
+      {p.videos.length ? <div className="grid gap-3 sm:grid-cols-2">{p.videos.map((video) => <VideoCard key={video.name} video={video} disabled={pipelineActive} onDelete={() => void p.deleteVideo(video.name, video.used_by ?? [])} onProcessOne={() => void p.startPipeline([video.name])} />)}</div> : <StudioEmpty title="还没有视频素材" description="拖拽视频到下方区域，或点击选择文件上传，也可以打开素材文件夹手动放入。" onRetry={p.loadWorkshop} />}
       <div
         role="button"
         tabIndex={0}
