@@ -109,9 +109,12 @@ def step3_slice(vocal: Path, prefix: str, cancel_event=None):
 
 
 def main():
-    videos = [f for f in RAW.iterdir() if f.suffix.lower() in (".mp4", ".mkv", ".mov", ".flv", ".webm", ".avi")]
+    # 视频与音频素材统一处理（音频文件 ffmpeg -vn 提轨同样有效）
+    suffixes = (".mp4", ".mkv", ".mov", ".flv", ".webm", ".avi",
+                ".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".wma")
+    videos = [f for f in RAW.iterdir() if f.suffix.lower() in suffixes]
     if not videos:
-        print("把美团老鼠视频放进 media/raw_videos/ 再运行！")
+        print("把视频/音频素材放进 media/raw_videos/ 再运行！")
         sys.exit(1)
     for v in videos:
         try:
