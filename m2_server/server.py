@@ -40,6 +40,7 @@ from finetune import router as ft_router
 from audiobook import router as audiobook_router
 from cascade import router as cascade_router
 from offline_vc import router as offlinevc_router
+from seed_vc import router as seedvc_router
 from effects import router as effects_router
 from rvc_common import exp_snapshot, find_pth
 from rvc_live import router as rvc_live_router
@@ -117,6 +118,7 @@ app.include_router(rvc_live_router)
 app.include_router(ft_router)
 app.include_router(audiobook_router)
 app.include_router(offlinevc_router)
+app.include_router(seedvc_router)
 app.include_router(cascade_router)
 app.include_router(effects_router)
 app.include_router(wechat_router)

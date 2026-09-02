@@ -49,6 +49,7 @@ async def offlinevc_run(
     pitch: int = Form(0),
     index_rate: float = Form(0.5),
     denoise: bool = Form(False),
+    post_seedvc: bool = Form(False),
 ):
     """提交离线变声任务。pitch 为半音数（男转女 +12，女转男 -12）。"""
     with _ovc_lock:
@@ -82,14 +83,15 @@ async def offlinevc_run(
     raw_path.write_bytes(raw)
     threading.Thread(
         target=_ovc_worker,
-        args=(raw_path, voice_id, pth, pitch, index_rate, denoise, stamp),
+        args=(raw_path, voice_id, pth, pitch, index_rate, denoise, post_seedvc, stamp),
         daemon=True,
     ).start()
     return {"ok": True, "voice_id": voice_id}
 
 
 def _ovc_worker(raw_path: Path, voice_id: str, pth: Path,
-                pitch: int, index_rate: float, denoise: bool, stamp: int):
+                pitch: int, index_rate: float, denoise: bool,
+                post_seedvc: bool, stamp: int):
     import soundfile as sf
 
     in_path = OUT / f"ovc_in_{stamp}.wav"
@@ -117,13 +119,30 @@ def _ovc_worker(raw_path: Path, voice_id: str, pth: Path,
             tail = (r.stderr or r.stdout or "").strip().splitlines()[-3:]
             raise RuntimeError("RVC 推理失败: " + " | ".join(tail)[-400:])
 
+        # 可选后处理：Seed-VC convert-style 把 RVC 压平的韵律/情绪补回来
+        # （RVC 只保音高，表达力弱；Seed-VC V2 零样本按 reference 重塑语气）
+        if post_seedvc:
+            ref = cfg.MEDIA_DIR / "voicebank" / voice_id / "reference.wav"
+            if not ref.exists():
+                raise RuntimeError(f"音色 [{voice_id}] 缺少 reference.wav，无法做 Seed-VC 情绪补偿")
+            OFFLINEVC_STATE.update(message="Seed-VC 情绪/韵律补偿中…（约 1 分钟）")
+            from seed_vc import run_conversion
+            tmp_dir = OUT / f"ovc_seedvc_{stamp}"
+            produced = run_conversion(out_path, ref, tmp_dir, convert_style=True)
+            import shutil
+            shutil.move(str(produced), str(out_path))
+            try:
+                tmp_dir.rmdir()
+            except Exception:
+                pass
+
         d, sr = sf.read(str(out_path))
         duration_s = round(len(d) / sr, 1)
         from history import register as history_register
         history_register("offlinevc", voice_id, out_path.name,
                          f"/api/media/outputs/{out_path.name}", duration_s,
                          params={"pitch": pitch, "index_rate": index_rate,
-                                 "denoise": denoise})
+                                 "denoise": denoise, "post_seedvc": post_seedvc})
         OFFLINEVC_STATE.update(
             running=False, status="done", message="完成",
             url=f"/api/media/outputs/{out_path.name}",

@@ -33,6 +33,7 @@ export function useOfflineVc() {
   const [pitch, setPitch] = useState(0)
   const [indexRate, setIndexRate] = useState(0.5)
   const [denoise, setDenoise] = useState(true)
+  const [postSeedVc, setPostSeedVc] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState("")
   const [status, setStatus] = useState<OfflineVcStatus | null>(null)
@@ -222,7 +223,7 @@ export function useOfflineVc() {
         if (it.status === "done") continue
         updateItem(it.id, { status: "running", error: "", url: undefined })
         try {
-          await runOfflineVc(it.file, voiceId, pitch, indexRate, denoise)
+          await runOfflineVc(it.file, voiceId, pitch, indexRate, denoise, postSeedVc)
           setStatus({
             running: true, status: "running", message: `批量转换：${it.name}`,
             voice_id: voiceId, url: "", duration_s: 0, error: "",
@@ -240,7 +241,7 @@ export function useOfflineVc() {
     } finally {
       setBatchProcessing(false)
     }
-  }, [batchProcessing, running, voiceId, pitch, indexRate, denoise, waitDone, updateItem])
+  }, [batchProcessing, running, voiceId, pitch, indexRate, denoise, postSeedVc, waitDone, updateItem])
 
   const canSubmit = !running && !batchProcessing && !submitting && Boolean(audioFile) && Boolean(voiceId)
 
@@ -249,7 +250,7 @@ export function useOfflineVc() {
     setSubmitting(true)
     setErrorMessage("")
     try {
-      await runOfflineVc(audioFile, voiceId, pitch, indexRate, denoise)
+      await runOfflineVc(audioFile, voiceId, pitch, indexRate, denoise, postSeedVc)
       setStatus({
         running: true, status: "running", message: "已提交",
         voice_id: voiceId, url: "", duration_s: 0, error: "",
@@ -260,7 +261,7 @@ export function useOfflineVc() {
     } finally {
       setSubmitting(false)
     }
-  }, [canSubmit, audioFile, voiceId, pitch, indexRate, denoise, startPoll])
+  }, [canSubmit, audioFile, voiceId, pitch, indexRate, denoise, postSeedVc, startPoll])
 
   useEffect(() => () => {
     stopPoll()
@@ -285,6 +286,8 @@ export function useOfflineVc() {
     setIndexRate,
     denoise,
     setDenoise,
+    postSeedVc,
+    setPostSeedVc,
     submitting,
     running,
     canSubmit,

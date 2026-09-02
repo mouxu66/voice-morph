@@ -275,7 +275,8 @@ export async function runOfflineVc(
   voiceId: string,
   pitch: number,
   indexRate: number,
-  denoise: boolean
+  denoise: boolean,
+  postSeedVc = false
 ): Promise<{ ok: boolean; voice_id: string }> {
   const form = new FormData();
   form.append("file", file);
@@ -283,6 +284,7 @@ export async function runOfflineVc(
   form.append("pitch", String(pitch));
   form.append("index_rate", String(indexRate));
   form.append("denoise", String(denoise));
+  form.append("post_seedvc", String(postSeedVc));
   const res = await fetch(BASE + "/offlinevc/run", { method: "POST", body: form });
   if (!res.ok) {
     let detail = res.statusText;
@@ -299,6 +301,61 @@ export async function runOfflineVc(
 
 export async function getOfflineVcStatus(): Promise<OfflineVcStatus> {
   return jsonFetch("/offlinevc/status");
+}
+
+// ---- Seed-VC 表达力变声（零样本换声，保留/转换语气情绪，补 RVC 缺的表达力） ----
+
+export type SeedVcStatus = {
+  running: boolean;
+  status: "idle" | "running" | "done" | "error";
+  message: string;
+  target: string;
+  url: string;
+  duration_s: number;
+  error: string;
+};
+
+export async function runSeedVc(opts: {
+  file: File;
+  /** 目标音色：voicebank 音色 id 或上传参考音频，二选一 */
+  targetVoiceId?: string;
+  targetFile?: File;
+  /** 开启情绪/口音转换（--convert-style） */
+  convertStyle: boolean;
+  similarityCfgRate: number;
+  topP: number;
+  temperature: number;
+  diffusionSteps: number;
+  lengthAdjust: number;
+  denoise: boolean;
+}): Promise<{ ok: boolean; target: string }> {
+  const form = new FormData();
+  form.append("file", opts.file);
+  if (opts.targetFile) form.append("target", opts.targetFile);
+  if (opts.targetVoiceId) form.append("target_voice_id", opts.targetVoiceId);
+  form.append("convert_style", String(opts.convertStyle));
+  form.append("similarity_cfg_rate", String(opts.similarityCfgRate));
+  form.append("top_p", String(opts.topP));
+  form.append("temperature", String(opts.temperature));
+  form.append("diffusion_steps", String(opts.diffusionSteps));
+  form.append("length_adjust", String(opts.lengthAdjust));
+  form.append("denoise", String(opts.denoise));
+  const res = await fetch(BASE + "/seedvc/run", { method: "POST", body: form });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function getSeedVcStatus(): Promise<SeedVcStatus> {
+  return jsonFetch("/seedvc/status");
 }
 
 // ---- 音色挖掘（解析切片 → 自动筛音色 → 迭代试听 → 保存） ----

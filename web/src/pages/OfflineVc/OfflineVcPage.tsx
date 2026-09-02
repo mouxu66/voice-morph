@@ -185,6 +185,15 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
                   className="h-4 w-4 accent-[var(--primary)]" />
                 输入降噪（推荐开着麦克风录音时使用）
               </label>
+
+              <label className="mt-3 flex cursor-pointer items-start gap-2 text-sm text-card-foreground">
+                <input type="checkbox" checked={p.postSeedVc} onChange={(e) => p.setPostSeedVc(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-[var(--primary)]" />
+                <span>
+                  RVC 转完再用 Seed-VC 补情绪/韵律
+                  <span className="ml-1 text-xs text-muted-foreground">（RVC 只保音高易压平语气；此开关用 Seed-VC 按参考音重塑情绪，额外约 1 分钟）</span>
+                </span>
+              </label>
             </div>
 
             {p.errorMessage && (

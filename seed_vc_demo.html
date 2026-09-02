@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Seed-VC 表达力变声</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --fg:#e8eaf0; --muted:#9aa3b2; --accent:#6ea8fe; --accent2:#7ee0c0; --err:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:var(--fg); padding:24px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:20px; }
+  .card { background:var(--card); border-radius:12px; padding:18px 20px; margin-bottom:16px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:14px 0 6px; }
+  input[type=file], input[type=text], select { width:100%; padding:8px 10px; border-radius:8px;
+         border:1px solid #2a2f3a; background:#0f1115; color:var(--fg); font-size:14px; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; }
+  .row > div { flex:1; min-width:200px; }
+  .check { display:flex; align-items:center; gap:8px; font-size:14px; color:var(--fg); }
+  .check input { width:auto; }
+  .slider { display:flex; align-items:center; gap:10px; }
+  .slider input[type=range] { flex:1; }
+  .slider .val { width:48px; text-align:right; font-variant-numeric:tabular-nums; color:var(--accent2); }
+  button { background:var(--accent); color:#0b1020; border:0; border-radius:8px; padding:10px 18px;
+           font-size:15px; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .status { margin-top:14px; font-size:14px; }
+  .status .msg { color:var(--accent2); }
+  .status .err { color:var(--err); }
+  audio { width:100%; margin-top:12px; }
+  .hint { font-size:12px; color:var(--muted); margin-top:6px; }
+  code { background:#0f1115; padding:1px 5px; border-radius:4px; color:var(--accent2); }
+</style>
+</head>
+<body>
+  <h1>Seed-VC 表达力变声（V2 零样本）</h1>
+  <div class="sub">录音/音频 → 换音色，并保留 / 转换语气情绪。与 RVC 实时路径并存。服务需运行于 <code>http://localhost:8000</code>。</div>
+
+  <div class="card">
+    <label>① 源音频（要变声的录音）</label>
+    <input type="file" id="src" accept="audio/*,.wav,.mp3,.webm" />
+
+    <label>② 目标音色（二选一）</label>
+    <div class="row">
+      <div>
+        <div class="check"><input type="radio" name="tgt" id="tgt_vb" checked /> <label style="margin:0">用 voicebank 音色</label></div>
+        <input type="text" id="voice_id" placeholder="voice_id，如 meituan_rat" style="margin-top:6px" />
+        <div class="hint">复用 voicebank 的 reference.wav 作参考音，零样本无需训练。</div>
+      </div>
+      <div>
+        <div class="check"><input type="radio" name="tgt" id="tgt_up" /> <label style="margin:0">上传参考音频</label></div>
+        <input type="file" id="tgt_file" accept="audio/*,.wav,.mp3" disabled style="margin-top:6px" />
+        <div class="hint">任意一段目标说话人音频（建议 5–25s）。</div>
+      </div>
+    </div>
+
+    <label class="check" style="margin-top:16px"><input type="checkbox" id="convert_style" /> 开启情绪/口音转换（--convert-style，补 RVC 缺的表达力）</label>
+
+    <div class="row" style="margin-top:8px">
+      <div>
+        <label>音色相似度 similarity_cfg_rate</label>
+        <div class="slider"><input type="range" id="sim" min="0" max="1" step="0.05" value="0.7" /><span class="val" id="sim_v">0.7</span></div>
+      </div>
+      <div>
+        <label>top_p（生成多样性）</label>
+        <div class="slider"><input type="range" id="topp" min="0" max="1" step="0.05" value="0.9" /><span class="val" id="topp_v">0.9</span></div>
+      </div>
+      <div>
+        <label>temperature</label>
+        <div class="slider"><input type="range" id="temp" min="0" max="2" step="0.05" value="1.0" /><span class="val" id="temp_v">1.0</span></div>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>diffusion_steps（质量↑但更慢）</label>
+        <div class="slider"><input type="range" id="steps" min="1" max="50" step="1" value="10" /><span class="val" id="steps_v">10</span></div>
+      </div>
+      <div>
+        <label>length_adjust（语速，1=原速）</label>
+        <div class="slider"><input type="range" id="len" min="0.5" max="2" step="0.05" value="1.0" /><span class="val" id="len_v">1.0</span></div>
+      </div>
+    </div>
+
+    <label class="check" style="margin-top:12px"><input type="checkbox" id="denoise" /> 源音频降噪（afftdn）</label>
+
+    <div style="margin-top:18px">
+      <button id="run">开始转换</button>
+      <span class="status" id="status"></span>
+    </div>
+    <div id="player"></div>
+  </div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const API = "http://localhost:8000";
+  function bindSlider(id){ const el=$(id), v=$(id+"_v"); el.oninput=()=>v.textContent=el.value; }
+  ["sim","topp","temp","steps","len"].forEach(bindSlider);
+
+  document.querySelectorAll('input[name=tgt]').forEach(r=>r.onchange=()=>{
+    $("tgt_file").disabled = !$("tgt_up").checked;
+    $("voice_id").disabled = $("tgt_up").checked;
+  });
+
+  let polling = null;
+  function setStatus(msg, cls){ $("status").innerHTML = cls ? `<span class="${cls}">${msg}</span>` : msg; }
+
+  async function poll(){
+    const r = await fetch(API+"/api/seedvc/status");
+    const s = await r.json();
+    if (s.status === "running") { setStatus("⏳ " + (s.message||"处理中…")); return true; }
+    if (s.status === "done") {
+      clearInterval(polling);
+      setStatus(`✅ 完成（${s.duration_s}s）`);
+      $("player").innerHTML = `<audio controls src="${API}${s.url}"></audio>`;
+      $("run").disabled = false;
+      return false;
+    }
+    if (s.status === "error") {
+      clearInterval(polling);
+      setStatus("❌ " + s.error, "err");
+      $("run").disabled = false;
+      return false;
+    }
+    return true;
+  }
+
+  $("run").onclick = async () => {
+    const src = $("src").files[0];
+    if (!src) { setStatus("请先选源音频", "err"); return; }
+    const useUp = $("tgt_up").checked;
+    if (useUp && !$("tgt_file").files[0]) { setStatus("请上传目标参考音频", "err"); return; }
+    if (!useUp && !$("voice_id").value.trim()) { setStatus("请填 voice_id", "err"); return; }
+
+    const fd = new FormData();
+    fd.append("file", src);
+    if (useUp) fd.append("target", $("tgt_file").files[0]);
+    else fd.append("target_voice_id", $("voice_id").value.trim());
+    fd.append("convert_style", $("convert_style").checked ? "true" : "false");
+    fd.append("similarity_cfg_rate", $("sim").value);
+    fd.append("top_p", $("topp").value);
+    fd.append("temperature", $("temp").value);
+    fd.append("diffusion_steps", $("steps").value);
+    fd.append("length_adjust", $("len").value);
+    fd.append("denoise", $("denoise").checked ? "true" : "false");
+
+    $("run").disabled = true;
+    $("player").innerHTML = "";
+    setStatus("提交中…");
+    const r = await fetch(API+"/api/seedvc/run", { method:"POST", body: fd });
+    if (!r.ok) {
+      const e = await r.json().catch(()=>({detail:r.statusText}));
+      setStatus("❌ " + (e.detail||r.statusText), "err");
+      $("run").disabled = false;
+      return;
+    }
+    polling = setInterval(poll, 1500);
+    poll();
+  };
+</script>
+</body>
+</html>
