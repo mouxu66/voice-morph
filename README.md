@@ -1,7 +1,14 @@
 # 变声 · 音色克隆工作台
 
-开源 AI 变声项目。目标：从任意视频克隆音色 → 在你的录音里用这个音色说话。
-当前版本聚焦 **PC 端全流程跑通**（扒素材 → 克隆音色 → 转换你的语音）。
+开源本地 AI 变声项目。目标：从任意视频/音频克隆音色 → 在你的录音里用这个音色说话，或实时把麦克风声音变成目标音色。
+
+当前已演进为 **三端一体** 的本地产品：
+
+- **桌面端**（主力）：Electron + React，自带 Python 推理后端，开箱即用。
+- **移动端**：Expo App，手机打字/遥控，PC 在局域网内推理并（可选）自动发到微信。
+- **Web 端**：同一套 React 前端，可浏览器直连局域网后端，或打包进安装包由桌面壳托管。
+
+> 所有推理都在**本机/局域网**完成，不上云，隐私安全。PC 端需 NVIDIA 显卡（本机 RTX 5060 8GB）。
 
 ---
 
@@ -16,37 +23,119 @@
 
 ---
 
-## 项目架构
+## 整体架构
+
+```
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│  桌面端 Electron │   │  Web 浏览器   │   │  移动端 Expo   │
+│ (React 19 窗体) │   │ (Vite/局域网) │   │ (手机遥控/打字) │
+└──────┬───────┘   └──────┬───────┘   └──────┬───────┘
+       │  HTTP 127.0.0.1:8000/api/*          │
+       └──────────────┬──────────────────────┘
+                      ▼
+        ┌─────────────────────────────────────┐
+        │   M2 后端  FastAPI (:8000)           │
+        │   - 素材流水线 / 切片质检 / 说话人分离  │
+        │   - TTS / 离线变声 / 实时变声 / 音色挖掘 │
+        │   - 微信发送 / 桌宠内录 / A-B 盲听      │
+        │   - 音频设备切换（VB-CABLE）/ 音色包    │
+        └──────────────┬──────────────────────┘
+                       │ spawn 子进程 / 懒启动
+        ┌──────────────┼──────────────────────────────┐
+        ▼              ▼                              ▼
+  Qwen3-TTS 1.7B   RVC 实时(via VB-CABLE)        Seed-VC / DSP
+  (venv312 :8001)  → 注入微信/会议/游戏麦克风      (离线变声备选)
+```
+
+三端共用同一个本地 M2 后端；本机回环永远放行，局域网请求可选 `VM_API_TOKEN` 鉴权。
+移动端走局域网时带 `api_key` 查询参数过 Token（原生音频播放器带不了自定义 Header）。
+
+---
+
+## 技术栈
+
+| 层 | 选型 |
+|----|------|
+| 桌面壳 | Electron 32 + electron-builder（NSIS 安装包） |
+| 前端 | React 19 + Vite 5 + TypeScript + Tailwind 3 + Zustand 4 + react-router 6 |
+| 移动端 | Expo SDK 54 + React Native 0.81 + expo-router（文件路由）+ Zustand |
+| 后端 | Python 3.11（FastAPI + uvicorn）；Qwen3-TTS worker 独立 venv312（torch 2.8 + cu129） |
+| 变声引擎 | Qwen3-TTS 1.7B（零样本/QLoRA 克隆）、RVC（实时变声）、Seed-VC（离线备选）、demucs、DeepFilterNet、CAM++ 声纹 |
+| 音频 | VB-Audio CABLE（虚拟声卡）；`audio_config.ps1` 调 Core Audio IPolicyConfig 切默认播放/录音设备 |
+
+---
+
+## 目录结构
 
 ```
 变声/
-├── web/                  # M1 音色工坊桌面端（Electron + React）
-│   ├── src/              # React 前端（素材→流水线→勾选→音色库→转换）
-│   ├── electron/         # Electron 主进程（桌面壳，自动拉起后端）
-│   ├── dist/             # 前端构建产物
-│   └── release/          # 打包产物（变声工坊.exe）
-├── m1_workshop/          # M1 音色工坊核心（Python）
-│   ├── pipeline.py       # 视频 → 提音轨 → 去BGM → 切 3~10s 片段
-│   ├── build_reference.py# 勾选片段 → 参考音频（支持追加素材聚合）
-├── m2_server/            # M2 服务（核心发动机）
-│   ├── server.py         # FastAPI 常驻服务（端口 8000）
-│   ├── qwen3_tts.py      # Qwen3-TTS 客户端（懒启动子进程 worker）
-│   └── qwen3_tts_service.py  # Qwen3-TTS 常驻 worker（venv312，端口 8001）
+├── web/                  # 桌面端（Electron + React）；构建产物 web/dist；打包 release2/
+│   ├── src/              # React 前端（7 个主路由页 + useAppStore 轮询 health/voices）
+│   ├── electron/         # 主进程 main.cjs（拉起后端/多窗体/IPC/热键/自动更新）
+│   └── package.json
+├── mobile/               # 移动端（Expo）；app/ 文件路由 + api.ts 调 PC 后端
+├── m2_server/            # M2 后端（FastAPI，端口 8000）
+│   ├── server.py         # 应用入口 + 内联：管线/切片/TTS/挖掘/音色包/音频设备接口
+│   ├── config.py         # 路径/端口/鉴权/模型目录（环境变量可覆盖）
+│   ├── common.py history.py clip_qc.py speaker_sep.py loopback_capture.py ...
+│   ├── cascade.py rvc_live.py offline_vc.py seed_vc.py audiobook.py
+│   ├── effects.py wechat_voice.py finetune.py history_api.py   # 各能力 APIRouter
+│   └── qwen3_tts.py qwen3_tts_service.py   # Qwen3-TTS 客户端 / 常驻 worker(:8001)
+├── m1_workshop/          # M1 素材流水线（pipeline.py：提轨→去BGM→切 2.5~10s 片段）
 ├── tts_models/           # Qwen3-TTS 权重（qwen3-tts-1.7b-base 等）
-├── media/
-│   ├── raw_videos/       # ← 素材视频放这里
-│   ├── vocals/           # 提取的音轨
-│   ├── demucs_out/       # demucs 分离输出
-│   ├── clips/            # 切好的片段（人工勾选区）
-│   └── voicebank/        # 音色库（每个音色一个子目录）
-└── outputs/              # 转换结果
+├── media/                # 素材/切片/音色库/语料（raw_videos, vocals, demucs_out, clips, voicebank, rvc_dataset）
+├── outputs/              # 转换/合成产物
+├── pretrained_models/    # 其他预训练模型
+├── seed_vc/ seed_vc_repo/  # Seed-VC 引擎（离线变声备选）
+├── tools/                # setup_env.ps1 / doctor.py / cleanup.ps1 等一键脚本
+├── agents/ .workbuddy/ .codebuddy/  # AI 协作约定与技能（junction 指向 agents/skills）
+└── AGENTS.md             # AI 协作铁律（改动即 git commit + 补测 + 记 memory）
 ```
+
+---
+
+## 桌面端框架（你重点问的）
+
+`web/electron/main.cjs` 是核心调度者，应用启动时：
+
+1. **推导项目根** `resolveProjectRoot()`：开发态用 `D:\变声`，打包态用 `resources/backend`，多候选兜底，不再硬编码盘符。
+2. **拉起后端** `startBackend()`：`spawn` 启动 `m2_server/server.py`（cwd=m2_server，注入 `PYTHONPATH / VM_MEDIA_DIR / VM_OUTPUTS_DIR / VM_PROJECT_ROOT`）；端口被自己残留进程占用会先清再拉。
+3. **开 3 个窗口**：主窗口（React）、桌宠窗口（`pet.html` 透明常驻右下角）、置顶提示窗（`alt-hint.html` 微信发送引导，鼠标穿透）。
+4. **注册 IPC**：`backend:*`（启停后端）、`pet:*`（桌宠）、`update:*`（自动更新）；全局热键 `Ctrl+Alt+V` 启停级联变声。
+5. **退出清理** `before-quit`：还原音频设备 + 释放热键 + 停后端。
+
+**两条通信通道**：
+- 渲染进程 ↔ 主进程：**IPC**（`preload.cjs` 暴露 `window.electron`）—— 用于启停后端、桌宠交互、更新。
+- 渲染进程 ↔ 后端：**HTTP `fetch 127.0.0.1:8000/api/*`**（`webSecurity:false` 直连）—— 业务数据走这条。
+- 主进程 ↔ 后端：`spawn` + HTTP（探活、微信发送、热键）。
+
+**打包**：`electron-builder` 把 `m2_server` + `tools` + `requirements.txt` 塞进 `resources/backend/`，前端静态放 `resources/backend/web_dist`，输出 `release2/`（**不是旧 README 写的 `release/`**）。
+
+---
+
+## 后端 M2（FastAPI）
+
+`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。9 个独立 router：
+
+`cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history`（历史）。
+
+`server.py` 自身内联：素材流水线（pipeline）、切片列表/质检、音色库、TTS（Qwen3-TTS）、音色挖掘（mine）、桌宠 loopback 内录、A/B 盲听、音色包导入导出、音频设备切换看板、静态音频。
+
+接口清单（节选）：`GET /api/health`、`/api/diagnose`、`/api/voices`、`/api/raw_videos`、`POST /api/pipeline/run`、`/api/clips`、`POST /api/voicebank`、`POST /api/tts`、`POST /api/mine/run`、`POST /api/capture/loopback`、`POST /api/ab/run`、`/api/rvc/live/*`、`/api/wechat/*`、`/api/audio/*`。
+
+> **架构演进建议（见文末）**：`m2_server/` 目前平铺、单文件偏大，下一步建议拆成 `routers/` + `services/` 包。
+
+---
+
+## 移动端（Expo）
+
+Expo SDK 54 + RN 0.81 + expo-router 文件路由 + Zustand。`mobile/api.ts` 调 PC 后端实现**微信语音遥控**：手机打字 → PC 用 Qwen3-TTS 合成 → 自动发到微信（走 `wechat_voice` 接口 + 桌宠置顶引导点击发送）。当前需手动填 PC 局域网 IP（后续补 mDNS 自动发现）。
 
 ---
 
 ## 环境搭建（一次性）
 
-> 前提：NVIDIA 显卡（本机为 RTX 5060），已装 git、ffmpeg。
+> 前提：NVIDIA 显卡（本机 RTX 5060），已装 git、ffmpeg。
 
 ```powershell
 # 1. 创建虚拟环境（建议 Python 3.11）
@@ -60,10 +149,7 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 pip install numpy librosa soundfile pydub wavmark eng_to_ipa inflect unidecode pypinyin cn2an jieba langid
 pip install -r requirements.txt
 
-# 4. Qwen3-TTS 需要独立环境 venv312（torch2.8+cu129，见 tts_trial/venv312），当前环境内已就绪
-
-# 5. 验证 GPU 可用 —— 必须打印 True
-python -c "import torch; print(torch.cuda.is_available())"
+# 4. Qwen3-TTS 需要独立环境 venv312（torch2.8+cu129），见 tts_trial/venv312，当前环境内已就绪
 ```
 
 ---
@@ -90,6 +176,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
 |------|------|-----------|
 | 文字转语音 | `qwen-tts` + `tts_models/` 权重 | 「文字转语音」页不可用 |
 | 实时变声 | RVC 整合包（`VM_RVC_ROOT`）+ VB-Audio CABLE | 「实时变声」页不可用 |
+| 微信发送 | 微信 PC 版 + 桌宠置顶引导 | 「微信发送」不可用，其余正常 |
 
 ### 目录清理
 
@@ -100,17 +187,18 @@ powershell -ExecutionPolicy Bypass -File .\tools\cleanup.ps1 -Apply    # 真的�
 
 ---
 
-## 当前进度（2026-08-27）
+## 当前进度（2026-09-03）
 
 ✅ **环境**：Python 3.11 venv、PyTorch 2.9.1+cu128（RTX 5060 CUDA 正常）、ffmpeg、Qwen3-TTS 权重与 venv312 已就位
-✅ **M1 素材流水线已验证**：视频→提音轨→demucs 分离→归一化→切片→参考音频（含追加聚合），全部实测通过
-✅ **M2 文字转语音已验证**：Qwen3-TTS 零样本克隆袋鼠音色（venv312 常驻 worker，端口 8001）可稳定输出
-✅ **M2 服务接口**：`/health`、`/voices`、`/pipeline/run`、`/clips`、`/voicebank`、`/tts`、`/rvc/dataset` 均实测可用
-✅ **桌面端已打通**：Electron + React 界面（音色工坊/音色库/文字转语音/袋鼠语音四页），`变声工坊.exe` 可运行
-✅ **RVC 袋鼠模型已训练完成**：Qwen3-TTS 批量生成 21 条语料 → 导出到 RVC 整合包离线训练 40 epoch（48k/v2/rmvpe），`meituan_rat.pth` + index 已就绪
-✅ **RVC 实时变声已验证**：`/rvc/live/start` 一键启动 → 自动切虚拟声卡（录音→CABLE Output）→ realtime_gui 实时变声 → 退出/停止自动还原声卡
-✅ **音频设备兜底**：`/rvc/live/reset` 一键强制恢复真实扬声器/麦克风；服务器启动自动清理上次异常残留的声卡切换
-✅ **整机联调已完成（2026-08-27）**：全流程自动化验收通过——后端服务(8000/CUDA) → 素材链路(55 切片+参考音频) → Qwen3-TTS 克隆出音(wav 落盘 outputs/) → RVC 数据集导出(21 条→D:\RVC) → 实时变声 start(弹窗+录音切 CABLE Output) / stop(进程退出+麦克风还原+备份清理)，全程无残留错误
+✅ **M1 素材流水线**：视频→提音轨→demucs 分离→归一化→切片(2.5~10s)→参考音频（含追加聚合），全部实测通过
+✅ **切片质检 + 说话人分离**：clip_qc 多维打分（时长/响度/削波/底噪/SNR/说话人一致性）；CAM++ 自动挑主说话人
+✅ **M2 文字转语音**：Qwen3-TTS 零样本/ICL 克隆（venv312 常驻 worker :8001）稳定输出
+✅ **RVC 训练式音色**：Qwen3-TTS 批量生成语料 → 导出 RVC 整合包离线训练 → 权重随音色包导入导出
+✅ **实时变声**：`/rvc/live/start` 一键切虚拟声卡（录音→CABLE Output）→ 实时变声 → 退出/停止自动还原 + 异常残留巡检
+✅ **桌宠 + 全局热键**：透明常驻桌宠、`Ctrl+Alt+V` 启停级联变声、loopback 内录系统声音自动挖掘音色
+✅ **微信发送 / 移动端遥控**：手机打字 → PC 合成 → 微信自动发送（桌宠置顶引导）；Expo App 已成型
+✅ **A/B 盲听 + 音色挖掘**：同句双音色合成 + 声纹相似度评分盲听；上传视频自动聚类挖音色试听
+✅ **桌面端联调**：Electron + React 七页（实时/工坊/发现/音色库/TTS/微调/离线变声），打包 `变声工坊.exe`（release2/）可运行，含自动更新
 
 ---
 
@@ -119,11 +207,11 @@ powershell -ExecutionPolicy Bypass -File .\tools\cleanup.ps1 -Apply    # 真的�
 ### 直接运行（已打包）
 
 ```
-web/release/win-unpacked/变声工坊.exe
+web/release2/win-unpacked/变声工坊.exe
 ```
 
 启动后自动完成：拉起 Python 后端（8000 端口）→ 打开桌面窗口。
-（需先保证 Python 后端环境就绪，详见下方「启动转换服务」。）
+（需先保证 Python 后端环境就绪，详见上方「新机器部署」。）
 
 ### 开发模式
 
@@ -133,8 +221,8 @@ npm install
 # 终端1：启动后端
 ..\.venv\Scripts\python ..\m2_server\server.py
 # 终端2：前端开发
-npm run dev        # http://localhost:5173
-# 或直接起桌面壳
+npm run dev            # http://localhost:5173
+# 或直接起桌面壳（vite + electron 并行）
 npm run electron:dev
 ```
 
@@ -142,42 +230,65 @@ npm run electron:dev
 
 ```powershell
 cd web
-npm run electron:build    # 产出 release/win-unpacked/ 和安装包
+npm run electron:build    # 产出 release2/win-unpacked/ 和 NSIS 安装包
 ```
 
 安装包内含前端与**后端源码**（`resources/backend/`），但不含 Python 与依赖 ——
 那部分是几个 GB，只能由 `tools\setup_env.ps1` 在目标机器上装一次。
 
+### 移动端开发
+
+```powershell
+cd mobile
+npm install
+# 改 mobile/api.ts 里的 PC 后端地址为 本机局域网IP:8000
+npx expo start          # 扫码或连模拟器；真机需同一局域网
+```
+
 ---
 
-## 使用流程（以「美团老鼠」为例）
+## 使用流程（以「袋鼠骑士」为例）
 
-| 步骤 | 操作 | 命令 |
-|------|------|------|
-| ① 存素材 | 把美团老鼠配音视频存进 `media/raw_videos/`（2~3 个不同二创更准） | - |
-| ② 跑流水线 | 提音轨+去BGM+切片段 | `python m1_workshop/pipeline.py`（或桌面端「音色工坊」页） |
-| ③ 试听勾选 | 听 `media/clips/`，挑纯美团老鼠音色片段（剔除 BGM/其他角色） | - |
-| ④ 生成参考 | 勾选片段→音色档案 | `python m1_workshop/build_reference.py meituan_rat clip_001 clip_004` |
-| ⑤ 追加素材 | 素材不够时继续加 | `python m1_workshop/build_reference.py --append meituan_rat clip_009` |
-| ⑥ 生成台词 | 用袋鼠音色做文字转语音（免训练克隆） | 桌面端「文字转语音」页 |
-| ⑦ 生训练集 | 批量生成 RVC 训练语料 | 桌面端「文字转语音」→ RVC 训练集 |
-| ⑧ 训练 RVC | 语料导出到 RVC 整合包离线训练底模 | 桌面端导出 / `POST /rvc/dataset/export`（→ `D:\RVC`） |
+| 步骤 | 操作 |
+|------|------|
+| ① 存素材 | 把目标配音视频/音频放进 `media/raw_videos/`（桌面端可拖拽上传） |
+| ② 跑流水线 | 提音轨+去BGM+切片段（桌面端「音色工坊」页或 `POST /api/pipeline/run`） |
+| ③ 质检/说话人分离 | 切片打分 + CAM++ 挑主说话人，剔除 BGM/他人声片段 |
+| ④ 建音色 | 勾选片段/自动优选 → 参考音频；或「音色挖掘」自动聚类挖候选试听 |
+| ⑤ 文字转语音 | 用该音色做 TTS（零样本/ICL 克隆免训练，秒级出结果） |
+| ⑥ 训练实时变声 | 批量生成 RVC 语料 → 导出整合包离线训练 → 实时变声可用 |
+| ⑦ 微信/移动遥控 | 手机打字 → PC 合成 → 微信自动发送 |
 
 ### 启动转换服务
 
 ```powershell
 python m2_server/server.py
 # 桌面端会自动拉起；手动启动供局域网手机/浏览器访问 http://<电脑IP>:8000
-# 接口：GET /health, GET /voices, GET /raw_videos, POST /pipeline/run, GET /clips,
-#      POST /voicebank, DELETE /voicebank/{id}, POST /tts, POST /rvc/dataset/generate 等
+# 接口前缀统一 /api，详见「后端 M2」一节
 ```
 
 ---
 
 ## 素材量决定档位
 
-- **文字转语音（Qwen3-TTS 零样本）**：一段 3~10s 纯净参考音频即可直接克隆、免训练，秒级出结果。适合素材稀缺场景（如美团老鼠）。
-- **实时变声（RVC 训练式）**：需 1 分钟+纯净语料，离线训练后相似度更高、可实时麦克风变声。
+- **文字转语音（Qwen3-TTS 零样本/ICL）**：一段 3~10s 纯净参考音频即可直接克隆、免训练，秒级出结果。适合素材稀缺场景。
+- **实时变声（RVC 训练式）**：需 1 分钟+纯净语料，离线训练后相似度更高、可实时麦克风变声（游戏/会议/微信通用）。
+
+---
+
+## 环境变量（config.py 可覆盖）
+
+| 变量 | 作用 | 默认 |
+|------|------|------|
+| `VM_SERVER_HOST` | 监听地址 | `0.0.0.0`（暴露 LAN） |
+| `VM_SERVER_PORT` | 后端端口 | `8000` |
+| `VM_API_TOKEN` | 启用局域网 Token 鉴权（不设则本机回环放行、LAN 无鉴权） | 空 |
+| `VM_CORS_ORIGINS` | 允许的前端来源（逗号分隔） | 本地+file:// |
+| `VM_MEDIA_DIR` / `VM_OUTPUTS_DIR` / `VM_PROJECT_ROOT` | 素材/产物/项目根 | 自动推导 |
+| `VM_RVC_ROOT` | RVC 整合包根目录（实时变声依赖） | `D:\RVC` |
+| `VM_QWEN_MODEL_DIR` / `VM_QWEN_TOKENIZER_DIR` | Qwen3-TTS 权重/分词器 | `tts_models/` |
+
+> 安全：以 `0.0.0.0` 监听且未设 `VM_API_TOKEN` 时，后端启动会告警——暴露到 LAN 前务必设 Token 并收紧 CORS。
 
 ---
 
@@ -189,21 +300,32 @@ python m2_server/server.py
 | demucs 首次卡住 | 在下载 ~300MB 模型，等它下完 |
 | 分离后人声仍带 BGM（发闷发混） | `pipeline.py` 里 `DEMUCS_MODEL` 换成 `htdemucs_ft` |
 | 切片全是噪音 | `pipeline.py` 里 `SILENCE_THRESH` 调到 `-38` |
-| 转换「像但不太像」 | 零样本正常水平；素材凑到 30s+ 会明显提升；要逼真上 GPT-SoVITS |
+| 实时变声没声音 | 检查 VB-CABLE 已装；`/api/audio/apply` 一键设录音=CABLE Output |
+| 换网络手机连不上 PC | 改 `mobile/api.ts` 的 PC 局域网 IP（后续补 mDNS 自动发现） |
+| 转换「像但不太像」 | 零样本正常水平；素材凑到 30s+ 会明显提升；要逼真上 GPT-SoVITS/RVC 训练 |
 
 ---
 
 ## 已确认的技术决策
 
 - 克隆方式：**VC 语音转换**（不做 ASR+TTS），保留你的语气/停顿/情绪
-- 素材入口：**只收视频文件**（不做抖音链接解析）
+- 素材入口：**收视频/音频文件**（不做抖音链接解析）
 - BGM 处理：流水线内置 demucs 人声分离
-- 多人混入：MVP 用人工勾选片段，不上说话人分离
-- M1 形态：Web 页面（后续），当前先命令行跑通
+- 多人混入：MVP 用人工勾选 + 说话人分离辅助，不上全自动 diarization 流水线
+- 推理位置：**本机/局域网**，不上云
+- 移动端定位：**PC 推理 + 手机遥控**的 tether 架构（非手机本地推理）
 
 ## 明确不做（v1）
 
 - ❌ 抖音链接自动下载解析
-- ❌ 游戏内实时变声
-- ❌ 云端服务（纯局域网，隐私安全）
+- ❌ 云端推理服务（纯局域网，隐私安全）
 - ❌ iOS（先吃透安卓）
+
+---
+
+## 架构演进建议（待办，非当前阻塞）
+
+1. **后端拆包（最推荐）**：`m2_server/` 目前平铺、单文件 `server.py` 1735 行既注册路由又内联多块逻辑。建议拆成 `routers/`（每能力一个）+ `services/`（管线/TTS/音频/音色包）+ `core/`（config/auth/state），降低单人维护成本、减少改一处炸全局的风险。低风险、高回报。
+2. **移动端 mDNS 自动发现**：当前手机手动填 PC 局域网 IP；加 `@react-native-community/zeroconf`，PC 后端广播 `_voicemorph._tcp.local`，手机自动发现，纯增量改动，体验提升明显。
+3. **共享 API 客户端**：`web/src` 与 `mobile/api.ts` 各写一份 fetch，可从 FastAPI `/openapi.json` 生成共享 client 防漂移（当前规模低优先级）。
+4. **桌面壳保持 Electron**：不迁 Tauri——本项目需 spawn Python 子进程 + 原生音频设备切换 + 自动更新 + 透明桌宠窗，Electron 现成且稳妥；Tauri 更适合无 Python 后端的轻量工具（如另开的「写作伴侣」）。
