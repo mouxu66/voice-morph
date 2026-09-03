@@ -71,7 +71,8 @@
 变声/
 ├── web/                  # 桌面端（Electron + React）；构建产物 web/dist；打包 release2/
 │   ├── src/              # React 前端（7 个主路由页 + useAppStore 轮询 health/voices）
-│   ├── electron/         # 主进程 main.cjs（拉起后端/多窗体/IPC/热键/自动更新）
+│   ├── electron/         # 主进程按职责拆 6 模块：main(装配) backend(后端进程/HTTP)
+│   │                     #   pet(桌宠) pet-actions(桌宠动作) alt-hint(置顶提示) update-ipc(更新)
 │   └── package.json
 ├── mobile/               # 移动端（Expo）；app/ 文件路由 + api.ts 调 PC 后端
 ├── m2_server/            # M2 后端（FastAPI，端口 8000）
@@ -100,9 +101,20 @@
 
 ## 桌面端框架（你重点问的）
 
-`web/electron/main.cjs` 是核心调度者，应用启动时：
+主进程按职责拆为 6 个 CommonJS 模块（`main.cjs` 只留装配层，1258→153 行）：
 
-1. **推导项目根** `resolveProjectRoot()`：开发态用 `D:\变声`，打包态用 `resources/backend`，多候选兜底，不再硬编码盘符。
+| 模块 | 职责 |
+|---|---|
+| `main.cjs` | 装配层：createWindow、Ctrl+Alt+V 热键、退出还原声卡、whenReady 启动链 |
+| `backend.cjs` | 后端进程生命周期（resolveProjectRoot/startBackend/stopBackend）、HTTP 工具（backendPost/httpJson）、故障提示与环境体检弹窗、`backend:*` IPC |
+| `pet.cjs` | 桌宠窗口/偏好/显隐轮询/页面导览；业务动作经 `createPetWindow(actions)` 依赖注入，无循环 require |
+| `pet-actions.cjs` | 桌宠触发的动作：发微信语音/试听/loopback 挖掘/实时变声开关 |
+| `alt-hint.cjs` | 微信发送置顶提示横幅 + Alt 倒计时引导 |
+| `update-ipc.cjs` | 自动更新 IPC（check/download/install/skip）+ 启动静默检查 |
+
+应用启动链（装配在 `main.cjs`，实现在各模块）：
+
+1. **推导项目根** `resolveProjectRoot()`（backend.cjs）：开发态用 `D:\变声`，打包态用 `resources/backend`，多候选兜底，不再硬编码盘符。
 2. **拉起后端** `startBackend()`：`spawn` 启动 `m2_server/server.py`（cwd=m2_server，注入 `PYTHONPATH / VM_MEDIA_DIR / VM_OUTPUTS_DIR / VM_PROJECT_ROOT`）；端口被自己残留进程占用会先清再拉。
 3. **开 3 个窗口**：主窗口（React）、桌宠窗口（`pet.html` 透明常驻右下角）、置顶提示窗（`alt-hint.html` 微信发送引导，鼠标穿透）。
 4. **注册 IPC**：`backend:*`（启停后端）、`pet:*`（桌宠）、`update:*`（自动更新）；全局热键 `Ctrl+Alt+V` 启停级联变声。
@@ -333,3 +345,4 @@ python m2_server/server.py
 2. **移动端 mDNS 自动发现**：当前手机手动填 PC 局域网 IP；加 `@react-native-community/zeroconf`，PC 后端广播 `_voicemorph._tcp.local`，手机自动发现，纯增量改动，体验提升明显。
 3. **共享 API 客户端**：`web/src` 与 `mobile/api.ts` 各写一份 fetch，可从 FastAPI `/openapi.json` 生成共享 client 防漂移（当前规模低优先级）。
 4. **桌面壳保持 Electron**：不迁 Tauri——本项目需 spawn Python 子进程 + 原生音频设备切换 + 自动更新 + 透明桌宠窗，Electron 现成且稳妥；Tauri 更适合无 Python 后端的轻量工具（如另开的「写作伴侣」）。
+5. ~~**桌面壳主进程拆分**~~ **✅ 已完成（2026-09-03）**：`main.cjs`（原 1258 行）已拆为 backend / pet / pet-actions / alt-hint / update-ipc 5 个职责模块，main.cjs 只留装配层（153 行）；IPC 通道与启动顺序零变更，并顺带修复了启动更新推送因未 await 而静默失效的问题。
