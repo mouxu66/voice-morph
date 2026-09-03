@@ -22,12 +22,47 @@ export type PetGuidePayload = {
   duration: number;
 };
 
+/** 更新清单里的一个版本（由 latest.json 提供） */
+export type UpdateManifest = {
+  version: string;
+  /** 更新内容（更新页主体，支持多行文本 / `- ` 列表 / `### ` 小标题） */
+  notes: string;
+  pub_date?: string;
+  url?: string;
+  sha256?: string;
+  size?: number;
+  /** 强制更新：为 true 时不给「跳过此版本」 */
+  mandatory?: boolean;
+};
+
+/** 检查结果 */
+export type UpdateCheck = {
+  ok: boolean;
+  /** false = 没配 VM_UPDATE_URL，当前是纯本地模式（不算错误） */
+  configured: boolean;
+  hasUpdate: boolean;
+  current: string;
+  latest: UpdateManifest | null;
+  reason?: string;
+};
+
+export type UpdateDownload = { ok: boolean; file?: string; cached?: boolean; reason?: string };
+export type UpdateProgress = { pct: number; received?: number; total?: number; done?: boolean };
+
 interface ElectronBridge {
   startBackend?: () => Promise<StartResult>;
   stopBackend?: () => Promise<{ ok: boolean }>;
   backendStatus?: () => Promise<{ running: boolean; port: number }>;
   showBackendLog?: () => Promise<{ ok: boolean }>;
   petGuide?: (payload: PetGuidePayload) => void;
+  // ---- 自动更新 ----
+  appVersion?: () => Promise<string>;
+  updateCheck?: () => Promise<UpdateCheck>;
+  updateDownload?: (manifest: UpdateManifest) => Promise<UpdateDownload>;
+  updateInstall?: (file: string) => Promise<{ ok: boolean; reason?: string }>;
+  updateSkip?: (version: string) => Promise<{ ok: boolean }>;
+  onUpdateProgress?: (cb: (p: UpdateProgress) => void) => () => void;
+  onUpdateAvailable?: (cb: (r: UpdateCheck) => void) => () => void;
 }
 
 const w = typeof window !== "undefined" ? (window as unknown as { electron?: ElectronBridge }) : undefined;
@@ -57,4 +92,51 @@ export function petGuide(payload: PetGuidePayload): void {
   } catch {
     // 桌宠窗口未就绪时忽略，不影响主界面
   }
+}
+
+// ---------------- 应用自动更新 ----------------
+// 仅打包桌面端可用；网页/Vite/局域网模式下这些函数都返回 null（UI 自动隐藏入口）。
+
+/** 是否能在这个环境里检查更新（即跑在带更新能力的桌面壳里） */
+export const hasUpdate = Boolean(electron?.updateCheck);
+
+export async function appVersion(): Promise<string | null> {
+  if (!electron?.appVersion) return null;
+  try {
+    return await electron.appVersion();
+  } catch {
+    return null;
+  }
+}
+
+export async function checkUpdate(): Promise<UpdateCheck | null> {
+  if (!electron?.updateCheck) return null;
+  return electron.updateCheck();
+}
+
+export async function downloadUpdate(manifest: UpdateManifest): Promise<UpdateDownload | null> {
+  if (!electron?.updateDownload) return null;
+  return electron.updateDownload(manifest);
+}
+
+export async function installUpdate(file: string): Promise<{ ok: boolean; reason?: string } | null> {
+  if (!electron?.updateInstall) return null;
+  return electron.updateInstall(file);
+}
+
+export async function skipUpdate(version: string): Promise<void> {
+  if (!electron?.updateSkip) return;
+  await electron.updateSkip(version);
+}
+
+/** 订阅下载进度，返回取消订阅函数（直接丢给 useEffect 的 return） */
+export function onUpdateProgress(cb: (p: UpdateProgress) => void): () => void {
+  if (!electron?.onUpdateProgress) return () => {};
+  return electron.onUpdateProgress(cb);
+}
+
+/** 订阅「启动静默检查发现新版本」（用于自动弹更新页） */
+export function onUpdateAvailable(cb: (r: UpdateCheck) => void): () => void {
+  if (!electron?.onUpdateAvailable) return () => {};
+  return electron.onUpdateAvailable(cb);
 }

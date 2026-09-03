@@ -4,6 +4,7 @@ const { spawn, execFileSync } = require("child_process");
 const http = require("http");
 const path = require("path");
 const fs = require("fs");
+const updater = require("./updater.cjs");
 
 const BACKEND_PORT = 8000;
 let backendProc = null;
@@ -355,6 +356,60 @@ function registerBackendIpc() {
     try { shell.showItemInFolder(BACKEND_LOG); } catch {}
     return { ok: true };
   });
+}
+
+// ---------------- 应用自动更新（设置里的「检查更新」+ 启动静默检查） ----------------
+// 更新源是静态清单 latest.json，地址由环境变量 VM_UPDATE_URL 指定；未配置则完全离线
+// （纯本地默认，不发任何网络请求）。详见 web/electron/UPDATE.md。
+function registerUpdateIpc() {
+  ipcMain.handle("app:version", () => updater.currentVersion());
+
+  ipcMain.handle("update:check", async () => {
+    try {
+      return await updater.checkForUpdates();
+    } catch (e) {
+      return { ok: false, configured: true, hasUpdate: false,
+        current: updater.currentVersion(), latest: null, reason: String(e.message || e) };
+    }
+  });
+
+  // 下载：进度用 webContents.send 推给发起请求的那个窗口（前端进度条据此更新）
+  ipcMain.handle("update:download", async (event, manifest) => {
+    const sender = event.sender;
+    const r = await updater.downloadUpdate(manifest, (pct, info) => {
+      try {
+        sender.send("update:progress", { pct, ...info });
+      } catch { /* 窗口已关闭 */ }
+    });
+    if (r.ok) {
+      try {
+        sender.send("update:progress", { pct: 100, done: true, file: r.file });
+      } catch { /* ignore */ }
+    }
+    return r;
+  });
+
+  ipcMain.handle("update:install", async (_e, file) => updater.installUpdate(file));
+  ipcMain.handle("update:skip", async (_e, version) => updater.skipVersion(version));
+}
+
+/**
+ * 启动后静默检查一次：有更新就主动推给前端弹更新页。
+ * 延迟 12s 再做，避免拖慢首屏（后端启动/模型加载才是抢占注意力的那件事）；
+ * 失败一律静默 —— 更新检查绝不能打扰正常使用。
+ */
+function scheduleStartupUpdateCheck(win) {
+  const delayMs = 12000;
+  setTimeout(async () => {
+    try {
+      const r = await updater.checkForUpdates();
+      if (!r.ok || !r.hasUpdate) return;
+      if (!win || win.isDestroyed()) return;
+      win.webContents.send("update:available", r);
+    } catch {
+      /* 静默 */
+    }
+  }, delayMs);
 }
 
 // ---------------- 桌宠窗口（页面导览 + 级联变声状态可视化） ----------------
@@ -1075,6 +1130,7 @@ async function createWindow(root) {
   } else {
     console.error("[frontend] 未找到构建产物 dist/index.html");
   }
+  return win;
 }
 
 app.whenReady().then(async () => {
@@ -1086,10 +1142,13 @@ app.whenReady().then(async () => {
     return;
   }
   const startInfo = await startBackend(root);
-  createWindow(root);
+  const win = createWindow(root);
   createPetWindow();
   registerBackendIpc();
   registerCascadeHotkey();
+  registerUpdateIpc();
+  // 启动 12s 后静默检查一次更新，有新版才弹更新页（失败全程静默）
+  scheduleStartupUpdateCheck(win);
   // 后端探测放在窗口之后异步进行，不阻塞界面出现；探不到才弹提示
   void reportBackendTrouble(startInfo || {});
 
