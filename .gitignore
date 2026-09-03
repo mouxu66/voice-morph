@@ -27,6 +27,11 @@ release/
 # ===== 第三方 agent skills（安装的工具，非项目代码） =====
 .agents/
 agents/
+.codebuddy/skills/
+.workbuddy/skills/
+
+# ===== Vite 临时文件 =====
+web/vite.config.ts.timestamp-*.mjs
 
 # ===== TTS 试听音频 / 构建缓存 =====
 tts_trial/*.wav
