@@ -215,6 +215,7 @@ def ft_list():
     if FT_DIR.exists():
         for d in sorted(FT_DIR.iterdir()):
             if d.is_dir() and (d / "status.json").exists():
+                _selfheal_training(d.name)
                 st = json.loads((d / "status.json").read_text("utf-8"))
                 items.append({"voice_id": d.name, **st})
     return {"items": items}
@@ -222,6 +223,7 @@ def ft_list():
 
 @router.get("/ft/status")
 def ft_status(voice_id: str):
+    _selfheal_training(voice_id)
     st = _status(voice_id)
     tr = _TRAIN.get(voice_id)
     if tr:
@@ -272,6 +274,29 @@ def _latest_ckpt(voice_id: str) -> Path | None:
     root = ROOT / "tts_trial" / "ft_output" / voice_id
     cks = sorted(root.glob("checkpoint-epoch-*"), key=lambda p: int(p.name.rsplit("-", 1)[-1]))
     return cks[-1] if cks else None
+
+
+def _selfheal_training(voice_id: str) -> None:
+    """训练状态自愈：status.json 停在 training 但实际没在训练时自动翻转。
+
+    成因：a) 服务重启丢了 _wait 收尾线程（内存态）；b) 历史版本手动训练未走状态机。
+    判据：本进程无训练任务 + 系统无 sft 训练进程 → 按 checkpoint 有无翻转为 trained / error。
+    翻转后再次进入 /ft/train 的门槛校验（ready/trained/error）即恢复可用。
+    """
+    st = _status(voice_id)
+    if st.get("stage") != "training":
+        return
+    tr = _TRAIN.get(voice_id)
+    if tr and tr.get("running"):
+        return
+    if _find_train_pid(voice_id):
+        return
+    ck = _latest_ckpt(voice_id)
+    if ck:
+        _set_status(voice_id, stage="trained", message="训练完成，可试听/入库（自愈）",
+                    checkpoint=str(ck), error="")
+    else:
+        _set_status(voice_id, stage="error", error="训练进程已退出且无 checkpoint（自愈）")
 
 
 def _train_job(voice_id: str, epochs: int):

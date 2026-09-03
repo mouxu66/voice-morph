@@ -36,6 +36,13 @@ ROOT = Path(__file__).resolve().parent.parent
 RVC_ROOT = cfg.RVC_ROOT
 CONFIG_JSON = RVC_ROOT / "configs" / "config.json"
 REALTIME_PY = RVC_ROOT / "realtime_gui.py"
+# 无头运行器（不弹窗口/控制台，推理逻辑与 realtime_gui.py 同源）
+HEADLESS_PY = RVC_ROOT / "rvc_headless.py"
+# 自我监听：把 CABLE Output（变声后的音频）软回环到真实输出设备，让自己听得到
+MONITOR_PY = RVC_ROOT / "rvc_monitor.py"
+MONITOR_LOG = cfg.OUTPUTS_DIR / "live_monitor.log"
+MONITOR_ENABLED = os.environ.get("VM_LIVE_MONITOR", "1") != "0"
+MONITOR_GAIN = float(os.environ.get("VM_LIVE_MONITOR_GAIN", "0.8"))
 # 本机 RVC 环境没有 runtime 目录，Python 解释器在 .venv（训练驱动脚本亦如此）
 RUNTIME_PY = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 VENV_PY = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
@@ -56,6 +63,10 @@ INPUT_DEVICE = os.environ.get("VM_LIVE_INPUT_DEVICE", "麦克风阵列")
 OUTPUT_DEVICE = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "CABLE Input")
 
 CREATE_NEW_CONSOLE = 0x00000010
+# 无头模式用：起进程但不分配控制台，避免每次开始变声都弹黑框
+CREATE_NO_WINDOW = 0x08000000
+# 无头运行器就绪标记（rvc_headless.py 开流后打印）
+_STREAM_READY_MARK = "[headless] STREAM_UP"
 
 DEFAULT_EPOCHS = 40
 
@@ -91,7 +102,8 @@ def _exp_dirs(exp: str | None = None) -> tuple[str, Path, Path]:
     return name, log_dir, dataset_dir
 
 _state = {
-    "live": {"running": False, "pid": None, "audio_switched": False, "error": ""},
+    "live": {"running": False, "pid": None, "audio_switched": False, "error": "",
+             "headless": False, "monitor": False, "monitor_gain": None},
     # exp=当前训练/生效的音色 ID；total_epochs 用于进度百分比计算
     "train": {"running": False, "pid": None, "rc": None,
               "exp": cfg.RVC_DEFAULT_EXP, "total_epochs": DEFAULT_EPOCHS},
@@ -181,7 +193,10 @@ def _audio(action: str) -> dict:
 
 
 def _find_realtime_pids() -> list[int]:
-    """按命令行找出所有 realtime_gui.py 进程的 PID（存活检测与兜底查杀共用）。
+    """按命令行找出所有实时变声进程的 PID（存活检测与兜底查杀共用）。
+
+    同时匹配无头运行器 rvc_headless.py 与官方 GUI realtime_gui.py，
+    两种模式共用同一套存活判断与停止逻辑。
 
     带 1s 缓存：status 每 3s 被前端轮询，每次都起 PowerShell 进程太重。
     """
@@ -194,7 +209,7 @@ def _find_realtime_pids() -> list[int]:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
              "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-             "Where-Object { $_.CommandLine -match 'realtime_gui' } | "
+             "Where-Object { $_.CommandLine -match 'realtime_gui|rvc_headless' } | "
              "Select-Object -ExpandProperty ProcessId"],
             capture_output=True, text=True, timeout=20,
         ).stdout
@@ -405,11 +420,44 @@ def _train_progress(exp_name: str | None = None) -> dict:
     return res
 
 
+def _device_matches(dev_name: str, want: str) -> bool:
+    """设备名模糊匹配。
+
+    MME 会把设备名截断到 31 字符（"CABLE Input (VB-Audio Virtual C"），
+    配置里写完整名就永远匹配不上，所以两边都按前缀比较。
+    """
+    a, b = (dev_name or "").lower(), (want or "").lower()
+    if not a or not b:
+        return False
+    return b in a or a in b or a[:28] in b or b[:28] in a
+
+
+def _system_default_input() -> str | None:
+    """系统当前默认录音设备的名字（MME 视角）。
+
+    插上耳机后 Windows 会把默认录音切到耳机麦，拔掉又切回内置阵列，
+    所以每次启动实时读一次，就能自动跟随用户实际在用的麦克风。
+    """
+    try:
+        out = subprocess.run(
+            [str(VENV_PY), "-c",
+             "import sounddevice as sd, json\n"
+             "print(json.dumps(sd.query_devices(kind='input')['name']))"],
+            capture_output=True, text=True, timeout=60, cwd=str(RVC_ROOT),
+        ).stdout
+        return json.loads(out.strip().splitlines()[-1])
+    except Exception:
+        return None
+
+
 def _resolve_device_names() -> tuple[str, str] | None:
     """用 RVC 环境的 sounddevice 枚举 MME 设备，按关键词模糊匹配出精确全名。
 
     配置里必须写完整枚举名（如 "CABLE Input (VB-Audio Virtual Cable)"），
     写短名会导致 GUI 内匹配失败而回退到默认设备（曾导致输出落到真实扬声器）。
+
+    输入设备默认跟随系统默认录音设备（插耳机用耳机麦、拔了回内置麦）；
+    设了 VM_LIVE_INPUT_DEVICE 时优先按关键词匹配，方便锁定特定设备。
     """
     try:
         out = subprocess.run(
@@ -425,8 +473,18 @@ def _resolve_device_names() -> tuple[str, str] | None:
         )
         items = json.loads(out.stdout.strip().splitlines()[-1])
         mme = [d for d in items if d.get("api") == "MME"]
-        inp = next((d["name"] for d in mme if d["in"] > 0 and INPUT_DEVICE.lower() in d["name"].lower()), None)
-        outp = next((d["name"] for d in mme if d["out"] > 0 and OUTPUT_DEVICE.lower() in d["name"].lower()), None)
+        outp = next((d["name"] for d in mme
+                     if d["out"] > 0 and _device_matches(d["name"], OUTPUT_DEVICE)), None)
+        # 输入候选按优先级：系统默认录音设备 → 环境变量指定 → MME 默认映射器
+        candidates = [_system_default_input(), INPUT_DEVICE, "Microsoft 声音映射器"]
+        inp = None
+        for want in candidates:
+            if not want:
+                continue
+            inp = next((d["name"] for d in mme
+                        if d["in"] > 0 and _device_matches(d["name"], want)), None)
+            if inp:
+                break
         if inp and outp:
             return inp, outp
     except Exception:
@@ -462,8 +520,85 @@ def _apply_model_config() -> bool:
     return True
 
 
+def _live_stream_ready() -> bool:
+    """无头模式下音频流是否真的起来了（进程活着 ≠ 模型加载完）。
+
+    rvc_headless.py 开流后会打印 STREAM_UP，这里扫日志判断，
+    前端据此显示「加载中」而不是一上来就告诉用户「已在变声」。
+    """
+    try:
+        _, log_dir, _ = _exp_dirs()
+        path = log_dir / "realtime_gui.log"
+        if not path.exists():
+            return False
+        # 只读尾部，避免每次 status 扫描整个大日志
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 8192))
+            tail = f.read().decode("utf-8", "replace")
+        return _STREAM_READY_MARK in tail
+    except Exception:
+        return False
+
+
+def _find_monitor_pids() -> list[int]:
+    """按命令行找出自我监听回环进程（rvc_monitor.py）。"""
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+             "Where-Object { $_.CommandLine -match 'rvc_monitor' } | "
+             "Select-Object -ExpandProperty ProcessId"],
+            capture_output=True, text=True, timeout=20,
+        ).stdout
+        return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
+    except Exception:
+        return []
+
+
+def _kill_monitor():
+    """停止自我监听回环（变声停止时必须一起收掉，否则耳机里一直是自己的声音）。"""
+    for pid in _find_monitor_pids():
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=30)
+        except Exception:
+            pass
+
+
+def _start_monitor(gain: float) -> bool:
+    """拉起自我监听回环进程。失败只影响「自己听到」，不影响变声本身。"""
+    if not MONITOR_PY.exists():
+        return False
+    _kill_monitor()  # 换音量/重启时先收掉旧的
+    try:
+        MONITOR_LOG.parent.mkdir(parents=True, exist_ok=True)
+        log = open(MONITOR_LOG, "ab")
+        subprocess.Popen(
+            [str(VENV_PY), str(MONITOR_PY),
+             "--gain", str(gain), "--wait", "3.0"],
+            cwd=str(RVC_ROOT), creationflags=CREATE_NO_WINDOW,
+            stdout=log, stderr=subprocess.STDOUT,
+        )
+        log.close()
+        return True
+    except Exception as e:
+        print(f"[live] 自我监听拉起失败（不影响变声）: {e}", flush=True)
+        return False
+
+
+def _live_input_device() -> str | None:
+    """当前 RVC 配置里实际使用的输入设备名，供前端显示「正在用哪个麦」。"""
+    try:
+        data = json.loads(CONFIG_JSON.read_text(encoding="utf-8"))
+        return data.get("sg_input_device")
+    except Exception:
+        return None
+
+
 def _live_proc_alive() -> bool:
-    """实时变声是否运行中：直接探测 realtime_gui 进程（同时覆盖服务器重启后内存 pid 丢失的情况）。"""
+    """实时变声是否运行中：直接探测 RVC 进程（同时覆盖服务器重启后内存 pid 丢失的情况）。"""
     return _realtime_alive()
 
 
@@ -471,6 +606,7 @@ def _live_waiter(proc: subprocess.Popen):
     proc.wait()
     # RVC 窗口关闭后自动还原声卡；restore 失败则 reset 兜底，并记录状态供 status 反馈
     _stop_asr_proc()  # 实时转写子进程跟随实时变声一起退出
+    _kill_monitor()   # 自我监听回环同样跟随退出
     error = ""
     try:
         _audio("restore")
@@ -496,6 +632,7 @@ def rvc_live_status(exp_name: str | None = None):
     model = _model_status(exp_name)
     exp, log_dir, dataset_dir = _exp_dirs(exp_name)
     idx = next(log_dir.glob("added_*.index"), None) if log_dir.exists() else None
+    running = _live_proc_alive()
     return {
         "ok": True,
         "exp": exp,
@@ -504,15 +641,41 @@ def rvc_live_status(exp_name: str | None = None):
         "pth_exists": find_pth(exp, log_dir) is not None,
         "index_exists": idx is not None,
         "dataset_count": len(list(dataset_dir.glob("*.wav"))) if dataset_dir.exists() else 0,
-        "live_running": _live_proc_alive(),
+        "live_running": running,
+        # 进程活着 ≠ 能出声：无头模式下要等模型加载完、音频流起来才算就绪
+        "live_ready": running and (_live_stream_ready() or not _state["live"].get("headless", True)),
+        "headless": bool(_state["live"].get("headless", False)),
         "audio_switched": _state["live"]["audio_switched"],
         "last_error": _state["live"].get("error", ""),
         "train_running": _state["train"]["running"],
         "output_device": OUTPUT_DEVICE,
-        "input_device": INPUT_DEVICE,
+        # 实际生效的输入设备（跟随系统默认录音设备，插拔耳机会变）
+        "input_device": _live_input_device() or INPUT_DEVICE,
+        "monitor_on": bool(_find_monitor_pids()),
+        "monitor_gain": _state["live"].get("monitor_gain"),
         # 实时转写（桌宠字幕）：running=转写子进程存活；stage/last_text 供桌宠渲染
         **{f"asr_{k}": v for k, v in _asr_state().items()},
     }
+
+
+@router.post("/rvc/live/monitor")
+def rvc_live_monitor(on: bool = True, gain: float | None = None):
+    """开关自我监听（把变声后的声音回放到耳机）。
+
+    变声运行中可随时开/关与调音量，不影响变声本身，也不用重启。
+    """
+    if not MONITOR_PY.exists():
+        raise HTTPException(status_code=500, detail=f"未找到监听脚本: {MONITOR_PY}")
+    g = MONITOR_GAIN if gain is None else float(gain)
+    if not on:
+        _kill_monitor()
+        _state["live"].update(monitor=False)
+        return JSONResponse({"ok": True, "monitor_on": False})
+    if not _live_proc_alive():
+        raise HTTPException(status_code=409, detail="实时变声未运行，先点开始变声")
+    ok = _start_monitor(g)
+    _state["live"].update(monitor=ok, monitor_gain=g)
+    return JSONResponse({"ok": ok, "monitor_on": ok, "monitor_gain": g if ok else None})
 
 
 @router.get("/rvc/voices")
@@ -567,7 +730,16 @@ def rvc_voices():
 
 
 @router.post("/rvc/live/start")
-def rvc_live_start(exp_name: str | None = None):
+def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
+                   monitor_gain: float | None = None):
+    """启动实时变声。
+
+    monitor: 是否开启自我监听（把变声后的声音回环到耳机，让自己听得到）。
+             不传时取环境变量 VM_LIVE_MONITOR（默认开）。
+    monitor_gain: 监听音量，默认 0.8。
+    """
+    monitor = MONITOR_ENABLED if monitor is None else bool(monitor)
+    monitor_gain = MONITOR_GAIN if monitor_gain is None else float(monitor_gain)
     # 级联变声与实时变声互斥：两者抢 GPU 且都要占 CABLE（反向检查在 cascade.start）
     from cascade import _cascade_alive
     if _cascade_alive():
@@ -600,11 +772,23 @@ def rvc_live_start(exp_name: str | None = None):
     # 这里依赖 cwd=RVC_ROOT + 解释器把脚本所在目录加入 sys.path[0]。
     _, log_dir, _ = _exp_dirs()
     log_dir.mkdir(parents=True, exist_ok=True)
-    gui_log = open(log_dir / "realtime_gui.log", "ab")
+    gui_log_path = log_dir / "realtime_gui.log"
+    gui_log = open(gui_log_path, "ab")
+    # 优先无头：没有窗口、没有控制台，推理逻辑与官方 GUI 同源；
+    # 脚本缺失时回退到官方 GUI（此时只能继续弹窗口）。
+    headless = HEADLESS_PY.exists()
+    script = HEADLESS_PY if headless else REALTIME_PY
+    cmd = [str(RUNTIME_PY), str(script)]
+    if headless:
+        # 无头进程没有窗口，不能再开控制台。
+        # 监听不在这里传参 —— 已拆成独立进程 rvc_monitor.py，由 _start_monitor 管理。
+        flags = CREATE_NO_WINDOW
+    else:
+        cmd.append("--auto-start")
+        flags = CREATE_NEW_CONSOLE
     try:
         proc = subprocess.Popen(
-            [str(RUNTIME_PY), str(REALTIME_PY), "--auto-start"],
-            cwd=str(RVC_ROOT), creationflags=CREATE_NEW_CONSOLE,
+            cmd, cwd=str(RVC_ROOT), creationflags=flags,
             stdout=gui_log, stderr=subprocess.STDOUT,
         )
         _pid_cache["ts"] = None  # 清缓存，确保秒退检测能探到新进程
@@ -612,27 +796,31 @@ def rvc_live_start(exp_name: str | None = None):
         gui_log.close()
         _state["live"].update(running=False, pid=None, audio_switched=False)
         ok, detail = _reset_audio()
-        msg = f"拉起 RVC 实时窗口失败: {e}"
+        msg = f"拉起 RVC 实时变声失败: {e}"
         if not ok:
             msg += f"；自动还原声卡也失败({detail})，请点「一键恢复音频」"
         raise HTTPException(status_code=500, detail=msg)
 
-    # 秒退检测：窗口要经历 import(约5~7s) 才到 argparse/GUI，窗口期给足 10s
-    deadline = time.time() + 10
+    # 秒退检测：无头模式要装 torch 再加载模型，窗口期给足 20s；
+    # GUI 模式窗口要经历 import(约5~7s) 才到 argparse，10s 足够。
+    deadline = time.time() + (20 if headless else 10)
     while time.time() < deadline:
         if not _realtime_alive():
             gui_log.close()
             _state["live"].update(running=False, pid=None, audio_switched=False)
             ok, detail = _reset_audio()
-            msg = "RVC 实时窗口启动即退出（日志见 logs/realtime_gui.log）"
+            msg = f"RVC 实时变声启动即退出（日志见 logs/{gui_log_path.name}）"
             if not ok:
                 msg += f"；自动还原声卡失败({detail})，请点「一键恢复音频」"
             raise HTTPException(status_code=500, detail=msg)
+        if _live_stream_ready():
+            break
         time.sleep(1)
     # 子进程已继承自己的句柄副本，父进程侧可安全关闭，日志仍持续写入
     gui_log.close()
 
-    _state["live"].update(running=True, pid=proc.pid, error="")
+    _state["live"].update(running=True, pid=proc.pid, error="",
+                          headless=headless, monitor=monitor)
     threading.Thread(target=_live_waiter, args=(proc,), daemon=True).start()
 
     # 拉起实时转写子进程（桌宠字幕）：只采真麦 + ASR，无声卡操作，失败不影响变声
@@ -651,11 +839,22 @@ def rvc_live_start(exp_name: str | None = None):
     except Exception as e:
         print(f"[live] 实时转写子进程拉起失败（桌宠字幕不可用）: {e}", flush=True)
 
+    # 自我监听（独立进程）：把 CABLE Output 回环到耳机，让自己听得到变声
+    monitor_started = False
+    if monitor:
+        monitor_started = _start_monitor(monitor_gain)
+
     return JSONResponse({
         "ok": True, "pid": proc.pid, "audio_switched": True,
         "asr_subtitle": asr_started,
+        "headless": headless,
+        "monitor": monitor_started,
+        "monitor_gain": monitor_gain if monitor_started else None,
         "output_device": OUTPUT_DEVICE,
-        "hint": "已把系统录音设备切到 CABLE Output（微信等应用会用变身后的声音），RVC 窗口已自动开始变声。关闭窗口或点「停止变声」会自动还原声卡",
+        "input_device": _live_input_device(),
+        "hint": ("变声已在后台运行（无窗口）。系统录音已切到 CABLE Output，"
+                 "微信等应用会用变身后的声音"
+                 + ("；自我监听已开，你可以在耳机里听到自己。" if monitor_started else "")),
     })
 
 
@@ -672,8 +871,10 @@ def rvc_live_stop():
         except Exception:
             pass
     _pid_cache["ts"] = None  # 清缓存，stop 后 status 立即反映真实状态
-    _state["live"].update(running=False, pid=None, audio_switched=False)
+    _state["live"].update(running=False, pid=None, audio_switched=False,
+                          monitor=False)
     _stop_asr_proc()  # 实时转写子进程跟随实时变声一起退出
+    _kill_monitor()   # 自我监听回环同理，否则耳机里一直有自己的声音
     # 还原声卡：restore 失败则 reset 兜底，并真实反馈
     try:
         _audio("restore")

@@ -1,8 +1,14 @@
 # M2 转换服务依赖（主环境 .venv · 核心运行时）
-# PyTorch 需单独用 cu128 索引安装（见 README）：
-#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+#
+# ⚠️ 可复现性必读：torch / torchaudio 必须从 CUDA 索引安装。
+#    直接 `pip install -r requirements.txt` 会装到 CPU 版 → 显存不可用、推理静默失效！
+#    步骤（RTX50/Blackwell 用 cu128；其它卡按实际 CUDA 版本选 cu121/cu124）：
+#      1) pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+#      2) pip install -r requirements.txt
+#    （训练/微调相关依赖见 RVC 整合包与 tts_trial/venv312 各自说明，不在此文件。）
 torch
 torchaudio
+python-dotenv  # .env 自动加载（config.py）
 numpy
 scipy
 soundfile

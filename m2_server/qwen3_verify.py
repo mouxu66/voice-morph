@@ -5,9 +5,11 @@ import subprocess
 import time
 import urllib.request
 
-VENV312 = r"D:\变声\tts_trial\venv312\Scripts\python.exe"
-WORKER = r"D:\变声\m2_server\qwen3_tts_service.py"
-OUT = r"D:\变声\tts_trial\verify_kangaroo.wav"
+# 全部相对于本文件推导项目根，去掉机器专属硬编码（与 config.py 一致，便于换机）。
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # m2_server 的上一级 = 项目根
+VENV312 = os.path.join(_ROOT, "tts_trial", "venv312", "Scripts", "python.exe")
+WORKER = os.path.join(_ROOT, "m2_server", "qwen3_tts_service.py")
+OUT = os.path.join(_ROOT, "tts_trial", "verify_kangaroo.wav")
 
 p = subprocess.Popen([VENV312, WORKER], cwd=os.path.dirname(WORKER))
 ready = False

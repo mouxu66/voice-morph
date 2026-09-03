@@ -63,7 +63,7 @@ STATE = {
     # 分阶段耗时统计（最近 30 块）：识别/合成的 avg 与 p95
     "avg_asr_s": 0.0, "p95_asr_s": 0.0, "avg_tts_s": 0.0, "p95_tts_s": 0.0,
     "input_device": "", "output_device": "",
-    "error": "", "updated_at": "",
+    "enhance": "", "error": "", "updated_at": "",
 }
 _latencies: deque = deque(maxlen=20)
 _asr_hist: deque = deque(maxlen=30)
@@ -523,6 +523,7 @@ def run_live(args):
     cas = Cascade(args, worker)
     cas.warmup()
 
+    enhance_wrap = _make_enhancer(args)
     _PLAYER = Player(dev_out, prime_s=args.prime_s)
     q: queue.Queue = queue.Queue()
 
@@ -534,18 +535,61 @@ def run_live(args):
                         dtype="int16", blocksize=FRAME_N, callback=in_cb):
         _PLAYER.start()
         try:
-            _live_main_loop(args, cas, q)
+            _live_main_loop(args, cas, q, enhance_wrap)
         finally:
             _PLAYER.stop()
 
 
-def _live_main_loop(args, cas, q):
+def _live_main_loop(args, cas, q, enhance_wrap):
     def gen():
         while True:
             yield q.get().astype(np.float32) / 32768.0, time.time()
 
+    if enhance_wrap is not None:
+        gen = enhance_wrap(gen)
     # VAD 输入统一为 float32，EnergyVad/webrtcvad 内部转 bytes
     cas.run_frames(gen(), _make_det(args))
+
+
+def _make_enhancer(args):
+    """按需构造帧级增强包装器（P2-5 DeepFilterNet 麦克风增强）。
+
+    启用条件：--enhance 显式开启，或环境变量 VM_CASCADE_ENHANCE 非 "0"。
+    模型不可用时自动回退原始采集（仅状态置 off，不影响主流程）。
+    返回 None 表示不增强；否则返回把 (frame, ts) 迭代器重对齐成定长帧的包装器。
+    """
+    want = args.enhance or (os.environ.get("VM_CASCADE_ENHANCE", "1") != "0")
+    if not want:
+        STATE["enhance"] = "off"
+        return None
+    # 灵敏度：--atten-lim > 环境变量 VM_CASCADE_ATTEN_LIM > 默认 12dB。
+    # 值越小越保护弱人声；0/"none" = 不限（原"一刀切"最狠行为）。
+    atten = getattr(args, "atten_lim", None)
+    if atten is None:
+        atten = os.environ.get("VM_CASCADE_ATTEN_LIM", "12")
+    atten_db: float | None
+    if str(atten).lower() in ("0", "none", "off"):
+        atten_db = None
+    else:
+        atten_db = max(1.0, min(60.0, float(atten)))
+    try:
+        from audio_enhance import StreamEnhancer, FrameRealigner
+        enh = StreamEnhancer(atten_lim_db=atten_db)
+        align = FrameRealigner(enh, SR_IN, FRAME_N)
+        STATE["enhance"] = "on" if atten_db is None else f"on({atten_db:.0f}dB)"
+        print(f"[cascade] DeepFilterNet 麦克风增强已启用"
+              f"（延迟 {enh._den.latency_ms:.0f}ms, 最大压制 "
+              f"{'不限' if atten_db is None else f'{atten_db:.0f}dB'}）", flush=True)
+
+        def wrap(frame_iter):
+            for frame, ts in frame_iter:
+                for f in align.feed(frame):
+                    yield f, ts
+        return wrap
+    except Exception as e:
+        STATE["enhance"] = "off"
+        print(f"[cascade] DeepFilterNet 增强不可用，回退原始采集: {e}", flush=True)
+        return None
 
 
 def _make_det(args):
@@ -618,6 +662,7 @@ def run_live_asr(args):
     vad_det = _make_det(args)
     chunker = Chunker(silence_ms=args.silence_ms, chunk_max_s=args.chunk_max_s,
                       min_chunk_s=args.min_chunk_s)
+    enhance_wrap = _make_enhancer(args)
     q: queue.Queue = queue.Queue()
 
     def in_cb(indata, frames, time_info, status):
@@ -626,6 +671,9 @@ def run_live_asr(args):
     def gen():
         while True:
             yield q.get().astype(np.float32) / 32768.0, time.time()
+
+    if enhance_wrap is not None:
+        gen = enhance_wrap(gen)
 
     def transcribe(pcm: np.ndarray):
         _set_stage("transcribing")
@@ -660,7 +708,9 @@ def run_live_asr(args):
 
 def main():
     p = argparse.ArgumentParser(description="级联变声子进程（录音→ASR→TTS）")
-    p.add_argument("--ref-audio", default="D:/变声/tts_models/ref/meituan_rat_002.wav")
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根
+    p.add_argument("--ref-audio",
+                   default=os.path.join(_root, "tts_models", "ref", "meituan_rat_002.wav"))
     p.add_argument("--ref-text", default="", help="参考文字稿；空则 x-vector 声纹模式")
     p.add_argument("--chunk-max-s", type=float, default=6.0)
     p.add_argument("--silence-ms", type=int, default=400)
@@ -671,6 +721,11 @@ def main():
     p.add_argument("--state-path", default="")
     p.add_argument("--out-dir", default="")
     p.add_argument("--file", default="", help="文件模式：处理该 wav 而非麦克风")
+    p.add_argument("--enhance", action="store_true",
+                   help="麦克风帧级增强（DeepFilterNet，P2-5）；默认由 VM_CASCADE_ENHANCE 控制")
+    p.add_argument("--atten-lim", default=None,
+                   help="增强最大压制 dB（弱人声保护：小=温和，0/none=不限）；"
+                        "默认取 VM_CASCADE_ATTEN_LIM，再默认 12")
     p.add_argument("--asr-only", action="store_true",
                    help="只转写不合成不播放（实时变声期间的桌宠字幕），无声卡操作")
     args = p.parse_args()

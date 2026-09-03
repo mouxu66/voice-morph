@@ -11,7 +11,8 @@ import argparse
 import os
 import sys
 
-RVC_ROOT = r"D:\RVC"
+# 从 VM_RVC_ROOT 读取（与 config.py 一致），未设置回退 D:\RVC，保证换机可移植。
+RVC_ROOT = os.environ.get("VM_RVC_ROOT", r"D:\RVC")
 sys.path.insert(0, RVC_ROOT)
 os.environ["PYTHONPATH"] = RVC_ROOT
 os.chdir(RVC_ROOT)

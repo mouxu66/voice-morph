@@ -9,6 +9,14 @@ from pathlib import Path
 # 项目根（m2_server 的上一级）
 ROOT = Path(__file__).resolve().parent.parent
 
+# 可选：自动加载项目根目录的 .env（需 python-dotenv）。
+# 真实环境变量优先于 .env；未安装 dotenv 或文件不存在则静默跳过。
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env")
+except Exception:
+    pass
+
 
 def _path(name: str, default: Path) -> Path:
     v = os.environ.get(name)

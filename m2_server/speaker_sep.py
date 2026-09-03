@@ -183,6 +183,95 @@ def analyze_audio(audio: Path, clip_paths: list[Path] | None = None) -> dict:
     }
 
 
+def analyze_clips(clip_paths: list[Path]) -> dict:
+    """无纯人声轨时的回退：直接用切片声纹聚类出说话人分组（P2-1）。
+
+    对每个可用切片（>=0.4s 且声纹可算）做 CAM++ 声纹，用 HDBSCAN 聚类成若干
+    说话人组；总时长占比最大者为主说话人。输出结构与 `analyze_audio` 一致，
+    前端可用同一份类型消费。切片无整轨时间轴，segments 的 start/end 以切片
+    自身时长近似。
+    """
+    fs = _FS
+    rows: list[dict] = []
+    for p in clip_paths:
+        try:
+            a = _read16k(p)
+            if a.shape[0] / fs < _MIN_CLIP_S:
+                continue
+            e = _sv_embed(a)
+            if e is None:
+                continue
+            rows.append({"name": p.stem, "emb": e, "dur": a.shape[0] / fs})
+        except Exception:  # noqa: BLE001
+            continue
+    if not rows:
+        raise RuntimeError(
+            "该素材没有可用于说话人分析的切片（切片过短或读取失败）。"
+            "建议：换一段人声清晰、无伴奏的素材重新走流水线。")
+
+    n = len(rows)
+    emb = np.stack([r["emb"] for r in rows])  # (n, 192)，L2 归一化
+
+    # HDBSCAN 聚类；依赖缺失或聚类退化时退化为单簇（全部算作同一个说话人）
+    try:
+        from hdbscan import HDBSCAN
+        labels = HDBSCAN(min_cluster_size=max(2, n // 4), min_samples=1,
+                         metric="euclidean").fit_predict(emb)
+        labels = np.asarray(labels, dtype=int)
+    except Exception:  # noqa: BLE001
+        labels = np.zeros(n, dtype=int)
+
+    # 噪声点(-1)并入欧氏距离最近的簇，避免被当成独立说话人
+    uniq = np.unique(labels[labels >= 0]) if (labels >= 0).any() else np.array([], dtype=int)
+    if (labels < 0).any() and uniq.size:
+        centers = np.stack([emb[labels == k].mean(axis=0) for k in uniq])
+        for i in np.flatnonzero(labels < 0):
+            labels[i] = uniq[int(np.argmin(((centers - emb[i]) ** 2).sum(axis=1)))]
+    if (labels < 0).all():
+        labels = np.zeros(n, dtype=int)
+
+    # 重新编号 0..K-1，按时长降序；主说话人 = 时长最长
+    dur: dict[int, float] = {}
+    cnt: dict[int, int] = {}
+    for r, lb in zip(rows, labels):
+        dur[lb] = dur.get(lb, 0.0) + r["dur"]
+        cnt[lb] = cnt.get(lb, 0) + 1
+    order = sorted(dur, key=lambda s: dur[s], reverse=True)
+    remap = {old: new for new, old in enumerate(order)}
+    main_spk = remap[order[0]]
+    total = sum(dur.values()) or 1e-9
+
+    speakers = [
+        {"id": remap[spk], "label": f"说话人{i + 1}", "duration": round(dur[spk], 2),
+         "segment_count": cnt[spk], "ratio": round(dur[spk] / total, 3),
+         "is_main": remap[spk] == main_spk}
+        for i, spk in enumerate(order)
+    ]
+    label_of = {remap[spk]: f"说话人{i + 1}" for i, spk in enumerate(order)}
+
+    clips = [{"name": r["name"], "spk": remap[lb]} for r, lb in zip(rows, labels)]
+    done = {r["name"] for r in rows}
+    clips += [{"name": p.stem, "spk": None} for p in clip_paths if p.stem not in done]
+
+    segments = [
+        {"start": 0.0, "end": round(r["dur"], 2), "duration": round(r["dur"], 2),
+         "spk": remap[lb], "label": label_of[remap[lb]], "is_main": remap[lb] == main_spk}
+        for r, lb in zip(rows, labels)
+    ]
+
+    return {
+        "ok": True,
+        "analyzed": len(segments),
+        "n_speakers": len(speakers),
+        "main_speaker": main_spk,
+        "main_label": label_of[main_spk],
+        "speakers": speakers,
+        "segments": segments,
+        "clips": clips,
+        "model": "clip-embedding cluster (fallback, 无纯人声轨)",
+    }
+
+
 def _assign_clips(clip_paths: list[Path], sound16: Path, segs: list[list]) -> list[dict]:
     """把切片按声纹分派到说话人。
 
