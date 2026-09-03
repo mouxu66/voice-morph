@@ -75,7 +75,11 @@
 │   └── package.json
 ├── mobile/               # 移动端（Expo）；app/ 文件路由 + api.ts 调 PC 后端
 ├── m2_server/            # M2 后端（FastAPI，端口 8000）
-│   ├── server.py         # 应用入口 + 内联：管线/切片/TTS/挖掘/音色包/音频设备接口
+│   ├── server.py         # 应用装配层：app + 鉴权中间件 + CORS + 路由注册 + SPA 托管
+│   ├── runtime.py        # 跨模块共享状态（流水线/挖掘/内录状态、路径常量）
+│   ├── system_api.py voices_api.py raw_media_api.py pipeline_api.py clips_api.py
+│   ├── tts_api.py mine_api.py capture_api.py ab_api.py audio_api.py
+│   ├── media_api.py rvc_dataset_api.py         # 按域拆分的路由模块
 │   ├── config.py         # 路径/端口/鉴权/模型目录（环境变量可覆盖）
 │   ├── common.py history.py clip_qc.py speaker_sep.py loopback_capture.py ...
 │   ├── cascade.py rvc_live.py offline_vc.py seed_vc.py audiobook.py
@@ -119,11 +123,11 @@
 
 `cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history`（历史）。
 
-`server.py` 自身内联：素材流水线（pipeline）、切片列表/质检、音色库、TTS（Qwen3-TTS）、音色挖掘（mine）、桌宠 loopback 内录、A/B 盲听、音色包导入导出、音频设备切换看板、静态音频。
+原 `server.py` 内联的业务已于 2026-09-03 按域拆为独立路由模块：`system_api`（health/diagnose）、`voices_api`（音色库+音色包）、`raw_media_api`（素材库/上传）、`pipeline_api`（流水线）、`clips_api`（切片/质检/说话人分离）、`tts_api`、`mine_api`（音色挖掘）、`capture_api`（桌宠内录）、`ab_api`（盲听）、`audio_api`（设备配置/巡检）、`media_api`（静态音频）、`rvc_dataset_api`（训练集）；共享状态收敛在 `runtime.py`。
 
 接口清单（节选）：`GET /api/health`、`/api/diagnose`、`/api/voices`、`/api/raw_videos`、`POST /api/pipeline/run`、`/api/clips`、`POST /api/voicebank`、`POST /api/tts`、`POST /api/mine/run`、`POST /api/capture/loopback`、`POST /api/ab/run`、`/api/rvc/live/*`、`/api/wechat/*`、`/api/audio/*`。
 
-> **架构演进建议（见文末）**：`m2_server/` 目前平铺、单文件偏大，下一步建议拆成 `routers/` + `services/` 包。
+> 注意：当前环境的 FastAPI 对 `include_router` 采用惰性挂载（路由不展开进 `app.routes`），不要用「枚举路由表」的方式做断言，用 TestClient 真实请求验证（见 `tests/test_server.py`）。
 
 ---
 
@@ -325,7 +329,7 @@ python m2_server/server.py
 
 ## 架构演进建议（待办，非当前阻塞）
 
-1. **后端拆包（最推荐）**：`m2_server/` 目前平铺、单文件 `server.py` 1735 行既注册路由又内联多块逻辑。建议拆成 `routers/`（每能力一个）+ `services/`（管线/TTS/音频/音色包）+ `core/`（config/auth/state），降低单人维护成本、减少改一处炸全局的风险。低风险、高回报。
+1. ~~**后端拆包（最推荐）**~~ **✅ 已完成（2026-09-03）**：`server.py`（原 1734 行）已拆为 `runtime.py`（共享状态）+ 12 个按域路由模块（`system/voices/raw_media/pipeline/clips/tts/mine/capture/ab/audio/media/rvc_dataset_api`），server.py 只留装配层；90 个测试全过、真实后端冒烟通过，行为零变更。
 2. **移动端 mDNS 自动发现**：当前手机手动填 PC 局域网 IP；加 `@react-native-community/zeroconf`，PC 后端广播 `_voicemorph._tcp.local`，手机自动发现，纯增量改动，体验提升明显。
 3. **共享 API 客户端**：`web/src` 与 `mobile/api.ts` 各写一份 fetch，可从 FastAPI `/openapi.json` 生成共享 client 防漂移（当前规模低优先级）。
 4. **桌面壳保持 Electron**：不迁 Tauri——本项目需 spawn Python 子进程 + 原生音频设备切换 + 自动更新 + 透明桌宠窗，Electron 现成且稳妥；Tauri 更适合无 Python 后端的轻量工具（如另开的「写作伴侣」）。

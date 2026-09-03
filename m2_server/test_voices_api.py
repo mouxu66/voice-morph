@@ -9,12 +9,14 @@ from fastapi.testclient import TestClient
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     """VOICEBANK / RVC_ROOT 全部指向临时目录，与真实环境完全隔离。"""
-    import server
     import config as cfg
+    import server
+    import voices_api
 
     vb = tmp_path / "voicebank"
     vb.mkdir()
-    monkeypatch.setattr(server, "VOICEBANK", vb)
+    # 音色清单逻辑在 voices_api（server.py 只做 app 装配），patch 必须落在逻辑模块上
+    monkeypatch.setattr(voices_api, "VOICEBANK", vb)
     monkeypatch.setattr(cfg, "RVC_ROOT", tmp_path / "rvc")   # 不存在 -> 跳过 RVC 实验扫描
     return TestClient(server.app), vb
 

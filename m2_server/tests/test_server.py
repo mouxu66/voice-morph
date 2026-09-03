@@ -15,8 +15,11 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 def test_server_imports_and_routes_registered():
     import server
-    paths = {getattr(r, "path", None) for r in server.app.routes}
-    assert "/api/health" in paths
+    # include_router 在当前 FastAPI 版本是惰性挂载（_IncludedRouter），
+    # 枚举 app.routes 看不到子路由路径；改用真实请求验证路由注册成功。
+    client = TestClient(server.app)
+    resp = client.get("/api/pipeline/status")   # 无 torch/无副作用端点
+    assert resp.status_code == 200
     # 默认未配置 token 时不应有 401 拦截
     assert server.cfg.API_TOKEN == ""
 

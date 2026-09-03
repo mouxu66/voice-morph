@@ -10,7 +10,9 @@ import pytest  # noqa: E402
 
 pytest.importorskip("fastapi")
 
-import server  # noqa: E402
+# 音频设备看板逻辑已从 server.py 拆到 audio_api（server 只做 app 装配），
+# monkeypatch 必须打在逻辑所在模块上才能生效。
+import audio_api as server  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

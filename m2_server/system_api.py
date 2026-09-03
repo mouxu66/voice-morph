@@ -1,0 +1,120 @@
+"""系统级接口：/health 健康检查 + /diagnose 环境体检。
+
+自 server.py 拆出（行为不变）；app 装配见 server.py。
+"""
+from fastapi import APIRouter
+
+import config as cfg
+from rvc_common import find_pth
+
+router = APIRouter(prefix="/api")
+
+
+@router.get("/health")
+def health():
+    import torch
+    return {"status": "ok", "cuda": torch.cuda.is_available()}
+
+
+@router.get("/diagnose")
+def diagnose():
+    """环境体检：并行检查本机推理所需的各项依赖，返回勾叉清单。
+
+    前端据此展示「哪里缺」，每项带 detail（现状）与 hint（怎么修）。
+    后端能响应本接口本身就说明「本地推理服务」已在线（故 backend 项恒 ok）。
+    """
+    import shutil
+    import torch
+
+    items: list[dict] = []
+
+    # 1) 本地推理服务（能响应 /diagnose 说明本身已在线）
+    items.append({
+        "key": "backend", "ok": True, "label": "本地推理服务",
+        "detail": f"已连接 · 端口 {cfg.SERVER_PORT}", "hint": "",
+    })
+
+    # 2) ffmpeg（音频预处理/导出依赖）
+    ff = shutil.which("ffmpeg")
+    if ff:
+        items.append({"key": "ffmpeg", "ok": True, "label": "ffmpeg", "detail": ff, "hint": ""})
+    else:
+        items.append({
+            "key": "ffmpeg", "ok": False, "label": "ffmpeg",
+            "detail": "未在 PATH 中找到 ffmpeg",
+            "hint": "安装 ffmpeg 并加入 PATH；Windows 可用 `winget install ffmpeg` 或 `scoop install ffmpeg`。",
+        })
+
+    # 3) Qwen3-TTS 模型 + 分词器
+    qwen_ok = cfg.QWEN_MODEL_DIR.exists() and (cfg.QWEN_MODEL_DIR / "config.json").exists()
+    tok_ok = cfg.QWEN_TOKENIZER_DIR.exists()
+    if qwen_ok and tok_ok:
+        items.append({
+            "key": "tts_models", "ok": True, "label": "Qwen3-TTS 模型/分词器",
+            "detail": str(cfg.QWEN_MODEL_DIR), "hint": "",
+        })
+    else:
+        miss = []
+        if not qwen_ok:
+            miss.append("模型目录缺失或没有 config.json")
+        if not tok_ok:
+            miss.append("分词器目录缺失")
+        items.append({
+            "key": "tts_models", "ok": False, "label": "Qwen3-TTS 模型/分词器",
+            "detail": "；".join(miss),
+            "hint": f"确认 VM_QWEN_MODEL_DIR（{cfg.QWEN_MODEL_DIR}）与 VM_QWEN_TOKENIZER_DIR（{cfg.QWEN_TOKENIZER_DIR}）已下载解压到位。",
+        })
+
+    # 4) RVC 整合包根目录（实时变声依赖）
+    if cfg.RVC_ROOT.exists():
+        looks = (
+            (cfg.RVC_ROOT / "rvc").exists()
+            or (cfg.RVC_ROOT / "infer").exists()
+            or (cfg.RVC_ROOT / "logs").exists()
+            or (cfg.RVC_ROOT / "tools").exists()
+        )
+        items.append({
+            "key": "rvc_root", "ok": True, "label": "RVC 整合包",
+            "detail": str(cfg.RVC_ROOT)
+            + ("" if looks else "（未识别到 rvc/logs 等典型子目录，请确认路径正确）"),
+            "hint": "" if looks else "该目录缺少 RVC 典型结构，实时变声可能无法工作。",
+        })
+    else:
+        items.append({
+            "key": "rvc_root", "ok": False, "label": "RVC 整合包",
+            "detail": f"目录不存在：{cfg.RVC_ROOT}",
+            "hint": "设置环境变量 VM_RVC_ROOT 指向 RVC 整合包根目录（含 rvc/infer/tools 等）。实时变声依赖它。",
+        })
+
+    # 5) 默认音色 RVC 权重（pth + index）
+    weights_dir = cfg.rvc_exp_dirs(cfg.RVC_DEFAULT_EXP)[0]
+    pth = find_pth(cfg.RVC_DEFAULT_EXP, weights_dir)
+    idx = next(weights_dir.glob("added_*.index"), None) if weights_dir.exists() else None
+    if pth and idx:
+        items.append({
+            "key": "rvc_weights", "ok": True, "label": f"RVC 权重（{cfg.RVC_DEFAULT_EXP}）",
+            "detail": str(pth), "hint": "",
+        })
+    else:
+        items.append({
+            "key": "rvc_weights", "ok": False, "label": f"RVC 权重（{cfg.RVC_DEFAULT_EXP}）",
+            "detail": f"未找到训练好的 .pth 或 .index（{weights_dir}）",
+            "hint": "该音色还没训练 RVC 模型：先在「音色微调」生成语料并训练，或在 RVC 整合包里完成训练。无权重时实时变声不可用，但 TTS/离线变声仍可用。",
+        })
+
+    # 6) GPU / CUDA（仅告警，不阻断 CPU 推理）
+    cuda = torch.cuda.is_available()
+    if cuda:
+        try:
+            dev = torch.cuda.get_device_name(0)
+        except Exception:
+            dev = "未知 GPU"
+        items.append({"key": "cuda", "ok": True, "label": "GPU / CUDA", "detail": dev, "hint": ""})
+    else:
+        items.append({
+            "key": "cuda", "ok": False, "warn": True, "label": "GPU / CUDA",
+            "detail": "未检测到可用 GPU，将退回 CPU 推理（非常慢）",
+            "hint": "确认已安装对应 CUDA 版本的 PyTorch 且显卡驱动正常；可运行 `nvidia-smi` 验证。",
+        })
+
+    return {"all_ok": all(i["ok"] for i in items), "cuda": cuda, "items": items}

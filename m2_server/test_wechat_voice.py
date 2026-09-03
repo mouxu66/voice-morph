@@ -30,7 +30,9 @@ def test_append_history_roundtrip(tmp_path, monkeypatch):
     ok = wechat_voice._append_history(Path("tts_002.wav"), 5.0)
     data = json.loads((tmp_path / "h.json").read_text("utf-8"))
     assert ok and len(data) == 2
-    assert data[-1] == {"wav": "tts_002.wav", "duration_s": 5.0, "ts": data[-1]["ts"]}
+    # 599b1ac 起 _append_history 记录带 outcome 字段
+    assert data[-1] == {"wav": "tts_002.wav", "duration_s": 5.0,
+                        "ts": data[-1]["ts"], "outcome": "ok"}
 
 
 def test_append_history_caps_at_20(tmp_path, monkeypatch):

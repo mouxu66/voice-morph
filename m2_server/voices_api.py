@@ -1,0 +1,313 @@
+"""音色库接口：音色清单 / 建库（含自动优选）/ 删除 / 音色包导出导入。
+
+自 server.py 拆出（行为不变）；app 装配见 server.py。
+"""
+import json
+import re
+import shutil
+from pathlib import Path
+
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import Response
+from pydantic import BaseModel
+
+import config as cfg
+from common import MAX_UPLOAD_BYTES, is_valid_voice_id
+from rvc_common import exp_snapshot
+from runtime import API_PREFIX, CLIPS_DIR, RAW_DIR, VIDEO_SUFFIXES, VOICEBANK, clip_prefix
+
+router = APIRouter(prefix=API_PREFIX)
+
+
+def _read_meta(meta_path: Path) -> dict:
+    try:
+        return json.loads(meta_path.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+@router.get("/voices")
+def list_voices():
+    """音色库清单（合并两个来源，与 /rvc/voices 保持一致）：
+
+    1. media/voicebank/<id>/reference.wav —— 音色库档案（有参考音频）；
+    2. <RVC_ROOT>/logs/<exp>/ —— RVC 实验目录（有训练产物或语料的）。
+
+    前端音色页据此展示统一视图；RVC 模型音色额外携带 model_ready / trained_at 等字段。
+    """
+    from pydub import AudioSegment
+    items: dict[str, dict] = {}
+
+    # 来源 1：音色库档案
+    for d in VOICEBANK.iterdir():
+        ref = d / "reference.wav"
+        if not d.is_dir() or not ref.exists():
+            continue
+        display = d.name
+        meta = _read_meta(meta_path) if (meta_path := d / "meta.json").exists() else {}
+        if meta.get("display_name"):
+            display = str(meta["display_name"])
+        items[d.name] = {
+            "id": d.name,
+            "display_name": display,
+            "reference": ref.name,
+            "duration_s": round(len(AudioSegment.from_wav(str(ref))) / 1000, 1),
+            "kind": meta.get("kind") or "clone",
+            "has_reference": True,
+            **exp_snapshot(d.name),
+        }
+
+    # 来源 2：RVC 实验目录（有模型/语料但不在音色库里的）
+    rvc_logs = cfg.RVC_ROOT / "logs"
+    if rvc_logs.exists():
+        for d in rvc_logs.iterdir():
+            if not d.is_dir() or d.name in items:
+                continue
+            snap = exp_snapshot(d.name)
+            # 无训练产物也无语料的噪音目录不展示
+            if not (snap["pth_exists"] or snap["index_exists"] or snap["dataset_count"]):
+                continue
+            items[d.name] = {
+                "id": d.name,
+                "display_name": d.name,
+                "reference": "",
+                "duration_s": 0,
+                "kind": "rvc_model",
+                "has_reference": False,
+                **snap,
+            }
+
+    voices = sorted(items.values(),
+                    key=lambda v: (not v.get("model_ready"), not v.get("has_reference", True), v["id"]))
+    return {"voices": voices}
+
+
+@router.delete("/voicebank/{voice_id}")
+async def delete_voice(voice_id: str):
+    if not is_valid_voice_id(voice_id):
+        raise HTTPException(400, "音色 ID 非法")
+    d = VOICEBANK / voice_id
+    if not d.exists():
+        raise HTTPException(404, f"音色 [{voice_id}] 不存在")
+    # rmtree 是阻塞 IO，丢进线程池避免卡住事件循环
+    await run_in_threadpool(shutil.rmtree, d, True)
+    return {"ok": True}
+
+
+def _voicebank_guidance() -> str:
+    """建库自动优选拿不到切片时，结合已有质检结果给「原因 + 下一步建议」（P2-1）。"""
+    try:
+        import clip_qc
+        items = clip_qc.load_all().values()
+    except Exception:  # noqa: BLE001
+        items = []
+    if not items:
+        return "没有可自动优选的切片：请先对素材运行流水线，再对它做一次切片质检。"
+    total = len(items)
+    from collections import Counter
+    grades = Counter(it.get("grade") for it in items)
+    ok = grades.get("A", 0) + grades.get("B", 0)
+    if ok == 0:
+        return (f"质检无可用切片（共 {total} 条，D 级 {grades.get('D', 0)} 条，"
+                f"多为他人声/伴奏残留）：建议换一段目标说话人清晰的素材后重试。")
+    dur = sum(it.get("duration_s", 0.0) for it in items if it.get("grade") in ("A", "B"))
+    return (f"质检可用切片仅 {ok}/{total} 条，总时长 {dur:.1f}s，不足以自动优选："
+            f"建议增加素材时长，或调低自动优选目标秒数后重试。")
+
+
+@router.post("/voicebank")
+async def create_voicebank(voice_id: str, request: Request):
+    """用勾选的片段生成参考音频。body: clips=name1&clips=name2...
+
+    自动优选：不传 clips 而传 auto=1 时，按切片质检分数从高到低自动挑够
+    target_s 秒（默认 30，精细档建议 60）——对应 P1-1 的"建库自动优选"。
+    """
+    from pydub import AudioSegment
+
+    form = await request.form()
+    clips = form.getlist("clips")
+    auto = str(form.get("auto") or "") in ("1", "true", "True")
+    enhance = str(form.get("enhance") or "") in ("1", "true", "True")
+    target_s = float(form.get("target_s") or 0) or 30.0
+    if not clips and auto:
+        try:
+            import clip_qc
+            clips, picked_s = clip_qc.recommend(target_s)
+        except Exception:  # noqa: BLE001
+            clips, picked_s = [], 0.0
+        if not clips:
+            raise HTTPException(400, _voicebank_guidance())
+    if not clips:
+        raise HTTPException(400, "请至少提供一个片段名")
+    if not is_valid_voice_id(voice_id):
+        raise HTTPException(400, "音色 ID 非法")
+
+    out_dir = VOICEBANK / voice_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / "reference.wav"
+
+    merged = AudioSegment.silent(duration=300)
+    for name in clips:
+        p = CLIPS_DIR / f"{name}.wav"
+        if not p.exists():
+            raise HTTPException(404, f"片段不存在: {name}")
+        if enhance:
+            # P2-5：可选 DeepFilterNet 模型增强，进一步清掉切片残留噪声/BGM
+            try:
+                from audio_enhance import enhance_file
+                tmp = out_dir / f"_enh_{name}.wav"
+                enhance_file(p, tmp)
+                seg = AudioSegment.from_wav(str(tmp))
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+            except Exception:
+                seg = AudioSegment.from_wav(str(p))
+        else:
+            seg = AudioSegment.from_wav(str(p))
+        merged += seg + AudioSegment.silent(duration=300)
+
+    merged = merged.set_channels(1).set_frame_rate(22050)
+    merged.export(str(out), format="wav")
+
+    # 记录片段清单（供 demo_convert 按片段提取音色向量）
+    (out_dir / "clips.txt").write_text("\n".join(clips), encoding="utf-8")
+    # 把来源素材写进 meta（素材库「已用于」徽标的持久依据）
+    meta_p = out_dir / "meta.json"
+    meta: dict = {}
+    if meta_p.exists():
+        try:
+            meta = json.loads(meta_p.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+    if RAW_DIR.exists():
+        sources = sorted(
+            f.name for f in RAW_DIR.iterdir()
+            if f.suffix.lower() in VIDEO_SUFFIXES
+            and any(name.startswith(clip_prefix(f.stem)) or name.startswith(f.stem[:12]) for name in clips)
+        )
+        if sources:
+            meta["sources"] = sources
+    try:
+        meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    # 删除旧的音色向量缓存，下次自动重新提取
+    (out_dir / "reference_se.npy").unlink(missing_ok=True)
+
+    return {"ok": True, "voice_id": voice_id, "duration_s": round(len(merged) / 1000, 1),
+            "auto": auto, "picked": len(clips)}
+
+
+# ---------------- 音色包导出 / 导入 ----------------
+
+# 音色包内允许携带的档案文件（白名单，杜绝 zip-slip 与超大缓存）
+_PACK_FILES = ("reference.wav", "ref_text.txt", "meta.json", "clips.txt")
+
+
+@router.get("/voicebank/{voice_id}/export")
+def export_voice_pack(voice_id: str, include_rvc: bool = False):
+    """打包音色档案为 zip（reference.wav + 文字稿 + meta + 片段清单）。
+    include_rvc=true 时附带该音色的 RVC 权重与索引（若已训练），导入端可直接实时变声。"""
+    if not is_valid_voice_id(voice_id):
+        raise HTTPException(status_code=400, detail="音色 ID 非法")
+    d = VOICEBANK / voice_id
+    if not d.exists():
+        raise HTTPException(status_code=404, detail=f"音色 [{voice_id}] 不存在")
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # meta.json 里补写 voice_id，导入端据此还原档案
+        meta = _read_meta(d / "meta.json")
+        meta["voice_id"] = voice_id
+        zf.writestr("voicepack/meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
+        for name in _PACK_FILES:
+            if name == "meta.json":
+                continue
+            p = d / name
+            if p.exists():
+                zf.write(p, f"voicepack/{name}")
+        if include_rvc:
+            log_dir = cfg.RVC_ROOT / "logs" / voice_id
+            if log_dir.exists():
+                pth = log_dir / f"{voice_id}.pth"
+                if not pth.exists():  # 回退训练自动产出的 G_*.pth（与 rvc_live 的规则一致）
+                    pth = next(log_dir.glob("G_*.pth"), None)
+                if pth is not None and pth.exists():
+                    zf.write(pth, f"voicepack/rvc/{pth.name}")
+                for idx in log_dir.glob("added_*.index"):
+                    zf.write(idx, f"voicepack/rvc/{idx.name}")
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="voicepack_{voice_id}.zip"'},
+    )
+
+
+@router.post("/voicebank/import")
+async def import_voice_pack(file: UploadFile = File(...), overwrite: bool = False):
+    """导入音色包 zip：还原为 voicebank/<voice_id>/ 音色档案。同名默认拒绝，overwrite=1 覆盖。
+    注意：微调模型（ft_model，含 3.6G 基座硬链接）不随包携带，导入后自动降级为 x-vector 声纹克隆。"""
+    import io
+    import zipfile
+
+    if (file.size or 0) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"音色包过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝导入")
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"音色包过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝导入")
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="不是有效的 zip 音色包")
+    names = zf.namelist()
+    if "voicepack/reference.wav" not in names or "voicepack/meta.json" not in names:
+        raise HTTPException(status_code=400, detail="缺少 voicepack/reference.wav 或 meta.json，不是音色包")
+    try:
+        meta = json.loads(zf.read("voicepack/meta.json").decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="meta.json 解析失败")
+    voice_id = str(meta.get("voice_id") or "").strip()
+    if not is_valid_voice_id(voice_id):
+        raise HTTPException(status_code=400, detail="包内 voice_id 非法")
+    dest = VOICEBANK / voice_id
+    if dest.exists() and not overwrite:
+        raise HTTPException(status_code=409, detail=f"音色 [{voice_id}] 已存在；如需覆盖请勾选覆盖导入")
+
+    await run_in_threadpool(lambda: shutil.rmtree(dest, True) if dest.exists() else None)
+    # 包内 rvc/ 权重还原到 RVC 整合包 logs/<voice_id>/（实时变声直接可用）；整合包缺失则跳过并提示
+    rvc_log_dir = cfg.RVC_ROOT / "logs" / voice_id
+    rvc_restored = 0
+    for name in names:
+        if not name.startswith("voicepack/") or name.endswith("/"):
+            continue
+        rel = name[len("voicepack/"):]
+        # 逐项防路径穿越：档案文件白名单 + rvc/ 一层子目录
+        is_rvc = bool(re.match(r"^rvc/[A-Za-z0-9_.-]+$", rel))
+        if not is_rvc and rel not in _PACK_FILES:
+            continue
+        target = (rvc_log_dir / rel[len("rvc/"):]) if is_rvc else (dest / rel)
+        if is_rvc:
+            if not cfg.RVC_ROOT.exists():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(zf.read(name))
+        if is_rvc:
+            rvc_restored += 1
+
+    kind = str(meta.get("kind") or "clone")
+    if kind == "finetuned" and not (dest / "ft_model" / "model.safetensors").exists():
+        # 包里没带微调权重：降级为普通声纹音色，避免 /tts 去加载不存在的模型目录
+        meta["kind"] = "clone"
+        meta.pop("model_dir", None)
+        meta["import_note"] = "微调权重未随包携带，已降级为声纹克隆"
+    kind = str(meta.get("kind") or "clone")
+    (dest / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"ok": True, "voice_id": voice_id, "kind": kind, "rvc_files": rvc_restored,
+            "display_name": meta.get("display_name") or voice_id}
