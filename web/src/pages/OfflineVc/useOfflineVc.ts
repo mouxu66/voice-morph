@@ -4,7 +4,9 @@ import {
   listRvcVoices,
   mediaUrl,
   runOfflineVc,
+  suggestPitch,
   type OfflineVcStatus,
+  type PitchSuggestion,
   type RvcVoice,
 } from "@/api/client"
 import { friendlyError } from "@/lib/errors"
@@ -33,6 +35,7 @@ export function useOfflineVc() {
   const [pitch, setPitch] = useState(0)
   const [indexRate, setIndexRate] = useState(0.5)
   const [denoise, setDenoise] = useState(true)
+  const [enhanceLevel, setEnhanceLevel] = useState("standard")
   const [postSeedVc, setPostSeedVc] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState("")
@@ -139,7 +142,11 @@ export function useOfflineVc() {
     setErrorMessage("")
   }, [stopRecording])
 
-  const clearFile = useCallback(() => setAudioFile(null), [])
+  const clearFile = useCallback(() => {
+    setAudioFile(null)
+    setPitchAdvice(null)
+    adviceKeyRef.current = ""
+  }, [])
 
   // ---- 参数预设 ----
   const savePreset = useCallback((name: string) => {
@@ -156,10 +163,47 @@ export function useOfflineVc() {
     setIndexRate(p.indexRate)
     setDenoise(p.denoise)
   }, [])
+  // 预设不带 enhanceLevel（旧预设无此字段），保持当前选择不被覆盖
 
   const deletePreset = useCallback((id: string) => {
     setPresets(removePreset(id))
   }, [])
+
+  // ---- 自动音高建议：音频+音色就绪后分析 f0，自动填一次建议变调 ----
+  const [pitchAdvice, setPitchAdvice] = useState<PitchSuggestion | null>(null)
+  const [pitchBusy, setPitchBusy] = useState(false)
+  const adviceKeyRef = useRef("")   // 已自动应用过的 file+voice 组合，之后用户手动调不覆盖
+
+  useEffect(() => {
+    if (!audioFile || !voiceId) {
+      setPitchAdvice(null)
+      return
+    }
+    const key = `${audioFile.name}|${audioFile.size}|${voiceId}`
+    if (key === adviceKeyRef.current) return
+    let cancelled = false
+    setPitchBusy(true)
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const s = await suggestPitch(audioFile, voiceId)
+          if (cancelled) return
+          setPitchAdvice(s)
+          adviceKeyRef.current = key
+          if (s.reliable && s.suggested_pitch != null) setPitch(s.suggested_pitch)
+        } catch {
+          if (!cancelled) setPitchAdvice(null)
+        } finally {
+          if (!cancelled) setPitchBusy(false)
+        }
+      })()
+    }, 400)  // 轻防抖：连续换文件/音色时不重复请求
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      setPitchBusy(false)
+    }
+  }, [audioFile, voiceId])
 
   const running = Boolean(status?.running)
 
@@ -223,7 +267,7 @@ export function useOfflineVc() {
         if (it.status === "done") continue
         updateItem(it.id, { status: "running", error: "", url: undefined })
         try {
-          await runOfflineVc(it.file, voiceId, pitch, indexRate, denoise, postSeedVc)
+          await runOfflineVc(it.file, voiceId, pitch, indexRate, denoise, postSeedVc, enhanceLevel)
           setStatus({
             running: true, status: "running", message: `批量转换：${it.name}`,
             voice_id: voiceId, url: "", duration_s: 0, error: "",
@@ -241,7 +285,7 @@ export function useOfflineVc() {
     } finally {
       setBatchProcessing(false)
     }
-  }, [batchProcessing, running, voiceId, pitch, indexRate, denoise, postSeedVc, waitDone, updateItem])
+  }, [batchProcessing, running, voiceId, pitch, indexRate, denoise, postSeedVc, enhanceLevel, waitDone, updateItem])
 
   const canSubmit = !running && !batchProcessing && !submitting && Boolean(audioFile) && Boolean(voiceId)
 
@@ -250,7 +294,7 @@ export function useOfflineVc() {
     setSubmitting(true)
     setErrorMessage("")
     try {
-      await runOfflineVc(audioFile, voiceId, pitch, indexRate, denoise, postSeedVc)
+      await runOfflineVc(audioFile, voiceId, pitch, indexRate, denoise, postSeedVc, enhanceLevel)
       setStatus({
         running: true, status: "running", message: "已提交",
         voice_id: voiceId, url: "", duration_s: 0, error: "",
@@ -261,7 +305,7 @@ export function useOfflineVc() {
     } finally {
       setSubmitting(false)
     }
-  }, [canSubmit, audioFile, voiceId, pitch, indexRate, denoise, postSeedVc, startPoll])
+  }, [canSubmit, audioFile, voiceId, pitch, indexRate, denoise, postSeedVc, enhanceLevel, startPoll])
 
   useEffect(() => () => {
     stopPoll()
@@ -282,10 +326,14 @@ export function useOfflineVc() {
     stopRecording,
     pitch,
     setPitch,
+    pitchAdvice,
+    pitchBusy,
     indexRate,
     setIndexRate,
     denoise,
     setDenoise,
+    enhanceLevel,
+    setEnhanceLevel,
     postSeedVc,
     setPostSeedVc,
     submitting,

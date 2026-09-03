@@ -5,6 +5,7 @@ import {
   getRvcGenStatus,
   listRvcDataset,
   listRvcVoices,
+  rvcLiveMonitor,
   rvcLiveStart,
   rvcLiveStatus,
   rvcLiveStop,
@@ -120,6 +121,9 @@ export function useLive() {
   }, [selectedExp, busy])
 
   const liveOn = Boolean(liveStatus?.live_running)
+  // 无头模式：进程活着但模型还在加载（音频流未就绪）时显示「加载中」
+  const liveReady = liveOn ? liveStatus?.live_ready !== false : false
+  const monitorOn = Boolean(liveStatus?.monitor_on)
   // 正在跑实时变声的音色（后端 active_exp），用于"选了别的音色要先停"的提示
   const liveExp = liveOn ? voicesInfo?.active_exp ?? null : null
   const current = useMemo(
@@ -234,6 +238,27 @@ export function useLive() {
     }
   }, [])
 
+  const toggleMonitor = useCallback(
+    async (on: boolean, gain?: number) => {
+      setFeedback(null)
+      try {
+        const r = await rvcLiveMonitor(on, gain)
+        if (!r.ok) {
+          setFeedback({ tone: "error", text: "监听开关失败，请稍后重试。" })
+        } else {
+          setFeedback(on
+            ? { tone: "ok", text: "自我监听已开：耳机里能听到变声后的自己（注意音量，过大可能啸叫）。" }
+            : { tone: "info", text: "自我监听已关：变声只送给微信/游戏，自己不再听到。" })
+        }
+      } catch (error) {
+        setFeedback({ tone: "error", text: msgOf(error, "监听开关失败") })
+      } finally {
+        tickRef.current()
+      }
+    },
+    [],
+  )
+
   return {
     voicesInfo,
     voices: voicesInfo?.voices ?? [],
@@ -245,6 +270,8 @@ export function useLive() {
     generatedCount,
     liveStatus,
     liveOn,
+    liveReady,
+    monitorOn,
     liveExp,
     trainStatus,
     genStatus,
@@ -258,6 +285,7 @@ export function useLive() {
     feedback,
     start,
     stop,
+    toggleMonitor,
     train,
     generateCorpus,
     importCorpus,

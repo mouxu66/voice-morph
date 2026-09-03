@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react"
-import { Activity, Eye, EyeOff, Moon, Monitor, RotateCcw, Settings2, Sparkles, Stethoscope, Sun } from "lucide-react"
+import { Activity, Download, Eye, EyeOff, Moon, Monitor, RotateCcw, Settings2, Sparkles, Stethoscope, Sun } from "lucide-react"
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { getHealth, listVoices, rvcLiveReset } from "@/api/client"
 import { StudioNav } from "@/components/voice-studio/StudioNav"
 import { EnvHealth } from "@/components/EnvHealth"
 import { PetGuide } from "@/components/PetGuide"
+import { UpdateDialog } from "@/components/UpdateDialog"
+import { appVersion, hasUpdate as canCheckUpdate, onUpdateAvailable, type UpdateCheck } from "@/lib/electron"
 import { useAppStore } from "@/store/useAppStore"
 import { ThemeMode, getStoredTheme, setStoredTheme } from "@/theme"
 import { LiveRoute } from "@/pages/Live/index"
@@ -50,7 +52,21 @@ function AppChrome({
   const [envOpen, setEnvOpen] = useState(false)
   const [restoring, setRestoring] = useState(false)
   const [restoreMsg, setRestoreMsg] = useState("")
+  const [updateOpen, setUpdateOpen] = useState(false)
+  const [autoUpdate, setAutoUpdate] = useState<UpdateCheck | null>(null)
+  const [version, setVersion] = useState<string | null>(null)
   const pageTitle = pageTitles[currentLocation.pathname] ?? "音色工坊"
+
+  // 当前版本号（设置里显示）；非桌面端为 null
+  useEffect(() => {
+    void (async () => setVersion(await appVersion()))()
+  }, [])
+
+  // 应用启动 12s 后主进程静默检查，有新版就自动弹更新页（无新版不打扰）
+  useEffect(() => onUpdateAvailable((r) => {
+    setAutoUpdate(r)
+    setUpdateOpen(true)
+  }), [])
 
   const handleRestoreAudio = useCallback(async () => {
     setRestoring(true)
@@ -146,10 +162,15 @@ function AppChrome({
             </button>
           </div>
         </div>
-        {settingsOpen && <div className="absolute right-5 top-14 w-48 rounded-lg border border-border bg-card p-2 shadow-lg sm:right-8"><p className="px-2 py-1 text-xs text-muted-foreground">界面主题</p><div className="mt-1 grid grid-cols-3 gap-1">{([['dark', '暗色', Moon], ['light', '亮色', Sun], ['system', '系统', Monitor]] as [ThemeMode, string, typeof Moon][]).map(([mode, label, Icon]) => <button type="button" key={mode} onClick={() => { setStoredTheme(mode); setTheme(mode); setSettingsOpen(false) }} className={`flex flex-col items-center gap-1 rounded-md px-2 py-2 text-xs ${theme === mode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="h-4 w-4" />{label}</button>)}</div><div className="mt-2 border-t border-border pt-2 space-y-1"><p className="px-2 py-1 text-xs text-muted-foreground">桌宠</p><button type="button" onClick={() => { window.dispatchEvent(new CustomEvent("replay-pet-guide")); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><Sparkles className="h-3.5 w-3.5" />让桌宠再讲一遍本页</button>            <button type="button" onClick={() => onTogglePetGuide()} className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><span className="flex items-center gap-2">{petGuideEnabled ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}{petGuideEnabled ? "切页时介绍页面" : "已关闭切页介绍"}</span><span className={`h-2 w-2 rounded-full ${petGuideEnabled ? "bg-primary" : "bg-muted-foreground/30"}`} /></button></div></div>}
+        {settingsOpen && <div className="absolute right-5 top-14 w-48 rounded-lg border border-border bg-card p-2 shadow-lg sm:right-8"><p className="px-2 py-1 text-xs text-muted-foreground">界面主题</p><div className="mt-1 grid grid-cols-3 gap-1">{([['dark', '暗色', Moon], ['light', '亮色', Sun], ['system', '系统', Monitor]] as [ThemeMode, string, typeof Moon][]).map(([mode, label, Icon]) => <button type="button" key={mode} onClick={() => { setStoredTheme(mode); setTheme(mode); setSettingsOpen(false) }} className={`flex flex-col items-center gap-1 rounded-md px-2 py-2 text-xs ${theme === mode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="h-4 w-4" />{label}</button>)}</div><div className="mt-2 border-t border-border pt-2 space-y-1"><p className="px-2 py-1 text-xs text-muted-foreground">桌宠</p><button type="button" onClick={() => { window.dispatchEvent(new CustomEvent("replay-pet-guide")); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><Sparkles className="h-3.5 w-3.5" />让桌宠再讲一遍本页</button>            <button type="button" onClick={() => onTogglePetGuide()} className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><span className="flex items-center gap-2">{petGuideEnabled ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}{petGuideEnabled ? "切页时介绍页面" : "已关闭切页介绍"}</span><span className={`h-2 w-2 rounded-full ${petGuideEnabled ? "bg-primary" : "bg-muted-foreground/30"}`} /></button></div>{canCheckUpdate && <div className="mt-2 space-y-1 border-t border-border pt-2"><p className="px-2 py-1 text-xs text-muted-foreground">应用</p><button type="button" onClick={() => { setAutoUpdate(null); setUpdateOpen(true); setSettingsOpen(false) }} className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><span className="flex items-center gap-2"><Download className="h-3.5 w-3.5" />检查更新</span>{version && <span className="font-mono text-[10px] opacity-70">v{version}</span>}</button></div>}</div>}
       </header>
       <div className="fixed inset-x-0 top-16 z-10 border-b border-border bg-card/80 py-1.5 backdrop-blur-xl lg:hidden"><StudioNav /></div>
       <EnvHealth open={envOpen} onClose={() => setEnvOpen(false)} />
+      <UpdateDialog
+        open={updateOpen}
+        onClose={() => { setUpdateOpen(false); setAutoUpdate(null) }}
+        initialCheck={autoUpdate}
+      />
     </>
   )
 }
@@ -197,6 +218,7 @@ export default function App() {
           {/* 旧路由重定向到合并页对应 tab */}
           <Route path="/cascade" element={<Navigate to="/live?tab=cascade" replace />} />
           <Route path="/audiobook" element={<Navigate to="/tts?tab=book" replace />} />
+          <Route path="/wechat" element={<Navigate to="/tts?tab=wechat" replace />} />
           <Route path="/effects" element={<Navigate to="/offlinevc?tab=fx" replace />} />
           <Route path="*" element={<Navigate to="/workshop" replace />} />
         </Routes>

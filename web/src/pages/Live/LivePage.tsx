@@ -220,6 +220,36 @@ export function LivePage(p: ReturnType<typeof useLive>) {
               </button>
             )}
 
+            {p.liveOn && !p.liveReady && (
+              <p className="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/10 px-3 py-2.5 text-xs leading-5 text-primary">
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                模型加载中（约 10~20 秒）… 就绪后对着麦克风说话即可变声。
+              </p>
+            )}
+
+            {/* 自我监听：变声运行中可随时开关，让自己在耳机里听到变声效果 */}
+            {p.liveOn && p.liveReady && (
+              <div className="flex items-center justify-between rounded-md border border-border bg-background/60 px-3 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-card-foreground">自我监听</p>
+                  <p className="truncate text-[11px] leading-4 text-muted-foreground">
+                    {p.monitorOn ? "已开：耳机里能听到变声后的自己" : "已关：变声只送给微信/游戏"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={p.monitorOn}
+                  onClick={() => void p.toggleMonitor(!p.monitorOn)}
+                  className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${p.monitorOn ? "bg-primary" : "bg-muted-foreground/30"}`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-background shadow transition-all ${p.monitorOn ? "left-[18px]" : "left-0.5"}`}
+                  />
+                </button>
+              </div>
+            )}
+
             {liveOnOtherVoice && (
               <p className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs leading-5 text-amber-500">
                 <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -241,7 +271,7 @@ export function LivePage(p: ReturnType<typeof useLive>) {
             {p.liveOn && (
               <p className="flex items-start gap-2 text-xs leading-5 text-primary">
                 <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                变声中：关闭 RVC 窗口或点「停止」会自动还原设备；若忘了关，随时到左侧栏点「一键恢复音频」。
+                变声在后台运行（无窗口）。点「停止」会自动还原声卡；若异常退出，随时到左侧栏点「一键恢复音频」。
               </p>
             )}
             {!p.liveOn && p.liveStatus?.last_error && (

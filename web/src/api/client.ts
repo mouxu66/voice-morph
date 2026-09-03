@@ -276,7 +276,9 @@ export async function runOfflineVc(
   pitch: number,
   indexRate: number,
   denoise: boolean,
-  postSeedVc = false
+  postSeedVc = false,
+  /** 降噪强度：light=轻·保弱声 standard=标准 strong=强力（不限压制） */
+  enhanceLevel = "standard"
 ): Promise<{ ok: boolean; voice_id: string }> {
   const form = new FormData();
   form.append("file", file);
@@ -285,6 +287,7 @@ export async function runOfflineVc(
   form.append("index_rate", String(indexRate));
   form.append("denoise", String(denoise));
   form.append("post_seedvc", String(postSeedVc));
+  form.append("enhance_level", enhanceLevel);
   const res = await fetch(BASE + "/offlinevc/run", { method: "POST", body: form });
   if (!res.ok) {
     let detail = res.statusText;
@@ -301,6 +304,33 @@ export async function runOfflineVc(
 
 export async function getOfflineVcStatus(): Promise<OfflineVcStatus> {
   return jsonFetch("/offlinevc/status");
+}
+
+/** 自动音高建议：分析输入中位基频，对照目标音色参考音高，算建议变调（半音） */
+export type PitchSuggestion = {
+  input_f0: number | null;
+  voiced_ratio: number;
+  ref_f0: number | null;
+  suggested_pitch: number | null;
+  reliable: boolean;
+};
+
+export async function suggestPitch(file: File, voiceId: string): Promise<PitchSuggestion> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("voice_id", voiceId);
+  const res = await fetch(BASE + "/offlinevc/pitch_suggest", { method: "POST", body: form });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json() as Promise<PitchSuggestion>;
 }
 
 // ---- Seed-VC 表达力变声（零样本换声，保留/转换语气情绪，补 RVC 缺的表达力） ----
@@ -537,6 +567,14 @@ export type RvcLiveStatus = {
   pth_exists: boolean;
   index_exists: boolean;
   dataset_count: number;
+  /** 进程活着但模型还没加载完时为 false，前端显示「加载中」 */
+  live_ready?: boolean;
+  /** 无头后台模式（不弹 RVC 窗口） */
+  headless?: boolean;
+  /** 自我监听回环是否在跑（能听到自己的变声） */
+  monitor_on?: boolean;
+  monitor_gain?: number | null;
+  asr_running?: boolean;
   live_running: boolean;
   audio_switched: boolean;
   last_error?: string;
@@ -551,6 +589,10 @@ export type RvcStartResult = {
   pid?: number;
   audio_switched?: boolean;
   output_device?: string;
+  input_device?: string;
+  headless?: boolean;
+  monitor?: boolean;
+  monitor_gain?: number | null;
   hint?: string;
 };
 
@@ -585,6 +627,13 @@ export async function rvcLiveStart(expName?: string): Promise<RvcStartResult> {
 
 export async function rvcLiveStop(): Promise<{ ok: boolean; restored?: boolean; error?: string; note?: string }> {
   return jsonFetch("/rvc/live/stop", { method: "POST" })
+}
+
+/** 开关自我监听（变声运行中可随时调，on=false 时 gain 可省略） */
+export async function rvcLiveMonitor(on: boolean, gain?: number): Promise<{ ok: boolean; monitor_on: boolean; monitor_gain?: number | null }> {
+  const qs = new URLSearchParams({ on: String(on) });
+  if (gain !== undefined) qs.set("gain", String(gain));
+  return jsonFetch(`/rvc/live/monitor?${qs}`, { method: "POST" });
 }
 
 export async function rvcLiveReset(): Promise<{ ok: boolean; reset?: boolean; error?: string }> {
@@ -791,4 +840,69 @@ export async function importVoicePack(
     throw new Error(detail);
   }
   return res.json();
+}
+
+// ---- 微信语音发送（PC 微信 4.1.9+ 虚拟声卡自动灌入） ----
+
+export type WechatLastTts = {
+  ok: boolean;
+  wav?: string;
+  duration_s?: number;
+  url?: string;
+  error?: string;
+};
+
+export type WechatHistoryItem = {
+  wav: string;
+  duration_s: number;
+  ts: number;
+  outcome: string;
+};
+
+export type WechatSendResult = {
+  ok: boolean;
+  wav?: string;
+  duration_s?: number;
+  outcome?: string;
+  error?: string;
+  steps?: string[];
+  hint?: string;
+  hint2?: string;
+  warn?: string;
+};
+
+/** 最近一次 TTS 合成产物（发送前预览用） */
+export async function getWechatLastTts(): Promise<WechatLastTts> {
+  return jsonFetch<WechatLastTts>("/wechat/send_voice/last");
+}
+
+/** 最近发送的微信语音列表 */
+export async function getWechatHistory(): Promise<{ ok: boolean; items: WechatHistoryItem[] }> {
+  return jsonFetch<{ ok: boolean; items: WechatHistoryItem[] }>("/wechat/history");
+}
+
+/**
+ * 全自动发送：切录音设备到 CABLE Output → 前台化微信模拟按住 Alt → 播放 → 松开发送。
+ * 执行期间（约 wav 时长 + 3s）不要动键鼠。wav=outputs/ 下文件名，缺省=最近 TTS。
+ */
+export async function wechatSendVoice(wav?: string): Promise<WechatSendResult> {
+  return jsonFetch("/wechat/send_voice", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wav: wav || null }),
+  });
+}
+
+/** 半自动：播放到虚拟声卡（带静音头），用户自己在微信按住 Alt 录，录完松开发送 */
+export async function wechatPlayToCable(wav?: string, leadS?: number): Promise<WechatSendResult> {
+  return jsonFetch("/wechat/play_to_cable", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wav: wav || null, lead_s: leadS ?? null }),
+  });
+}
+
+/** 手动实时变声模式：切微信录音到 CABLE Output + 确保实时变声运行，用户按住 Alt 说话 */
+export async function wechatManualSend(): Promise<WechatSendResult> {
+  return jsonFetch("/wechat/manual_send", { method: "POST" });
 }

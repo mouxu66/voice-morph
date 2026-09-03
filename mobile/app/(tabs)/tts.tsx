@@ -1,8 +1,17 @@
 import React, { useEffect, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { TtsResult, VoiceInfo, listVoices, mediaUrl, sendTts } from "@/src/api";
+import {
+  TtsResult,
+  VoiceInfo,
+  WechatHistoryItem,
+  getWechatHistory,
+  listVoices,
+  mediaUrl,
+  sendTts,
+  wechatSendVoice,
+} from "@/src/api";
 import { useAppStore } from "@/src/store";
 import { Badge, Button, C, Card, PlayButton, ShareButton, usePolling } from "@/src/ui";
 
@@ -17,6 +26,9 @@ export default function TtsScreen() {
   const [err, setErr] = useState("");
   const [result, setResult] = useState<TtsResult | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [wxSending, setWxSending] = useState(false);
+  const [wxResult, setWxResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [wxHistory, setWxHistory] = useState<WechatHistoryItem[]>([]);
 
   usePolling(
     async () => {
@@ -43,6 +55,20 @@ export default function TtsScreen() {
     return () => clearInterval(t);
   }, [busy]);
 
+  // 微信发送历史（低频轮询）
+  usePolling(
+    async () => {
+      try {
+        const h = await getWechatHistory();
+        setWxHistory(h.items ?? []);
+      } catch {
+        /* ignore */
+      }
+    },
+    15000,
+    true
+  );
+
   const submit = async () => {
     const t = text.trim();
     if (!t || !voiceId) return;
@@ -52,11 +78,48 @@ export default function TtsScreen() {
     try {
       const r = await sendTts(t, lang, voiceId);
       setResult(r);
+      setWxResult(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "合成失败");
     } finally {
       setBusy(false);
     }
+  };
+
+  const sendToWechat = () => {
+    if (!result || wxSending) return;
+    // send_voice 是同步阻塞调用（PC 端约 wav 时长 + 3s），期间 PC 键鼠被接管
+    const eta = Math.ceil((result.duration_s || 5) + 3);
+    Alert.alert(
+      "发送到微信语音条？",
+      `PC 端微信将被自动抢前台完成录音与发送（约 ${eta} 秒）。\n期间请不要碰 PC 键鼠，并确保微信已打开目标聊天窗口。`,
+      [
+        { text: "取消", style: "cancel" },
+        {
+          text: "开始发送",
+          onPress: async () => {
+            const wav = result.url.split("/").pop();
+            setWxSending(true);
+            setWxResult(null);
+            try {
+              const r = await wechatSendVoice(wav);
+              if (r.ok) setWxResult({ ok: true, msg: `已发送到微信（${(r.duration_s ?? result.duration_s).toFixed(1)}s）` });
+              else setWxResult({ ok: false, msg: r.error || "发送失败" });
+            } catch (e) {
+              setWxResult({ ok: false, msg: e instanceof Error ? e.message : "发送失败" });
+            } finally {
+              setWxSending(false);
+              try {
+                const h = await getWechatHistory();
+                setWxHistory(h.items ?? []);
+              } catch {
+                /* ignore */
+              }
+            }
+          },
+        },
+      ]
+    );
   };
 
   return (
@@ -124,6 +187,41 @@ export default function TtsScreen() {
             </View>
             <Text style={styles.playHint}>点击播放 · ↗ 保存/分享到手机</Text>
           </View>
+          <View style={styles.wxDivider} />
+          <Button
+            title={wxSending ? "微信发送中，PC 被接管…" : "发送到微信语音条"}
+            onPress={sendToWechat}
+            disabled={wxSending}
+            loading={wxSending}
+            tone="ghost"
+          />
+          <Text style={styles.wxHint}>
+            PC 端微信将自动抢前台发送（约 {Math.ceil((result.duration_s || 5) + 3)}s），需微信 4.1.9+ 且已打开聊天窗口。
+          </Text>
+          {wxResult ? (
+            <Text style={[styles.wxResult, { color: wxResult.ok ? C.ok : C.err }]}>{wxResult.msg}</Text>
+          ) : null}
+        </Card>
+      )}
+
+      {/* 微信发送历史 */}
+      {wxHistory.length > 0 && (
+        <Card style={{ marginTop: 16 }}>
+          <View style={styles.rowBetween}>
+            <Text style={styles.cardTitle}>微信发送记录</Text>
+            <Badge text={`${wxHistory.length} 条`} tone="tint" />
+          </View>
+          {wxHistory.slice(0, 5).map((it, i) => (
+            <View key={`${it.ts}-${i}`} style={[styles.wxRow, i > 0 && styles.wxRowGap]}>
+              <Text style={styles.wxTime} numberOfLines={1}>
+                {new Date(it.ts * 1000).toLocaleString("zh-CN", { hour12: false })}
+              </Text>
+              <Text style={styles.wxWav} numberOfLines={1}>
+                {it.wav} · {it.duration_s}s
+              </Text>
+              <Badge text={it.outcome === "ok" ? "成功" : it.outcome} tone={it.outcome === "ok" ? "ok" : "err"} />
+            </View>
+          ))}
         </Card>
       )}
 
@@ -164,6 +262,13 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 13, color: C.text },
   chipTextActive: { color: C.tint, fontWeight: "600" },
   playHint: { fontSize: 13, color: C.sub, marginTop: 12 },
+  wxDivider: { height: 1, backgroundColor: C.border, marginTop: 16, marginBottom: 14 },
+  wxHint: { fontSize: 11, color: C.sub, marginTop: 10, lineHeight: 16, textAlign: "center" },
+  wxResult: { fontSize: 12, marginTop: 8, textAlign: "center", fontWeight: "600" },
+  wxRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12 },
+  wxRowGap: {},
+  wxTime: { fontSize: 11, color: C.sub, width: 118 },
+  wxWav: { flex: 1, fontSize: 11, color: C.text },
   err: { fontSize: 12, color: C.err, marginTop: 10, lineHeight: 17 },
   hint: { fontSize: 12, color: C.sub, marginTop: 16, lineHeight: 17 },
 });

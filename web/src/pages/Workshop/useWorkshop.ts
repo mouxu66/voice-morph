@@ -22,6 +22,14 @@ const IDLE_PIPELINE: PipelineStatus = {
   running: false, status: "idle", step: "", message: "", percent: 0, clips: 0, error: "",
 }
 
+/** 素材切片前缀：新切片用完整素材名（去文件系统非法字符，≤80 字符），旧切片用 stem[:12]。 */
+function materialPrefixes(file: string): Set<string> {
+  const stem = file.replace(/\.[^./\\]+$/, "")
+  const cleaned = stem.replace(/[\\/:*?"<>|]/g, "").slice(0, 80)
+  const legacy = stem.slice(0, 12)
+  return new Set([cleaned, legacy].filter(Boolean))
+}
+
 export function useWorkshop() {
   const { backendUp, clips, setClips, selectedClips, toggleClip, clearSelectedClips } = useAppStore()
   const [videos, setVideos] = useState<VideoItem[]>([])
@@ -42,6 +50,8 @@ export function useWorkshop() {
   const [gradeFilter, setGradeFilter] = useState<"全部" | "合格" | "A" | "B" | "C" | "D">("全部")
   const [qcBusy, setQcBusy] = useState(false)
   const [qcFor, setQcFor] = useState<string>("")
+  // 当前"活动"素材：最近一次质检/说话人分离的对象，供全局自动优选限定范围
+  const [activeMaterial, setActiveMaterial] = useState<string>("")
 
   // 流水线（后台运行 + 轮询进度）
   const [pipeline, setPipeline] = useState<PipelineStatus>(IDLE_PIPELINE)
@@ -162,8 +172,16 @@ export function useWorkshop() {
       const result = await diarizeClips(file)
       setDiar(result)
       setDiarFor(file)
+      setActiveMaterial(file)
       setSpeakerFilter(null)
-      setFeedback(`「${file}」识别出 ${result.n_speakers} 位说话人，主说话人推荐：${result.main_label}`)
+      // P2-1：主说话人占比过低时给出可读引导（多人混音/他人声多的素材不宜直接建库）
+      const main = result.speakers.find((s) => s.is_main)
+      let hint = ""
+      if (main && result.n_speakers > 1 && main.ratio < 0.5) {
+        const pct = Math.round((main.ratio ?? 0) * 100)
+        hint = `。注意：${result.main_label}占比仅 ${pct}%，素材说话人较杂——建议自动优选时优先该说话人，或换一段目标说话人占多数的素材`
+      }
+      setFeedback(`「${file}」识别出 ${result.n_speakers} 位说话人，主说话人推荐：${result.main_label}${hint}`)
     } catch (error) {
       setErrorMessage(friendlyError(error, "说话人分离失败"))
     } finally {
@@ -178,6 +196,7 @@ export function useWorkshop() {
     try {
       const res = await qcClips(file, spk)
       setQcFor(file)
+      setActiveMaterial(file)
       setFeedback(`「${file}」质检完成：${res.count} 条切片，可用（A/B）${res.ok_count} 条`
         + (res.has_spk ? "（含声纹一致性校验）" : "（无声纹维度，可先做说话人分离再质检）"))
       await loadWorkshop()
@@ -188,13 +207,25 @@ export function useWorkshop() {
     }
   }, [loadWorkshop])
 
-  // 自动优选：按质检分数从高到低勾选，凑够 target 秒（默认 30，对应零样本门槛）
-  const autoPick = useCallback((target = 30) => {
+  // 自动优选（限定素材）：只在该素材的切片里，优先主说话人、再按质检分数从高到低勾选，
+  // 凑够 target 秒（默认 30，对应零样本门槛）。修复跨素材混选：不同素材高分切片不再被误抓。
+  const autoPickFor = useCallback((material: string, target = 30) => {
+    const prefixes = materialPrefixes(material)
+    const mainId = diar && diarFor === material
+      ? (diar.speakers.find((s) => s.is_main)?.id ?? -1)
+      : -1
+    const spkOf = (name: string) => (diar && diarFor === material ? diar.clips.find((c) => c.name === name)?.spk : undefined)
     const ranked = clips
-      .filter((c) => c.qc && (c.qc.grade === "A" || c.qc.grade === "B"))
-      .sort((a, b) => (b.qc?.score ?? 0) - (a.qc?.score ?? 0))
+      .filter((c) => c.qc && (c.qc.grade === "A" || c.qc.grade === "B")
+        && [...prefixes].some((p) => c.name.startsWith(p)))
+      .sort((a, b) => {
+        const am = mainId >= 0 && spkOf(a.name) === mainId ? 0 : 1
+        const bm = mainId >= 0 && spkOf(b.name) === mainId ? 0 : 1
+        if (am !== bm) return am - bm
+        return (b.qc?.score ?? 0) - (a.qc?.score ?? 0)
+      })
     if (!ranked.length) {
-      setErrorMessage("还没有质检结果，请先对素材做一次切片质检")
+      setErrorMessage(`「${material}」还没有 A/B 级质检切片，请先对该素材做切片质检`)
       return
     }
     clearSelectedClips()
@@ -206,8 +237,17 @@ export function useWorkshop() {
       if (total >= target) break
     }
     picked.forEach((name) => toggleClip(name))
-    setFeedback(`已自动勾选 ${picked.length} 条高分切片，共 ${total.toFixed(1)}s（目标 ${target}s）`)
-  }, [clips, clearSelectedClips, toggleClip])
+    setFeedback(`已从「${material}」自动勾选 ${picked.length} 条 A/B 级切片，共 ${total.toFixed(1)}s（目标 ${target}s${mainId >= 0 ? "，优先主说话人" : ""}）`)
+  }, [clips, diar, diarFor, clearSelectedClips, toggleClip])
+
+  // 全局自动优选：作用于最近一次质检/分离的素材（无则提示先选素材）
+  const autoPick = useCallback((target = 30) => {
+    if (!activeMaterial) {
+      setErrorMessage("请先对某个素材做质检/说话人分离，或直接点素材卡片上的「自动优选」")
+      return
+    }
+    autoPickFor(activeMaterial, target)
+  }, [activeMaterial, autoPickFor])
 
   // RVC 训练集导出（带当前采纳片段）
   const exportRvc = async () => {
@@ -299,7 +339,7 @@ export function useWorkshop() {
     deleteVideo,
     loadWorkshop, toggleClip, clearSelectedClips, setDecision,
     diar, diarFor, diarBusy, speakerFilter, setSpeakerFilter, runDiarize,
-    gradeFilter, setGradeFilter, qcBusy, qcFor, runQc, autoPick,
+    gradeFilter, setGradeFilter, qcBusy, qcFor, runQc, autoPick, autoPickFor,
     clipAudioUrl: (clip: ClipItem) => mediaUrl(`/media/clips/${clip.name}.wav`),
   }
 }

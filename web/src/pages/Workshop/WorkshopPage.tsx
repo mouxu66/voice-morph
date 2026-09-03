@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Check, ChevronRight, CircleAlert, FileVideo2, Filter, FolderOpen, Library, Loader2, Play, Scissors, ShieldCheck, SlidersHorizontal, Sparkles, Star, Trash2, Upload, Users, Wand2, X } from "lucide-react"
+import { Check, ChevronDown, ChevronRight, CircleAlert, FileVideo2, Filter, FolderOpen, Library, Loader2, Play, Scissors, ShieldCheck, SlidersHorizontal, Sparkles, Star, Trash2, Upload, Users, Wand2, X } from "lucide-react"
 import { Link } from "react-router-dom"
 import type { useWorkshop } from "@/pages/Workshop/useWorkshop"
 import type { DiarizeResult } from "@/api/client"
@@ -23,10 +23,10 @@ function SpeakerFilterBar({ result, active, onSelect }: { result: DiarizeResult;
   </div>
 }
 
-function VideoCard({ video, onDelete, onProcessOne, onDiarize, onQc, disabled, diarBusy, qcBusy, qcFor }: { video: VideoItem; onDelete: () => void; onProcessOne: () => void; onDiarize: () => void; onQc: () => void; disabled: boolean; diarBusy: boolean; qcBusy: boolean; qcFor: boolean }) {
+function VideoCard({ video, onDelete, onProcessOne, onDiarize, onQc, onAutoPick, disabled, diarBusy, qcBusy, qcFor }: { video: VideoItem; onDelete: () => void; onProcessOne: () => void; onDiarize: () => void; onQc: () => void; onAutoPick: () => void; disabled: boolean; diarBusy: boolean; qcBusy: boolean; qcFor: boolean }) {
   const [confirming, setConfirming] = useState(false)
   const usedBy = video.used_by ?? []
-  return <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-background/60 p-3"><FileVideo2 className="h-5 w-5 shrink-0 text-primary" /><div className="min-w-0 flex-1"><p className="truncate text-sm text-card-foreground">{video.name}</p><p className="mt-1 font-mono text-xs text-muted-foreground">{video.size_mb.toFixed(1)} MB · 已就绪</p>{usedBy.length > 0 && <p className="mt-1.5 inline-block rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">已用于：{usedBy.join("、")}</p>}</div>{confirming ? <div className="flex shrink-0 flex-col gap-1"><button type="button" onClick={onDelete} className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-white transition hover:opacity-90">{usedBy.length ? "仍要删除" : "确认删除"}</button><button type="button" onClick={() => setConfirming(false)} className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground">取消</button></div> : <div className="flex shrink-0 items-center gap-1"><button type="button" onClick={onProcessOne} disabled={disabled} title="仅处理此素材（不碰其它视频）" className="shrink-0 rounded-md border border-border p-1.5 text-primary transition hover:border-primary disabled:pointer-events-none disabled:opacity-40"><Play className="h-3.5 w-3.5" /></button><button type="button" onClick={onDiarize} disabled={diarBusy || disabled} title="对该素材做说话人分离（标注每个切片所属人，推荐主说话人）" className="shrink-0 rounded-md border border-border p-1.5 text-primary transition hover:border-primary disabled:pointer-events-none disabled:opacity-40">{diarBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Users className="h-3.5 w-3.5" />}</button><button type="button" onClick={onQc} disabled={qcBusy || disabled} title="给该素材的切片做质检打分（含声纹一致性，能剔除他人声与伴奏残留）" className={`shrink-0 rounded-md border p-1.5 transition hover:border-primary disabled:pointer-events-none disabled:opacity-40 ${qcFor ? "border-primary text-primary" : "border-border text-primary"}`}>{qcBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}</button><button type="button" onClick={() => setConfirming(true)} title="删除素材及其切片/中间文件" className="shrink-0 rounded-md border border-border p-1.5 text-muted-foreground transition hover:border-destructive hover:text-destructive"><Trash2 className="h-3.5 w-3.5" /></button></div>}</div>
+  return <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-background/60 p-3"><FileVideo2 className="h-5 w-5 shrink-0 text-primary" /><div className="min-w-0 flex-1"><p className="truncate text-sm text-card-foreground">{video.name}</p><p className="mt-1 font-mono text-xs text-muted-foreground">{video.size_mb.toFixed(1)} MB · 已就绪</p>{usedBy.length > 0 && <p className="mt-1.5 inline-block rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">已用于：{usedBy.join("、")}</p>}</div>{confirming ? <div className="flex shrink-0 flex-col gap-1"><button type="button" onClick={onDelete} className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-white transition hover:opacity-90">{usedBy.length ? "仍要删除" : "确认删除"}</button><button type="button" onClick={() => setConfirming(false)} className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground">取消</button></div> : <div className="flex shrink-0 items-center gap-1"><button type="button" onClick={onProcessOne} disabled={disabled} title="仅处理此素材（不碰其它视频）" className="shrink-0 rounded-md border border-border p-1.5 text-primary transition hover:border-primary disabled:pointer-events-none disabled:opacity-40"><Play className="h-3.5 w-3.5" /></button><button type="button" onClick={onDiarize} disabled={diarBusy || disabled} title="对该素材做说话人分离（标注每个切片所属人，推荐主说话人）" className="shrink-0 rounded-md border border-border p-1.5 text-primary transition hover:border-primary disabled:pointer-events-none disabled:opacity-40">{diarBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Users className="h-3.5 w-3.5" />}</button><button type="button" onClick={onQc} disabled={qcBusy || disabled} title="给该素材的切片做质检打分（含声纹一致性，能剔除他人声与伴奏残留）" className={`shrink-0 rounded-md border p-1.5 transition hover:border-primary disabled:pointer-events-none disabled:opacity-40 ${qcFor ? "border-primary text-primary" : "border-border text-primary"}`}>{qcBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}</button><button type="button" onClick={onAutoPick} disabled={disabled} title="只从该素材自动优选 A/B 级切片（优先主说话人），一键勾选到 30 秒" className="shrink-0 rounded-md border border-border p-1.5 text-primary transition hover:border-primary disabled:pointer-events-none disabled:opacity-40"><Wand2 className="h-3.5 w-3.5" /></button><button type="button" onClick={() => setConfirming(true)} title="删除素材及其切片/中间文件" className="shrink-0 rounded-md border border-border p-1.5 text-muted-foreground transition hover:border-destructive hover:text-destructive"><Trash2 className="h-3.5 w-3.5" /></button></div>}</div>
 }
 
 const stages = ["批量初筛", "精细审核", "送入音色库"]
@@ -57,6 +57,8 @@ export function WorkshopPage(p: ReturnType<typeof useWorkshop>) {
   const progress = Math.min(100, Math.round((p.selectedDuration / 60) * 100))
   const markVisible = (decision: "采纳" | "驳回") => p.visibleClips.forEach((clip) => p.setDecision(clip.name, decision))
   const pipelineActive = p.pipeline.running || p.pipeline.status === "running"
+  // 素材列表默认折叠，避免开屏一长串视频
+  const [videosOpen, setVideosOpen] = useState(false)
 
   // 切片 -> 说话人标签（仅当前已做分离的素材有）
   const speakerInfo = (clipName: string) => {
@@ -88,9 +90,47 @@ export function WorkshopPage(p: ReturnType<typeof useWorkshop>) {
     {p.feedback && <div className="mt-4 flex items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5 text-xs text-primary animate-in fade-in slide-in-from-top-2 duration-300"><CircleAlert className="h-3.5 w-3.5" />{p.feedback}</div>}
     {p.errorMessage && <ErrorPanel title="音色工坊操作失败" detail={p.errorMessage} />}
 
-    {/* 素材列表 + 拖拽上传 */}
+    {/* 素材列表（默认折叠）+ 拖拽上传（始终可见） */}
     <div className="mt-6 space-y-3">
-      {p.videos.length ? <div className="grid gap-3 sm:grid-cols-2">{p.videos.map((video) => <VideoCard key={video.name} video={video} disabled={pipelineActive || p.diarBusy || p.qcBusy} diarBusy={p.diarBusy} qcBusy={p.qcBusy} qcFor={p.qcFor === video.name} onDiarize={() => void p.runDiarize(video.name)} onQc={() => void p.runQc(video.name)} onDelete={() => void p.deleteVideo(video.name, video.used_by ?? [])} onProcessOne={() => void p.startPipeline([video.name])} />)}</div> : <StudioEmpty title="还没有视频素材" description="拖拽视频到下方区域，或点击选择文件上传，也可以打开素材文件夹手动放入。" onRetry={p.loadWorkshop} />}
+      {p.videos.length > 0 ? (
+        <>
+          <button
+            type="button"
+            onClick={() => setVideosOpen((v) => !v)}
+            className="flex w-full items-center justify-between gap-2 rounded-lg border border-border bg-background/40 px-3 py-2 text-xs text-muted-foreground transition hover:border-primary hover:text-primary"
+          >
+            <span className="flex items-center gap-2">
+              {videosOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+              <FileVideo2 className="h-3.5 w-3.5 text-primary" />
+              <span>共 <span className="font-mono text-card-foreground">{p.videos.length}</span> 个视频素材已就绪</span>
+            </span>
+            <span>{videosOpen ? "收起" : "展开管理"}</span>
+          </button>
+          {videosOpen && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {p.videos.map((video) => (
+                <VideoCard
+                  key={video.name}
+                  video={video}
+                  disabled={pipelineActive || p.diarBusy || p.qcBusy}
+                  diarBusy={p.diarBusy}
+                  qcBusy={p.qcBusy}
+                  qcFor={p.qcFor === video.name}
+                  onDiarize={() => void p.runDiarize(video.name)}
+                  onQc={() => void p.runQc(video.name)}
+                  onAutoPick={() => p.autoPickFor(video.name)}
+                  onDelete={() => void p.deleteVideo(video.name, video.used_by ?? [])}
+                  onProcessOne={() => void p.startPipeline([video.name])}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="rounded-lg border border-dashed border-border bg-background/40 px-3 py-2 text-xs text-muted-foreground">
+          还没有视频素材，下方拖入或选择上传。
+        </p>
+      )}
       <div
         role="button"
         tabIndex={0}

@@ -294,3 +294,40 @@ export async function applyAudioConfig(): Promise<{ ok: boolean; error?: string 
 export async function restoreAudioConfig(): Promise<{ ok: boolean; error?: string }> {
   return jsonFetch("/audio/restore", { method: "POST" }, 30000);
 }
+
+// ---- 微信语音发送（遥控 PC 端把合成语音灌进 PC 微信语音条） ----
+
+export interface WechatHistoryItem {
+  wav: string;
+  duration_s: number;
+  ts: number;
+  outcome: string;
+}
+
+export interface WechatSendResult {
+  ok: boolean;
+  wav?: string;
+  duration_s?: number;
+  outcome?: string;
+  error?: string;
+}
+
+/**
+ * 遥控 PC 全自动发送：PC 端切录音设备 → 前台化微信模拟按住 Alt → 播放 → 松开发送。
+ * 执行期间（约 wav 时长 + 3s）PC 键鼠会被接管。wav=PC outputs/ 下文件名，缺省=PC 最近 TTS 产物。
+ */
+export async function wechatSendVoice(wav?: string): Promise<WechatSendResult> {
+  return jsonFetch(
+    "/wechat/send_voice",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wav: wav || null }),
+    },
+    120000
+  );
+}
+
+export async function getWechatHistory(): Promise<{ ok: boolean; items: WechatHistoryItem[] }> {
+  return jsonFetch<{ ok: boolean; items: WechatHistoryItem[] }>("/wechat/history");
+}

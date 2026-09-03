@@ -167,6 +167,31 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
                     </button>
                   ))}
                 </div>
+                {p.pitchBusy && (
+                  <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" />正在分析音频音高，稍后自动填入建议变调…
+                  </p>
+                )}
+                {!p.pitchBusy && p.pitchAdvice && (
+                  p.pitchAdvice.reliable && p.pitchAdvice.suggested_pitch != null && p.pitchAdvice.ref_f0 ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary">
+                      <span>
+                        已按音高自动建议变调：你 {p.pitchAdvice.input_f0}Hz → {voiceName || "目标音色"} {p.pitchAdvice.ref_f0}Hz
+                      </span>
+                      {p.pitch !== p.pitchAdvice.suggested_pitch && (
+                        <button type="button"
+                          onClick={() => p.setPitch(p.pitchAdvice!.suggested_pitch!)}
+                          className="rounded-full bg-primary px-2 py-0.5 font-medium text-primary-foreground transition hover:scale-105">
+                          填入建议 ({p.pitchAdvice.suggested_pitch > 0 ? `+${p.pitchAdvice.suggested_pitch}` : p.pitchAdvice.suggested_pitch})
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-yellow-600">
+                      音频里有效语音太少（{Math.round(p.pitchAdvice.voiced_ratio * 100)}%），音高建议不可靠——建议换段干净录音。
+                    </p>
+                  )
+                )}
               </div>
 
               <div className="mt-5">
@@ -180,11 +205,29 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">越高越贴目标音色，过高会有训练腔；0.5 左右通常最自然。</p>
               </div>
 
-              <label className="mt-5 flex cursor-pointer items-center gap-2 text-sm text-card-foreground">
-                <input type="checkbox" checked={p.denoise} onChange={(e) => p.setDenoise(e.target.checked)}
-                  className="h-4 w-4 accent-[var(--primary)]" />
-                输入降噪（推荐开着麦克风录音时使用）
-              </label>
+              <div className="mt-5">
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-card-foreground">
+                  <input type="checkbox" checked={p.denoise} onChange={(e) => p.setDenoise(e.target.checked)}
+                    className="h-4 w-4 accent-[var(--primary)]" />
+                  输入降噪（推荐开着麦克风录音时使用）
+                </label>
+                {p.denoise && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 pl-6 text-xs">
+                    <span className="text-muted-foreground">降噪强度</span>
+                    {([["light", "轻 · 保弱声"], ["standard", "标准"], ["strong", "强力"]] as const).map(([v, label]) => (
+                      <button key={v} type="button" onClick={() => p.setEnhanceLevel(v)}
+                        className={`rounded-full px-2.5 py-1 text-xs transition ${p.enhanceLevel === v ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground"}`}>
+                        {label}
+                      </button>
+                    ))}
+                    <span className="text-muted-foreground">
+                      {p.enhanceLevel === "light" && "最多压 6dB：弱人声/远场说话更安全，噪声残留多"}
+                      {p.enhanceLevel === "standard" && "最多压 12dB：日常录音推荐"}
+                      {p.enhanceLevel === "strong" && "不限压制：最干净，但弱人声易被压断（原默认行为）"}
+                    </span>
+                  </div>
+                )}
+              </div>
 
               <label className="mt-3 flex cursor-pointer items-start gap-2 text-sm text-card-foreground">
                 <input type="checkbox" checked={p.postSeedVc} onChange={(e) => p.setPostSeedVc(e.target.checked)}
