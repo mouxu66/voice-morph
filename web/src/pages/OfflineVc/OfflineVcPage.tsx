@@ -14,6 +14,7 @@ import {
 import { useState } from "react"
 import { Link } from "react-router-dom"
 import { mediaUrl } from "@/api/client"
+import { downloadUrl } from "@/lib/download"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import type { useOfflineVc } from "@/pages/OfflineVc/useOfflineVc"
@@ -301,6 +302,7 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
                         <>
                           <span className="text-muted-foreground">{it.durationS ? `${it.durationS}s` : ""}</span>
                           <a href={mediaUrl(it.url)} download={`vc-${it.name.replace(/\.[^.]+$/, "")}.wav`}
+                            onClick={(e) => { e.preventDefault(); const u = it.url; if (u) void downloadUrl(mediaUrl(u), `vc-${it.name.replace(/\.[^.]+$/, "")}.wav`).catch(() => {}) }}
                             className="inline-flex items-center gap-1.5 font-medium text-primary transition hover:underline">
                             <Download className="h-3.5 w-3.5" />下载 wav
                           </a>
@@ -332,6 +334,7 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
                   <h3 className="mt-2 text-lg font-semibold text-card-foreground">变声完成 · 全长 {st.duration_s}s</h3>
                 </div>
                 <a href={p.resultUrl} download={`offlinevc-${st.voice_id}.wav`}
+                  onClick={(e) => { e.preventDefault(); void downloadUrl(p.resultUrl, `offlinevc-${st.voice_id}.wav`).catch(() => {}) }}
                   className="inline-flex items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20">
                   <Download className="h-4 w-4" />下载 48kHz wav
                 </a>
