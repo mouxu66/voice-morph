@@ -50,7 +50,8 @@ def _post_json(url: str, payload: dict, timeout: int = 300) -> dict:
 
 
 def _get_emb(path: Path) -> list:
-    d = _post_json(WORKER + "/emb", {"path": str(path)}, timeout=300)
+    # worker 以 m2_server 为 cwd 运行，必须用绝对路径，否则相对路径解析失败
+    d = _post_json(WORKER + "/emb", {"path": str(Path(path).resolve())}, timeout=300)
     if d.get("error") or not d.get("emb"):
         raise RuntimeError(d.get("error") or "empty emb")
     return d["emb"]
@@ -115,9 +116,9 @@ def main():
     for c in args.candidates:
         cp = Path(c)
         if cp.is_dir():
-            cands += sorted(cp.rglob("*.wav"))
+            cands += sorted(p.resolve() for p in cp.rglob("*.wav"))
         else:
-            cands.append(cp)
+            cands.append(cp.resolve())
     cands = [c for c in cands if c.suffix.lower() == ".wav"]
     if not cands:
         print("没有候选 wav，退出")
@@ -146,7 +147,7 @@ def main():
     secs_ref = None
     if not args.no_secs:
         try:
-            secs_ref = _get_emb(Path(args.ref))
+            secs_ref = _get_emb(Path(args.ref).resolve())
             print("[secs] 已取原声嵌入（worker 8001 / CAM++）", flush=True)
         except Exception as e:
             print(f"[secs] 警告：原声嵌入失败（worker 未启动？）：{e}", flush=True)
