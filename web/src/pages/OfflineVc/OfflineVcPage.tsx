@@ -30,6 +30,21 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
   const [presetNameOpen, setPresetNameOpen] = useState(false)
   const [presetName, setPresetName] = useState("")
   const [activePresetId, setActivePresetId] = useState("")
+  // 下载状态：失败的 key+原因必须浮出到 UI，不再静默吞掉
+  const [dlBusy, setDlBusy] = useState<string | null>(null)
+  const [dlFail, setDlFail] = useState<{ key: string; msg: string } | null>(null)
+
+  const runDownload = async (key: string, url: string, filename: string) => {
+    setDlFail(null)
+    setDlBusy(key)
+    try {
+      await downloadUrl(url, filename)
+    } catch (e) {
+      setDlFail({ key, msg: e instanceof Error ? e.message : "下载失败" })
+    } finally {
+      setDlBusy(null)
+    }
+  }
 
   const confirmSavePreset = () => {
     if (!presetName.trim()) return
@@ -302,10 +317,14 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
                         <>
                           <span className="text-muted-foreground">{it.durationS ? `${it.durationS}s` : ""}</span>
                           <a href={mediaUrl(it.url)} download={`vc-${it.name.replace(/\.[^.]+$/, "")}.wav`}
-                            onClick={(e) => { e.preventDefault(); const u = it.url; if (u) void downloadUrl(mediaUrl(u), `vc-${it.name.replace(/\.[^.]+$/, "")}.wav`).catch(() => {}) }}
-                            className="inline-flex items-center gap-1.5 font-medium text-primary transition hover:underline">
-                            <Download className="h-3.5 w-3.5" />下载 wav
+                            onClick={(e) => { e.preventDefault(); const u = it.url; if (u) void runDownload(`q-${it.id}`, mediaUrl(u), `vc-${it.name.replace(/\.[^.]+$/, "")}.wav`) }}
+                            className={`inline-flex items-center gap-1.5 font-medium text-primary transition hover:underline ${dlBusy === `q-${it.id}` ? "pointer-events-none opacity-60" : ""}`}>
+                            {dlBusy === `q-${it.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                            {dlBusy === `q-${it.id}` ? "下载中…" : "下载 wav"}
                           </a>
+                          {dlFail?.key === `q-${it.id}` && (
+                            <span className="text-destructive" title={dlFail.msg}>下载失败：{dlFail.msg}</span>
+                          )}
                         </>
                       ) : it.status === "error" ? (
                         <span className="rounded border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-destructive">{it.error || "失败"}</span>
@@ -334,11 +353,15 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
                   <h3 className="mt-2 text-lg font-semibold text-card-foreground">变声完成 · 全长 {st.duration_s}s</h3>
                 </div>
                 <a href={p.resultUrl} download={`offlinevc-${st.voice_id}.wav`}
-                  onClick={(e) => { e.preventDefault(); void downloadUrl(p.resultUrl, `offlinevc-${st.voice_id}.wav`).catch(() => {}) }}
-                  className="inline-flex items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20">
-                  <Download className="h-4 w-4" />下载 48kHz wav
+                  onClick={(e) => { e.preventDefault(); void runDownload("result", p.resultUrl, `offlinevc-${st.voice_id}.wav`) }}
+                  className={`inline-flex items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20 ${dlBusy === "result" ? "pointer-events-none opacity-60" : ""}`}>
+                  {dlBusy === "result" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                  {dlBusy === "result" ? "下载中…" : "下载 48kHz wav"}
                 </a>
               </div>
+              {dlFail?.key === "result" && (
+                <p className="mt-2 text-xs text-destructive">下载失败：{dlFail.msg}</p>
+              )}
               <StudioAudioPlayer src={p.resultUrl} label="播放变声结果" className="mt-4" />
             </div>
           )}
