@@ -39,6 +39,7 @@ web/tsconfig.tsbuildinfo
 
 # ===== 模型权重（大文件，另行管理/下载） =====
 tts_models/
+models/
 checkpoints_v2/
 
 # ===== 数据素材 / 切片 / 音色 / 输出（不入库） =====
