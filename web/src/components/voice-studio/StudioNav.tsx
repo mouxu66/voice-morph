@@ -1,4 +1,4 @@
-import { AudioLines, FlaskConical, Library, Mic2, Radio, Radar, Speech } from "lucide-react"
+import { AudioLines, FlaskConical, Library, Mic2, Radio, Radar, Speech, Waves } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 
 const items = [
@@ -7,7 +7,8 @@ const items = [
   { path: "/ft", label: "音色微调", icon: FlaskConical },
   { path: "/voices", label: "音色库", icon: Library },
   { path: "/tts", label: "语音合成", icon: Speech },
-  { path: "/live", label: "实时变声", icon: Radio },
+  { path: "/live", label: "RVC 实时", icon: Radio },
+  { path: "/qwen", label: "千问变声", icon: Waves },
   { path: "/offlinevc", label: "离线工坊", icon: AudioLines },
 ]
 
