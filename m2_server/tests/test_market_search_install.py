@@ -417,6 +417,68 @@ def test_install_faileld_cleans_part(server_url, mgr, fake_rvc):
     assert not (mgr.download_dir / "gone.pth.part").exists()
 
 
+# ---------------- A1 溯源与卸载 ----------------
+def test_install_writes_source_json(server_url, mgr, fake_rvc):
+    """安装完成后落 source.json，记录市场来源与 manifest 溯源。"""
+    import json as _json
+    ins = InstallManager(manager=mgr)
+    ins.run("src_voice", download={"url": f"{server_url}/v.pth"},
+            index={"url": f"{server_url}/v.index"}, display_name="演示音色",
+            manifest_id="demo/001")
+    _wait_install(ins)
+    src = _json.loads((fake_rvc / "logs" / "src_voice" / "source.json").read_text("utf-8"))
+    assert src["source"] == "market"
+    assert src["manifest_id"] == "demo/001"
+    assert src["display_name"] == "演示音色"
+    assert ins._is_market_installed("src_voice")
+    assert not ins._is_market_installed("self_trained_no_marker")
+
+
+def test_uninstall_market_voice_removes_everything(server_url, mgr, fake_rvc):
+    """市场音色卸载：logs 目录 + weights + 下载缓存全部清除。"""
+    ins = InstallManager(manager=mgr)
+    ins.run("kill_me", download={"url": f"{server_url}/v.pth"},
+            index={"url": f"{server_url}/v.index"}, manifest_id="demo/002")
+    _wait_install(ins)
+    cache_pth = mgr.download_dir / "kill_me.pth"
+    assert cache_pth.exists()                  # 下载缓存落盘
+    res = ins.uninstall("kill_me")
+    assert not (fake_rvc / "logs" / "kill_me").exists()
+    assert not (fake_rvc / "assets" / "weights" / "kill_me.pth").exists()
+    assert not cache_pth.exists()
+    assert "kill_me" not in ins.installed_ids()
+    assert res["removed"], "应返回被删除的路径列表"
+
+
+def test_uninstall_rejects_self_trained(server_url, mgr, fake_rvc):
+    """自训产物（logs/<id>/<id>.pth 无 source.json）拒绝被市场卸载误删。"""
+    d = fake_rvc / "logs" / "selftrained"
+    d.mkdir(parents=True)
+    (d / "selftrained.pth").write_bytes(PTH_DATA)
+    ins = InstallManager(manager=mgr)
+    with pytest.raises(InstallError):
+        ins.uninstall("selftrained")
+    assert (d / "selftrained.pth").exists(), "非市场来源不可被卸载删除"
+
+
+def test_uninstall_rejects_unknown(mgr, fake_rvc):
+    ins = InstallManager(manager=mgr)
+    with pytest.raises(InstallError, match="不存在"):
+        ins.uninstall("never_existed")
+
+
+def test_uninstall_after_market_uninstall_reinstallable(server_url, mgr, fake_rvc):
+    """卸载后可重新安装（去重：旧安装状态不阻塞）。"""
+    ins = InstallManager(manager=mgr)
+    ins.run("circular", download={"url": f"{server_url}/v.pth"}, manifest_id="demo/003")
+    _wait_install(ins)
+    ins.uninstall("circular")
+    ins.run("circular", download={"url": f"{server_url}/v.pth"}, manifest_id="demo/003")
+    st = _wait_install(ins)
+    assert st["install"]["status"] == "installed"
+    assert (fake_rvc / "logs" / "circular" / "source.json").exists()
+
+
 # ---------------- API 壳 ----------------
 def _api_client():
     pytest.importorskip("fastapi")

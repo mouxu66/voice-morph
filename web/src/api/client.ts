@@ -1094,3 +1094,11 @@ export async function marketInstalled(): Promise<string[]> {
 export async function marketCancel(): Promise<{ task: MarketTask | null }> {
   return jsonFetch("/market/cancel", { method: "POST" });
 }
+
+export async function marketUninstall(voice_id: string): Promise<{ voice_id: string; removed: string[] }> {
+  return jsonFetch("/market/uninstall", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ voice_id }),
+  });
+}

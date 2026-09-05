@@ -35,6 +35,8 @@ export interface VoiceInfo {
   dataset_count?: number;
   /** 音色入库自动质检结果（tools/voice_qc.py 产出，经 /rvc/voices 的 qc 字段并入） */
   qc?: VoiceQc | null;
+  /** 来源标记：market=市场安装；自训/导入无标记（logs/<id>/source.json） */
+  source?: string;
 }
 
 // 音色质检单项（时长比 / f0偏移 / ASR重合 / 声纹余弦，各 25 分）

@@ -7,6 +7,7 @@ import {
   marketProgress,
   marketRepo,
   marketSearch,
+  marketUninstall,
   type MarketFile,
   type MarketFileSlot,
   type MarketItem,
@@ -180,6 +181,26 @@ export function useVoiceMarket() {
     }
   }, [])
 
+  // ---- 卸载（仅市场来源） ----
+  const [uninstallingId, setUninstallingId] = useState("")
+  const uninstallVoice = useCallback(
+    async (voice_id: string) => {
+      setInstallErr("")
+      setUninstallingId(voice_id)
+      try {
+        const r = await marketUninstall(voice_id)
+        await refreshInstalled()
+        return r
+      } catch (e) {
+        setInstallErr(e instanceof Error ? e.message : "卸载失败")
+        throw e
+      } finally {
+        setUninstallingId("")
+      }
+    },
+    [refreshInstalled],
+  )
+
   // ---- 派生帮助 ----
   /** 搜索结果的快速安装槽：files 恰好一个 pth → 可一键；否则需打开文件面板选 */
   const quickSlot = useCallback((item: MarketItem): { download: MarketFile; index: MarketFile | null } | null => {
@@ -216,6 +237,8 @@ export function useVoiceMarket() {
     refreshInstalled,
     startInstall,
     cancelInstall,
+    uninstallingId,
+    uninstallVoice,
     searching,
     searchQuery,
     setSearchQuery,

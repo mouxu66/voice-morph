@@ -303,6 +303,18 @@ def _read_qc(exp: str):
         return None
 
 
+def _read_source(exp: str) -> str:
+    """读取该音色的来源标记（logs/<exp>/source.json → "market"/""）。
+
+    市场安装的 RVC 模型由 market_install 落 source.json；自训/本地导入无标记。
+    """
+    src = cfg.RVC_ROOT / "logs" / exp / "source.json"
+    try:
+        return str(json.loads(src.read_text(encoding="utf-8")).get("source") or "")
+    except Exception:
+        return ""
+
+
 def _maybe_run_qc(exp: str, log_dir: Path):
     """训练完成后自动触发音色质检（后台线程，失败静默、绝不影响训练状态）。
 
@@ -716,7 +728,8 @@ def rvc_voices():
             if not (snap["pth_exists"] or snap["index_exists"] or snap["dataset_count"]):
                 continue
             items[d.name] = {"id": d.name, "display_name": d.name,
-                             "has_reference": False, "qc": _read_qc(d.name), **snap}
+                             "has_reference": False, "qc": _read_qc(d.name),
+                             "source": _read_source(d.name), **snap}
 
     voices = sorted(items.values(),
                     key=lambda v: (not v["model_ready"], not v["has_reference"], v["id"]))

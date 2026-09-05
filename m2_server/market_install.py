@@ -15,6 +15,7 @@
   - 下载 URL 仍走 DownloadManager 域名白名单
   - 单安装互斥；下载中不能并发安装（复用 DownloadManager 的互斥）
 """
+import json
 import re
 import shutil
 import threading
@@ -83,7 +84,8 @@ class InstallManager:
             "resume_pth": cur.get("name") == f"install_{voice_id}" and cur.get("status") != "done",
         })
         self._thread = threading.Thread(
-            target=self._run, args=(voice_id, download, index, display_name), daemon=True,
+            target=self._run,
+            args=(voice_id, download, index, display_name, manifest_id), daemon=True,
         )
         self._thread.start()
         return self.progress()
@@ -155,8 +157,79 @@ class InstallManager:
                 ids.add(p.stem)
         return sorted(ids)
 
+    # ---- 溯源与卸载 ----
+
+    @staticmethod
+    def _is_market_installed(voice_id: str) -> bool:
+        """logs/<id>/source.json 标记了市场来源才算市场安装的音色。"""
+        src = cfg.RVC_ROOT / "logs" / voice_id / "source.json"
+        try:
+            return json.loads(src.read_text(encoding="utf-8")).get("source") == "market"
+        except Exception:
+            return False
+
+    def uninstall(self, voice_id: str) -> dict:
+        """卸载市场安装的音色：清 logs/<id>/（含 source.json）、assets/weights/<id>.pth、
+        outputs/market 下载缓存与质检/试听产物。
+
+        仅允许卸载带市场来源标记（source.json）的音色，避免误删自训产物；
+        安装/下载进行中拒绝执行。返回被删除的路径列表。
+        """
+        if not voice_id or not VOICE_ID_RE.match(voice_id):
+            raise InstallError(f"非法音色 ID: {voice_id!r}（限字母数字_\\-）")
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise InstallError("已有安装任务在进行中，请稍后再卸载")
+            st = self.manager.progress()
+            if st.get("status") == "downloading":
+                raise InstallError("已有下载任务在进行中，请稍后再卸载")
+        log_dir = cfg.RVC_ROOT / "logs" / voice_id
+        w_pth = cfg.RVC_ROOT / "assets" / "weights" / f"{voice_id}.pth"
+        if not log_dir.exists() and not w_pth.exists():
+            raise InstallError(f"音色 {voice_id} 不存在或已卸载")
+        if not self._is_market_installed(voice_id):
+            raise InstallError(
+                f"音色 {voice_id} 不是市场安装来源（无 source.json 标记），为避免误删自训产物，"
+                "请到音色库中删除")
+        paths: list = []
+        if log_dir.exists():
+            paths.append(log_dir)
+        if w_pth.exists():
+            paths.append(w_pth)
+        # 下载缓存与试听 / 质检孤儿产物
+        for cand in (
+            self.manager.download_dir / f"{voice_id}.pth",
+            self.manager.download_dir / f"{voice_id}.pth.part",
+            self.manager.download_dir / f"{voice_id}.index",
+            self.manager.download_dir / f"{voice_id}.index.part",
+            cfg.OUTPUTS_DIR / "market" / f"{voice_id}_preview.wav",
+            cfg.OUTPUTS_DIR / "qc" / f"{voice_id}.json",
+        ):
+            if cand.exists():
+                paths.append(cand)
+        if not paths:
+            raise InstallError(f"音色 {voice_id} 不存在或已卸载")
+        for p in paths:
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink(missing_ok=True)
+        return {"voice_id": voice_id, "removed": [str(p) for p in paths]}
+
+    def write_source(self, voice_id: str, manifest_id: str, display_name: str):
+        """安装落位后写入溯源标记（logs/<id>/source.json），供卸载与音色库角标使用。"""
+        src = cfg.RVC_ROOT / "logs" / voice_id / "source.json"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text(json.dumps({
+            "source": "market",
+            "manifest_id": manifest_id,
+            "display_name": display_name,
+            "installed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+
     # ---- 后台线程 ----
-    def _run(self, voice_id: str, download: dict, index: dict | None, display_name: str):
+    def _run(self, voice_id: str, download: dict, index: dict | None,
+             display_name: str, manifest_id: str = ""):
         try:
             self._set_install(status="downloading_pth", phase="下载权重",
                               message="正在下载权重文件 …", percent=_pct_of(0, INSTALL_PHASES))
@@ -179,6 +252,7 @@ class InstallManager:
             self._set_install(status="staging", phase="注册音色",
                               message="正在写入音色库 …", percent=_pct_of(2, INSTALL_PHASES))
             self._stage(voice_id)
+            self.write_source(voice_id, manifest_id, display_name)
 
             self._set_install(status="installed", phase="完成", message="安装完成",
                               percent=100.0, error="",

@@ -11,6 +11,7 @@ import {
   ScrollText,
   ShieldCheck,
   Store,
+  Trash2,
   TriangleAlert,
   X,
   XCircle,
@@ -161,9 +162,18 @@ function MarketCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
         {playable && <StudioAudioPlayer src={item.demo!} label="试听" className="flex-1 min-w-0" />}
         <div className="shrink-0">
           {isInstalled ? (
-            <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-400">
-              <CheckCircle2 className="h-3.5 w-3.5" />已安装
-            </span>
+            <button
+              type="button"
+              disabled={p.installRunning || p.uninstallingId === voiceId}
+              onClick={() => {
+                if (!window.confirm(`确定从音色库卸载「${item.name}」吗？\n将删除其模型（logs/${voiceId}）、权重（assets/weights）与下载缓存，不可恢复。`)) return
+                void p.uninstallVoice(voiceId).catch(() => {})
+              }}
+              className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/20 disabled:pointer-events-none disabled:opacity-50"
+            >
+              {p.uninstallingId === voiceId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              卸载
+            </button>
           ) : isThis ? (
             <div className="flex items-center gap-2">
               <div className="flex h-9 items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3">

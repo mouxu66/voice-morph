@@ -112,6 +112,23 @@ def market_installed():
     return {"installed": get_installer().installed_ids()}
 
 
+class UninstallRequest(BaseModel):
+    voice_id: str = Field(..., description="要卸载的音色 ID（须为市场安装来源）")
+
+
+@router.delete("/market/uninstall")
+def market_uninstall(req: UninstallRequest):
+    """卸载市场安装的音色：清 logs/<id>/ + assets/weights/<id>.pth + 市场缓存。
+
+    仅允许卸载带 source.json 市场标记的音色（防止误删自训产物）；
+    安装/下载进行中返回 409。
+    """
+    try:
+        return get_installer().uninstall(req.voice_id)
+    except InstallError as exc:
+        raise HTTPException(409, str(exc))
+
+
 @router.get("/market/progress")
 def market_progress():
     """当前下载 / 安装进度（无任务时返回 null）。"""

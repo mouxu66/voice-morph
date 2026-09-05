@@ -28,6 +28,18 @@ def _read_meta(meta_path: Path) -> dict:
         return {}
 
 
+def _rvc_source(exp: str) -> str:
+    """RVC 实验音色的来源标记（logs/<exp>/source.json → "market"/""）。
+
+    市场安装的模型由 market_install 落 source.json；自训/导入无标记。
+    """
+    src = cfg.RVC_ROOT / "logs" / exp / "source.json"
+    try:
+        return str(json.loads(src.read_text(encoding="utf-8")).get("source") or "")
+    except Exception:
+        return ""
+
+
 @router.get("/voices")
 def list_voices():
     """音色库清单（合并两个来源，与 /rvc/voices 保持一致）：
@@ -56,6 +68,7 @@ def list_voices():
             "duration_s": round(len(AudioSegment.from_wav(str(ref))) / 1000, 1),
             "kind": meta.get("kind") or "clone",
             "has_reference": True,
+            "source": _rvc_source(d.name),
             **exp_snapshot(d.name),
         }
 
@@ -76,6 +89,7 @@ def list_voices():
                 "duration_s": 0,
                 "kind": "rvc_model",
                 "has_reference": False,
+                "source": _rvc_source(d.name),
                 **snap,
             }
 
