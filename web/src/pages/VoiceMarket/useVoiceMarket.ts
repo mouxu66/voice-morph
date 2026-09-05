@@ -97,7 +97,7 @@ export function useVoiceMarket() {
     setSearchNote(null)
     setRepoOpen(null)
     try {
-      const r = await marketSearch(query, pf, 10)
+      const r = await marketSearch(query, pf, 50)
       setResults(r.items)
       setSearchNote(r.note)
     } catch (e) {

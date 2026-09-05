@@ -25,7 +25,7 @@ MS_BASE = "https://modelscope.cn"
 API_TIMEOUT = 20
 
 # 每个搜索结果的排序权重（HF API 的 downloads/likes 在镜像上时常为 0，用 id 相关性兜底）
-SEARCH_LIMIT_MAX = 20
+SEARCH_LIMIT_MAX = 50
 FILE_LOOKUP_TOP = 3          # 搜索时对前 N 条做文件探测（每模型一次 tree 请求）
 PTH_RE = re.compile(r"\.pth$", re.IGNORECASE)
 
