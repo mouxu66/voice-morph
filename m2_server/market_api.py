@@ -1,13 +1,25 @@
-"""音色市场 —— 下载 API（断点续传 / 进度查询 / 取消）。
+"""音色市场 —— API（精选清单 / 双源搜索 / 仓库浏览 / 下载安装）。
 
-本轮只做下载链路（断点续传 + 进度落盘 + 镜像回退）；搜索、清单、
-安装注册在后续迭代接入。前端通过 /api/market/progress 轮询进度。
+覆盖应用市场完整链路：
+  - GET  /api/market/manifest    内置精选清单（推荐 Tab）
+  - GET  /api/market/search      双源搜索（hf / modelscope / all）
+  - GET  /api/market/repo        仓库文件列表（选文件 / 看详情）
+  - POST /api/market/download    断点续传下载（单文件）
+  - GET  /api/market/progress    下载 / 安装进度轮询
+  - POST /api/market/install     一键安装到 RVC 音色库（.pth + 可选 .index）
+  - GET  /api/market/installed   已安装音色 id 列表（前端标"已装"角标）
+  - POST /api/market/cancel      取消当前下载 / 安装
 """
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from runtime import API_PREFIX
 from market_download import get_manager, MarketError
+from market_install import get_installer, InstallError
+from market_manifest import get_manifest, find_manifest_item
+from market_search import search, repo_files_hf, repo_files_ms
+from market_search import hf_resolve, ms_resolve
+from market_search import HF_API as HF_BASE
 
 router = APIRouter(prefix=API_PREFIX)
 
@@ -20,11 +32,87 @@ class DownloadRequest(BaseModel):
     expected_size: int | None = Field(None, description="可选期望字节数")
 
 
+class FileSlot(BaseModel):
+    url: str = Field(..., description="文件直链（域名须在白名单内）")
+    mirror_url: str | None = Field(None, description="镜像直链")
+    sha256: str | None = Field(None, description="SHA256（可选强校验）")
+
+
+class InstallRequest(BaseModel):
+    voice_id: str = Field(..., description="RVC 音色 ID（限字母数字_-，≤64）")
+    download: FileSlot = Field(..., description="权重文件（.pth 或含 pth 的 zip）")
+    index: FileSlot | None = Field(None, description="可选索引文件（.index）")
+    display_name: str = Field("", description="中文展示名（空则用 voice_id）")
+    manifest_id: str = Field("", description="来源清单条目 id（安装溯源）")
+
+
+@router.get("/market/manifest")
+def market_manifest():
+    """内置精选清单（含每条的 download/index 直链与镜像）。"""
+    return {"items": get_manifest()}
+
+
+@router.get("/market/search")
+def market_search(q: str = "", platform: str = "all", limit: int = 10):
+    """双源搜索：platform ∈ hf / modelscope / all；魔搭源返回降级说明。"""
+    query = q.strip()
+    if not query:
+        raise HTTPException(400, "缺少搜索关键词 q")
+    data = search(platform, query, limit)
+    return data
+
+
+@router.get("/market/repo")
+def market_repo(repo: str = "", platform: str = "hf", recursive: bool = False):
+    """仓库文件列表（hf / modelscope）。blob 附直链，便于前端选文件安装。"""
+    repo = repo.strip()
+    if not repo:
+        raise HTTPException(400, "缺少仓库名 repo")
+    try:
+        if platform == "modelscope":
+            files = repo_files_ms(repo, _only=False, recursive=recursive)
+            # 非 only 模式统一补按钮直链（目录除外）
+            for f in files:
+                if f.get("type") == "blob" and not f.get("url"):
+                    f["url"] = ms_resolve(repo, f["path"])
+        else:
+            files = repo_files_hf(repo, recursive=recursive)
+            for f in files:
+                if f.get("type") == "blob":
+                    f["url"] = hf_resolve(repo, f["path"], HF_BASE)
+                    f["mirror_url"] = hf_resolve(repo, f["path"], "https://huggingface.co")
+    except MarketError as exc:
+        raise HTTPException(404, f"仓库不可用: {exc}")
+    return {"repo": repo, "platform": platform, "files": files}
+
+
+@router.post("/market/install")
+def market_install(req: InstallRequest):
+    """一键安装音色到 RVC 音色库：串行下载 pth → 可选 index → 落位 logs/assets。"""
+    dl = {"url": req.download.url, "mirror_url": req.download.mirror_url,
+          "sha256": req.download.sha256}
+    idx = {"url": req.index.url, "mirror_url": req.index.mirror_url} if req.index else None
+    try:
+        st = get_installer().run(
+            voice_id=req.voice_id, download=dl, index=idx,
+            display_name=req.display_name, manifest_id=req.manifest_id,
+        )
+    except InstallError as exc:
+        raise HTTPException(409, str(exc))
+    return {"task": st}
+
+
+@router.get("/market/installed")
+def market_installed():
+    """已安装到 RVC 音色库的音色 id 列表。"""
+    return {"installed": get_installer().installed_ids()}
+
+
 @router.get("/market/progress")
 def market_progress():
-    """当前下载任务进度（无任务时返回 null）。"""
-    st = get_manager().progress()
-    if st.get("idle") or not st.get("name"):
+    """当前下载 / 安装进度（无任务时返回 null）。"""
+    st = get_installer().progress()
+    if (st.get("idle") or not st.get("name")) and not st.get("install"):
         return {"task": None}
     return {"task": st}
 
@@ -44,9 +132,9 @@ def market_download(req: DownloadRequest):
 
 @router.post("/market/cancel")
 def market_cancel():
-    """取消当前下载（删除 .part，允许开启新任务）。"""
+    """取消当前下载 / 安装（删除 .part，允许开启新任务）。"""
     try:
-        st = get_manager().cancel()
-    except MarketError as exc:
+        st = get_installer().cancel()
+    except (InstallError, MarketError) as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {"task": st or None}

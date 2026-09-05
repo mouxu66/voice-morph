@@ -108,6 +108,10 @@ class DownloadManager:
             self._state.update(kw)
         self._persist(force=force)
 
+    def set_meta(self, **kw):
+        """外部（如安装编排）向同一状态文件写入附加字段（install 段等）。"""
+        self._set(force=True, **kw)
+
     # ---- 对外 ----
     def progress(self) -> dict:
         """进度快照。线程僵死（进程内线程意外终止）时纠正为 interrupted。"""
@@ -119,8 +123,13 @@ class DownloadManager:
         return st
 
     def start(self, name: str, url: str, mirror_url: str | None = None,
-              sha256: str | None = None, expected_size: int | None = None) -> dict:
-        """启动（或续传）一个下载任务。已有任务在跑时抛 MarketError。"""
+              sha256: str | None = None, expected_size: int | None = None,
+              filename: str | None = None) -> dict:
+        """启动（或续传）一个下载任务。已有任务在跑时抛 MarketError。
+
+        filename：下载目标文件名（默认 ``{name}.pth``），允许安装编排为
+        index 等资产指定自定义文件名；name 仍作为互斥键与续传标识。
+        """
         name = str(name).strip()
         if not name or "/" in name or "\\" in name or name in {".", ".."}:
             raise MarketError(f"非法任务名: {name!r}")
@@ -132,7 +141,8 @@ class DownloadManager:
             if self._thread is not None and self._thread.is_alive():
                 raise MarketError("已有下载任务在进行中")
             cur = self._state
-            dest = self.download_dir / (name + ".pth")
+            filename = filename or f"{name}.pth"
+            dest = self.download_dir / filename
             part = dest.with_suffix(dest.suffix + PART_SUFFIX)
             if dest.exists():
                 self._state = {"idle": True, "done_file": str(dest)}
@@ -143,6 +153,7 @@ class DownloadManager:
                 self._state = {
                     "idle": False,
                     "name": name,
+                    "filename": filename,
                     "url": url,
                     "mirror_url": mirror_url,
                     "sha256": (sha256 or "").lower() or None,
@@ -155,6 +166,8 @@ class DownloadManager:
                     "part": str(part),
                     "started_at": cur.get("started_at") if resume else time.strftime("%Y-%m-%d %H:%M:%S"),
                     "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    # 安装编排写入的自定义段（install 等）跨任务保留
+                    "install": cur.get("install"),
                 }
         # 注意：_persist 会再拿锁（非重入），必须放在 with 块外
         self._persist(force=True)
@@ -162,7 +175,8 @@ class DownloadManager:
             return dict(self._state)
         self._cancel_evt.clear()
         self._thread = threading.Thread(
-            target=self._run, args=(name, url, mirror_url, sha256, expected_size), daemon=True
+            target=self._run, args=(name, url, mirror_url, sha256, expected_size, filename),
+            daemon=True,
         )
         self._thread.start()
         with self._lock:
@@ -178,9 +192,10 @@ class DownloadManager:
         return self.progress()
 
     # ---- 后台线程 ----
-    def _run(self, name, url, mirror_url, sha256, expected_size):
-        part = (self.download_dir / (name + ".pth")).with_suffix(".pth" + PART_SUFFIX)
-        dest = self.download_dir / (name + ".pth")
+    def _run(self, name, url, mirror_url, sha256, expected_size, filename=None):
+        filename = filename or f"{name}.pth"
+        part = self.download_dir / (filename + PART_SUFFIX)
+        dest = self.download_dir / filename
         try:
             if expected_size and expected_size > MAX_BYTES:
                 raise MarketError(f"文件超过上限 {MAX_BYTES} 字节")
