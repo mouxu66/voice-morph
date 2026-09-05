@@ -203,6 +203,7 @@ class InstallManager:
             self.manager.download_dir / f"{voice_id}.index",
             self.manager.download_dir / f"{voice_id}.index.part",
             cfg.OUTPUTS_DIR / "market" / f"{voice_id}_preview.wav",
+            cfg.OUTPUTS_DIR / "market" / f"{voice_id}_preview.json",
             cfg.OUTPUTS_DIR / "qc" / f"{voice_id}.json",
         ):
             if cand.exists():
@@ -253,6 +254,12 @@ class InstallManager:
                               message="正在写入音色库 …", percent=_pct_of(2, INSTALL_PHASES))
             self._stage(voice_id)
             self.write_source(voice_id, manifest_id, display_name)
+            # A2：安装收尾自动触发试听生成（fire-and-forget，GPU 忙则 skipped 等前端重试）
+            try:
+                from market_preview import try_auto_preview
+                try_auto_preview(voice_id)
+            except Exception:  # noqa: BLE001 —— 试听失败不阻塞安装
+                pass
 
             self._set_install(status="installed", phase="完成", message="安装完成",
                               percent=100.0, error="",

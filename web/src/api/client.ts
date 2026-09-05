@@ -1102,3 +1102,20 @@ export async function marketUninstall(voice_id: string): Promise<{ voice_id: str
     body: JSON.stringify({ voice_id }),
   });
 }
+
+// ---- 市场试听（A2：装完自动生成固定句试听） ----
+
+export type MarketPreviewStatus = "ready" | "generating" | "failed" | "skipped" | "missing";
+export type MarketPreview = { status: MarketPreviewStatus; url: string; error: string };
+
+export async function marketPreviewStatus(voice_id: string): Promise<MarketPreview> {
+  return jsonFetch(`/market/preview?voice_id=${encodeURIComponent(voice_id)}`);
+}
+
+export async function marketPreviewTrigger(voice_id: string): Promise<MarketPreview> {
+  return jsonFetch("/market/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ voice_id }),
+  });
+}

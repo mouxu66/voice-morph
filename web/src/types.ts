@@ -37,6 +37,8 @@ export interface VoiceInfo {
   qc?: VoiceQc | null;
   /** 来源标记：market=市场安装；自训/导入无标记（logs/<id>/source.json） */
   source?: string;
+  /** 市场安装音色已生成的自动试听地址（outputs/market/<id>_preview.wav） */
+  preview_url?: string;
 }
 
 // 音色质检单项（时长比 / f0偏移 / ASR重合 / 声纹余弦，各 25 分）

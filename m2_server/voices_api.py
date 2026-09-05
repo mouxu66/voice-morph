@@ -40,6 +40,16 @@ def _rvc_source(exp: str) -> str:
         return ""
 
 
+def _market_preview_url(exp: str) -> str:
+    """市场音色已生成试听时返回播放地址（outputs/market/<id>_preview.wav）。"""
+    try:
+        if (cfg.OUTPUTS_DIR / "market" / f"{exp}_preview.wav").exists():
+            return f"/api/media/outputs/market/{exp}_preview.wav"
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 @router.get("/voices")
 def list_voices():
     """音色库清单（合并两个来源，与 /rvc/voices 保持一致）：
@@ -90,6 +100,7 @@ def list_voices():
                 "kind": "rvc_model",
                 "has_reference": False,
                 "source": _rvc_source(d.name),
+                "preview_url": _market_preview_url(d.name),
                 **snap,
             }
 

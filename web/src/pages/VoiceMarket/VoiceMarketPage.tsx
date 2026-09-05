@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   AlertTriangle,
   Archive,
@@ -7,6 +7,7 @@ import {
   FileAudio,
   FolderOpen,
   Loader2,
+  RefreshCw,
   Search,
   ScrollText,
   ShieldCheck,
@@ -17,6 +18,7 @@ import {
   XCircle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { mediaUrl } from "@/api/client"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import type { MarketFile, MarketItem } from "@/api/client"
@@ -139,6 +141,15 @@ function MarketCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
   const isThis = p.installRunning && p.installingId === voiceId
   const installPct = isThis ? pctOf(p.task) : 0
   const playable = p.isPlayable(item.demo)
+  const prev = p.previews[voiceId]
+
+  // A2：装了但没有仓库演示音频 → 自动生成固定句试听（ready 后底部出播放器）
+  useEffect(() => {
+    if (isInstalled && !playable) void p.ensurePreview(voiceId)
+  }, [isInstalled, playable, voiceId, p.ensurePreview])
+
+  const previewBusy = prev?.status === "generating" || prev?.status === "missing"
+  const previewErr = prev?.status === "failed" || prev?.status === "skipped"
 
   return (
     <article className="flex flex-col rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl transition hover:shadow-xl">
@@ -160,6 +171,24 @@ function MarketCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
       )}
       <div className="mt-4 flex items-center gap-2 border-t border-border pt-4">
         {playable && <StudioAudioPlayer src={item.demo!} label="试听" className="flex-1 min-w-0" />}
+        {!playable && prev?.status === "ready" && (
+          <StudioAudioPlayer src={mediaUrl(prev.url)} label="试听" className="flex-1 min-w-0" />
+        )}
+        {!playable && previewBusy && isInstalled && (
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-muted-foreground">
+            <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />试听生成中…
+          </span>
+        )}
+        {!playable && previewErr && isInstalled && (
+          <button
+            type="button"
+            onClick={() => void p.ensurePreview(voiceId, true)}
+            title={prev.error}
+            className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md border border-border px-3 py-2 text-[11px] text-muted-foreground transition hover:border-primary hover:text-primary"
+          >
+            <RefreshCw className="h-3 w-3 shrink-0" />重新生成试听
+          </button>
+        )}
         <div className="shrink-0">
           {isInstalled ? (
             <button

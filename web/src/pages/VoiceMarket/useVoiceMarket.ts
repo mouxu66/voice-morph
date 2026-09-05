@@ -4,6 +4,8 @@ import {
   marketInstall,
   marketInstalled,
   marketManifest,
+  marketPreviewStatus,
+  marketPreviewTrigger,
   marketProgress,
   marketRepo,
   marketSearch,
@@ -11,6 +13,7 @@ import {
   type MarketFile,
   type MarketFileSlot,
   type MarketItem,
+  type MarketPreview,
   type MarketTask,
 } from "@/api/client"
 
@@ -70,10 +73,14 @@ export function useVoiceMarket() {
         if (t && (st ?? t.status)) {
           setInstallingId(st ? t.install?.voice_id ?? "" : "")
         }
-        // 状态由进行中 → 终结时，刷新已装列表
+        // 状态由进行中 → 终结时，刷新已装列表并自动拉起试听生成
         const cur = (st ?? t?.status) ?? ""
         const wasActive = ACTIVE.has(prevStatus.current)
-        if (wasActive && !ACTIVE.has(cur)) void refreshInstalled()
+        const finishedId = t?.install?.voice_id ?? ""
+        if (wasActive && !ACTIVE.has(cur)) {
+          void refreshInstalled()
+          if (finishedId) void ensurePreview(finishedId)
+        }
         prevStatus.current = cur
       } catch {
         /* 轮询失败静默 */
@@ -201,6 +208,51 @@ export function useVoiceMarket() {
     [refreshInstalled],
   )
 
+  // ---- 试听生成（A2：装完自动生成固定句试听，供市场卡片与音色库共用） ----
+  const [previews, setPreviews] = useState<Record<string, MarketPreview>>({})
+  const previewLocks = useRef<Set<string>>(new Set())
+
+  /** 确保该音色试听可用：缺失/生成中就触发任务并轮询到终结（ready/failed/skipped）。
+   *  force=true 时忽略终结态强制重新生成（用于「重试」按钮）。 */
+  const ensurePreview = useCallback(
+    async (voice_id: string, force = false) => {
+      if (!voice_id || previewLocks.current.has(voice_id)) return
+      previewLocks.current.add(voice_id)
+      const put = (r: MarketPreview) => setPreviews((v) => ({ ...v, [voice_id]: r }))
+      try {
+        let r = await marketPreviewStatus(voice_id)
+        if (!force && (r.status === "ready" || r.status === "failed" || r.status === "skipped")) {
+          put(r)
+          return
+        }
+        try {
+          r = await marketPreviewTrigger(voice_id)
+        } catch (e) {
+          put({ status: "failed", url: "", error: e instanceof Error ? e.message : "试听生成启动失败" })
+          return
+        }
+        for (let i = 0; i < 90; i++) {              // 最长 ~3 分钟（TTS 首启可能较慢）
+          await new Promise((res) => setTimeout(res, 2000))
+          try {
+            r = await marketPreviewStatus(voice_id)
+          } catch {
+            r = { status: "missing", url: "", error: "" }
+          }
+          if (r.status === "ready" || r.status === "failed" || r.status === "skipped") {
+            put(r)
+            return
+          }
+        }
+        put({ status: "failed", url: "", error: "试听生成超时，请稍后重试" })
+      } catch (e) {
+        put({ status: "failed", url: "", error: e instanceof Error ? e.message : "试听状态查询失败" })
+      } finally {
+        previewLocks.current.delete(voice_id)
+      }
+    },
+    [],
+  )
+
   // ---- 派生帮助 ----
   /** 搜索结果的快速安装槽：files 恰好一个 pth → 可一键；否则需打开文件面板选 */
   const quickSlot = useCallback((item: MarketItem): { download: MarketFile; index: MarketFile | null } | null => {
@@ -239,6 +291,8 @@ export function useVoiceMarket() {
     cancelInstall,
     uninstallingId,
     uninstallVoice,
+    previews,
+    ensurePreview,
     searching,
     searchQuery,
     setSearchQuery,

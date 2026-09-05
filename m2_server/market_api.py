@@ -17,6 +17,7 @@ from runtime import API_PREFIX
 from market_download import get_manager, MarketError
 from market_install import get_installer, InstallError
 from market_manifest import get_manifest, find_manifest_item
+import market_preview
 from market_search import search, repo_files_hf, repo_files_ms
 from market_search import hf_resolve, ms_resolve
 from market_search import readme_summary
@@ -46,6 +47,10 @@ class InstallRequest(BaseModel):
     display_name: str = Field("", description="中文展示名（空则用 voice_id）")
     manifest_id: str = Field("", description="来源清单条目 id（安装溯源）")
     overwrite: bool = Field(False, description="音色已存在时是否显式覆盖重装（默认拒绝）")
+
+
+class PreviewRequest(BaseModel):
+    voice_id: str = Field(..., description="要生成试听的市场音色 ID")
 
 
 @router.get("/market/manifest")
@@ -136,6 +141,21 @@ def market_progress():
     if (st.get("idle") or not st.get("name")) and not st.get("install"):
         return {"task": None}
     return {"task": st}
+
+
+@router.get("/market/preview")
+def market_preview_status(voice_id: str = ""):
+    """市场音色试听状态（ready/generating/failed/skipped/missing）+ 可播放 url。"""
+    voice_id = voice_id.strip()
+    if not voice_id:
+        raise HTTPException(400, "缺少 voice_id")
+    return market_preview.status(voice_id)
+
+
+@router.post("/market/preview")
+def market_preview_trigger(req: PreviewRequest):
+    """触发市场音色试听生成（后台线程，同一音色去重；GPU 忙返回 skipped）。"""
+    return market_preview.generate(req.voice_id.strip())
 
 
 @router.post("/market/download")
