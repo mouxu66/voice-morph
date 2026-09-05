@@ -8,6 +8,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
@@ -24,11 +25,19 @@ import voices_api  # noqa: E402
 
 @pytest.fixture()
 def voicebank(tmp_path, monkeypatch):
-    """构造临时 voicebank 并把 voices_api.VOICEBANK / cfg.MEDIA_DIR 指过去。"""
+    """整体替换 voices_api.cfg 为受控命名空间（含临时 RVC_ROOT）。
+
+    不 patch 全局 config 模块的属性，避免其他测试 / 导入顺序对模块状态的干扰。"""
     vb = tmp_path / "voicebank"
     vb.mkdir()
+    rvc_root = tmp_path / "rvc"
+    rvc_root.mkdir()
     monkeypatch.setattr(voices_api, "VOICEBANK", vb)
-    monkeypatch.setattr(voices_api.cfg, "MEDIA_DIR", tmp_path)
+    monkeypatch.setattr(voices_api, "cfg",
+                        SimpleNamespace(MEDIA_DIR=tmp_path, RVC_ROOT=rvc_root))
+    # common.selected_voice() 读全局 config.MEDIA_DIR——一并指向 tmp，
+    # 否则它读真实 voicebank 的 selected_voice.json，清悬空逻辑测不到
+    monkeypatch.setattr(sys.modules["config"], "MEDIA_DIR", tmp_path)
     return vb
 
 
@@ -47,8 +56,29 @@ def _make_voice(vb: Path, vid: str, *, selected: str | None = None):
 def test_delete_ok_removes_dir(voicebank):
     _make_voice(voicebank, "v1")
     resp = asyncio_run(voices_api.delete_voice("v1"))
-    assert resp == {"ok": True}
+    assert resp == {"ok": True, "source": "voicebank"}
     assert not (voicebank / "v1").exists()
+
+
+def test_delete_rvc_logs_entry(voicebank, monkeypatch):
+    """音色列表合并了 RVC 实验目录来源（kind=rvc_model）：voicebank 里没有的
+    条目（如旧模型 kangaroo_clean）必须路由到 RVC_ROOT/logs/<id> 实验目录删除，
+    而不是 404"删除失败"。
+
+    真建临时目录（让 exists() 检查通过）+ 记录式 rmtree（不真删），
+    与环境的 safe-delete 钩子完全解耦。"""
+    exp = voices_api.cfg.RVC_ROOT / "logs" / "old_exp"
+    exp.mkdir(parents=True)
+    calls: list[Path] = []
+
+    def _rec_rmtree(path, *a, **kw):
+        calls.append(Path(path))
+
+    monkeypatch.setattr(voices_api.shutil, "rmtree", _rec_rmtree)
+    resp = asyncio_run(voices_api.delete_voice("old_exp"))
+    assert resp == {"ok": True, "source": "rvc_logs"}
+    assert calls == [exp]
+    assert voices_api.VOICEBANK not in calls[0].parents  # 没误指 voicebank
 
 
 def test_delete_clears_dangling_selected(voicebank):
@@ -116,7 +146,7 @@ def test_delete_recovers_after_transient_lock(voicebank, monkeypatch):
     monkeypatch.setattr(voices_api.shutil, "rmtree", _flaky_rmtree)
     monkeypatch.setattr(voices_api.asyncio, "sleep", _noop_await)
     resp = asyncio_run(voices_api.delete_voice("v1"))
-    assert resp == {"ok": True}
+    assert resp["ok"] is True
     assert state["n"] == 2
     assert not (voicebank / "v1").exists()
 

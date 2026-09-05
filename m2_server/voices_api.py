@@ -86,18 +86,23 @@ def list_voices():
 
 @router.delete("/voicebank/{voice_id}")
 async def delete_voice(voice_id: str):
-    """删除音色档案目录。
+    """删除音色：音色库档案不在时，回退删 RVC 实验目录。
 
-    Windows 坑：目录内文件若被 worker/播放器短暂占用，rmtree 会 PermissionError。
-    旧实现 rmtree(d, True)（ignore_errors=True）把错误吞掉还返回 ok，前端刷新发现
-    音色仍在 → 用户看到"删除失败"。现改为：短重试（句柄释放有延迟）+ 失败时
-    返回 500 并点名被锁文件，同时清掉悬空的 selected_voice.json。
+    音色列表有两个来源（见 list_voices）：voicebank/<id>/ 档案、
+    RVC_ROOT/logs/<id>/ 实验目录（训练产物/语料）。旧实现只删 voicebank，
+    删 RVC 模型条目（如 kangaroo_clean/mute）必 404——前端只见"删除失败"。
+    Windows 坑：目录内文件被 worker/播放器占用时 rmtree 会 PermissionError，
+    短重试（句柄释放有延迟）+ 失败返回 500 并点名被锁文件。
     """
     if not is_valid_voice_id(voice_id):
         raise HTTPException(400, "音色 ID 非法")
+    source = "voicebank"
     d = VOICEBANK / voice_id
     if not d.exists():
-        raise HTTPException(404, f"音色 [{voice_id}] 不存在")
+        d = cfg.RVC_ROOT / "logs" / voice_id
+        if not d.exists():
+            raise HTTPException(404, f"音色 [{voice_id}] 不存在")
+        source = "rvc_logs"
     # 删除的是当前选中音色 → 先清选中记录，避免 selected_voice.json 悬空引用
     if selected_voice() == voice_id:
         try:
@@ -109,7 +114,7 @@ async def delete_voice(voice_id: str):
     for attempt in range(3):
         try:
             await run_in_threadpool(shutil.rmtree, d)
-            return {"ok": True}
+            return {"ok": True, "source": source}
         except OSError as e:
             last_err = e
             if attempt < 2:

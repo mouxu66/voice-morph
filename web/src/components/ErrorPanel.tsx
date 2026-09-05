@@ -24,11 +24,20 @@ export function ErrorPanel({
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(text)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
     } catch {
-      /* 剪贴板不可用时忽略，用户仍可手动选中复制 */
+      // Electron file:// 页面不在 secure context，navigator.clipboard 不可用；
+      // 退回 execCommand（隐藏 textarea 选中复制），仍失败则用户可手动选中文本
+      const ta = document.createElement("textarea")
+      ta.value = text
+      ta.style.position = "fixed"
+      ta.style.opacity = "0"
+      document.body.appendChild(ta)
+      ta.select()
+      try { document.execCommand("copy") } catch { /* 放弃，按钮静默 */ }
+      ta.remove()
     }
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
   }
   return (
     <div

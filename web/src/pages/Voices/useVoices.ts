@@ -193,7 +193,10 @@ export function useVoices() {
     if (!window.confirm(`确定删除音色「${voice.id}」吗？`)) return
     try {
       const response = await fetch(`${BASE}/voicebank/${encodeURIComponent(voice.id)}`, { method: "DELETE" })
-      if (!response.ok) throw new Error("删除失败")
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.detail || `删除失败（HTTP ${response.status}）`)
+      }
       if (selectedVoiceId === voice.id) selectVoice("")
       await loadVoices()
     } catch (error) {
