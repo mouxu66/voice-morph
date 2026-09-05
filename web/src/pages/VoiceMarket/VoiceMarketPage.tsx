@@ -87,18 +87,23 @@ export function MarketInstallBar(p: Pick<VoiceMarket, "task" | "installRunning" 
 export function FeaturedTab(p: VoiceMarket) {
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
-      <header className="border-b border-border bg-card/30 px-5 py-10 sm:px-8 lg:px-12 lg:py-12">
-        <div className="mx-auto max-w-7xl">
-          <p className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-primary">
-            <Store className="h-3.5 w-3.5" />VOICE MARKET / 精选清单
-          </p>
-          <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">音色市场</h2>
-          <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-            精选社区优质 RVC 音色，HuggingFace / 魔搭双源直链下载。点击安装即下载权重与索引并落位到音色库，之后可在实时变声与离线工坊直接使用。
-          </p>
+      <header className="border-b border-border bg-card/30 px-5 py-5 sm:px-8 lg:px-12">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-end justify-between gap-x-6 gap-y-3">
+          <div className="min-w-0">
+            <p className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-primary">
+              <Store className="h-3.5 w-3.5" />VOICE MARKET / 精选清单
+            </p>
+            <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-foreground">精选推荐</h2>
+            <p className="mt-1.5 text-xs leading-5 text-muted-foreground">精选社区优质 RVC 音色，双源直链一键安装到音色库，装完即可用于实时变声与离线工坊。</p>
+          </div>
+          {p.manifest && p.manifest.length > 0 && (
+            <span className="shrink-0 rounded-full border border-border bg-background/60 px-3 py-1 text-xs text-muted-foreground">
+              共 {p.manifest.length} 款 · 双源直链
+            </span>
+          )}
         </div>
       </header>
-      <main className="mx-auto max-w-7xl px-5 py-8 sm:px-8 lg:px-12 lg:py-10">
+      <main className="mx-auto max-w-7xl px-5 py-6 sm:px-8 lg:px-12 lg:py-8">
         {p.manifest === null ? (
           <div className="flex items-center gap-2 rounded-2xl border border-border bg-card/80 px-4 py-6 text-sm text-muted-foreground shadow-md backdrop-blur-xl">
             <Loader2 className="h-4 w-4 animate-spin text-primary" />正在加载精选清单…
@@ -114,7 +119,7 @@ export function FeaturedTab(p: VoiceMarket) {
             ))}
           </div>
         )}
-        <div className="mt-8 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-5 text-amber-400">
+        <div className="mt-6 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-5 text-amber-400">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
             社区自训音色多为「仅供个人学习研究」用途，请遵守对应许可证并勿商用；涉及卡通/真人 IP 的音色另存法律风险，本工具仅提供下载通道，不承担用途责任。
@@ -196,16 +201,20 @@ export function SearchTab(p: VoiceMarket) {
 
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
-      <header className="border-b border-border bg-card/30 px-5 py-10 sm:px-8 lg:px-12 lg:py-12">
+      <header className="border-b border-border bg-card/30 px-5 py-5 sm:px-8 lg:px-12">
         <div className="mx-auto max-w-7xl">
-          <p className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-primary">
-            <Search className="h-3.5 w-3.5" />VOICE MARKET / 双源搜索
-          </p>
-          <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">搜索音色仓库</h2>
-          <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-            在 HuggingFace 与魔搭模型库中检索 RVC 音色模型；打开仓库查看文件，选择权重（.pth）与可选索引（.index）后一键安装。
-          </p>
-          <div className="mt-6 flex max-w-3xl flex-col gap-3 sm:flex-row">
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+            <div className="min-w-0">
+              <p className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-primary">
+                <Search className="h-3.5 w-3.5" />VOICE MARKET / 双源搜索
+              </p>
+              <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-foreground">搜索音色仓库</h2>
+            </div>
+            <p className="max-w-md text-xs leading-5 text-muted-foreground">
+              在 HuggingFace 与魔搭检索 RVC 音色；打开仓库选择权重（.pth）与可选索引（.index）后一键安装。
+            </p>
+          </div>
+          <div className="mt-4 flex max-w-3xl flex-col gap-3 sm:flex-row">
             <input
               value={localQuery}
               onChange={(e) => setLocalQuery(e.target.value)}
@@ -241,7 +250,7 @@ export function SearchTab(p: VoiceMarket) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-5 py-8 sm:px-8 lg:px-12 lg:py-10">
+      <main className="mx-auto max-w-7xl px-5 py-6 sm:px-8 lg:px-12 lg:py-8">
         {p.searchNote && (
           <div className="mb-5 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-5 text-amber-400">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
