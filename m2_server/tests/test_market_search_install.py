@@ -188,6 +188,116 @@ def test_strip_markdown_and_readme_summary(monkeypatch):
     assert ms.readme_summary("someone/nonexistent", "hf") is None
 
 
+@pytest.fixture()
+def readme_cache(monkeypatch):
+    """隔离 readme_summary 的全局内存缓存，避免用例间互相污染。"""
+    monkeypatch.setattr(ms, "_README_CACHE", {})
+
+
+class _FakeResp:
+    def __init__(self, status: int, text: str = ""):
+        self.status_code = status
+        self.text = text
+
+
+def test_strip_markdown_variants():
+    """markdown 剥除：frontmatter/图片/链接/强调/表格/代码块/空行压缩。"""
+    md = ("---\nlanguage: zh\n---\n"
+          "# 标题一\n\n"
+          "## 标题二\n\n"
+          "粗体 **强调** 与 *斜体*\n\n"
+          "- 无序一\n- 无序二\n\n"
+          "| 列A | 列B |\n| --- | --- |\n| a1 | b1 |\n\n"
+          "```python\nprint('hi')\n```\n\n"
+          "链接 [说明文字](https://x/y) 保留文本\n\n"
+          "图片 ![alt](https://x/img.png) 应消失\n\n"
+          "多行\n\n\n\n空行压缩")
+    clean = ms._strip_markdown(md)
+    assert "language:" not in clean, "frontmatter 应剥除"
+    assert "banner" not in clean
+    assert "img.png" not in clean and "![alt]" not in clean
+    assert "(https://x/y)" not in clean and "说明文字" in clean
+    assert "粗体" in clean and "强调" in clean
+    assert "#" not in clean and "**" not in clean
+    assert "|" not in clean and "```" not in clean
+    assert "\n\n\n\n" not in clean
+    compact = " ".join(clean.split())
+    assert "多行" in compact and "空行压缩" in compact
+
+
+def test_strip_markdown_missing_frontmatter_close():
+    """无闭合 frontmatter 不误删正文（正则要求成对 ---）。"""
+    md = "---\nlanguage: zh\n正文第一行\n正文第二行"   # 只有开头 ---，无闭合
+    clean = ms._strip_markdown(md)
+    assert "正文第一行" in clean and "正文第二行" in clean
+
+
+def test_readme_raw_hf_fallback_master(monkeypatch):
+    """HF：main 分支 404 → 回退 master 并返回；请求顺序可断言。"""
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append(url)
+        if url.endswith("/raw/main/README.md"):
+            return _FakeResp(404)
+        if url.endswith("/raw/master/README.md"):
+            return _FakeResp(200, "# Old readme\nmaster content")
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(ms.requests, "get", fake_get)
+    text = ms._readme_raw("hf", "some/repo")
+    assert text == "# Old readme\nmaster content"
+    assert calls == [f"{ms.HF_API}/some/repo/raw/main/README.md",
+                     f"{ms.HF_API}/some/repo/raw/master/README.md"]
+
+
+def test_readme_raw_hf_none_on_all_404(monkeypatch):
+    monkeypatch.setattr(ms.requests, "get",
+                        lambda *a, **k: _FakeResp(404))
+    assert ms._readme_raw("hf", "some/repo") is None
+
+
+def test_readme_raw_modelscope_structures(monkeypatch):
+    """魔搭 readme API 的多种返回结构解析。"""
+    monkeypatch.setattr(ms, "_get_json",
+                        lambda url, **kw: {"Code": 200, "Data": {"ModelReadme": "# 模型说明\n说明文本"}})
+    assert "说明文本" in ms._readme_raw("modelscope", "a/b")
+    monkeypatch.setattr(ms, "_get_json", lambda url, **kw: {"Data": "裸字符串正文"})
+    assert ms._readme_raw("modelscope", "a/b") == "裸字符串正文"
+    monkeypatch.setattr(ms, "_get_json", lambda url, **kw: {"Code": 200, "Data": {}})
+    assert ms._readme_raw("modelscope", "a/b") is None
+
+
+def test_readme_summary_truncate_and_negative(monkeypatch, readme_cache):
+    """摘要截断到 max_chars；空白/异常 → None 且负结果进缓存。"""
+    monkeypatch.setattr(ms, "_readme_raw", lambda p, r: "# 标题\n\n" + "word " * 500)
+    assert len(ms.readme_summary("some/long", "hf", max_chars=600)) <= 600
+    monkeypatch.setattr(ms, "_readme_raw", lambda p, r: "   \n\t ")
+    assert ms.readme_summary("some/blank", "hf") is None
+
+    counter = {"n": 0}
+
+    def boom(p, r):
+        counter["n"] += 1
+        raise OSError("network down")
+
+    monkeypatch.setattr(ms, "_readme_raw", boom)
+    assert ms.readme_summary("some/broken", "hf") is None
+    assert ms.readme_summary("some/broken", "hf") is None
+    assert counter["n"] == 1, "失败结果也应进缓存，绝不重复拉取"
+
+
+def test_readme_cache_key_isolation(monkeypatch, readme_cache):
+    """不同 repo 与不同 platform 的缓存键互不污染。"""
+    monkeypatch.setattr(ms, "_readme_raw", lambda p, r: r)
+    assert ms.readme_summary("repo-a", "hf") == "repo-a"
+    assert ms.readme_summary("repo-b", "hf") == "repo-b"
+    assert ms.readme_summary("repo-a", "hf") == "repo-a"
+    monkeypatch.setattr(ms, "_readme_raw", lambda p, r: f"{p}:{r}")
+    assert ms.readme_summary("repo-a", "modelscope") == "modelscope:repo-a"
+    assert ms.readme_summary("repo-a", "hf") == "repo-a", "platform 键独立"
+
+
 def test_search_ms_path_resolution(monkeypatch):
     seen = {}
 
@@ -331,3 +441,29 @@ def test_api_search_requires_q():
     import server
     assert TestClient(server.app).get("/api/market/search").status_code == 400
     assert TestClient(server.app).get("/api/market/repo").status_code == 400
+
+
+def test_api_market_repo_returns_readme(monkeypatch, readme_cache):
+    """/market/repo 端到端返回 README 摘要 + 文件列表，且失败静默不 500。"""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    import server
+    import market_api
+    # market_api 是 `from market_search import ...` 名字绑定，须 monkeypatch 到 market_api 模块
+    monkeypatch.setattr(market_api, "repo_files_hf",
+                        lambda repo, recursive=False: [{"name": "v.pth", "path": "v.pth",
+                                                        "size": 10, "type": "file", "url": None}])
+    monkeypatch.setattr(ms, "_readme_raw",
+                        lambda p, r: "# 仓库标题\n\n这是仓库的 README 说明文字。")
+    resp = TestClient(server.app).get("/api/market/repo?repo=some/repo&platform=hf")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["readme"] and "说明文字" in body["readme"]
+    assert body["files"][0]["path"] == "v.pth"
+
+    # readme 拉取异常 → readme 为 null，接口仍 200
+    monkeypatch.setattr(ms, "_readme_raw",
+                        lambda p, r: (_ for _ in ()).throw(OSError("down")))
+    resp2 = TestClient(server.app).get("/api/market/repo?repo=other/repo&platform=hf")
+    assert resp2.status_code == 200
+    assert resp2.json()["readme"] is None
