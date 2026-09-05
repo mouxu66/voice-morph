@@ -38,6 +38,23 @@ SEEDVC_VENV_PY = cfg.ROOT / ".venv" / "Scripts" / "python.exe"
 # 走国内 HF 镜像下载/加载权重（首次已缓存，后续直接用）
 HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
 
+# 目标音色 → 微调 run 目录（不存在该目录或目录里无 CFM_*.pth 时静默回落零样本）。
+# 2026-09-05：kangaroo 用 73 条自录切片（video_260828_110637 + video_260828_105338）微调 CFM 100 步，
+# 像度 CAM++ 0.71 → 0.806、漏源更低、F0 表达力更强（对照 experiments/seedvc_ft_eval.py）。
+SEEDVC_FT_RUNS: dict[str, Path] = {
+    "kangaroo": SEEDVC_REPO / "runs" / "kangaroo_ft_100",
+}
+SEEDVC_FT_MAX_RUNS = 3  # 自定义微调最多支持 N 个音色，避免误填膨胀
+
+
+def _ft_ckpt(voice_id: str) -> Path | None:
+    """查目标音色对应的最新微调 CFM 检查点；无则返回 None（零样本）。"""
+    run_dir = SEEDVC_FT_RUNS.get(voice_id)
+    if not run_dir or not run_dir.is_dir():
+        return None
+    ckpts = sorted(run_dir.glob("CFM_*.pth"))
+    return ckpts[-1] if ckpts else None
+
 router = APIRouter(prefix="/api")
 
 SEEDVC_STATE: dict = {
@@ -129,11 +146,13 @@ def run_conversion(in_src: Path, in_tgt: Path, out_dir: Path, *,
                    top_p: float = 0.9,
                    temperature: float = 1.0,
                    diffusion_steps: int = 10,
-                   length_adjust: float = 1.0) -> Path:
+                   length_adjust: float = 1.0,
+                   cfm_checkpoint_path: Path | None = None) -> Path:
     """跑一次 Seed-VC V2 子进程，返回生成的 wav 路径（调用方负责搬移/改名）。
 
     供本模块 /seedvc 与 offline_vc（RVC 后处理补情绪，post_seedvc）复用。
     权重已缓存在 seed_vc_repo/checkpoints 与 HF 缓存，单次约几十秒。
+    cfm_checkpoint_path 非空时用自定义微调 CFM 权重（替代零样本底模）。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [str(SEEDVC_VENV_PY), str(SEEDVC_INFER),
@@ -146,6 +165,8 @@ def run_conversion(in_src: Path, in_tgt: Path, out_dir: Path, *,
            "--top-p", str(top_p),
            "--temperature", str(temperature),
            "--length-adjust", str(length_adjust)]
+    if cfm_checkpoint_path is not None:
+        cmd += ["--cfm-checkpoint-path", str(cfm_checkpoint_path)]
     env = dict(os.environ)
     env["HF_ENDPOINT"] = HF_ENDPOINT
     env["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -161,7 +182,8 @@ def run_conversion(in_src: Path, in_tgt: Path, out_dir: Path, *,
 def _seedvc_worker(raw_path: Path, target: UploadFile, ref_path: Path | None,
                    target_label: str, convert_style: bool,
                    similarity_cfg_rate: float, top_p: float, temperature: float,
-                   diffusion_steps: int, length_adjust: float, denoise: bool, stamp: int):
+                   diffusion_steps: int, length_adjust: float, denoise: bool, stamp: int,
+                   cfm_checkpoint_path: Path | None = None):
     import soundfile as sf
 
     in_src = OUT / f"seedvc_in_src_{stamp}.wav"
@@ -188,7 +210,8 @@ def _seedvc_worker(raw_path: Path, target: UploadFile, ref_path: Path | None,
                                   similarity_cfg_rate=similarity_cfg_rate,
                                   top_p=top_p, temperature=temperature,
                                   diffusion_steps=diffusion_steps,
-                                  length_adjust=length_adjust)
+                                  length_adjust=length_adjust,
+                                  cfm_checkpoint_path=cfm_checkpoint_path)
         import shutil
         shutil.move(str(produced), str(final_path))
 
