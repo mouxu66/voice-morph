@@ -42,6 +42,12 @@ export const GUIDES: Record<string, PageGuide> = {
     action: "idle",
     motion: "wave",
   },
+  "/market": {
+    title: "音色市场",
+    lines: ["缺音色？来市场逛逛。", "推荐清单一键装，", "双源搜索找更多。"],
+    action: "shop",
+    motion: "float",
+  },
   "/tts": {
     title: "语音合成",
     lines: ["选个音色念一段话。", "长文稿切「有声书」模式，", "按句合成自动拼接。"],

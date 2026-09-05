@@ -17,6 +17,7 @@ import { WorkshopRoute } from "@/pages/Workshop/index"
 import { DiscoverRoute } from "@/pages/Discover/index"
 import { FtRoute } from "@/pages/Ft/index"
 import { OfflineVcRoute } from "@/pages/OfflineVc/index"
+import { VoiceMarketRoute } from "@/pages/VoiceMarket/index"
 
 const pageTitles: Record<string, string> = {
   "/live": "RVC 实时变声",
@@ -27,6 +28,7 @@ const pageTitles: Record<string, string> = {
   "/tts": "语音合成",
   "/ft": "音色微调",
   "/offlinevc": "离线工坊",
+  "/market": "音色市场",
 }
 
 // 服务状态：在线 / 启动中（启动后 45s 内从未连上，视为正在加载模型）/ 离线
@@ -218,6 +220,7 @@ export default function App() {
           <Route path="/tts" element={<TtsRoute />} />
           <Route path="/ft" element={<FtRoute />} />
           <Route path="/offlinevc" element={<OfflineVcRoute />} />
+          <Route path="/market" element={<VoiceMarketRoute />} />
           {/* 旧路由重定向到合并页对应 tab */}
           <Route path="/cascade" element={<Navigate to="/qwen" replace />} />
           <Route path="/audiobook" element={<Navigate to="/tts?tab=book" replace />} />

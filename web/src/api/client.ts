@@ -906,3 +906,120 @@ export async function wechatPlayToCable(wav?: string, leadS?: number): Promise<W
 export async function wechatManualSend(): Promise<WechatSendResult> {
   return jsonFetch("/wechat/manual_send", { method: "POST" });
 }
+
+// ---- 音色市场（双源搜索 / 推荐清单 / 一键安装） ----
+
+export type MarketPlatform = "hf" | "modelscope";
+
+export type MarketFileSlot = {
+  url: string;
+  mirror_url?: string | null;
+  sha256?: string | null;
+};
+
+export type MarketFile = {
+  name: string;
+  path: string;
+  size: number;
+  type: string;
+  url?: string | null;
+  mirror_url?: string | null;
+  sha256?: string | null;
+};
+
+export type MarketItem = {
+  id: string;
+  voice_id?: string;
+  name: string;
+  platform: MarketPlatform;
+  repo: string;
+  category?: string;
+  desc?: string;
+  size_hint_mb?: number;
+  license?: string;
+  demo?: string;
+  downloads?: number;
+  likes?: number;
+  updated_at?: string;
+  tags?: string[];
+  files?: MarketFile[];
+  download?: MarketFileSlot;
+  index?: MarketFileSlot | null;
+  /** 魔搭降级搜索附带的清单原始条目（含 download/index 直链） */
+  prefs?: MarketItem;
+};
+
+export type MarketInstallState = {
+  voice_id: string;
+  display_name: string;
+  manifest_id?: string;
+  status: string;
+  phase: string;
+  message: string;
+  percent: number;
+  error: string;
+  started_at?: string;
+  updated_at?: string;
+  resume_pth?: boolean;
+};
+
+export type MarketTask = {
+  name?: string;
+  filename?: string;
+  status?: string;
+  total?: number | null;
+  done?: number;
+  started_at?: string;
+  error?: string;
+  install?: MarketInstallState;
+};
+
+export async function marketManifest(): Promise<MarketItem[]> {
+  const data = await jsonFetch<{ items: MarketItem[] }>("/market/manifest");
+  return data.items;
+}
+
+export async function marketSearch(
+  q: string,
+  platform: string = "all",
+  limit: number = 10,
+): Promise<{ items: MarketItem[]; note: string | null }> {
+  const qs = `q=${encodeURIComponent(q)}&platform=${encodeURIComponent(platform)}&limit=${limit}`;
+  return jsonFetch(`/market/search?${qs}`);
+}
+
+export async function marketRepo(
+  repo: string,
+  platform: MarketPlatform | string = "hf",
+  recursive: boolean = false,
+): Promise<{ repo: string; platform: string; files: MarketFile[] }> {
+  const qs = `repo=${encodeURIComponent(repo)}&platform=${encodeURIComponent(platform)}&recursive=${recursive}`;
+  return jsonFetch(`/market/repo?${qs}`);
+}
+
+export async function marketInstall(req: {
+  voice_id: string;
+  download: MarketFileSlot;
+  index?: MarketFileSlot | null;
+  display_name?: string;
+  manifest_id?: string;
+}): Promise<{ task: MarketTask }> {
+  return jsonFetch("/market/install", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function marketProgress(): Promise<{ task: MarketTask | null }> {
+  return jsonFetch("/market/progress");
+}
+
+export async function marketInstalled(): Promise<string[]> {
+  const data = await jsonFetch<{ installed: string[] }>("/market/installed");
+  return data.installed;
+}
+
+export async function marketCancel(): Promise<{ task: MarketTask | null }> {
+  return jsonFetch("/market/cancel", { method: "POST" });
+}
