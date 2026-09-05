@@ -58,7 +58,7 @@ async def seedvc_run(
     target: UploadFile = File(None),
     target_voice_id: str = Form(""),
     convert_style: bool = Form(False),
-    similarity_cfg_rate: float = Form(0.7),
+    similarity_cfg_rate: float = Form(0.5),
     top_p: float = Form(0.9),
     temperature: float = Form(1.0),
     diffusion_steps: int = Form(10),
@@ -125,7 +125,7 @@ def _preprocess(src: Path, dst: Path, denoise: bool) -> None:
 
 def run_conversion(in_src: Path, in_tgt: Path, out_dir: Path, *,
                    convert_style: bool = False,
-                   similarity_cfg_rate: float = 0.7,
+                   similarity_cfg_rate: float = 0.5,
                    top_p: float = 0.9,
                    temperature: float = 1.0,
                    diffusion_steps: int = 10,
