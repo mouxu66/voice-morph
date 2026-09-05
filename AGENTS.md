@@ -37,6 +37,14 @@
 - 破坏性 git 操作（`--force` / `reset --hard` / 强推 main）需用户明确授权。
 - 不跳过 git hooks（`--no-verify`），除非用户要求。
 
+## 袋鼠音色素材铁律（2026-09-05 用户拍板，所有 agent 必须遵守）
+
+1. **袋鼠骑士训练素材只认两个自录视频**：`video_260828_110637`（45 条切片/2.7min）+ `video_260828_105338`（28 条/1.9min），合计 **73 条 / 4.5 分钟**。这两个才是袋鼠本音的最准确来源。
+2. **以下 B 站下载素材一律禁止进入任何袋鼠训练集**：神人の外卖（5）、美团袋鼠视频合集、老板的胆子真是肥嘟嘟的、feidudu_merged。文件留存于 `media/raw_videos/` 但仅作存档。
+3. 干净训练目录：`D:/RVC/dataset_raw/kangaroo_v2/`（73 wav，22050Hz 单声道，已就绪）；切片源只认 `media/clips/video_260828_110637_*` 与 `media/clips/video_260828_105338_*` 两个前缀。
+4. **RVC 重训不需要任何文字标注**（voice-to-voice，只要音频）；需要 ref_text 的是 TTS 路线（已废弃）。
+5. 参考音 `media/voicebank/kangaroo/reference.wav` 取自 video_260828_105338_027（自录素材），仍有效。
+
 ## 备注
 
 - 技能源目录 `agents\skills\` 保留不动（另一个 agent 框架使用）；本项目的可用副本在 `.workbuddy\skills\`。
