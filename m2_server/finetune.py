@@ -32,6 +32,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 import config as cfg
+import ft_corpus_qc as ftq
 from common import is_valid_voice_id, find_ffmpeg
 
 router = APIRouter(prefix="/api")
@@ -359,6 +360,53 @@ def _train_job(voice_id: str, epochs: int):
         _set_status(voice_id, stage="error", error=str(exc))
 
 
+# ---------------- 语料体检与剔除（A3：训练前的语料质量闸门）----------------
+
+@router.get("/ft/corpus_qc")
+def ft_corpus_qc(voice_id: str, with_spk: bool = False, force: bool = False):
+    """微调语料体检：逐条切片打分 → 等级分布 + 问题 Top + 可操作建议。
+
+    结果落盘 media/ft/<id>/corpus_qc.json（切片数/mtime 指纹未变时直接返回缓存）。
+    with_spk=true 额外算声纹一致性（能抓他人声与伴奏残留，但需加载 CAM++，较慢）。
+    """
+    _vdir(voice_id)                      # 顺带校验 voice_id 合法性
+    try:
+        return ftq.build_report(voice_id, with_spk=with_spk, force=force)
+    except Exception as exc:             # noqa: BLE001
+        raise HTTPException(400, f"语料体检失败：{exc}")
+
+
+@router.post("/ft/corpus_prune")
+def ft_corpus_prune(voice_id: str, keep_grades: str = "A,B", min_score: int | None = None):
+    """一键剔除低分切片：移入 clips_rejected/ 并同步从训练集摘掉样本（绝不删音频）。"""
+    _vdir(voice_id)
+    st = _status(voice_id)
+    if st.get("stage") == "processing":
+        raise HTTPException(400, "语料正在处理中，请等待处理完成")
+    training = (bool((_TRAIN.get(voice_id) or {}).get("running"))
+                or _find_train_pid(voice_id) is not None)
+    grades = [g.strip().upper() for g in (keep_grades or "").split(",") if g.strip()]
+    try:
+        res = ftq.prune(voice_id, keep_grades=grades or list(ftq.DEFAULT_KEEP_GRADES),
+                        min_score=min_score, training=training)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, **res}
+
+
+@router.post("/ft/corpus_restore")
+def ft_corpus_restore(voice_id: str):
+    """恢复全部被剔除的切片与样本（clips_rejected → clips，并重选锚点）。"""
+    _vdir(voice_id)
+    training = (bool((_TRAIN.get(voice_id) or {}).get("running"))
+                or _find_train_pid(voice_id) is not None)
+    try:
+        res = ftq.restore(voice_id, training=training)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, **res}
+
+
 @router.post("/ft/train")
 def ft_train(voice_id: str, epochs: int = 12):
     st = _status(voice_id)
@@ -369,8 +417,26 @@ def ft_train(voice_id: str, epochs: int = 12):
     tr = _TRAIN.get(voice_id) or {}
     if tr.get("running") or _find_train_pid(voice_id):
         raise HTTPException(400, "该音色已在训练中")
+
+    # 训练前语料体检（A3）：不阻断训练，但把等级分布与警告落进 status 并返回，
+    # 让"这批料里有多少脏样本"在开跑前就可见。体检失败一律静默。
+    qc, qc_warning = None, ""
+    try:
+        rep = ftq.build_report(voice_id)
+        qc = {"count": rep.get("count"), "grades": rep.get("grades"),
+              "ok_count": rep.get("ok_count"), "avg_score": rep.get("avg_score"),
+              "updated_at": rep.get("updated_at")}
+        bad = int((rep.get("grades") or {}).get("D", 0))
+        if bad:
+            qc_warning = (f"语料里有 {bad} 条不合格切片（D 级）会一起进训练集，"
+                          f"建议先做「语料体检」剔除再训练")
+        _set_status(voice_id, qc=qc, qc_warning=qc_warning)
+    except Exception:  # noqa: BLE001 —— 体检失败绝不阻断训练
+        pass
+
     threading.Thread(target=_train_job, args=(voice_id, epochs), daemon=True).start()
-    return {"ok": True, "voice_id": voice_id, "epochs": epochs}
+    return {"ok": True, "voice_id": voice_id, "epochs": epochs,
+            "qc": qc, "qc_warning": qc_warning}
 
 
 @router.get("/ft/train_status")

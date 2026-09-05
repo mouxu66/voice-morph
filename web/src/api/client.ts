@@ -759,6 +759,69 @@ export type FtTrainStatus = {
   done?: boolean;
 };
 
+/** 微调语料体检报告（A3：训练前的语料质量闸门） */
+export type FtCorpusQc = {
+  voice_id: string;
+  updated_at: string;
+  count: number;
+  has_spk: boolean;
+  grades: { A: number; B: number; C: number; D: number };
+  ok_count: number;
+  avg_score: number;
+  total_s: number;
+  rejected_count: number;
+  top_reasons: { reason: string; count: number }[];
+  advice: string[];
+  clips: Record<string, {
+    name: string; score: number; grade: "A" | "B" | "C" | "D";
+    reasons: string[]; duration_s: number; spk_sim: number | null;
+  }>;
+};
+
+export type FtPruneResult = {
+  ok: boolean;
+  kept: number;
+  moved: number;
+  moved_names: string[];
+  speech_s: number;
+  rejected: number;
+  warning: string;
+};
+
+export type FtRestoreResult = {
+  ok: boolean;
+  restored: number;
+  rows: number;
+  speech_s: number;
+  rejected: number;
+  grades: { A: number; B: number; C: number; D: number };
+};
+
+export async function getFtCorpusQc(
+  voiceId: string,
+  opts?: { withSpk?: boolean; force?: boolean },
+): Promise<FtCorpusQc> {
+  const qs = `voice_id=${encodeURIComponent(voiceId)}`
+    + `&with_spk=${opts?.withSpk ? "true" : "false"}`
+    + `&force=${opts?.force ? "true" : "false"}`;
+  return jsonFetch<FtCorpusQc>(`/ft/corpus_qc?${qs}`);
+}
+
+export async function ftCorpusPrune(
+  voiceId: string,
+  opts?: { keepGrades?: string; minScore?: number },
+): Promise<FtPruneResult> {
+  let qs = `voice_id=${encodeURIComponent(voiceId)}`;
+  if (opts?.keepGrades) qs += `&keep_grades=${encodeURIComponent(opts.keepGrades)}`;
+  if (typeof opts?.minScore === "number") qs += `&min_score=${opts.minScore}`;
+  return jsonFetch<FtPruneResult>(`/ft/corpus_prune?${qs}`, { method: "POST" });
+}
+
+export async function ftCorpusRestore(voiceId: string): Promise<FtRestoreResult> {
+  return jsonFetch<FtRestoreResult>(
+    `/ft/corpus_restore?voice_id=${encodeURIComponent(voiceId)}`, { method: "POST" });
+}
+
 export async function ftUpload(voiceId: string, file: Blob, filename: string): Promise<{ ok: boolean; voice_id: string }> {
   const form = new FormData();
   form.append("voice_id", voiceId);
@@ -776,7 +839,12 @@ export async function getFtStatus(voiceId: string): Promise<FtStatus> {
   return jsonFetch<FtStatus>(`/ft/status?voice_id=${encodeURIComponent(voiceId)}`);
 }
 
-export async function ftTrain(voiceId: string, epochs = 12): Promise<{ ok: boolean; epochs: number }> {
+export async function ftTrain(voiceId: string, epochs = 12): Promise<{
+  ok: boolean;
+  epochs: number;
+  qc?: { count: number; grades: { A: number; B: number; C: number; D: number }; ok_count: number; avg_score: number };
+  qc_warning?: string;
+}> {
   return jsonFetch(`/ft/train?voice_id=${encodeURIComponent(voiceId)}&epochs=${epochs}`, { method: "POST" });
 }
 

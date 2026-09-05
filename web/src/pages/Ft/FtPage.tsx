@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import {
   ArrowRight, BookOpenText, CheckCircle2, ListMusic,
-  Loader2, Mic, Square, Upload, Wand2,
+  Loader2, Mic, RefreshCw, Scissors, Square, Undo2, Upload, Wand2,
 } from "lucide-react";
 import { SCRIPT_SENTENCES, useFt } from "@/pages/Ft/useFt";
 import { mediaUrl } from "@/api/client";
@@ -26,6 +26,7 @@ export function FtPage(props: ReturnType<typeof useFt>) {
     startRecording, stopRecording, uploadFile,
     startTrain, audition, auditionText, setAuditionText, auditionBusy, doAudition,
     publishName, setPublishName, publishing, publishOk, setPublishOk, doPublish, removeFt, resetFlow,
+    qc, qcBusy, qcMsg, keepGrades, setKeepGrades, runQc, pruneCorpus, restoreCorpus,
   } = props;
   const voices = useAppStore((s) => s.voices);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -158,6 +159,69 @@ export function FtPage(props: ReturnType<typeof useFt>) {
               语音净时长只有 {status.speech_s}s（建议 ≥5 分钟）。可以先用它验证流程，但正式音色建议重录更长。
             </p>
           )}
+
+          {/* 语料体检 */}
+          <div className="mt-4 rounded-lg border border-border bg-background p-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium">语料体检{qc && <span className="ml-2 text-xs font-normal text-muted-foreground">均分 {qc.avg_score.toFixed(1)}</span>}</p>
+              <button type="button" disabled={qcBusy} onClick={() => void runQc(true)}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50">
+                {qcBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}重新体检
+              </button>
+            </div>
+            {qc ? (
+              <>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                  {(["A", "B", "C", "D"] as const).map((g) => (
+                    <span key={g} className={`rounded-full px-2 py-0.5 font-medium ${
+                      g === "A" ? "bg-emerald-500/15 text-emerald-600" : g === "B" ? "bg-sky-500/15 text-sky-600"
+                      : g === "C" ? "bg-yellow-500/15 text-yellow-600" : "bg-destructive/15 text-destructive"}`}>
+                      {g} 级 {qc.grades[g]}
+                    </span>
+                  ))}
+                  <span className="text-muted-foreground">共 {qc.count} 条 · 净时长 {Math.round(qc.total_s)}s{qc.rejected_count > 0 && ` · 历史已剔 ${qc.rejected_count} 条`}</span>
+                </div>
+                {qc.grades.D > 0 && (
+                  <p className="mt-2 text-xs leading-5 text-destructive">
+                    检出 {qc.grades.D} 条 D 级废片{qc.top_reasons.slice(0, 2).map((r) => `（${r.reason}×${r.count}）`).join("")}——这些切片会污染音色，建议剔除后再训练。
+                  </p>
+                )}
+                {qc.grades.D === 0 && qc.grades.C > 0 && (
+                  <p className="mt-2 text-xs leading-5 text-yellow-600">有 {qc.grades.C} 条 C 级切片质量偏差，默认保留；追求效果可在剔除时一并移除。</p>
+                )}
+                {qc.grades.D === 0 && qc.grades.C === 0 && (
+                  <p className="mt-2 text-xs text-emerald-600">语料干净，可以直接开训。</p>
+                )}
+                {(qc.grades.C > 0 || qc.grades.D > 0) && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <div className="flex overflow-hidden rounded-lg border border-border text-xs">
+                      {["A,B", "A,B,C"].map((k) => (
+                        <button key={k} type="button" onClick={() => setKeepGrades(k)}
+                          className={`px-2.5 py-1.5 ${keepGrades === k ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:text-foreground"}`}>
+                          {k === "A,B" ? "剔到只剩 A/B" : "C 级也剔"}
+                        </button>
+                      ))}
+                    </div>
+                    <button type="button" disabled={qcBusy} onClick={() => void pruneCorpus()}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50">
+                      <Scissors className="h-3.5 w-3.5" />一键剔除并重选锚点
+                    </button>
+                    <button type="button" disabled={qcBusy || qc.rejected_count === 0} onClick={() => void restoreCorpus()}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50">
+                      <Undo2 className="h-3.5 w-3.5" />恢复全部
+                    </button>
+                  </div>
+                )}
+                {qc.advice.length > 0 && (
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground">{qc.advice.join("；")}</p>
+                )}
+              </>
+            ) : (
+              <p className="mt-2 text-xs text-muted-foreground">{qcBusy ? "体检中…" : "暂无体检结果"}</p>
+            )}
+            {qcMsg && <p className="mt-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2.5 py-1.5 text-xs leading-5 text-yellow-600">{qcMsg}</p>}
+          </div>
+
           <div className="mt-4 flex items-center gap-3">
             {[8, 12, 20].map((n) => (
               <button key={n} type="button" onClick={() => void startTrain(n)} className={`${btn} ${n === 12 ? "bg-primary text-primary-foreground hover:bg-primary/90" : "border border-border bg-card text-muted-foreground hover:text-foreground"}`}>

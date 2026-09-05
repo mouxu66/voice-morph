@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  FtCorpusQc,
   FtStatus,
   FtTrainStatus,
   ftAudition,
+  ftCorpusPrune,
+  ftCorpusRestore,
   ftDelete,
   ftPublish,
   ftTrain,
   ftUpload,
+  getFtCorpusQc,
   getFtStatus,
   getFtTrainStatus,
 } from "@/api/client";
@@ -135,9 +139,27 @@ export function useFt() {
   const [recSeconds, setRecSeconds] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [sentenceIdx, setSentenceIdx] = useState(0);
+  const [qc, setQc] = useState<FtCorpusQc | null>(null);
+  const [qcBusy, setQcBusy] = useState(false);
+  const [qcMsg, setQcMsg] = useState("");
+  const [keepGrades, setKeepGrades] = useState("A,B");
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
+  const qcFetchedRef = useRef<string>("");
+
+  /** 语料体检：stage 就绪后自动跑一次（带指纹缓存，不会每次轮询都重算） */
+  const runQc = useCallback(async (force = false) => {
+    if (!voiceId) return;
+    setQcBusy(true);
+    try {
+      setQc(await getFtCorpusQc(voiceId, { force }));
+    } catch (e) {
+      setQcMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setQcBusy(false);
+    }
+  }, [voiceId]);
 
   // 轮询处理/训练状态
   useEffect(() => {
@@ -151,12 +173,18 @@ export function useFt() {
           const ts = await getFtTrainStatus(voiceId);
           if (alive) setTrainStatus(ts);
         }
+        // 语料就绪（或每批切片数变化）时自动体检一次，不随轮询反复重算
+        const sig = `${voiceId}:${st.stage}:${st.clips ?? 0}:${(st as { rejected?: number }).rejected ?? 0}`;
+        if (st.stage === "ready" && qcFetchedRef.current !== sig) {
+          qcFetchedRef.current = sig;
+          void runQc();
+        }
       } catch { /* 后端未就绪时静默 */ }
     };
     void poll();
     const t = window.setInterval(() => void poll(), 2000);
     return () => { alive = false; window.clearInterval(t); };
-  }, [voiceId]);
+  }, [voiceId, runQc]);
 
   const startRecording = useCallback(async () => {
     setError("");
@@ -218,11 +246,42 @@ export function useFt() {
   const startTrain = useCallback(async (epochs: number) => {
     setError("");
     try {
-      await ftTrain(voiceId, epochs);
+      const res = await ftTrain(voiceId, epochs);
+      // 后端开跑前做了语料体检：有脏样本就提示（不阻断，用户可自行决定）
+      if (res.qc_warning) setQcMsg(res.qc_warning);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [voiceId]);
+
+  /** 一键剔除低分切片：移入 clips_rejected，可随时恢复 */
+  const pruneCorpus = useCallback(async () => {
+    setQcBusy(true);
+    setQcMsg("");
+    try {
+      const res = await ftCorpusPrune(voiceId, { keepGrades });
+      setQcMsg(res.warning || `已剔除 ${res.moved} 条，剩余 ${res.kept} 条参与训练`);
+      await runQc(true);
+    } catch (e) {
+      setQcMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setQcBusy(false);
+    }
+  }, [voiceId, keepGrades, runQc]);
+
+  const restoreCorpus = useCallback(async () => {
+    setQcBusy(true);
+    setQcMsg("");
+    try {
+      const res = await ftCorpusRestore(voiceId);
+      setQcMsg(res.restored ? `已恢复 ${res.restored} 条` : "没有需要恢复的切片");
+      await runQc(true);
+    } catch (e) {
+      setQcMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setQcBusy(false);
+    }
+  }, [voiceId, runQc]);
 
   const doAudition = useCallback(async () => {
     setAuditionBusy(true);
@@ -257,6 +316,7 @@ export function useFt() {
   const resetFlow = useCallback(() => {
     setVoiceId(""); setStatus(null); setTrainStatus(null);
     setAudition(null); setPublishOk(false); setError(""); setRecSeconds(0);
+    setQc(null); setQcMsg(""); qcFetchedRef.current = "";
   }, []);
 
   return {
@@ -267,5 +327,6 @@ export function useFt() {
     startTrain, audition, auditionText, setAuditionText, auditionBusy, doAudition,
     publishName, setPublishName, publishing, publishOk, setPublishOk, doPublish,
     removeFt, resetFlow,
+    qc, qcBusy, qcMsg, keepGrades, setKeepGrades, runQc, pruneCorpus, restoreCorpus,
   };
 }
