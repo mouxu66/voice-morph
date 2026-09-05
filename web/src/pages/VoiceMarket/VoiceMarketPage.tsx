@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Loader2,
   Search,
+  ScrollText,
   ShieldCheck,
   Store,
   X,
@@ -421,6 +422,14 @@ function RepoFilePanel({ p }: { p: VoiceMarket }) {
       ) : (
         <div className="grid gap-6 px-5 py-5 lg:grid-cols-[minmax(0,1fr)_260px]">
           <div className="space-y-5">
+            {p.repoReadme && (
+              <div className="rounded-xl border border-border bg-background/50 p-3">
+                <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <ScrollText className="h-3.5 w-3.5 text-primary" />仓库简介
+                </p>
+                <p className="text-xs leading-5 text-muted-foreground">{p.repoReadme}</p>
+              </div>
+            )}
             {demo && (
               <div className="rounded-xl border border-border bg-background/50 p-3">
                 <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">

@@ -994,7 +994,7 @@ export async function marketRepo(
   repo: string,
   platform: MarketPlatform | string = "hf",
   recursive: boolean = false,
-): Promise<{ repo: string; platform: string; files: MarketFile[] }> {
+): Promise<{ repo: string; platform: string; files: MarketFile[]; readme?: string | null }> {
   const qs = `repo=${encodeURIComponent(repo)}&platform=${encodeURIComponent(platform)}&recursive=${recursive}`;
   return jsonFetch(`/market/repo?${qs}`);
 }

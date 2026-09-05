@@ -111,6 +111,7 @@ export function useVoiceMarket() {
   // ---- 仓库文件面板（搜索结果的安装选文件） ----
   const [repoOpen, setRepoOpen] = useState<MarketItem | null>(null)
   const [repoFiles, setRepoFiles] = useState<MarketFile[] | null>(null)
+  const [repoReadme, setRepoReadme] = useState<string | null>(null)
   const [repoLoading, setRepoLoading] = useState(false)
   const [repoErr, setRepoErr] = useState("")
   const [pickPth, setPickPth] = useState<MarketFile | null>(null)
@@ -123,6 +124,7 @@ export function useVoiceMarket() {
     }
     setRepoOpen(item)
     setRepoFiles(null)
+    setRepoReadme(null)
     setPickPth(null)
     setPickIdx(null)
     setRepoErr("")
@@ -130,6 +132,7 @@ export function useVoiceMarket() {
     try {
       const r = await marketRepo(item.repo, item.platform, false)
       setRepoFiles(r.files)
+      setRepoReadme(r.readme ?? null)
     } catch (e) {
       setRepoErr(e instanceof Error ? e.message : "仓库文件加载失败")
     } finally {
@@ -217,6 +220,7 @@ export function useVoiceMarket() {
     repoOpen,
     openRepo,
     repoFiles,
+    repoReadme,
     repoLoading,
     repoErr,
     pickPth,

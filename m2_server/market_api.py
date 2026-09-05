@@ -19,6 +19,7 @@ from market_install import get_installer, InstallError
 from market_manifest import get_manifest, find_manifest_item
 from market_search import search, repo_files_hf, repo_files_ms
 from market_search import hf_resolve, ms_resolve
+from market_search import readme_summary
 from market_search import HF_API as HF_BASE
 
 router = APIRouter(prefix=API_PREFIX)
@@ -83,7 +84,8 @@ def market_repo(repo: str = "", platform: str = "hf", recursive: bool = False):
                     f["mirror_url"] = hf_resolve(repo, f["path"], "https://huggingface.co")
     except MarketError as exc:
         raise HTTPException(404, f"仓库不可用: {exc}")
-    return {"repo": repo, "platform": platform, "files": files}
+    return {"repo": repo, "platform": platform, "files": files,
+            "readme": readme_summary(repo, platform)}
 
 
 @router.post("/market/install")

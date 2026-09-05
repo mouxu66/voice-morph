@@ -163,6 +163,31 @@ def test_hf_desc_zh_helpers():
     assert "音频转换" in d and "语言 英语/日语" in d and "RVC voice model pack" in d
 
 
+def test_strip_markdown_and_readme_summary(monkeypatch):
+    """README 纯文本化与摘要（frontmatter/图片/链接剥除 + 10 分钟缓存）。"""
+    md = ("---\nlanguage: zh\nlibrary_name: rvc\n---\n# 懒羊羊音色\n\n"
+          "![banner](https://x/y.png)\n这是一个 [懒羊羊](https://example.com) 的 RVC 音色。\n\n"
+          "## 使用说明\n\n1. 下载 .pth\n2. 放进 weights")
+    clean = ms._strip_markdown(md)
+    assert "banner" not in clean and "y.png" not in clean
+    assert "懒羊羊" in clean
+    assert "language:" not in clean, "frontmatter 应被剥除"
+
+    calls = {}
+
+    def fake_raw(platform, repo):
+        calls[repo] = calls.get(repo, 0) + 1
+        return md
+
+    monkeypatch.setattr(ms, "_readme_raw", fake_raw)
+    first = ms.readme_summary("someone/lazy-voice", "hf")
+    assert first and "懒羊羊" in first and "RVC 音色" in first
+    monkeypatch.setattr(ms, "_readme_raw", lambda p, r: (_ for _ in ()).throw(AssertionError("不应二次拉取")))
+    second = ms.readme_summary("someone/lazy-voice", "hf")
+    assert second == first and calls.get("someone/lazy-voice") == 1, "应命中缓存"
+    assert ms.readme_summary("someone/nonexistent", "hf") is None
+
+
 def test_search_ms_path_resolution(monkeypatch):
     seen = {}
 

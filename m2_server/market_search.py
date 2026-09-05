@@ -11,6 +11,7 @@
 所有对外直链均落域名白名单（见 market_download.ALLOWED_HOSTS）。
 """
 import re
+import time
 import urllib.parse
 
 import requests
@@ -181,6 +182,68 @@ def make_hf_desc(m: dict, zh_tags: list) -> str:
     if desc:
         parts.append(desc[:140])
     return " · ".join(parts) or "HuggingFace 公开语音模型仓库"
+
+
+# ---------------- README 摘要（仓库简介，选中时拉取并缓存） ----------------
+_README_CACHE: dict[str, tuple[float, str | None]] = {}
+_README_TTL = 600          # 秒；同仓库 10 分钟内不重复拉取
+_UA = {"User-Agent": "voice-morph/0.1"}
+
+
+def _strip_markdown(text: str) -> str:
+    """粗鲁剥除 markdown 标记为纯文本（frontmatter/图片/链接/强调符）。"""
+    text = re.sub(r"(?ms)^---\s*\n.*?\n---\s*\n", "", text or "")
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"[#>*`|_~]", " ", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _readme_raw(platform: str, repo: str) -> str | None:
+    """拉取仓库 README 原文（HF raw / 魔搭 readme API），失败静默返回 None。"""
+    if platform == "modelscope":
+        data = _get_json(f"{MS_BASE}/api/v1/models/{urllib.parse.quote(repo, safe='/')}/readme",
+                         Revision="master")
+        if isinstance(data, dict):
+            for key in ("ModelReadme", "Readme", "Description", "Content"):
+                v = data.get("Data", {}).get(key) if isinstance(data.get("Data"), dict) else None
+                if isinstance(v, str) and v.strip():
+                    return v
+            v = data.get("Data")
+            if isinstance(v, str) and v.strip():
+                return v
+        return None
+    for branch in ("main", "master"):
+        resp = requests.get(
+            f"{HF_API}/{urllib.parse.quote(repo, safe='/')}/raw/{branch}/README.md",
+            headers=_UA, timeout=API_TIMEOUT)
+        if resp.status_code == 200:
+            return resp.text
+    return None
+
+
+def readme_summary(repo: str, platform: str = "hf", max_chars: int = 600) -> str | None:
+    """返回仓库 README 摘要（去 frontmatter 与 markdown 标记，取头部 ≤max_chars）。
+
+    带 10 分钟内存缓存；任何失败静默返回 None，绝不阻塞文件面板。
+    """
+    key = f"{platform}:{repo}"
+    now = time.time()
+    hit = _README_CACHE.get(key)
+    if hit and now - hit[0] < _README_TTL:
+        return hit[1]
+    try:
+        raw = _readme_raw(platform, repo)
+        summary = None
+        if raw and raw.strip():
+            clean = re.sub(r"\s+", " ", _strip_markdown(raw)).strip()
+            summary = clean[:max_chars] or None
+    except Exception:
+        summary = None
+    _README_CACHE[key] = (now, summary)
+    return summary
 
 
 def _hf_pick_files(repo: str) -> list[dict]:
