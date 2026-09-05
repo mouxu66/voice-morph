@@ -15,6 +15,7 @@
       或上传 target 参考音频。
     - 同一时刻只允许一个转换任务，且实时变声/级联运行中会拒绝（避免抢 GPU）。
 """
+import logging
 import os
 import subprocess
 import threading
@@ -27,6 +28,8 @@ import config as cfg
 from common import MAX_UPLOAD_BYTES, find_ffmpeg, voice_ref
 from rvc_live import _live_proc_alive
 from cascade import _cascade_alive
+
+LOG = logging.getLogger(__name__)
 
 OUT = cfg.OUTPUTS_DIR
 OUT.mkdir(exist_ok=True)
@@ -45,6 +48,10 @@ SEEDVC_FT_RUNS: dict[str, Path] = {
     "kangaroo": SEEDVC_REPO / "runs" / "kangaroo_ft_100",
 }
 SEEDVC_FT_MAX_RUNS = 3  # 自定义微调最多支持 N 个音色，避免误填膨胀
+if len(SEEDVC_FT_RUNS) > SEEDVC_FT_MAX_RUNS:
+    # 配置超过上限时仅警告不阻断：提示裁剪多余音色，避免微调目录莫名膨胀
+    LOG.warning("SEEDVC_FT_RUNS 共 %d 条，超过上限 %d，请裁剪音色数",
+                len(SEEDVC_FT_RUNS), SEEDVC_FT_MAX_RUNS)
 
 
 def _ft_ckpt(voice_id: str) -> Path | None:

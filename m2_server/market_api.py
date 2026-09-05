@@ -45,6 +45,7 @@ class InstallRequest(BaseModel):
     index: FileSlot | None = Field(None, description="可选索引文件（.index）")
     display_name: str = Field("", description="中文展示名（空则用 voice_id）")
     manifest_id: str = Field("", description="来源清单条目 id（安装溯源）")
+    overwrite: bool = Field(False, description="音色已存在时是否显式覆盖重装（默认拒绝）")
 
 
 @router.get("/market/manifest")
@@ -98,6 +99,7 @@ def market_install(req: InstallRequest):
         st = get_installer().run(
             voice_id=req.voice_id, download=dl, index=idx,
             display_name=req.display_name, manifest_id=req.manifest_id,
+            overwrite=req.overwrite,
         )
     except InstallError as exc:
         raise HTTPException(409, str(exc))

@@ -57,7 +57,9 @@ def main():
     config.is_half = True
 
     # 手动填充 VC 实例（get_vc 依赖 weight_root 环境变量与 Gradio 回调，绕开它）
-    cpt = torch.load(args.pth, map_location="cpu")
+    # weights_only=True：仅允许 dict/list/str/int/tensor 等基础类型反序列化，
+    # 防止第三方 ckpt 的 __reduce__ 载荷触发任意代码执行（坏文件此处即报错，不后移）
+    cpt = torch.load(args.pth, map_location="cpu", weights_only=True)
     tgt_sr = cpt["config"][-1]
     cpt["config"][-3] = cpt["weight"]["emb_g.weight"].shape[0]  # n_spk
     if_f0 = cpt.get("f0", 1)

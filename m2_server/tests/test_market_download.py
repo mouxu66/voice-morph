@@ -13,9 +13,12 @@ import pytest
 
 from market_download import DownloadManager, MarketError, MAX_BYTES
 
-DATA = os.urandom(1024 * 1024)            # 1MB 随机数据
+# 假权重必须以 PyTorch 存档文件头开头（\x80\x02 = pickle 协议 2），
+# 否则过不了 _torch_header_ok 魔数校验（头部校验按设计拒随机字节当权重）。
+_PTH_PREFIX = b"\x80\x02"
+DATA = _PTH_PREFIX + os.urandom(1024 * 1024 - len(_PTH_PREFIX))     # 1MB 假权重
 SHA = hashlib.sha256(DATA).hexdigest()
-MIRROR_DATA = os.urandom(256 * 1024)      # 镜像文件（内容刻意不同，验证回退后取自镜像）
+MIRROR_DATA = _PTH_PREFIX + os.urandom(256 * 1024 - len(_PTH_PREFIX))  # 镜像假权重
 
 
 class _Ctx:
@@ -223,7 +226,23 @@ def test_size_limit_enforced_before_request(mgr):
 
 
 # ---- API 壳（路由存在性 + 错误映射）----
-def test_api_progress_empty():
+@pytest.fixture()
+def iso_api(monkeypatch, tmp_path):
+    """把 market_api 的下载/安装单例换成 tmp 隔离实例，避免读到磁盘真实
+    outputs/market/downloads.json（曾有 install_lanyangyang/cancelled 残留
+    导致 test_api_progress_empty / test_api_cancel_without_task 假红）。"""
+    import market_api
+    from market_install import InstallManager
+    m = DownloadManager(download_dir=tmp_path / "dl",
+                        state_file=tmp_path / "dl" / "downloads.json",
+                        allow_loopback=True)
+    ins = InstallManager(manager=m)
+    monkeypatch.setattr(market_api, "get_manager", lambda: m)
+    monkeypatch.setattr(market_api, "get_installer", lambda: ins)
+    return m, ins
+
+
+def test_api_progress_empty(iso_api):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
     import server
@@ -232,7 +251,7 @@ def test_api_progress_empty():
     assert resp.json() == {"task": None}
 
 
-def test_api_rejects_untrusted_domain():
+def test_api_rejects_untrusted_domain(iso_api):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
     import server
@@ -242,7 +261,7 @@ def test_api_rejects_untrusted_domain():
     assert "白名单" in resp.json().get("detail", "")
 
 
-def test_api_cancel_without_task():
+def test_api_cancel_without_task(iso_api):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
     import server

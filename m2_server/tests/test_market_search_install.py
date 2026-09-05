@@ -18,7 +18,8 @@ import market_search
 import market_search as ms
 import config
 
-PTH_DATA = os.urandom(512 * 1024)          # 512KB 伪权重
+# 伪权重须过 _torch_header_ok 魔数校验：以 pickle 协议 2 头部 \x80\x02 开头
+PTH_DATA = b"\x80\x02" + os.urandom(512 * 1024 - 2)          # 512KB 伪权重
 IDX_DATA = os.urandom(64 * 1024)           # 64KB 伪索引
 MIRROR_DATA = os.urandom(128 * 1024)       # 镜像文件（内容刻意不同）
 

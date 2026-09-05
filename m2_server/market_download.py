@@ -34,6 +34,23 @@ MAX_BYTES = 500 * 1024 * 1024           # 单权重上限 500MB
 PART_SUFFIX = ".part"
 _PERSIST_MIN_INTERVAL = 0.5             # 进度落盘节流（秒）
 
+# PyTorch 存档文件头：zip 容器（torch.save 默认）或 pickle 协议（\x80\x00/\x80\x02~06）
+TORCH_SUFFIXES = (".pth", ".pt", ".ckpt")
+
+
+def _torch_header_ok(path: Path) -> bool:
+    """粗校验文件头是否像 PyTorch 存档（PK=zip / \\x80=pickle），拒 HTML/文本当权重落盘。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except OSError:
+        return False
+    if head[:2] == b"PK":
+        return True
+    if head[:1] == b"\x80" and len(head) > 1 and head[1] in (0x00, 0x02, 0x03, 0x04, 0x05, 0x06):
+        return True
+    return False
+
 # 下载域名白名单：搜索/download 直链只允许这些主机
 ALLOWED_HOSTS = {
     "huggingface.co",
@@ -145,7 +162,10 @@ class DownloadManager:
             dest = self.download_dir / filename
             part = dest.with_suffix(dest.suffix + PART_SUFFIX)
             if dest.exists():
-                self._state = {"idle": True, "done_file": str(dest)}
+                # 幂等完成：保留安装编排写入的 install 段（否则进度面板空白），
+                # 覆盖重装由安装层先清除产物再 start，避免装回旧文件。
+                self._state = {"idle": True, "done_file": str(dest),
+                               "install": cur.get("install")}
                 idle_done = True
             else:
                 idle_done = False
@@ -191,6 +211,12 @@ class DownloadManager:
         self._cancel_evt.set()
         return self.progress()
 
+    def remove_artifact(self, filename: str) -> None:
+        """删除下载产物（含 .part 残留），供安装覆盖重装时强制重新下载。"""
+        for p in (self.download_dir / filename,
+                  self.download_dir / (filename + PART_SUFFIX)):
+            p.unlink(missing_ok=True)
+
     # ---- 后台线程 ----
     def _run(self, name, url, mirror_url, sha256, expected_size, filename=None):
         filename = filename or f"{name}.pth"
@@ -199,12 +225,13 @@ class DownloadManager:
         try:
             if expected_size and expected_size > MAX_BYTES:
                 raise MarketError(f"文件超过上限 {MAX_BYTES} 字节")
-            # 断点续传的哈希初始化：先吞掉 .part 已有字节，再续算
-            hasher = hashlib.sha256() if sha256 else None
-            if part.exists() and hasher is not None:
+            # 断点续传的哈希初始化：先吞掉 .part 已有字节，再续算。
+            # 用可变 dict 装载，_download_to 在"从头写"场景可原地换新 hasher。
+            box = {"h": hashlib.sha256() if sha256 else None}
+            if part.exists() and box["h"] is not None:
                 with part.open("rb") as f:
                     for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
-                        hasher.update(chunk)
+                        box["h"].update(chunk)
 
             err_url = url
             mirror_attempted = False
@@ -213,14 +240,15 @@ class DownloadManager:
                     continue
                 err_url = try_url
                 try:
-                    self._download_to(part, try_url, hasher)
+                    self._download_to(part, try_url, box)
                     break
                 except Exception as exc:  # noqa: BLE001 —— 网络/校验错误统一走回退
                     if attempt == 0 and mirror_url and not self._cancel_evt.is_set():
                         mirror_attempted = True
                         self._set(force=True, url=mirror_url,
                                   error=f"主源失败({exc.__class__.__name__})，回退镜像重下")
-                        # 主源中途失败时 .part 不可信：删除从头
+                        # 主源中途失败时 .part 不可信：删除从头（hasher 由
+                        # _download_to 的 offset==0 分支自动重置，避免旧字节混入 digest）
                         if part.exists():
                             part.unlink(missing_ok=True)
                         continue
@@ -238,8 +266,12 @@ class DownloadManager:
             if size > MAX_BYTES:
                 part.unlink(missing_ok=True)
                 raise MarketError(f"文件超过上限 {MAX_BYTES} 字节")
-            if hasher is not None:
-                digest = hasher.hexdigest()
+            # 权重类文件做文件头校验：杜绝 404 HTML / 任意网页内容当权重落盘
+            if dest.suffix.lower() in TORCH_SUFFIXES and not _torch_header_ok(part):
+                part.unlink(missing_ok=True)
+                raise MarketError("文件头校验失败：不是有效的 PyTorch 存档（可能下载到了错误页面）")
+            if box["h"] is not None:
+                digest = box["h"].hexdigest()
                 if digest != sha256:
                     part.unlink(missing_ok=True)
                     raise MarketError(f"SHA256 不符: 期望 {sha256} 实际 {digest}")
@@ -256,17 +288,45 @@ class DownloadManager:
         finally:
             self._cancel_evt.clear()
 
-    def _download_to(self, part: Path, url: str, hasher) -> None:
-        """流式下载（支持 Range 续传），逐块写 .part 并更新进度/落盘。"""
+    def _download_to(self, part: Path, url: str, box: dict) -> None:
+        """流式下载（支持 Range 续传），逐块写 .part 并更新进度/落盘。
+
+        安全：
+          - 手动跟随重定向（allow_redirects=False），每一跳都重新过域名白名单，
+            防止 302 逃逸到内网/云元数据地址（SSRF）
+          - 无 Content-Length 的 chunked 大响应实时按累计字节拦截，杜绝磁盘写满
+          - 服务端不支持续传（200）或重下时从头写，hasher 原地重置，避免旧字节
+            混入 digest 导致 SHA256 必失败
+        """
+        MAX_REDIRECTS = 5
         resume = part.stat().st_size if part.exists() else 0
         headers = {"Range": f"bytes={resume}-"} if resume else {}
-        with requests.get(url, stream=True, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                          allow_redirects=True, headers=headers) as resp:
+        redirects = 0
+        while True:
+            _validate_url(url, self.allow_loopback)   # 每一次跳转目标都过白名单
+            resp = requests.get(url, stream=True, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                                allow_redirects=False, headers=headers)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                loc = resp.headers.get("Location")
+                resp.close()
+                if not loc:
+                    raise MarketError(f"重定向缺少 Location: {url}")
+                url = urllib.parse.urljoin(url, loc)
+                redirects += 1
+                if redirects > MAX_REDIRECTS:
+                    raise MarketError(f"重定向次数过多（>{MAX_REDIRECTS}）：{url}")
+                continue
+            break
+        try:
             resp.raise_for_status()
             # 200 = 服务端不支持续传，从头写；206 = 从断点续写
             offset = resume if resp.status_code == 206 else 0
+            if offset == 0 and box["h"] is not None:
+                # 从头写：旧 .part 字节不再属于新内容（重启续传失败 / 服务端不支持
+                # Range / 镜像回退重下），换新 hasher 避免 digest 拼接旧字节
+                box["h"] = hashlib.sha256()
             total = (int(resp.headers.get("Content-Length") or 0) + offset) or None
-            if total and (total - offset) + offset > MAX_BYTES:
+            if total and total > MAX_BYTES:
                 raise MarketError(f"文件超过上限 {MAX_BYTES} 字节")
             mode = "ab" if offset else "wb"
             with part.open(mode) as f:
@@ -277,10 +337,14 @@ class DownloadManager:
                     if not chunk:
                         continue
                     f.write(chunk)
-                    if hasher is not None:
-                        hasher.update(chunk)
+                    if box["h"] is not None:
+                        box["h"].update(chunk)
                     offset += len(chunk)
+                    if offset > MAX_BYTES:
+                        raise MarketError(f"文件超过上限 {MAX_BYTES} 字节")
                     self._set(done=offset, total=total, status="downloading")
+        finally:
+            resp.close()
 
 
 # 进程级单例：server 与测试共用（测试可通过构造隔离实例）

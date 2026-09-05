@@ -54,10 +54,13 @@ export function useVoiceMarket() {
     void refreshInstalled()
   }, [refreshInstalled])
 
-  // 轮询全局进度：常驻 1.5s（兼恢复上一次会话遗留的安装任务）
+  // 轮询全局进度：常驻 1.5s，busy 防慢响应叠加以防请求堆积
   useEffect(() => {
     let alive = true
+    let busy = false
     const tick = async () => {
+      if (busy) return                        // 慢响应不叠加请求
+      busy = true
       try {
         const { task: t } = await marketProgress()
         if (!alive) return
@@ -73,12 +76,15 @@ export function useVoiceMarket() {
         prevStatus.current = cur
       } catch {
         /* 轮询失败静默 */
+      } finally {
+        busy = false
       }
     }
     void tick()
     const timer = window.setInterval(tick, 1500)
     return () => {
       alive = false
+      busy = false
       window.clearInterval(timer)
     }
   }, [refreshInstalled])
@@ -144,7 +150,7 @@ export function useVoiceMarket() {
   const installRunning = !!task && !!task.install && ACTIVE.has(task.install.status)
 
   const startInstall = useCallback(
-    async (voice_id: string, download: MarketFileSlot, opts?: { index?: MarketFileSlot | null; display_name?: string; manifest_id?: string }) => {
+    async (voice_id: string, download: MarketFileSlot, opts?: { index?: MarketFileSlot | null; display_name?: string; manifest_id?: string; overwrite?: boolean }) => {
       setInstallErr("")
       setInstallingId(voice_id)
       try {
@@ -154,6 +160,7 @@ export function useVoiceMarket() {
           index: opts?.index ?? undefined,
           display_name: opts?.display_name ?? voice_id,
           manifest_id: opts?.manifest_id ?? "",
+          overwrite: opts?.overwrite ?? false,
         })
         setTask(t)
       } catch (e) {

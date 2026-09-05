@@ -11,6 +11,7 @@ import {
   ScrollText,
   ShieldCheck,
   Store,
+  TriangleAlert,
   X,
   XCircle,
 } from "lucide-react"
@@ -388,13 +389,18 @@ function RepoFilePanel({ p }: { p: VoiceMarket }) {
   const idxFiles = (p.repoFiles ?? []).filter((f) => f.type !== "directory" && /\.index$/i.test(f.path))
   const zipFiles = (p.repoFiles ?? []).filter((f) => f.type !== "directory" && /\.zip$/i.test(f.path))
   const demo = p.demoAudio(p.repoFiles ?? [])
-  const idPreview = p.pickPth ? p.deriveVoiceId(p.pickPth.name, item.repo) : ""
+  const [customId, setCustomId] = useState("")
+  const [wantOverwrite, setWantOverwrite] = useState(false)
+  const derivedId = p.pickPth ? p.deriveVoiceId(p.pickPth.name, item.repo) : ""
+  const finalId = (customId || derivedId).trim()
+  const idConflict = p.installed.includes(finalId)
 
   const handleInstall = () => {
-    if (!p.pickPth?.url) return
-    void p.startInstall(idPreview, { url: p.pickPth.url, mirror_url: p.pickPth.mirror_url, sha256: p.pickPth.sha256 }, {
+    if (!p.pickPth?.url || !finalId) return
+    void p.startInstall(finalId, { url: p.pickPth.url, mirror_url: p.pickPth.mirror_url, sha256: p.pickPth.sha256 }, {
       index: p.pickIdx?.url ? { url: p.pickIdx.url, mirror_url: p.pickIdx.mirror_url } : null,
       display_name: p.pickPth.name.replace(/\.pth$/i, ""),
+      overwrite: wantOverwrite,
     })
   }
 
@@ -478,20 +484,44 @@ function RepoFilePanel({ p }: { p: VoiceMarket }) {
           <aside className="space-y-4">
             <div className="rounded-xl border border-border bg-gradient-to-br from-primary/10 via-card to-card p-4">
               <p className="font-mono text-xs uppercase tracking-widest text-primary">一键安装</p>
-              {idPreview ? (
+              {finalId ? (
                 <>
-                  <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                    音色 ID：<span className="font-mono text-foreground">{idPreview}</span>
-                  </p>
+                  <label className="mt-2 block text-[11px] font-medium text-muted-foreground" htmlFor="voice-id-input">
+                    音色 ID（可改，仅字母数字_-）
+                  </label>
+                  <input
+                    id="voice-id-input"
+                    value={customId}
+                    onChange={(e) => {
+                      setCustomId(e.target.value.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64))
+                      setWantOverwrite(false)
+                    }}
+                    placeholder={derivedId}
+                    className="mt-1 w-full rounded-md border border-border bg-background/60 px-2.5 py-1.5 font-mono text-xs text-card-foreground outline-none transition focus:border-primary focus:ring-1 focus:ring-primary"
+                  />
                   <p className="mt-1 text-[11px] text-muted-foreground">安装后可在「音色库 / 实时变声 / 离线工坊」中使用。</p>
+                  {idConflict && (
+                    <button
+                      type="button"
+                      onClick={() => setWantOverwrite((v) => !v)}
+                      className={`mt-2 flex w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-[11px] transition ${
+                        wantOverwrite
+                          ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
+                          : "border-border bg-background/40 text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+                      <span>{wantOverwrite ? "已确认：将覆盖现有同名音色" : `ID 已存在（${finalId}），点击确认覆盖重装`}</span>
+                    </button>
+                  )}
                   <button
                     type="button"
-                    disabled={p.installRunning || p.installed.includes(idPreview)}
+                    disabled={p.installRunning || (idConflict && !wantOverwrite)}
                     onClick={handleInstall}
                     className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-md transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50"
                   >
                     <CloudDownload className="h-4 w-4" />
-                    {p.installed.includes(idPreview) ? "已安装" : p.installRunning ? "安装中…" : "开始安装"}
+                    {p.installRunning ? "安装中…" : idConflict ? "覆盖安装" : "开始安装"}
                   </button>
                 </>
               ) : (

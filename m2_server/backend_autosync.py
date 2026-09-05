@@ -118,6 +118,12 @@ def sync_backend_copy(project_root: Path) -> dict:
                 continue
             stat = {"copied": 0, "deleted": 0, "errors": 0}
             src_files = _walk(src)
+            if not src_files:
+                # 源目录为空（构建失败/被清空）时不执行删除镜像，防止清空可用分发副本；
+                # 本轮只警告，等源恢复后再同步。
+                logger.warning("[autosync] %s 源为空（疑似构建中断），跳过清理", src_rel)
+                result["pairs"][dst_name] = stat
+                continue
             dst_files = _walk(dst) if dst.is_dir() else {}
             for rel, meta in src_files.items():
                 if dst_files.get(rel) == meta:

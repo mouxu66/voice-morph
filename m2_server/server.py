@@ -24,10 +24,12 @@
 
 共享运行状态（流水线进度/挖掘状态/内录状态/路径常量）在 runtime.py。
 """
+import re
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 import config as cfg
 from ab_api import router as ab_router
@@ -94,15 +96,50 @@ else:
             "（含 /tts 与 /rvc/live）。生产/暴露到 LAN 前请设置 VM_API_TOKEN 并收紧 VM_CORS_ORIGINS。"
         )
 
-# CORS：默认允许本地前端(5173 dev)与打包后的 file:// 页面访问。
-# 来源可经 VM_CORS_ORIGINS 收紧（逗号分隔）；留 "*" 维持 LAN 可用。
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cfg.CORS_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# CORS / 跨站守卫
+# ---------------------------------------------------------------
+# 默认（未显式配置 VM_CORS_ORIGINS）仅放行本机来源：file:// 页面（Electron /
+# 浏览器打开 dist，Origin 为 null 或 file://）、开发服务器 localhost:*、
+# 以及无 Origin 头的本机调用（curl / RN 原生 / 测试）。任意远程网页
+# （https://evil.com）的 fetch 请求会被 _OriginGuardMiddleware 直接 403，
+# 杜绝"无鉴权 + CORS 通配"下被跨站调用破坏性接口（DELETE 音色 / 触发下载 /
+# /tts 占显存）。显式配置 VM_CORS_ORIGINS 时走用户白名单并跳过守卫。
+LOCAL_ORIGIN_RE = re.compile(
+    r"^(?:null|file://|https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?)$"
 )
+
+
+class _OriginGuardMiddleware(BaseHTTPMiddleware):
+    """默认模式下，拒绝一切非本机来源的跨站调用（预检留给 CORS 层）。"""
+
+    async def dispatch(self, request, call_next):
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        origin = request.headers.get("Origin", "")
+        if origin and not LOCAL_ORIGIN_RE.match(origin):
+            return JSONResponse(status_code=403,
+                                content={"detail": f"拒绝跨站来源: {origin}"})
+        return await call_next(request)
+
+
+if cfg.CORS_ORIGINS == ["*"]:
+    app.add_middleware(_OriginGuardMiddleware)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=LOCAL_ORIGIN_RE.pattern,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    # 显式白名单（逗号分隔）：以用户配置为准，不设守卫
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cfg.CORS_ORIGINS,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # ---- 注册路由（原有 9 个能力模块 + server.py 拆出的 11 个）----
 app.include_router(rvc_live_router)

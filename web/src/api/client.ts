@@ -1005,6 +1005,7 @@ export async function marketInstall(req: {
   index?: MarketFileSlot | null;
   display_name?: string;
   manifest_id?: string;
+  overwrite?: boolean;
 }): Promise<{ task: MarketTask }> {
   return jsonFetch("/market/install", {
     method: "POST",

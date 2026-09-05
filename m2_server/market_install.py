@@ -20,7 +20,7 @@ import shutil
 import threading
 import time
 
-from market_download import DownloadManager, MarketError, get_manager
+from market_download import DownloadManager, MarketError, get_manager, _torch_header_ok
 import config as cfg
 
 VOICE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
@@ -42,8 +42,13 @@ class InstallManager:
 
     # ---- 对外 ----
     def run(self, voice_id: str, download: dict, index: dict | None = None,
-            display_name: str = "", manifest_id: str = "") -> dict:
-        """启动安装：校验 → 状态落盘 → 后台线程执行。已有安装/下载在跑抛 InstallError。"""
+            display_name: str = "", manifest_id: str = "",
+            overwrite: bool = False) -> dict:
+        """启动安装：校验 → 状态落盘 → 后台线程执行。已有安装/下载在跑抛 InstallError。
+
+        overwrite=False：目标音色已存在（logs/assets 任一，含自训产物）时抛 409，
+        绝不静默覆盖。overwrite=True：清除旧下载产物与本地目标后完整重装。
+        """
         if not voice_id or not VOICE_ID_RE.match(voice_id):
             raise InstallError(f"非法音色 ID: {voice_id!r}（限字母数字_\\-）")
         if not download or not download.get("url"):
@@ -55,6 +60,15 @@ class InstallManager:
             if st.get("status") == "downloading":
                 raise InstallError("已有下载任务在进行中，请稍后再安装")
             cur = dict(st)
+        conflict = self._conflict_paths(voice_id)
+        if conflict and not overwrite:
+            raise InstallError(
+                f"音色 {voice_id} 已存在：{'、'.join(str(p) for p in conflict)}（含自训产物）。"
+                "如需覆盖请显式指定 overwrite=true")
+        if conflict:
+            # 覆盖重装：清除旧下载产物（防止 DownloadManager 幂等分支装回旧文件）
+            for suffix in (".pth", ".index"):
+                self.manager.remove_artifact(f"{voice_id}{suffix}")
         self.manager.set_meta(install={
             "voice_id": voice_id,
             "display_name": display_name or voice_id,
@@ -74,12 +88,29 @@ class InstallManager:
         self._thread.start()
         return self.progress()
 
+    @staticmethod
+    def _conflict_paths(voice_id: str) -> list:
+        """返回已存在的本地音色路径（logs/<id>/<id>.pth、assets/weights/<id>.pth）。"""
+        out = []
+        log_pth = cfg.RVC_ROOT / "logs" / voice_id / f"{voice_id}.pth"
+        w_pth = cfg.RVC_ROOT / "assets" / "weights" / f"{voice_id}.pth"
+        if log_pth.exists():
+            out.append(log_pth)
+        if w_pth.exists():
+            out.append(w_pth)
+        return out
+
     def cancel(self) -> dict:
-        """取消当前安装（挂起中的下载任务随 manager.cancel 一并取消）。"""
+        """取消进行中的安装（挂起中的下载任务随 manager.cancel 一并取消）。
+
+        仅 queued/downloading_*/staging 活跃状态可取消；installed/failed 及
+        残留的 cancelled/interrupted 一律视为"无进行中任务"抛 InstallError（409）。
+        """
+        ACTIVE = ("queued", "downloading_pth", "downloading_index", "staging")
         with self._lock:
             st = self.progress_locked()
         install = st.get("install") or {}
-        if not install.get("status") or install.get("status") in ("installed", "failed"):
+        if install.get("status") not in ACTIVE:
             raise InstallError("没有进行中的安装任务")
         if st.get("status") == "downloading":
             try:
@@ -191,9 +222,14 @@ class InstallManager:
         raise InstallError("下载超时")
 
     def _stage(self, voice_id: str):
-        """把 outputs/market 下载产物落位到 RVC 目录（幂等）。"""
+        """把 outputs/market 下载产物落位到 RVC 目录（幂等，重复拷贝覆盖）。"""
         src_pth = self.manager.download_dir / f"{voice_id}.pth"
         src_idx = self.manager.download_dir / f"{voice_id}.index"
+        if not src_pth.exists():
+            raise InstallError("权重文件缺失，安装中止")
+        # 落位前再验一次文件头：杜绝坏文件/网页内容进入 RVC 音色库
+        if not _torch_header_ok(src_pth):
+            raise InstallError("权重文件头校验失败：不是有效的 PyTorch 存档")
         log_dir = cfg.RVC_ROOT / "logs" / voice_id
         weights_dir = cfg.RVC_ROOT / "assets" / "weights"
         log_dir.mkdir(parents=True, exist_ok=True)
