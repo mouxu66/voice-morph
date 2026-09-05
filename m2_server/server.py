@@ -41,6 +41,7 @@ from finetune import router as ft_router
 from history_api import router as history_router
 from media_api import router as media_router
 from mine_api import router as mine_router
+from market_api import router as market_router
 from offline_vc import router as offlinevc_router
 from pipeline_api import router as pipeline_router
 from raw_media_api import router as raw_media_router
@@ -120,6 +121,7 @@ app.include_router(pipeline_router)
 app.include_router(clips_router)
 app.include_router(tts_router)
 app.include_router(mine_router)
+app.include_router(market_router)
 app.include_router(capture_router)
 app.include_router(ab_router)
 app.include_router(audio_router)
