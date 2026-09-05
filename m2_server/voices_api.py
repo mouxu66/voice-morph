@@ -2,6 +2,7 @@
 
 自 server.py 拆出（行为不变）；app 装配见 server.py。
 """
+import asyncio
 import json
 import re
 import shutil
@@ -13,7 +14,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 import config as cfg
-from common import MAX_UPLOAD_BYTES, is_valid_voice_id
+from common import MAX_UPLOAD_BYTES, is_valid_voice_id, selected_voice
 from rvc_common import exp_snapshot
 from runtime import API_PREFIX, CLIPS_DIR, RAW_DIR, VIDEO_SUFFIXES, VOICEBANK, clip_prefix
 
@@ -85,14 +86,40 @@ def list_voices():
 
 @router.delete("/voicebank/{voice_id}")
 async def delete_voice(voice_id: str):
+    """删除音色档案目录。
+
+    Windows 坑：目录内文件若被 worker/播放器短暂占用，rmtree 会 PermissionError。
+    旧实现 rmtree(d, True)（ignore_errors=True）把错误吞掉还返回 ok，前端刷新发现
+    音色仍在 → 用户看到"删除失败"。现改为：短重试（句柄释放有延迟）+ 失败时
+    返回 500 并点名被锁文件，同时清掉悬空的 selected_voice.json。
+    """
     if not is_valid_voice_id(voice_id):
         raise HTTPException(400, "音色 ID 非法")
     d = VOICEBANK / voice_id
     if not d.exists():
         raise HTTPException(404, f"音色 [{voice_id}] 不存在")
-    # rmtree 是阻塞 IO，丢进线程池避免卡住事件循环
-    await run_in_threadpool(shutil.rmtree, d, True)
-    return {"ok": True}
+    # 删除的是当前选中音色 → 先清选中记录，避免 selected_voice.json 悬空引用
+    if selected_voice() == voice_id:
+        try:
+            (VOICEBANK / "selected_voice.json").unlink()
+        except OSError:
+            pass
+    # rmtree 是阻塞 IO，丢进线程池避免卡住事件循环；Windows 句柄释放有延迟，重试 3 次
+    last_err: OSError | None = None
+    for attempt in range(3):
+        try:
+            await run_in_threadpool(shutil.rmtree, d)
+            return {"ok": True}
+        except OSError as e:
+            last_err = e
+            if attempt < 2:
+                await asyncio.sleep(0.6)
+    leftovers = sorted(p.relative_to(d).as_posix() for p in d.rglob("*"))[:3]
+    raise HTTPException(
+        500,
+        f"删除失败：{last_err}。文件可能正被占用（如 {', '.join(leftovers)}），"
+        "请先停止相关页面的播放/生成，或重启桌面端后重试。",
+    )
 
 
 def _voicebank_guidance() -> str:
