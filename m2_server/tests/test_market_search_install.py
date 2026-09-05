@@ -151,6 +151,18 @@ def test_search_hf_parses_items(monkeypatch, server_url):
     assert items[0]["files"][0]["sha256"] == "abc"
 
 
+def test_hf_desc_zh_helpers():
+    """英文元数据 → 中文简介（类型/能力/协议/语言）。"""
+    zh = ms._zh_tags(["rvc", "license:mit", "en", "ja", "region:us",
+                      "text-generation-inference", "arxiv:2409.123"])
+    assert "RVC 变声" in zh and "MIT 协议" in zh and "地区 · 美国" in zh
+    assert all("english" != s for s in zh), "语言标签不应进标签数组"
+    m = {"pipeline_tag": "audio-to-audio", "tags": ["rvc", "license:mit", "en", "ja"],
+         "cardData": {"description": "RVC voice model pack"}}
+    d = ms.make_hf_desc(m, zh)
+    assert "音频转换" in d and "语言 英语/日语" in d and "RVC voice model pack" in d
+
+
 def test_search_ms_path_resolution(monkeypatch):
     seen = {}
 

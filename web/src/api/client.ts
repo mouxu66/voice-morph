@@ -942,6 +942,8 @@ export type MarketItem = {
   likes?: number;
   updated_at?: string;
   tags?: string[];
+  /** 后端汉化的中文标签（英文元数据 → 可读介绍），无则回退 tags */
+  tags_zh?: string[];
   files?: MarketFile[];
   download?: MarketFileSlot;
   index?: MarketFileSlot | null;

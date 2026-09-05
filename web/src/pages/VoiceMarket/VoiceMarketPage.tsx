@@ -296,11 +296,14 @@ function SearchResultCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
               {PLATFORM_LABEL[item.platform] ?? item.platform}
             </span>
             <h3 className="truncate text-sm font-semibold text-card-foreground">{item.name}</h3>
-            {(item.tags ?? []).slice(0, 3).map((t) => (
-              <span key={t} className="rounded-full bg-primary/10 px-2 py-0.5 font-mono text-[10px] text-primary">{t}</span>
+            {(item.tags_zh ?? item.tags ?? []).slice(0, 3).map((t) => (
+              <span key={t} className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-[10px] text-primary">{t}</span>
             ))}
           </div>
           <p className="mt-1 font-mono text-xs text-muted-foreground">{item.repo}</p>
+          {item.desc && (
+            <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.desc}</p>
+          )}
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
             {item.downloads != null && item.downloads > 0 && <span>下载 {item.downloads.toLocaleString()}</span>}
             {item.likes != null && item.likes > 0 && <span>点赞 {item.likes.toLocaleString()}</span>}

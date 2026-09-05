@@ -66,6 +66,7 @@ def search_hf(query: str, limit: int = 10) -> list[dict]:
         repo = m.get("id", "")
         if not repo:
             continue
+        zh = _zh_tags(m.get("tags"))
         items.append({
             "id": repo,
             "name": _hf_title(m),
@@ -75,6 +76,8 @@ def search_hf(query: str, limit: int = 10) -> list[dict]:
             "likes": int(m.get("likes") or 0),
             "tags": [t for t in m.get("tags") or []]
                     + [t for t in m.get("library_name") or [] if t],
+            "desc": make_hf_desc(m, zh),
+            "tags_zh": zh,
             "updated_at": (m.get("lastModified") or "")[:10],
             "files": _hf_pick_files(repo) if len(items) < FILE_LOOKUP_TOP else [],
         })
@@ -87,6 +90,97 @@ def _hf_title(m: dict) -> str:
     pretty = (m.get("cardData") or {}).get("language") or ""
     tag_hint = next((t for t in (m.get("tags") or []) if t.lower() in ("rvc", "voice")), "")
     return pretty or (m.get("author", "") + "/" + m.get("name", "")) or m.get("id", "")
+
+
+# ---------------- 结果可读化（英文元数据 → 中文简介） ----------------
+PIPELINE_ZH = {
+    "audio-to-audio": "音频转换",
+    "text-to-audio": "语音合成",
+    "text-to-speech": "语音合成",
+    "speech-synthesis": "语音合成",
+    "automatic-speech-recognition": "语音识别",
+    "music-generation": "音乐生成",
+    "text-to-music": "音乐生成",
+    "voice-activity-detection": "语音活动检测",
+    "speaker-diarization": "说话人分离",
+    "text-to-speech-g4mms": "语音合成",
+}
+LANG_ZH = {
+    "zh": "中文", "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语",
+    "de": "德语", "es": "西语", "ru": "俄语", "it": "意大利语", "pt": "葡语",
+    "ar": "阿拉伯语", "hi": "印地语",
+}
+LICENSE_ZH = {
+    "mit": "MIT", "apache-2.0": "Apache-2.0", "gpl-3.0": "GPL-3.0",
+    "gpl-2.0": "GPL-2.0", "lgpl-3.0": "LGPL-3.0", "cc0-1.0": "CC0",
+    "cc-by-4.0": "CC-BY-4.0", "cc-by-nc-4.0": "CC-BY-NC-4.0",
+    "agpl-3.0": "AGPL-3.0", "bsd-3-clause": "BSD-3", "bsd-2-clause": "BSD-2",
+    "unlicense": "无限制",
+}
+REGION_ZH = {"us": "美国", "de": "德国", "jp": "日本", "cn": "中国", "gb": "英国",
+             "kr": "韩国", "sg": "新加坡", "au": "澳洲", "ca": "加拿大"}
+CAPABILITY_ZH = {
+    "rvc": "RVC 变声", "voice": "变声", "svc": "歌声转换", "so-vits-svc": "SVC 歌声转换",
+    "vc": "变声", "voice-conversion": "变声", "voice-conversion-model": "变声",
+    "wangzer-rvc": "RVC 音色", "recognition": "识别模型",
+}
+
+
+def _zh_tags(tags: list) -> list:
+    """HF 标签 → 中文可读标签数组（license/region/能力/语言 汉化，其余噪声略去）。"""
+    out: list = []
+    low2 = None
+    for t in tags or []:
+        low = str(t).lower()
+        if low in CAPABILITY_ZH:
+            low2 = CAPABILITY_ZH[low]
+            if low2 not in out:
+                out.append(low2)
+            continue
+        m = re.match(r"^license:([a-z0-9.\-]+)$", low)
+        if m:
+            lic = LICENSE_ZH.get(m.group(1)) or m.group(1)
+            out.append(f"{lic} 协议")
+            continue
+        m = re.match(r"^region:([a-z0-9]+)$", low)
+        if m:
+            r = REGION_ZH.get(m.group(1))
+            if r:
+                out.append(f"地区 · {r}")
+            continue
+        if re.fullmatch(r"[a-z]{2}", low) and low in LANG_ZH:
+            continue  # 语言单列，不进标签
+        # 其余噪声标签（arxiv:/bert/umap 等）不展示
+    return out
+
+
+def _zh_langs(tags: list) -> list:
+    langs = [LANG_ZH[str(t).lower()] for t in (tags or [])
+             if re.fullmatch(r"[a-z]{2}", str(t).lower()) and str(t).lower() in LANG_ZH]
+    seen, out = set(), []
+    for x in langs:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def make_hf_desc(m: dict, zh_tags: list) -> str:
+    """合成一句中文介绍：类型 · 能力 · 协议 · 语言（+英文描述原样若存在）。"""
+    pipeline = PIPELINE_ZH.get((m.get("pipeline_tag") or "").lower())
+    langs = _zh_langs(m.get("tags"))
+    parts = []
+    if pipeline:
+        parts.append(pipeline)
+    if zh_tags:
+        parts.append(" ".join(zh_tags))
+    if langs:
+        parts.append("语言 " + "/".join(langs))
+    card = m.get("cardData") or {}
+    desc = (card.get("description") or "").strip().replace("\n", " ")
+    if desc:
+        parts.append(desc[:140])
+    return " · ".join(parts) or "HuggingFace 公开语音模型仓库"
 
 
 def _hf_pick_files(repo: str) -> list[dict]:
@@ -183,7 +277,7 @@ def _manifest_to_search(m: dict) -> dict:
                       "size": 0, "type": "model", "url": m["download"]["url"]})
     return {"id": m["id"], "name": m["name"], "platform": "modelscope",
             "repo": m["repo"], "downloads": 0, "likes": 0, "tags": ["rvc"],
-            "prefs": m, "files": files}
+            "desc": m.get("desc"), "tags_zh": ["精选音色"], "prefs": m, "files": files}
 
 
 def repo_files_ms(model_id: str, _only: bool = False, recursive: bool = True) -> list[dict]:
