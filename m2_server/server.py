@@ -142,4 +142,10 @@ if _web_dist is not None:
 
 if __name__ == "__main__":
     _start_audio_audit()  # 音频设备残留自动巡检（FRD F4）
+    # 打开桌面端 = 拉起后端：自动把 m2_server/tools/web/dist 镜像同步到
+    # resources/backend 兜底副本（安装版回退用），详见 backend_autosync.py。
+    # 后台线程执行，失败/关闭（VM_BACKEND_AUTOSYNC=0）均不影响启动。
+    from backend_autosync import autostart_sync
+
+    autostart_sync(ROOT)
     uvicorn.run(app, host=cfg.SERVER_HOST, port=cfg.SERVER_PORT)

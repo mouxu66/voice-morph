@@ -11,6 +11,11 @@
     resolveProjectRoot 会优先命中 D:\变声（全量代码+模型），分发到别的机器才回退
     resources/backend，此时需要用户自备模型并用「运行环境体检」自查。
 
+    【2026-09-05 起】本脚本仅剩手动应急用途：后端每次启动（= 每次打开桌面端）
+    会通过 m2_server/backend_autosync.py 自动镜像同步 m2_server/tools/web_dist
+    到 resources/backend（VM_BACKEND_AUTOSYNC=0 可关），语义与本脚本一致
+    （MD5 比对 + 镜像清理多余文件）。
+
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\sync_backend.ps1
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\sync_backend.ps1 -WhatIfSync
