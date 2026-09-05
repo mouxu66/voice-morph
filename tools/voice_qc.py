@@ -290,7 +290,7 @@ def _pick_emb_ref(exp: str, test_in: Path, self_convert: bool) -> Path | None:
     return max(pool, key=lambda c: c[0])[1]
 
 
-def run_voice(exp: str) -> dict:
+def run_voice(exp: str, ref: str = "") -> dict:
     res = {"items": {}, "score": None, "pass": None, "input": "", "output": "",
            "emb_ref": "", "self_convert": False, "error": None,
            "error_stage": None, "hint": None}
@@ -320,6 +320,13 @@ def run_voice(exp: str) -> dict:
         res["hint"] = "为该音色准备一段 3~30 秒的参考/测试音频（voicebank 参考、clips 或数据集切片）"
         return res
     emb_ref = _pick_emb_ref(exp, test_in, self_convert)
+    if ref:
+        ref_p = Path(ref)
+        if not ref_p.exists():
+            res["error"] = f"显式参考音频不存在: {ref}"
+            res["error_stage"] = "参考音频"
+            return res
+        emb_ref = ref_p
     res.update(input=str(test_in), self_convert=self_convert,
                emb_ref=str(emb_ref) if emb_ref else "")
 
@@ -474,6 +481,7 @@ def main():
     p = argparse.ArgumentParser(description="音色入库自动质检")
     p.add_argument("--dataset", help="数据集预检：切片数/时长分布/响度/语速")
     p.add_argument("--voice", help="变声验收：测试音频经离线变声后四项指标 + score")
+    p.add_argument("--ref", help="显式指定声纹对比的目标音色参考音频（缺省自动查找 voicebank/数据集）")
     args = p.parse_args()
     if not args.dataset and not args.voice:
         p.error("至少指定 --dataset 或 --voice 之一")
@@ -495,7 +503,7 @@ def main():
         exp = args.voice
         print(f"[voice] 验收音色 {exp}", flush=True)
         try:
-            payload = run_voice(exp)
+            payload = run_voice(exp, args.ref or "")
         except Exception as e:
             payload = {"error": f"{type(e).__name__}: {e}", "error_stage": "未知",
                        "hint": "质检脚本意外崩溃，查看控制台堆栈定位", "items": {},

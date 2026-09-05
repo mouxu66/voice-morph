@@ -117,7 +117,8 @@ def _transcribe(path: str, vad_filter: bool = True, fast: bool = False) -> dict:
     fast=True 供级联实时链路：短句（0.5~6s）用 beam_size=1 + 免时间戳，
     解码耗时约降一半以上；切片转写/质检等离线场景仍走默认高质量参数。
     """
-    kw = dict(language="zh", vad_filter=vad_filter)
+    kw = dict(language="zh", vad_filter=vad_filter,
+              initial_prompt="以下是简体中文。\n")
     if fast:
         kw.update(beam_size=1, best_of=1, condition_on_previous_text=False,
                   without_timestamps=True)
