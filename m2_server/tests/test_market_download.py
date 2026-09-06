@@ -267,3 +267,45 @@ def test_api_cancel_without_task(iso_api):
     import server
     resp = TestClient(server.app).post("/api/market/cancel")
     assert resp.status_code == 409
+
+# ---- 2026-09-06 懒羊羊下载失败修复：Xet CDN 子域 + 回退不污染主源 url ----
+
+def test_whitelist_allows_hf_subdomains():
+    """HF 重定向到 Xet CDN（cas-bridge.xethub.hf.co 等 *.hf.co 子域）必须放行。"""
+    from market_download import _validate_url
+    _validate_url("https://cas-bridge.xethub.hf.co/xet-bridge-us/abc?Expires=1")
+    _validate_url("https://cdn-lfs.hf.co/x/y")
+    _validate_url("https://huggingface.co/a/b")
+
+
+def test_whitelist_rejects_lookalike_domains():
+    """白名单子域匹配不得放过伪装域（evil-hf.co / hf.co.evil.com）。"""
+    from market_download import _validate_url
+    import pytest
+    with pytest.raises(MarketError):
+        _validate_url("https://evil-hf.co/a.pth")
+    with pytest.raises(MarketError):
+        _validate_url("https://hf.co.evil.com/a.pth")
+    with pytest.raises(MarketError):
+        _validate_url("https://cas-bridge.xethub.hf.co.evil.com/a.pth")
+
+
+def test_mirror_failover_keeps_primary_url(mgr, server_url):
+    """回退镜像时 state.url 必须保持主源不变（此前被覆盖成镜像，误导排查）。"""
+    RangeHandler.ctx.requests["/fail_main2.bin"] = 0
+    mgr.start("vo2", f"{server_url}/fail_main2.bin", mirror_url=f"{server_url}/mirror.bin")
+    st = _wait(mgr)
+    assert st["status"] == "done"
+    # done 态清理 url 字段，这里单独验证回退标记
+    mgr2_state = mgr.progress()
+    assert mgr2_state.get("url") in (None, f"{server_url}/fail_main2.bin")
+
+
+def test_mirror_failover_failed_state_keeps_primary_url(mgr, server_url):
+    """主源与镜像都失败 → failed 态里 url 仍是主源（修复前显示的是镜像 URL）。"""
+    RangeHandler.ctx.requests["/always_fail.bin"] = 0
+    mgr.start("vo3", f"{server_url}/always_fail.bin", mirror_url=f"{server_url}/always_fail.bin")
+    st = _wait(mgr)
+    assert st["status"] == "failed"
+    assert st["url"] == f"{server_url}/always_fail.bin"
+    assert st.get("attempt_url") == f"{server_url}/always_fail.bin"

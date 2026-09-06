@@ -51,11 +51,10 @@ def _torch_header_ok(path: Path) -> bool:
         return True
     return False
 
-# 下载域名白名单：搜索/download 直链只允许这些主机
+# 下载域名白名单：搜索/download 直链只允许这些主机（含子域，见 _validate_url）
 ALLOWED_HOSTS = {
     "huggingface.co",
-    "cdn-lfs.huggingface.co",
-    "cdn-lfs-us-1.huggingface.co",
+    "hf.co",                    # 官方短域（重定向目标多为 *.hf.co 子域）
     "hf-mirror.com",
     "huggingface.cn",
     "modelscope.cn",
@@ -69,7 +68,8 @@ class MarketError(Exception):
 
 
 def _validate_url(url: str, allow_loopback: bool = False) -> None:
-    """域名白名单校验；不满足直接抛 MarketError。"""
+    """域名白名单校验（精确域或其子域，如 cas-bridge.xethub.hf.co 匹配 hf.co）；
+    不满足直接抛 MarketError。"""
     try:
         host = urllib.parse.urlparse(url).hostname or ""
     except ValueError as exc:
@@ -77,8 +77,10 @@ def _validate_url(url: str, allow_loopback: bool = False) -> None:
     host = host.lower()
     if allow_loopback and host in {"127.0.0.1", "localhost", "::1"}:
         return
-    if host not in ALLOWED_HOSTS:
-        raise MarketError(f"下载域名不在白名单: {host}")
+    for allowed in ALLOWED_HOSTS:
+        if host == allowed or host.endswith("." + allowed):
+            return
+    raise MarketError(f"下载域名不在白名单: {host}")
 
 
 class DownloadManager:
@@ -245,7 +247,9 @@ class DownloadManager:
                 except Exception as exc:  # noqa: BLE001 —— 网络/校验错误统一走回退
                     if attempt == 0 and mirror_url and not self._cancel_evt.is_set():
                         mirror_attempted = True
-                        self._set(force=True, url=mirror_url,
+                        # 只标记当前尝试源（attempt_url），不覆盖主源 url——
+                        # 覆盖会污染 state，失败后排查看到的"主源"其实是镜像
+                        self._set(force=True, attempt_url=mirror_url,
                                   error=f"主源失败({exc.__class__.__name__})，回退镜像重下")
                         # 主源中途失败时 .part 不可信：删除从头（hasher 由
                         # _download_to 的 offset==0 分支自动重置，避免旧字节混入 digest）
