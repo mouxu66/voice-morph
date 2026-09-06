@@ -16,6 +16,7 @@
     mine_api.py          /mine/*（音色挖掘/试听/保存）
     capture_api.py       /capture/loopback（桌宠内录）
     ab_api.py            /ab/run（盲听对比）
+    ab_chain.py          /ab/chain（多链路评测：RVC/Seed-VC/Qwen3 + 客观分）
     audio_api.py         /audio/*（设备配置/诊断看板/残留巡检）
     media_api.py         /media/{kind}/{name}（静态音频）
     rvc_dataset_api.py   /rvc/dataset/* /rvc/model
@@ -33,6 +34,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 import config as cfg
 from ab_api import router as ab_router
+from ab_chain import router as ab_chain_router
 from audio_api import _start_audio_audit, router as audio_router
 from audiobook import router as audiobook_router
 from capture_api import router as capture_router
@@ -161,6 +163,7 @@ app.include_router(mine_router)
 app.include_router(market_router)
 app.include_router(capture_router)
 app.include_router(ab_router)
+app.include_router(ab_chain_router)
 app.include_router(audio_router)
 app.include_router(media_router)
 app.include_router(rvc_dataset_router)

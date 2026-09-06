@@ -883,6 +883,43 @@ export async function abRun(voiceA: string, voiceB: string, text: string): Promi
   });
 }
 
+// ---- 多链路对比评测（A4：同一输入 × RVC/Seed-VC/Qwen3 + 客观分） ----
+
+export type ChainMetrics = { secs: number; nats: number; duration_s: number };
+
+export type ChainLink = {
+  status: "done" | "failed" | "skipped";
+  url: string;
+  error: string;
+  metrics: ChainMetrics | null;
+};
+
+export type AbChainResult = {
+  ok: boolean;
+  target_voice_id: string;
+  text: string;
+  chains: { rvc: ChainLink; seed_vc: ChainLink; qwen3: ChainLink };
+};
+
+export async function abChainRun(file: File, voiceId: string, text: string): Promise<AbChainResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("voice_id", voiceId);
+  if (text.trim()) form.append("text", text);
+  const res = await fetch(BASE + "/ab/chain", { method: "POST", body: form });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
 // ---- 音色包导出 / 导入 ----
 
 /** 音色包下载地址（<a href> 直接下载；includeRvc 附带 RVC 权重，可在别处直接实时变声） */
