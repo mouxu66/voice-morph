@@ -1,15 +1,24 @@
 """市场音色自动试听（A2）：状态机 / 源句缓存 / GPU 忙 skipped / 推理成功。
 
-全部本地完成：源句 TTS 用 monkeypatch 桩，RVC 推理子进程用 stub 替代，
-不碰真实网络、不用真实 GPU。
+全部本地完成：源句来自参考音真人声截段（不再用 TTS——本机 Qwen3-TTS 对真实
+锚点会吐纯静音，见 2026-09-06 懒羊羊试听静音修复），RVC 推理子进程用 stub
+替代，不碰真实网络、不用真实 GPU。
 """
 import json
 import time
 
+import numpy as np
 import pytest
+import soundfile as sf
 
 import config
 import market_preview as mp
+
+
+def _tone_wav(path, seconds: float = 2.0, sr: int = 16000, amp: float = 0.5):
+    """写一段有声 wav（正弦），用于真人声截段与 audible 校验的桩。"""
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False)
+    sf.write(str(path), (amp * np.sin(2 * np.pi * 220 * t)).astype(np.float32), sr)
 
 
 @pytest.fixture()
@@ -50,7 +59,7 @@ def fake_voicebank(tmp_path, monkeypatch):
     vb = tmp_path / "voicebank"
     d = vb / "vb_demo"
     d.mkdir(parents=True)
-    (d / "reference.wav").write_bytes(b"RIFFfake")
+    _tone_wav(d / "reference.wav", seconds=6.0)
     monkeypatch.setattr(mp, "VOICEBANK", vb)
     return vb
 
@@ -83,26 +92,30 @@ def test_preview_gpu_busy_marks_skipped(tmp_path, market_dir, monkeypatch):
     assert "离线变声任务正在运行" in st["error"]
 
 
-def test_ensure_source_caches_tts_once(tmp_path, fake_voicebank, market_dir, monkeypatch):
-    """源句缓存：首次用第一个 voicebank 参考合成并缓存，二次不重复调 TTS。"""
-    calls = {"n": 0}
-
-    def fake_tts(**kw):
-        calls["n"] += 1
-        import soundfile as sf
-        import numpy as np
-        p = tmp_path / "gen.wav"
-        sf.write(str(p), np.zeros(16000, dtype=np.float32), 16000)
-        return p.read_bytes()
-
-    import qwen3_tts
-    monkeypatch.setattr(qwen3_tts, "tts", fake_tts)
-
+def test_ensure_source_from_reference_and_cache(tmp_path, fake_voicebank, market_dir):
+    """源句来自参考音真人声截段（~5s 有声），缓存后二次调用不重新截取。"""
     src1 = mp._ensure_source()
+    x, sr = sf.read(str(src1))
+    assert x.size > 0 and float(np.sqrt(np.mean(x ** 2))) > mp._MIN_RMS
+    assert abs(len(x) / sr - 5.0) < 0.5        # 中段 ~5s
+    mtime1 = src1.stat().st_mtime
     src2 = mp._ensure_source()
-    assert src1 == src2 and src1.exists()
-    assert calls["n"] == 1, "源句应只合成一次并缓存"
-    assert src1.stat().st_size > 0
+    assert src2 == src1 and src2.stat().st_mtime == mtime1, "缓存有效时不应重新截取"
+
+
+def test_ensure_source_rejects_silent_cache_and_ref(tmp_path, fake_voicebank, market_dir):
+    """缓存静音 → 弃用重截；参考音全静音 → 可读报错，绝不返回静音源句。"""
+    # 缓存为静音 → 应被弃用并重建为有声
+    sf.write(str(mp._src_wav()), np.zeros(16000, dtype=np.float32), 16000)
+    src = mp._ensure_source()
+    assert float(np.sqrt(np.mean(sf.read(str(src))[0] ** 2))) > mp._MIN_RMS
+    # 参考音也静音 → RuntimeError
+    import soundfile as sf2
+    sf2.write(str(fake_voicebank / "vb_demo" / "reference.wav"),
+              np.zeros(16000, dtype=np.float32), 16000)
+    (mp._src_wav()).unlink(missing_ok=True)
+    with pytest.raises(RuntimeError, match="静音"):
+        mp._ensure_source()
 
 
 def test_ensure_source_fails_without_voicebank(tmp_path, market_dir, monkeypatch):
@@ -116,14 +129,11 @@ def test_ensure_source_fails_without_voicebank(tmp_path, market_dir, monkeypatch
 
 def test_generate_success_marks_ready(rvc_tmp, market_dir, tmp_path, monkeypatch):
     """完整链路（stub 推理子进程）→ 试听落盘，status=ready 且 url 可访问。"""
-    import soundfile as sf
-    import numpy as np
-
-    (mp.MARKET_DIR / "_preview_src.wav").write_bytes(b"RIFFsrc")  # 预置源句，避免触碰真实 TTS worker
+    _tone_wav(mp.MARKET_DIR / "_preview_src.wav")   # 预置有声源句缓存
 
     def fake_run(cmd, **kw):  # stub：模拟推理子进程写出 wav
         out = cmd[cmd.index("--output") + 1]
-        sf.write(out, np.sin(np.linspace(0, 100, 16000 * 3)).astype(np.float32), 16000)
+        _tone_wav(out, seconds=3.0)
         return type("R", (), {"returncode": 0, "stderr": "", "stdout": "OK"})
 
     monkeypatch.setattr(mp.subprocess, "run", fake_run)
@@ -136,6 +146,29 @@ def test_generate_success_marks_ready(rvc_tmp, market_dir, tmp_path, monkeypatch
     assert sc["status"] == "ready"
 
 
+def test_generate_silent_output_marks_failed(rvc_tmp, market_dir, tmp_path, monkeypatch):
+    """推理产出静音 wav → failed + 删除产物 + sidecar 带原因（绝不假 ready）。"""
+    _tone_wav(mp.MARKET_DIR / "_preview_src.wav")
+
+    def fake_run(cmd, **kw):
+        out = cmd[cmd.index("--output") + 1]
+        sf.write(out, np.zeros(16000, dtype=np.float32), 16000)
+        return type("R", (), {"returncode": 0, "stderr": "", "stdout": "OK"})
+
+    monkeypatch.setattr(mp.subprocess, "run", fake_run)
+    mp._do_generate("demo_voice")
+    st = mp.status("demo_voice")
+    assert st["status"] == "failed"
+    assert "静音" in st["error"]
+    assert not (mp.MARKET_DIR / "demo_voice_preview.wav").exists()
+
+
+def test_status_silent_wav_not_ready(rvc_tmp, market_dir):
+    """历史遗留的静音试听 wav 不得判 ready（懒羊羊线上 bug 回归）。"""
+    sf.write(str(mp._out_wav("demo_voice")), np.zeros(8000, dtype=np.float32), 16000)
+    assert mp.status("demo_voice")["status"] == "failed"
+
+
 def test_generate_dedupe_via_inflight(rvc_tmp, market_dir):
     """同一音色重复触发：第二次直接返 generating，不重复起线程。"""
     mp._inflight.add("demo_voice")
@@ -146,14 +179,11 @@ def test_generate_dedupe_via_inflight(rvc_tmp, market_dir):
 
 def test_generate_ready_short_circuits_inflight(rvc_tmp, market_dir, tmp_path, monkeypatch):
     """已 ready 的音色即使线程/重装也不重复触发。"""
-    import soundfile as sf
-    import numpy as np
-
-    (mp.MARKET_DIR / "_preview_src.wav").write_bytes(b"RIFFsrc")
+    _tone_wav(mp.MARKET_DIR / "_preview_src.wav")
 
     def fake_run(cmd, **kw):
         out = cmd[cmd.index("--output") + 1]
-        sf.write(out, np.zeros(16000, dtype=np.float32), 16000)
+        _tone_wav(out, seconds=3.0)
         return type("R", (), {"returncode": 0, "stderr": "", "stdout": "OK"})
 
     monkeypatch.setattr(mp.subprocess, "run", fake_run)

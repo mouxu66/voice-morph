@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
 """市场音色安装后自动试听（A2）。
 
-流程：固定一句中文 → 用本机任一 voicebank 参考音色经 TTS 合成源句（缓存到
+流程：从本机 voicebank 参考音截中段 ~5s 真人声当源句（缓存到
 outputs/market/_preview_src.wav）→ 走 RVC 离线推理（offline_vc_infer.py 子进程，
 与离线变声同链路）→ outputs/market/<id>_preview.wav，供市场卡片与音色库共用播放器。
 
+源句为何不用 TTS（2026-09-06 懒羊羊试听静音根因）：本机 Qwen3-TTS 对袋鼠等
+真实锚点的零样本克隆本就不可靠（会吐 1s 纯静音/乱码，见 A/B 试听结论），
+静音源句经 RVC 转换后仍是静音。RVC 是 voice-to-voice，直接用真人参考声
+当源句最稳，也最符合"试听音色品质"的目的。
+
 状态模型：每个音色一个 sidecar（outputs/market/<id>_preview.json）
-    ready      试听已生成（wav 存在）
+    ready      试听已生成（wav 存在且非静音）
     generating 生成中
     failed     生成失败（error 带原因）
     skipped    GPU 被占用/未加载，等前端手动重试（不静默排队，避免长任务堆积）
@@ -15,7 +20,7 @@ outputs/market/_preview_src.wav）→ 走 RVC 离线推理（offline_vc_infer.py
 并发与资源：
     - 单进程 _inflight 去重，同一音色同时只跑一个生成任务
     - 实时变声 / 级联变声 / 离线变声任一在跑 → 标记 skipped（它们正在占用 RVC GPU 环境）
-    - TTS 源句失败（无可用 voicebank 等）→ failed 可读原因，不只返「生成失败」
+    - 源句/输出做 RMS 静音校验，静音按 failed 处理（绝不把无声 wav 标成 ready）
 """
 import json
 import subprocess
@@ -23,10 +28,16 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
+
 import config as cfg
 from runtime import VOICEBANK
 
-# 固定试听句：约 4～5 秒，清晰中性，覆盖多种音色
+# 静音判定阈值：正常语音 RMS 远大于此；数字静音/近静音均视为无声
+_MIN_RMS = 1e-3
+
+# 固定试听句：约 4～5 秒，清晰中性，覆盖多种音色（仅文档用途；源句已改用真人声）
 PREVIEW_TEXT = "安装完成，这是一段自动生成的试听，请听听这个新音色的声音品质。"
 
 MARKET_DIR = cfg.OUTPUTS_DIR / "market"
@@ -62,10 +73,12 @@ def _read_sidecar(voice_id: str) -> dict:
 
 
 def status(voice_id: str) -> dict:
-    """试听状态：{status, url, error}。wav 存在优先判 ready（sidecar 可脏）。"""
+    """试听状态：{status, url, error}。wav 存在且非静音才判 ready（防坏文件假 ready）。"""
     wav = _out_wav(voice_id)
-    if wav.exists():
+    if wav.exists() and _audible(wav):
         return {"status": "ready", "url": preview_url(voice_id), "error": ""}
+    if wav.exists():
+        return {"status": "failed", "url": "", "error": "试听文件为静音，请重新生成"}
     sc = _read_sidecar(voice_id)
     return {"status": sc.get("status") or "missing", "url": "", "error": str(sc.get("error") or "")}
 
@@ -84,26 +97,64 @@ def _src_wav() -> Path:
     return MARKET_DIR / "_preview_src.wav"
 
 
-def _ensure_source() -> Path:
-    """返回试听源句 wav；无则用本机任一 voicebank 参考音色 TTS 合成并缓存。
+def _audible(path: Path) -> bool:
+    """wav 是否有声（RMS 高于静音阈值）；读不了/全静音都算无声。"""
+    try:
+        x, _sr = sf.read(str(path))
+        if x.ndim > 1:
+            x = x.mean(axis=1)
+        if x.size == 0:
+            return False
+        return float(np.sqrt(np.mean(np.asarray(x, dtype=np.float64) ** 2))) > _MIN_RMS
+    except Exception:
+        return False
 
-    抛 RuntimeError 时带可读原因（无 voicebank / TTS 失败）。
+
+def _extract_ref_segment(ref: Path, out: Path, want_s: float = 5.0) -> None:
+    """从参考音截中段 ~want_s 秒当试听源句（真人声；中段避开开头静音/呼吸声）。"""
+    x, sr = sf.read(str(ref))
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+    x = np.asarray(x, dtype=np.float32)
+    trim = max(1, len(x) // 10)               # 丢头尾各 10%
+    core = x[trim:-trim] if len(x) > 2 * trim else x
+    want = int(want_s * sr)
+    if len(core) <= want:
+        seg = core
+    else:                                      # 取中段
+        start = (len(core) - want) // 2
+        seg = core[start:start + want]
+    peak = float(np.max(np.abs(seg))) if seg.size else 0.0
+    if peak > 0:
+        seg = seg * (0.7 / peak)               # 归一到约 -3dB，避免源句过轻
+    tmp = out.with_name(out.stem + "_tmp.wav")   # 保持 .wav 扩展名，soundfile 靠它识别格式
+    sf.write(str(tmp), seg, sr)
+    tmp.replace(out)
+
+
+def _ensure_source() -> Path:
+    """返回试听源句 wav：缓存有效直接用；否则从 voicebank 参考音截真人声。
+
+    抛 RuntimeError 时带可读原因（无 voicebank / 参考音无声 / 截取失败）。
     """
     cached = _src_wav()
-    if cached.exists():
+    if cached.exists() and _audible(cached):
         return cached
     refs = sorted((p for p in VOICEBANK.iterdir() if p.is_dir() and (p / "reference.wav").exists()),
                   key=lambda p: p.name) if VOICEBANK.is_dir() else []
     if not refs:
-        raise RuntimeError("本机没有可用于合成试听源句的参考音色（音色库为空），请先自建一个音色")
-    vb = refs[0]
-    from qwen3_tts import tts as qwen_tts
-    bytes_out = qwen_tts(text=PREVIEW_TEXT, ref_audio=str(vb / "reference.wav"),
-                         ref_text="", language="Chinese", voice_id=vb.name)
-    tmp = _src_wav().with_suffix(".wav.tmp")
-    tmp.write_bytes(bytes_out)
-    tmp.replace(cached)
-    return cached
+        raise RuntimeError("本机没有可用于截取试听源句的参考音色（音色库为空），请先自建一个音色")
+    for vb in refs:                            # 第一个参考音全静音时顺延下一个
+        ref = vb / "reference.wav"
+        if not _audible(ref):
+            continue
+        try:
+            _extract_ref_segment(ref, cached)
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"从参考音截取源句失败：{e}")
+        if _audible(cached):
+            return cached
+    raise RuntimeError("所有参考音均为静音，无法截取试听源句，请检查音色库")
 
 
 # ---------------- 生成 ----------------
@@ -210,6 +261,9 @@ def _do_generate(voice_id: str):
         if r.returncode != 0 or not out.exists():
             tail = (r.stderr or r.stdout or "").strip().splitlines()[-3:]
             raise RuntimeError(" | ".join(tail)[-300:] or "无错误输出")
+        if not _audible(out):
+            out.unlink(missing_ok=True)
+            raise RuntimeError("输出为纯静音（源句或模型异常），请重试或换源音色")
         _mark(voice_id, "ready")
     except Exception as e:  # noqa: BLE001
         _mark(voice_id, "failed", f"RVC 推理失败：{e}")
