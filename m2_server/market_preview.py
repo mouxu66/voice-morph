@@ -250,11 +250,14 @@ def _do_generate(voice_id: str):
         _mark(voice_id, "failed", f"试听源句合成失败：{e}")
         return
     out = _out_wav(voice_id)
+    # pitch=+12：试听源句是真人参考声（音区低），目标多为卡通/女声等高音区音色，
+    # 不移调时 f0 跨度大易出电音（2026-09-06 懒羊羊实测 C/D 组对比后定稿）；
+    # index-rate=0.75：加大向目标音色检索的贴力度，压源音色残留。
     cmd = [str(RVC_VENV_PY), str(INFER_PY),
            "--pth", str(pth),
            "--index", _find_index(voice_id),
            "--input", str(src), "--output", str(out),
-           "--pitch", "0", "--index-rate", "0.3"]
+           "--pitch", "12", "--index-rate", "0.75"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
                            encoding="utf-8", errors="replace", cwd=str(cfg.RVC_ROOT))
