@@ -16,10 +16,13 @@
   - 单安装互斥；下载中不能并发安装（复用 DownloadManager 的互斥）
 """
 import json
+import os
 import re
 import shutil
 import threading
 import time
+
+from pathlib import Path
 
 from market_download import DownloadManager, MarketError, get_manager, _torch_header_ok
 import config as cfg
@@ -315,10 +318,32 @@ class InstallManager:
         weights_dir = cfg.RVC_ROOT / "assets" / "weights"
         log_dir.mkdir(parents=True, exist_ok=True)
         weights_dir.mkdir(parents=True, exist_ok=True)
+        # 同一份权重要出现在两处（logs 供训练/检索，assets/weights 供实时变声）：
+        # 优先硬链接（同盘，省一份 55–72MB），不支持时回退复制。
         shutil.copy2(src_pth, log_dir / f"{voice_id}.pth")
-        shutil.copy2(src_pth, weights_dir / f"{voice_id}.pth")
+        _link_or_copy(log_dir / f"{voice_id}.pth", weights_dir / f"{voice_id}.pth")
         if src_idx.exists():
             shutil.copy2(src_idx, log_dir / f"added_{voice_id}.index")
+
+
+def _link_or_copy(src: Path, dst: Path) -> str:
+    """把 src 落到 dst：先试硬链接（省磁盘），失败则复制。返回实际方式。
+
+    logs/<id>/<id>.pth 与 assets/weights/<id>.pth 内容恒等，硬链接后两份目录项
+    指向同一份数据；卸载时两处都删，空间照常释放。跨盘/非 NTFS/权限受限时
+    OSError，静默回退为复制，行为与改动前一致。
+    """
+    if dst.exists():
+        try:
+            dst.unlink()
+        except OSError:
+            pass
+    try:
+        os.link(src, dst)
+        return "hardlink"
+    except OSError:
+        shutil.copy2(src, dst)
+        return "copy"
 
 
 def _pct_of(idx: int, phases: tuple) -> float:

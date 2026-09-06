@@ -530,3 +530,49 @@ def test_api_market_repo_returns_readme(monkeypatch, readme_cache):
     resp2 = TestClient(server.app).get("/api/market/repo?repo=other/repo&platform=hf")
     assert resp2.status_code == 200
     assert resp2.json()["readme"] is None
+
+# ---------------- 权重落位：硬链接省一份，失败回退复制 ----------------
+
+def test_link_or_copy_content_identical(tmp_path):
+    """_link_or_copy 后 dst 内容与 src 一致（无论走硬链接还是复制）。"""
+    from market_install import _link_or_copy
+    src = tmp_path / "a.pth"
+    src.write_bytes(PTH_DATA)
+    dst = tmp_path / "b.pth"
+    _link_or_copy(src, dst)
+    assert dst.read_bytes() == PTH_DATA
+
+
+def test_link_or_copy_overwrites_existing(tmp_path):
+    """目标已存在（覆盖重装场景）时先清掉再落，不抛异常。"""
+    from market_install import _link_or_copy
+    src = tmp_path / "a.pth"
+    src.write_bytes(PTH_DATA)
+    dst = tmp_path / "b.pth"
+    dst.write_bytes(b"\x80\x02stale-old-content")
+    _link_or_copy(src, dst)
+    assert dst.read_bytes() == PTH_DATA
+
+
+def test_link_or_copy_falls_back_to_copy(monkeypatch, tmp_path):
+    """os.link 抛 OSError（跨盘/非 NTFS）→ 静默回退复制，结果仍正确。"""
+    import market_install as mi
+    monkeypatch.setattr(mi.os, "link", lambda s, d: (_ for _ in ()).throw(OSError("cross-device")))
+    src = tmp_path / "a.pth"
+    src.write_bytes(PTH_DATA)
+    dst = tmp_path / "b.pth"
+    assert mi._link_or_copy(src, dst) == "copy"
+    assert dst.read_bytes() == PTH_DATA
+
+
+def test_stage_writes_both_locations(monkeypatch, tmp_path, mgr, fake_rvc):
+    """_stage 仍把权重落满 logs/ 与 assets/weights/ 两处（实时变声两处都要）。"""
+    ins = InstallManager(manager=mgr)
+    src = mgr.download_dir / "dual.pth"
+    mgr.download_dir.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(PTH_DATA)
+    ins._stage("dual")
+    log_pth = fake_rvc / "logs" / "dual" / "dual.pth"
+    w_pth = fake_rvc / "assets" / "weights" / "dual.pth"
+    assert log_pth.read_bytes() == PTH_DATA
+    assert w_pth.read_bytes() == PTH_DATA
