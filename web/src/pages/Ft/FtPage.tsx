@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import {
   ArrowRight, BookOpenText, CheckCircle2, ListMusic,
   Loader2, Mic, RefreshCw, Scissors, Square, Undo2, Upload, Wand2,
@@ -33,6 +33,9 @@ export function FtPage(props: ReturnType<typeof useFt>) {
 
   const stage = status?.stage ?? "new";
   const ftVoices = Array.from(new Set([...(status ? [status.voice_id] : []), ...voices.filter((v) => v.kind === "finetuned").map((v) => v.id)])).filter(Boolean);
+  // C2 续训：可选训练起点——默认 base 全量重训，或从任一已发布微调音色继续（含自身）
+  const [initFrom, setInitFrom] = useState("");
+  const publishedFtVoices = voices.filter((v) => v.kind === "finetuned").map((v) => v.id);
 
   const card = "rounded-xl border border-border bg-card/80 p-5 shadow-md backdrop-blur-md";
   const btn = "inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50";
@@ -222,14 +225,26 @@ export function FtPage(props: ReturnType<typeof useFt>) {
             {qcMsg && <p className="mt-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2.5 py-1.5 text-xs leading-5 text-yellow-600">{qcMsg}</p>}
           </div>
 
-          <div className="mt-4 flex items-center gap-3">
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             {[8, 12, 20].map((n) => (
-              <button key={n} type="button" onClick={() => void startTrain(n)} className={`${btn} ${n === 12 ? "bg-primary text-primary-foreground hover:bg-primary/90" : "border border-border bg-card text-muted-foreground hover:text-foreground"}`}>
+              <button key={n} type="button" onClick={() => void startTrain(n, initFrom)} className={`${btn} ${n === 12 ? "bg-primary text-primary-foreground hover:bg-primary/90" : "border border-border bg-card text-muted-foreground hover:text-foreground"}`}>
                 <Wand2 className="h-4 w-4" />训练 {n} 轮
               </button>
             ))}
-            <span className="text-xs text-muted-foreground">8GB 显存约 0.5~1 分钟/轮，12 轮约 10 分钟</span>
+            <select value={initFrom} onChange={(e) => setInitFrom(e.target.value)}
+              className="ml-auto rounded-lg border border-border bg-card px-2.5 py-2 text-xs text-muted-foreground outline-none focus:border-primary" title="训练起点：从零开始或基于已有微调模型继续">
+              <option value="">训练起点：base 全量重训</option>
+              {publishedFtVoices.map((v) => (
+                <option key={v} value={v}>续训自「{v}」（快，增量加料）</option>
+              ))}
+            </select>
           </div>
+          {initFrom && (
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
+              将从「{initFrom}」已训练的模型继续（素材仍是当前录音，适合补录后增量加料）；想完全重来请切回 base 全量重训。
+            </p>
+          )}
+          <p className="mt-2 text-xs text-muted-foreground">8GB 显存约 0.5~1 分钟/轮，12 轮约 10 分钟</p>
         </div>
       )}
 

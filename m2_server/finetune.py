@@ -8,6 +8,8 @@
   2. GET  /api/ft/status          处理进度 / 切片数 / 总时长 / 转写抽查
   3. POST /api/ft/train           prepare_data(tokenizer 提 codes) → sft_8gb.py 训练
      GET  /api/ft/train_status    阶段/loss/显存峰值/日志尾（进程级，重启可追踪）
+     可选 init_from=<已发布音色>：从其 ft_model/最新 ckpt 续训（C2 增量加料），
+     不传则从 base 全量重训
   4. POST /api/ft/audition        x-vector 与微调模型 A/B 试听
      POST /api/ft/publish          微调模型入音色库（voicebank/<id>/ft_model），
      之后 /tts 对该音色自动走微调合成（见 qwen3_tts.tts 的 meta 分流）
@@ -300,11 +302,33 @@ def _selfheal_training(voice_id: str) -> None:
         _set_status(voice_id, stage="error", error="训练进程已退出且无 checkpoint（自愈）")
 
 
-def _train_job(voice_id: str, epochs: int):
+def _resolve_init_from(init_from: str) -> str:
+    """把 init_from（来源音色的 voice_id）解析为可加载的完整模型目录。
+
+    C2 续训：只接受 voicebank/<id>/ft_model（已发布）或 ft_output/<id>/ 最新
+    checkpoint（训完未入库），复用 _published_model 的解析顺序，防止任意路径注入。
+    空串返回 ""（从 base 全量重训，行为与旧版一致）。
+    """
+    src = (init_from or "").strip()
+    if not src:
+        return ""
+    if not is_valid_voice_id(src):
+        raise HTTPException(400, f"init_from 音色名不合法：{src}")
+    try:
+        return str(_published_model(src))
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"解析续训起点失败：{exc}")
+
+
+def _train_job(voice_id: str, epochs: int, init_model: str = ""):
     d = _vdir(voice_id)
     log = d / "train_run.log"
+    base_desc = f"续训自 {init_model}" if init_model else "base 全量"
     log.write_text(
-        f"=== FT TRAIN {voice_id} {time.strftime('%F %T')} epochs={epochs} ===\n", "utf-8")
+        f"=== FT TRAIN {voice_id} {time.strftime('%F %T')} epochs={epochs} "
+        f"init={base_desc} ===\n", "utf-8")
     try:
         # 1) tokenizer 提 codes（阻塞，~30s）
         _set_status(voice_id, stage="training", message="提取音频 codes(tokenizer)…")
@@ -327,6 +351,8 @@ def _train_job(voice_id: str, epochs: int):
                "--output_model_path", str(ROOT / "tts_trial" / "ft_output" / voice_id)]
         if anchor_path:
             cmd += ["--anchor_ref", anchor_path]
+        if init_model:
+            cmd += ["--init_model_path", init_model]
         _set_status(voice_id, stage="training", message="训练中…")
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
@@ -408,7 +434,7 @@ def ft_corpus_restore(voice_id: str):
 
 
 @router.post("/ft/train")
-def ft_train(voice_id: str, epochs: int = 12):
+def ft_train(voice_id: str, epochs: int = 12, init_from: str = ""):
     st = _status(voice_id)
     if st.get("stage") not in ("ready", "trained", "error"):
         raise HTTPException(400, f"当前状态 {st.get('stage')} 不可启动训练")
@@ -417,6 +443,11 @@ def ft_train(voice_id: str, epochs: int = 12):
     tr = _TRAIN.get(voice_id) or {}
     if tr.get("running") or _find_train_pid(voice_id):
         raise HTTPException(400, "该音色已在训练中")
+
+    # C2 续训：init_from = 已有音色的 voice_id（voicebank ft_model 或最新 ckpt）。
+    # 校验放在开跑前，路径解析失败直接 400，不进后台线程。
+    init_model = _resolve_init_from(init_from)
+    _set_status(voice_id, init_from=init_model)   # 独立落盘，不随体检失败丢失
 
     # 训练前语料体检（A3）：不阻断训练，但把等级分布与警告落进 status 并返回，
     # 让"这批料里有多少脏样本"在开跑前就可见。体检失败一律静默。
@@ -434,9 +465,10 @@ def ft_train(voice_id: str, epochs: int = 12):
     except Exception:  # noqa: BLE001 —— 体检失败绝不阻断训练
         pass
 
-    threading.Thread(target=_train_job, args=(voice_id, epochs), daemon=True).start()
+    threading.Thread(target=_train_job, args=(voice_id, epochs, init_model),
+                     daemon=True).start()
     return {"ok": True, "voice_id": voice_id, "epochs": epochs,
-            "qc": qc, "qc_warning": qc_warning}
+            "init_from": init_model, "qc": qc, "qc_warning": qc_warning}
 
 
 @router.get("/ft/train_status")

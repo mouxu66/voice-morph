@@ -243,10 +243,10 @@ export function useFt() {
     }
   }, [voiceId]);
 
-  const startTrain = useCallback(async (epochs: number) => {
+  const startTrain = useCallback(async (epochs: number, initFrom = "") => {
     setError("");
     try {
-      const res = await ftTrain(voiceId, epochs);
+      const res = await ftTrain(voiceId, epochs, initFrom);
       // 后端开跑前做了语料体检：有脏样本就提示（不阻断，用户可自行决定）
       if (res.qc_warning) setQcMsg(res.qc_warning);
     } catch (e) {

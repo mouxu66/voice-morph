@@ -839,13 +839,15 @@ export async function getFtStatus(voiceId: string): Promise<FtStatus> {
   return jsonFetch<FtStatus>(`/ft/status?voice_id=${encodeURIComponent(voiceId)}`);
 }
 
-export async function ftTrain(voiceId: string, epochs = 12): Promise<{
+export async function ftTrain(voiceId: string, epochs = 12, initFrom = ""): Promise<{
   ok: boolean;
   epochs: number;
+  init_from?: string;
   qc?: { count: number; grades: { A: number; B: number; C: number; D: number }; ok_count: number; avg_score: number };
   qc_warning?: string;
 }> {
-  return jsonFetch(`/ft/train?voice_id=${encodeURIComponent(voiceId)}&epochs=${epochs}`, { method: "POST" });
+  const initQ = initFrom ? `&init_from=${encodeURIComponent(initFrom)}` : "";
+  return jsonFetch(`/ft/train?voice_id=${encodeURIComponent(voiceId)}&epochs=${epochs}${initQ}`, { method: "POST" });
 }
 
 export async function getFtTrainStatus(voiceId: string): Promise<FtTrainStatus> {
