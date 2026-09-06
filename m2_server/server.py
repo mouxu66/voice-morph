@@ -7,7 +7,7 @@
 本文件只负责：创建 app、可选 Token 鉴权中间件、CORS、注册全部路由、
 托管前端静态资源。业务实现按域拆在同目录各模块（行为与拆分前一致）：
 
-    system_api.py        /health /diagnose
+    system_api.py        /health /diagnose /system/storage（占用看板+清理）
     voices_api.py        /voices /voicebank（建库/删除/音色包导出导入）
     raw_media_api.py     /raw_videos /upload/video /open/folder
     pipeline_api.py      /pipeline/*（提轨→去BGM→切片，进度轮询）

@@ -1,10 +1,12 @@
-"""系统级接口：/health 健康检查 + /diagnose 环境体检。
+"""系统级接口：/health 健康检查 + /diagnose 环境体检 + /system/storage 占用看板（B2）。
 
 自 server.py 拆出（行为不变）；app 装配见 server.py。
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 import config as cfg
+import storage
 from rvc_common import find_pth
 
 router = APIRouter(prefix="/api")
@@ -118,3 +120,27 @@ def diagnose():
         })
 
     return {"all_ok": all(i["ok"] for i in items), "cuda": cuda, "items": items}
+
+
+# ---------------- 存储占用看板（B2） ----------------
+
+
+class StorageCleanRequest(BaseModel):
+    targets: list[str] = Field(..., description="要清理的目标 key（见 /system/storage）")
+
+
+@router.get("/system/storage")
+def system_storage():
+    """各目录占用统计 + 所在盘剩余空间；供设置面板做选择性清理。
+
+    cleanable=false 的目标（voicebank / RVC 实时权重）只展示，不接受清理。
+    """
+    return {"disks": storage.disk_usage(), "items": storage.scan()}
+
+
+@router.post("/system/storage/clean")
+def system_storage_clean(req: StorageCleanRequest):
+    """清理指定目标：只删文件，受保护项跳过并返回原因；单文件失败不中断。"""
+    if not req.targets:
+        raise HTTPException(status_code=400, detail="targets 不能为空")
+    return storage.clean(req.targets)
