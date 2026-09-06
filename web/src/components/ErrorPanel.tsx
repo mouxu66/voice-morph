@@ -1,5 +1,6 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { AlertTriangle, Check, Copy } from "lucide-react"
+import { notify } from "@/lib/notify"
 
 /**
  * 统一报错卡片：像普通网页一样把「哪里出错 + 完整错误原文」摊开，
@@ -10,7 +11,7 @@ import { AlertTriangle, Check, Copy } from "lucide-react"
  * - hint：可选的排查建议
  */
 export function ErrorPanel({
-  title, detail, hint, className = "",
+  title, detail, hint,   className = "",
 }: {
   title: string
   detail?: string | null
@@ -18,6 +19,15 @@ export function ErrorPanel({
   className?: string
 }) {
   const [copied, setCopied] = useState(false)
+  // 错误出现（或内容更新）时同步弹一次全局 toast，让「埋在表单里的内联报错」也显眼可见。
+  // 用 ref 记录已提醒的内容，避免同一错误反复挂载时重复弹窗。
+  const firedRef = useRef<string | null>(null)
+  useEffect(() => {
+    const key = `${title}::${detail ?? ""}`
+    if (firedRef.current === key) return
+    firedRef.current = key
+    notify.error(title, detail ?? undefined)
+  }, [title, detail])
   const text = [title, detail, hint ? `排查建议：${hint}` : null]
     .filter(Boolean)
     .join("\n")

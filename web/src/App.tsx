@@ -7,6 +7,7 @@ import { EnvHealth } from "@/components/EnvHealth"
 import { StoragePanel } from "@/components/StoragePanel"
 import { PetGuide } from "@/components/PetGuide"
 import { UpdateDialog } from "@/components/UpdateDialog"
+import { ToastViewport } from "@/lib/notify"
 import { appVersion, hasUpdate as canCheckUpdate, onUpdateAvailable, type UpdateCheck } from "@/lib/electron"
 import { useAppStore } from "@/store/useAppStore"
 import { ThemeMode, getStoredTheme, setStoredTheme } from "@/theme"
@@ -234,6 +235,8 @@ export default function App() {
       </main>
       {/* 页面内导览桌宠：随路由切换介绍当前页 */}
       <PetGuide page={location.pathname} enabled={petGuideEnabled} />
+      {/* 全局错误通知：任何未捕获异常 / 用户操作失败都会在此弹窗（见 lib/notify.tsx） */}
+      <ToastViewport />
     </div>
   )
 }
