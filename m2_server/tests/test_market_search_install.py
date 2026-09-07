@@ -97,7 +97,10 @@ def _wait_install(ins, timeout=20.0):
 # ---------------- 精选清单 ----------------
 def test_manifest_structure_and_whitelist():
     items = get_manifest()
-    assert 5 <= len(items) <= 10
+    assert 12 <= len(items) <= 40  # 2026-09-07 扩充后 18 条
+    # voice_id 不重复（安装按 voice_id 落位，重名会互相覆盖）
+    vids = [it["voice_id"] for it in items]
+    assert len(vids) == len(set(vids))
     for it in items:
         assert it["voice_id"] and it["voice_id"].replace("_", "").isalnum()
         assert it["name"] and it["platform"] in ("hf", "modelscope")

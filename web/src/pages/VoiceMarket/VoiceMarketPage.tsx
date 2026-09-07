@@ -320,14 +320,28 @@ export function MarketPage(p: VoiceMarket) {
   )
 }
 
-// HMCL 风格卡片：左侧大缩略图占位 + 右侧标签/标题/简介/底部操作；两种数据源共用外壳。
+// HMCL 风格卡片：左侧大缩略图 + 右侧标签/标题/简介/底部操作；两种数据源共用外壳。
+// 缩略图优先用 manifest 配图（item.image），无图按分类着色 + 首字母占位。
+const CATEGORY_TONE: Array<[RegExp, string, string]> = [
+  [/卡通|角色/, "from-amber-500/25 to-amber-500/5", "ring-amber-500/30"],
+  [/女声/, "from-pink-500/25 to-pink-500/5", "ring-pink-500/30"],
+  [/男声/, "from-sky-500/25 to-sky-500/5", "ring-sky-500/30"],
+]
+const DEFAULT_TONE = ["from-violet-500/25 to-violet-500/5", "ring-violet-500/30"] as const
+
 function MarketThumb({ item }: { item: MarketItem }) {
-  const platformTone = item.platform === "hf" ? "from-amber-500/20 to-amber-500/5" : "from-violet-500/20 to-violet-500/5"
-  const ring = item.platform === "hf" ? "ring-amber-500/30" : "ring-violet-500/30"
+  const tone = CATEGORY_TONE.find(([re]) => re.test(item.category ?? "")) ?? null
+  const [grad, ring] = tone ?? DEFAULT_TONE
   const Initial = (item.name || item.repo || "?").trim().charAt(0).toUpperCase()
   return (
-    <div className={cn("relative flex h-20 w-20 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ring-1", platformTone, ring)}>
-      <span className="font-display text-2xl font-semibold text-foreground/80">{Initial}</span>
+    <div className={cn("relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-gradient-to-br ring-1", grad, ring)}>
+      {item.image ? (
+        <img src={item.image} alt="" loading="lazy" className="h-full w-full object-cover" />
+      ) : (
+        <span className="flex h-full w-full items-center justify-center font-display text-2xl font-semibold text-foreground/80">
+          {Initial}
+        </span>
+      )}
       <span className="absolute bottom-1 right-1 rounded-md bg-background/85 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground shadow-sm">
         {PLATFORM_LABEL[item.platform] ?? item.platform}
       </span>

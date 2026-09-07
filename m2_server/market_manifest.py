@@ -47,15 +47,16 @@ def _hf_pair(display: str, path: str) -> dict:
     }
 
 
-def _ms_entry(voice_id: str, display: str, path: str, has_index: bool) -> dict:
+def _ms_entry(voice_id: str, display: str, path: str, has_index: bool, desc: str = "",
+              category: str = "跨源·魔搭") -> dict:
     entry = {
         "id": f"ms-{voice_id}",
         "voice_id": voice_id,
         "name": display,
         "platform": "modelscope",
         "repo": HUDDD_REPO,
-        "category": "跨源·魔搭",
-        "desc": f"魔搭下载源音色「{display}」（hudddd 精选集合 15+ 款）",
+        "category": category,
+        "desc": desc or f"魔搭下载源音色「{display}」（hudddd 精选集合 15+ 款）",
         "size_hint_mb": 55 if voice_id != "kiki" else 110,
         "license": "未标注·仅供个人学习研究，勿商用",
         "download": {"url": _ms_resolve(HUDDD_REPO, f"models/{path}/{path}.pth")},
@@ -65,72 +66,94 @@ def _ms_entry(voice_id: str, display: str, path: str, has_index: bool) -> dict:
     return entry
 
 
-# 推荐清单：HF 源 5 款（卡通/女声/男声，避开真人真人姓名/名人类目）
-# + 魔搭源 2 款（lanyangyang 与 HF 源同音色做双源对照；kiki 带 index 可实时变声）
+def _hf_entry(item_id: str, voice_id: str, display: str, category: str, desc: str,
+              size_hint_mb: int = 72) -> dict:
+    """HF 精选条目（weights/<名>.pth + indices/<名>.index 成对，均已实测存在）。"""
+    return {
+        "id": item_id,
+        "voice_id": voice_id,
+        "name": display,
+        "platform": "hf",
+        "repo": CHAYE_REPO,
+        "category": category,
+        "desc": desc,
+        "size_hint_mb": size_hint_mb,
+        "license": "社区自训·仅供个人使用，勿商用",
+        **_hf_pair(display, display),
+    }
+
+
+# 精选清单（2026-09-07 扩充：7 → 18 条）：
+# 选品红线：不收真人政治人物/真人网红名条目（仓库里的奥巴马/特朗普/丁真/卢本伟一律不上）。
+# HF 源 chaye741/RVC-Voice-Models：33 对 pth+index 实测齐全，精选 13 款（卡通/女声/男声）。
+# 魔搭源 hudddd/Retrieval-based-Voice：46 款，精选 5 款（lanyangyang 双源对照 / kiki 带 index /
+#   sunwukong·paidaxing 角色向 / guaiguai 甜系）。
 MANIFEST: list[dict] = [
-    {
-        "id": "katoong-lanyangyang",
-        "voice_id": "katoong_lanyangyang",
-        "name": "卡通·懒羊羊",
-        "platform": "hf",
-        "repo": CHAYE_REPO,
-        "category": "卡通",
-        "desc": "《喜羊羊》懒羊羊经典懒散腔，同款音色也上架魔搭源可切换下载",
-        "size_hint_mb": 72,
-        "license": "社区自训·仅供个人使用，勿商用（卡通角色 IP 亦有风险）",
-        "demo": "https://huggingface.co/chaye741/RVC-Voice-Models/resolve/main/weights/卡通-懒羊羊.pth",
-        **_hf_pair("卡通-懒羊羊", "卡通-懒羊羊"),
-    },
-    {
-        "id": "katoong-manbo",
-        "voice_id": "katoong_manbo",
-        "name": "卡通·曼波",
-        "platform": "hf",
-        "repo": CHAYE_REPO,
-        "category": "卡通",
-        "desc": "网络热梗“曼波”卡通音色，活泼奶音，适合娱乐玩梗",
-        "size_hint_mb": 72,
-        "license": "社区自训·仅供个人使用，勿商用",
-        **_hf_pair("卡通-曼波", "卡通-曼波"),
-    },
-    {
-        "id": "nv-oi",
-        "voice_id": "nv_oi",
-        "name": "女声·OI",
-        "platform": "hf",
-        "repo": CHAYE_REPO,
-        "category": "女声",
-        "desc": "元气少女声线，日常/游戏/直播通用款",
-        "size_hint_mb": 72,
-        "license": "社区自训·仅供个人使用，勿商用",
-        **_hf_pair("女声-OI", "女声-OI"),
-    },
-    {
-        "id": "nv-yuner",
-        "voice_id": "nv_yuner",
-        "name": "女声·云儿青春",
-        "platform": "hf",
-        "repo": CHAYE_REPO,
-        "category": "女声",
-        "desc": "清亮青春系女声，吐字清晰，适合朗诵/播报向内容",
-        "size_hint_mb": 72,
-        "license": "社区自训·仅供个人使用，勿商用",
-        **_hf_pair("女声-云儿青春", "女声-云儿青春"),
-    },
-    {
-        "id": "male-yansang",
-        "voice_id": "male_yansang",
-        "name": "男声·烟嗓",
-        "platform": "hf",
-        "repo": CHAYE_REPO,
-        "category": "男声",
-        "desc": "低沉磁性烟嗓，适合故事/电台/低沉人设",
-        "size_hint_mb": 72,
-        "license": "社区自训·仅供个人使用，勿商用",
-        **_hf_pair("男声-烟嗓", "男声-烟嗓"),
-    },
-    _ms_entry("lanyangyang", "懒羊羊（魔搭源）", "lanyangyang", has_index=False),
-    _ms_entry("kiki", "Kiki（魔搭源）", "kiki", has_index=True),
+    _hf_entry(
+        "katoong-lanyangyang", "katoong_lanyangyang", "卡通·懒羊羊", "卡通",
+        "《喜羊羊》懒羊羊经典懒散腔，同款音色也上架魔搭源可切换下载",
+    ),
+    _hf_entry(
+        "katoong-manbo", "katoong_manbo", "卡通·曼波", "卡通",
+        "网络热梗“曼波”卡通音色，活泼奶音，适合娱乐玩梗",
+    ),
+    _hf_entry(
+        "nv-oi", "nv_oi", "女声·OI", "女声",
+        "元气少女声线，日常/游戏/直播通用款",
+    ),
+    _hf_entry(
+        "nv-yuner", "nv_yuner", "女声·云儿青春", "女声",
+        "清亮青春系女声，吐字清晰，适合朗诵/播报向内容",
+    ),
+    _hf_entry(
+        "nv-peipei", "nv_peipei", "女声·佩佩", "女声",
+        "俏皮活泼女声，尾音上扬有灵气，游戏开黑/日常整活",
+    ),
+    _hf_entry(
+        "nv-beijixing", "nv_beijixing", "女声·北极星", "女声",
+        "清冷疏离系女声，气质向，适合氛围感内容与角色配音",
+    ),
+    _hf_entry(
+        "nv-caomei", "nv_caomei", "女声·草莓", "女声",
+        "甜系软糯女声，甜度拉满，适合卖萌系主播与甜妹人设",
+    ),
+    _hf_entry(
+        "nv-yalin-yujie", "nv_yalin_yujie", "女声·雅琳御姐", "女声",
+        "成熟御姐音，气场足，适合女王人设/解说/播报",
+    ),
+    _hf_entry(
+        "nv-xuejie", "nv_xuejie", "女声·学姐", "女声",
+        "温柔学姐音，亲切耐听，适合讲书/陪伴类内容",
+    ),
+    _hf_entry(
+        "male-yansang", "male_yansang", "男声·烟嗓", "男声",
+        "低沉磁性烟嗓，适合故事/电台/低沉人设",
+    ),
+    _hf_entry(
+        "male-nanshen", "male_nanshen", "男声·男神", "男声",
+        "清亮通透男声，标准发音，适合播音/解说/正式场合",
+    ),
+    _hf_entry(
+        "male-qingnian", "male_qingnian", "男声·青年", "男声",
+        "日常青年男声，自然口语，游戏/直播/日常通用",
+    ),
+    _hf_entry(
+        "male-qingnian-shouruo", "male_qingnian_shouruo", "男声·青年瘦弱", "男声",
+        "偏瘦弱少年感男声，适合少年角色/弱势人设配音",
+    ),
+    _ms_entry("lanyangyang", "懒羊羊（魔搭源）", "lanyangyang", has_index=False,
+              desc="魔搭下载源音色「懒羊羊」，与 HF 源同款可对照下载速度"),
+    _ms_entry("kiki", "Kiki（魔搭源）", "kiki", has_index=True,
+              desc="魔搭源女声，带配套 index，特征检索更贴，可实时变声"),
+    _ms_entry("sunwukong", "孙悟空（魔搭源）", "sunwukong", has_index=False,
+              desc="西游角色向音色，戏腔感足，整活/角色扮演",
+              category="角色"),
+    _ms_entry("paidaxing", "派大星（魔搭源）", "paidaxing", has_index=False,
+              desc="海绵宝宝角色向卡通音色，憨憨奶音，玩梗整活",
+              category="角色"),
+    _ms_entry("guaiguai", "乖乖（魔搭源）", "guaiguai", has_index=False,
+              desc="甜系女声，温顺软和，陪伴/哄睡向内容",
+              category="女声"),
 ]
 
 

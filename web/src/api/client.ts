@@ -1042,6 +1042,8 @@ export type MarketItem = {
   repo: string;
   category?: string;
   desc?: string;
+  /** 精选条目可选配图 URL（本地 /media 托管或远程直链）；无图时前端用分类色首字母占位 */
+  image?: string;
   size_hint_mb?: number;
   license?: string;
   demo?: string;
