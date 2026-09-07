@@ -27,6 +27,7 @@ API_TIMEOUT = 20
 
 # 每个搜索结果的排序权重（HF API 的 downloads/likes 在镜像上时常为 0，用 id 相关性兜底）
 SEARCH_LIMIT_MAX = 50
+HF_FETCH_MAX = 200           # 单次向 HF 拉取的最大条数（分页窗口上限；翻页=拉 offset+页宽 再切片）
 FILE_LOOKUP_TOP = 3          # 搜索时对前 N 条做文件探测（每模型一次 tree 请求）
 PTH_RE = re.compile(r"\.pth$", re.IGNORECASE)
 
@@ -54,16 +55,20 @@ def _get_json(url: str, **params) -> list | dict:
         raise MarketError(f"请求失败: {url} ({exc.__class__.__name__})") from exc
 
 
-def search_hf(query: str, limit: int = 10) -> list[dict]:
-    """HF 模型搜索（hf-mirror Hub API）。
+def search_hf(query: str, limit: int = 10, offset: int = 0) -> list[dict]:
+    """HF 模型搜索（hf-mirror Hub API），支持 offset 翻页。
 
-    文件探测代价高（每模型一次 tree 请求），只对前 FILE_LOOKUP_TOP 条执行，
-    其余仅返回仓库元数据；安装文件列表请走 /market/repo 或精选清单。
+    HF Hub API 未暴露稳定的 skip 语义 → 翻页用窗口切片：每次拉
+    min(offset+limit, HF_FETCH_MAX) 条再切 [offset:offset+limit]。
+    文件探测代价高（每模型一次 tree 请求），只对第一页前 FILE_LOOKUP_TOP 条执行，
+    深页仅返回仓库元数据；安装文件列表请走 /market/repo 或精选清单。
     """
     limit = max(1, min(int(limit), SEARCH_LIMIT_MAX))
-    results = _get_json(f"{HF_API}/api/models", search=query, limit=limit, full=True) or []
+    offset = max(0, int(offset))
+    window = min(offset + limit, HF_FETCH_MAX)
+    results = _get_json(f"{HF_API}/api/models", search=query, limit=window, full=True) or []
     items: list[dict] = []
-    for m in results[:limit]:
+    for m in results[offset:offset + limit]:
         repo = m.get("id", "")
         if not repo:
             continue
@@ -80,7 +85,7 @@ def search_hf(query: str, limit: int = 10) -> list[dict]:
             "desc": make_hf_desc(m, zh),
             "tags_zh": zh,
             "updated_at": (m.get("lastModified") or "")[:10],
-            "files": _hf_pick_files(repo) if len(items) < FILE_LOOKUP_TOP else [],
+            "files": _hf_pick_files(repo) if (offset == 0 and len(items) < FILE_LOOKUP_TOP) else [],
         })
     return items
 
@@ -365,22 +370,43 @@ def repo_files_ms(model_id: str, _only: bool = False, recursive: bool = True) ->
 
 
 # ---------------- 统一入口 ----------------
-def search(platform: str, query: str, limit: int = 10) -> dict:
-    """统一搜索入口：platform ∈ hf / modelscope / all。"""
+def search(platform: str, query: str, limit: int = 10, skip: int = 0) -> dict:
+    """统一搜索入口：platform ∈ hf / modelscope / all，skip 翻页。
+
+    翻页语义：结果流 = 魔搭块（仅首页计入，精确/精选匹配天然有界）+ HF 无限流。
+    返回 {items, note, next_skip}；next_skip=None 表示没有更多
+    （魔搭块有界 / HF 超过 HF_FETCH_MAX 窗口 / 拉到末页）。
+    """
     platform = (platform or "all").lower()
+    skip = max(0, int(skip))
     note = ""
-    out: list[dict] = []
-    if platform in ("hf", "all"):
+    if platform == "modelscope":
+        out: list[dict] = []
         try:
-            out += search_hf(query, limit if platform == "hf" else max(1, limit // 2))
+            r = search_ms(query, limit)
+            out = r["items"][skip:skip + limit]
+            if r["note"]:
+                note = r["note"]
         except MarketError as exc:
-            note += f"HF: {exc}; "
-    if platform in ("modelscope", "all"):
+            note = f"魔搭: {exc}"
+        return {"items": out, "note": note.strip(" ;") or None, "next_skip": None}
+
+    ms_block: list[dict] = []
+    if platform == "all":
         try:
-            r = search_ms(query, limit if platform == "modelscope" else max(1, limit // 2))
-            out += r["items"]
-            if r["note"] and platform == "modelscope":
-                note += r["note"]
+            ms_block = search_ms(query, max(1, limit // 2))["items"]
         except MarketError as exc:
             note += f"魔搭: {exc}; "
-    return {"items": out, "note": note.strip(" ;") or None}
+    m = len(ms_block)
+    try:
+        hf_page = search_hf(query, limit, offset=max(0, skip - m))
+    except MarketError as exc:
+        hf_page = []
+        note += f"HF: {exc}; "
+    if skip < m:
+        out = (ms_block[skip:] + hf_page)[:limit]
+    else:
+        out = hf_page[:limit]
+    has_more = len(hf_page) >= limit and bool(out)
+    return {"items": out, "note": note.strip(" ;") or None,
+            "next_skip": skip + len(out) if has_more else None}

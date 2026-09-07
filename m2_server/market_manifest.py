@@ -47,8 +47,8 @@ def _hf_pair(display: str, path: str) -> dict:
     }
 
 
-def _ms_entry(voice_id: str, display: str, path: str, has_index: bool, desc: str = "",
-              category: str = "跨源·魔搭") -> dict:
+def _ms_entry(voice_id: str, display: str, path: str, has_index: bool = False,
+              desc: str = "", category: str = "跨源·魔搭") -> dict:
     entry = {
         "id": f"ms-{voice_id}",
         "voice_id": voice_id,
@@ -154,6 +154,32 @@ MANIFEST: list[dict] = [
     _ms_entry("guaiguai", "乖乖（魔搭源）", "guaiguai", has_index=False,
               desc="甜系女声，温顺软和，陪伴/哄睡向内容",
               category="女声"),
+    # ---- 魔搭源扩容（2026-09-07，文件实测 ~52M；除 sisi 外均无 index：试听/离线可用，
+    #      实时变声缺 index 检索会弱。命名按拼音可读化，音质未逐个人耳验收）----
+    _ms_entry("sisi", "丝丝（魔搭源）", "sisi", has_index=True,
+              desc="魔搭源女声，带配套 index，可用于实时变声", category="女声"),
+    _ms_entry("yujie2", "御姐（魔搭源）", "yujie2",
+              desc="魔搭源成熟御姐声线，气场足，适合女王人设/解说", category="女声"),
+    _ms_entry("tianmei", "甜美女声（魔搭源）", "tianmei",
+              desc="魔搭源甜美女声，适合日常聊天/游戏开黑", category="女声"),
+    _ms_entry("keruanshaonv", "可软少女（魔搭源）", "keruanshaonv",
+              desc="魔搭源软萌少女声线，直播/陪玩向", category="女声"),
+    _ms_entry("guanguanv1", "关关（魔搭源）", "guanguanV1",
+              desc="魔搭源音色「关关」V1 版", category="女声"),
+    _ms_entry("tangguo", "糖果（魔搭源）", "tangguo",
+              desc="魔搭源甜系音色「糖果」", category="女声"),
+    _ms_entry("yueyue", "月月（魔搭源）", "yueyue",
+              desc="魔搭源音色「月月」", category="女声"),
+    _ms_entry("xiaohuanhuan", "小欢欢（魔搭源）", "xiaohuanhuan",
+              desc="魔搭源活泼音色「小欢欢」", category="女声"),
+    _ms_entry("lili", "莉莉（魔搭源）", "lili",
+              desc="魔搭源音色「莉莉」", category="女声"),
+    _ms_entry("qiqi", "奇奇（魔搭源）", "qiqi",
+              desc="魔搭源音色「奇奇」", category="女声"),
+    _ms_entry("diyin", "低音（魔搭源）", "diyin",
+              desc="魔搭源低音声线，适合低沉人设/电台", category="男声"),
+    _ms_entry("lulu", "露露（魔搭源）", "lulu",
+              desc="魔搭源音色「露露」", category="女声"),
 ]
 
 

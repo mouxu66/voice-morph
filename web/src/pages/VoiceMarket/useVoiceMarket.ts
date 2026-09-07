@@ -145,12 +145,14 @@ export function useVoiceMarket() {
     }
   }, [])
 
-  // ---- 搜索 ----
+  // ---- 搜索（skip 翻页：next_skip 非空即可继续「加载更多」） ----
   const [searching, setSearching] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [platform, setPlatform] = useState<MarketPlatformFilter>("all")
   const [results, setResults] = useState<MarketItem[] | null>(null)
   const [searchNote, setSearchNote] = useState<string | null>(null)
+  const [nextSkip, setNextSkip] = useState<number | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
 
   const doSearch = useCallback(async (q: string, pf: MarketPlatformFilter) => {
     const query = q.trim()
@@ -159,22 +161,45 @@ export function useVoiceMarket() {
     setSearchNote(null)
     setRepoOpen(null)
     try {
-      const r = await marketSearch(query, pf, 50)
+      const r = await marketSearch(query, pf, 50, 0)
       setResults(r.items)
       setSearchNote(r.note)
+      setNextSkip(r.next_skip ?? null)
     } catch (e) {
       setResults([])
+      setNextSkip(null)
       setSearchNote(e instanceof Error ? e.message : "搜索失败")
     } finally {
       setSearching(false)
     }
   }, [])
 
+  /** 加载更多：按 nextSkip 续拉一页并按 id 去重追加（HMCL 式往下刷）。 */
+  const loadMore = useCallback(async () => {
+    const query = searchQuery.trim()
+    if (loadingMore || nextSkip == null || !query) return
+    setLoadingMore(true)
+    try {
+      const r = await marketSearch(query, platform, 50, nextSkip)
+      setResults((cur) => {
+        const seen = new Set((cur ?? []).map((x) => x.id))
+        return [...(cur ?? []), ...r.items.filter((x) => !seen.has(x.id))]
+      })
+      setNextSkip(r.next_skip ?? null)
+      if (r.note) setSearchNote(r.note)
+    } catch (e) {
+      setSearchNote(e instanceof Error ? e.message : "加载更多失败")
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [loadingMore, nextSkip, searchQuery, platform])
+
   // 清空搜索：丢弃结果与提示、收起文件面板，回到精选态
   const clearSearch = useCallback(() => {
     setSearchQuery("")
     setResults(null)
     setSearchNote(null)
+    setNextSkip(null)
     setRepoOpen(null)
   }, [])
 
@@ -353,9 +378,11 @@ export function useVoiceMarket() {
   const previewLocks = useRef<Set<string>>(new Set())
 
   /** 确保该音色试听可用：缺失/生成中就触发任务并轮询到终结（ready/failed/skipped）。
-   *  force=true 时忽略终结态强制重新生成（用于「重试」按钮）。 */
+   *  force=true 时忽略终结态强制重新生成（用于「重试」按钮）。
+   *  download：音色未安装时的权重直链——后端先下载到市场缓存再转换，
+   *  该缓存与安装共用，之后一键安装免二次下载（2026-09-07 先试听后安装）。 */
   const ensurePreview = useCallback(
-    async (voice_id: string, force = false) => {
+    async (voice_id: string, force = false, download?: MarketFileSlot | null) => {
       if (!voice_id || previewLocks.current.has(voice_id)) return
       previewLocks.current.add(voice_id)
       const put = (r: MarketPreview) => setPreviews((v) => ({ ...v, [voice_id]: r }))
@@ -365,13 +392,16 @@ export function useVoiceMarket() {
           put(r)
           return
         }
+        // 乐观置 generating：预下载模型的试听可达数分钟，卡片要立即有反馈
+        put({ status: "generating", url: "", error: "" })
         try {
-          r = await marketPreviewTrigger(voice_id)
+          r = await marketPreviewTrigger(voice_id, download ?? undefined)
         } catch (e) {
           put({ status: "failed", url: "", error: e instanceof Error ? e.message : "试听生成启动失败" })
           return
         }
-        for (let i = 0; i < 90; i++) {              // 最长 ~3 分钟（TTS 首启可能较慢）
+        const maxTries = download ? 300 : 90       // 带下载的试听最长 ~10 分钟；纯转换 ~3 分钟
+        for (let i = 0; i < maxTries; i++) {
           await new Promise((res) => setTimeout(res, 2000))
           try {
             r = await marketPreviewStatus(voice_id)
@@ -409,6 +439,34 @@ export function useVoiceMarket() {
   /** 资源是否可试听（真音频文件才能播；.pth 权重不算） */
   const isPlayable = useCallback((url?: string) => !!url && AUDIO_RE.test(url) && !/\.pth$/i.test(url), [])
 
+  /** 未安装音色的「先试听」：解析条目可用的权重直链（清单/prefs/快速槽）后触发生成。 */
+  const previewItem = useCallback(
+    (item: MarketItem) => {
+      if (isPlayable(item.demo)) return          // 仓库自带演示音频，直接播，不走生成
+      const prefs = item.prefs
+      const vid = prefs?.voice_id ?? item.voice_id ?? ""
+      const dl: MarketFileSlot | null = prefs?.download
+        ? { url: prefs.download.url, mirror_url: prefs.download.mirror_url, sha256: prefs.download.sha256 }
+        : item.download
+          ? { url: item.download.url, mirror_url: item.download.mirror_url, sha256: item.download.sha256 }
+          : null
+      if (vid && dl) {
+        void ensurePreview(vid, false, dl)
+        return
+      }
+      const quick = quickSlot(item)
+      if (quick) {
+        const qid = deriveVoiceId(quick.download.name, item.repo)
+        void ensurePreview(qid, false, {
+          url: quick.download.url ?? "",
+          mirror_url: quick.download.mirror_url,
+          sha256: quick.download.sha256,
+        })
+      }
+    },
+    [ensurePreview, quickSlot, isPlayable],
+  )
+
   /** 文件面板里的演示音频（优先 demo/试听/sample 命名的） */
   const demoAudio = useCallback(
     (files: MarketFile[]): MarketFile | null => {
@@ -443,6 +501,7 @@ export function useVoiceMarket() {
     rollbackVoice,
     previews,
     ensurePreview,
+    previewItem,
     searching,
     searchQuery,
     setSearchQuery,
@@ -450,6 +509,9 @@ export function useVoiceMarket() {
     setPlatform,
     results,
     searchNote,
+    nextSkip,
+    loadingMore,
+    loadMore,
     doSearch,
     clearSearch,
     repoOpen,

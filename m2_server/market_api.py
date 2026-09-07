@@ -51,6 +51,8 @@ class InstallRequest(BaseModel):
 
 class PreviewRequest(BaseModel):
     voice_id: str = Field(..., description="要生成试听的市场音色 ID")
+    download: FileSlot | None = Field(
+        None, description="音色未安装时的权重直链（先下载到市场缓存再转换，之后安装免重复下载）；已安装可省略")
 
 
 @router.get("/market/manifest")
@@ -60,13 +62,15 @@ def market_manifest():
 
 
 @router.get("/market/search")
-def market_search(q: str = "", platform: str = "all", limit: int = 10):
-    """双源搜索：platform ∈ hf / modelscope / all；魔搭源返回降级说明。"""
+def market_search(q: str = "", platform: str = "all", limit: int = 10, skip: int = 0):
+    """双源搜索：platform ∈ hf / modelscope / all；skip 翻页（next_skip=None 即没有更多）。
+
+    魔搭源返回降级说明。
+    """
     query = q.strip()
     if not query:
         raise HTTPException(400, "缺少搜索关键词 q")
-    data = search(platform, query, limit)
-    return data
+    return search(platform, query, limit, skip)
 
 
 @router.get("/market/repo")
@@ -173,8 +177,15 @@ def market_preview_status(voice_id: str = ""):
 
 @router.post("/market/preview")
 def market_preview_trigger(req: PreviewRequest):
-    """触发市场音色试听生成（后台线程，同一音色去重；GPU 忙返回 skipped）。"""
-    return market_preview.generate(req.voice_id.strip())
+    """触发市场音色试听生成（后台线程，同一音色去重；GPU 忙返回 skipped）。
+
+    未安装音色带 download 直链 → 先下载权重到市场缓存（与安装共用）再转换；
+    已安装音色忽略 download，直接用本地模型。
+    """
+    vid = req.voice_id.strip()
+    dl = ({"url": req.download.url, "mirror_url": req.download.mirror_url,
+           "sha256": req.download.sha256} if req.download else None)
+    return market_preview.generate(vid, download=dl)
 
 
 @router.post("/market/download")

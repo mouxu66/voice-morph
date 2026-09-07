@@ -288,3 +288,80 @@ def test_mark_preserves_existing_fingerprint(rvc_tmp, market_dir):
     mp._mark("demo_voice", "failed", "boom")
     sc = json.loads(mp._sidecar("demo_voice").read_text("utf-8"))
     assert sc["src_fp"] == fp
+
+# ---------------- 未安装先试听（预下载模型 → 转换，2026-09-07） ----------------
+
+def test_generate_with_download_uses_staged_override(market_dir, monkeypatch, tmp_path):
+    """未安装 + 带直链 → 走 _worker_pre：_ensure_staged 拿暂存权重，转换用覆盖参数。"""
+    monkeypatch.setattr(mp, "_gpu_busy", lambda: "")
+    rec = {}
+
+    def fake_staged(vid, dl):
+        rec["dl"] = dict(dl)
+        return tmp_path / "staged.pth"
+
+    def fake_gen(vid, pth_override=None, index_override=None):
+        rec["pth"] = pth_override
+        rec["idx"] = index_override
+
+    monkeypatch.setattr(mp, "_ensure_staged", fake_staged)
+    monkeypatch.setattr(mp, "_do_generate", fake_gen)
+    mp._inflight.clear()
+    r = mp.generate("pv_item", download={"url": "https://hf-mirror.com/u/rvc.pth"})
+    assert r["status"] == "generating"
+    _wait_inflight("pv_item")
+    assert rec["pth"] == tmp_path / "staged.pth"
+    assert rec["idx"] == "", "暂存权重无 index，应显式传空跳过检索"
+    assert rec["dl"]["url"].endswith(".pth")
+
+
+def test_generate_installed_ignores_download(market_dir, rvc_tmp, monkeypatch):
+    """已安装音色即使带了直链也走本地模型路径（不做预下载）。"""
+    monkeypatch.setattr(mp, "_gpu_busy", lambda: "")
+    rec = {}
+    monkeypatch.setattr(mp, "_do_generate", lambda vid, **kw: rec.update(kw, vid=vid))
+    mp._inflight.clear()
+    mp.generate("demo_voice", download={"url": "https://hf-mirror.com/x/x.pth"})
+    _wait_inflight("demo_voice")
+    assert rec["vid"] == "demo_voice"
+    assert "pth_override" not in rec and "index_override" not in rec
+
+
+def test_ensure_staged_reuses_valid_cache(monkeypatch, tmp_path):
+    """缓存里已有有效权重 → 直接复用，不发起下载（安装时 DownloadManager 幂等同理）。"""
+    staged = tmp_path / "vx.pth"
+    staged.write_bytes(b"PK\x03\x04" + b"\x00" * 16)
+
+    class FakeMgr:
+        download_dir = tmp_path
+
+        def start(self, **kw):  # noqa: ANN003
+            raise AssertionError("缓存有效时不应重新下载")
+
+    import market_download as md
+    monkeypatch.setattr(md, "get_manager", lambda: FakeMgr())
+    assert mp._ensure_staged("vx", {"url": "https://hf-mirror.com/x/x.pth"}) == staged
+
+
+def test_ensure_staged_downloads_when_missing(monkeypatch, tmp_path):
+    """缓存缺失 → 用 DownloadManager 起 preview_<id> 任务下载到 <voice_id>.pth。"""
+    staged = tmp_path / "vy.pth"
+
+    class FakeMgr:
+        download_dir = tmp_path
+        started = None
+
+        def start(self, name, url, mirror_url=None, sha256=None, filename=None):
+            self.started = (name, filename)
+            staged.write_bytes(b"\x80\x02" + b"\x00" * 16)   # 模拟下载完成落盘
+            return {"status": "downloading"}
+
+        def task_status(self, name):
+            return {"status": "done"}
+
+    fake = FakeMgr()
+    import market_download as md
+    monkeypatch.setattr(md, "get_manager", lambda: fake)
+    out = mp._ensure_staged("vy", {"url": "https://hf-mirror.com/y/y.pth"})
+    assert out == staged
+    assert fake.started == ("preview_vy", "vy.pth"), "任务名 preview_*、文件名与安装共用 <id>.pth"

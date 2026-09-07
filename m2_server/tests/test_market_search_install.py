@@ -778,3 +778,46 @@ def test_install_downloads_pth_and_index_in_parallel(parallel_server, mgr, fake_
     assert (fake_rvc / "logs" / "para" / "added_para.index").read_bytes() == IDX_DATA
     assert _ParallelHandler.ctx.peak >= 2, \
         f"pth 与 index 应并行下载，实际峰值并发 {_ParallelHandler.ctx.peak}"
+
+
+# ---------------- 搜索翻页（skip / next_skip，2026-09-07） ----------------
+
+def test_search_hf_window_offset(monkeypatch):
+    """翻页 = 窗口切片：向 HF 拉 offset+limit 条再切，深页不做文件探测。"""
+    calls = []
+
+    def fake(url, **params):
+        calls.append(dict(params))
+        return [{"id": f"u/model-{i}"} for i in range(120)]
+
+    monkeypatch.setattr(ms, "_get_json", fake)
+    items = ms.search_hf("q", limit=50, offset=50)
+    assert [i["repo"] for i in items] == [f"u/model-{i}" for i in range(50, 100)]
+    assert calls[0]["limit"] == 100, "窗口应为 offset+limit"
+    assert all(i["files"] == [] for i in items), "深页不做 tree 探测"
+    assert ms.search_hf("q", limit=50, offset=200) == [], "超过 HF_FETCH_MAX 为空"
+    assert calls[-1]["limit"] == ms.HF_FETCH_MAX
+
+
+def test_search_pagination_next_skip(monkeypatch):
+    monkeypatch.setattr(ms, "_get_json",
+                        lambda url, **params: [{"id": f"u/m-{i}"} for i in range(80)])
+    r1 = ms.search("hf", "q", limit=50, skip=0)
+    assert len(r1["items"]) == 50 and r1["next_skip"] == 50
+    r2 = ms.search("hf", "q", limit=50, skip=50)
+    assert r2["items"][0]["repo"] == "u/m-50"
+    assert r2["next_skip"] is None, "末页（30 条 < 50）→ 没有更多"
+
+
+def test_search_skip_beyond_ms_block(monkeypatch):
+    """平台=all：结果流 = 魔搭块（首页计入）+ HF 续流，skip 跨块不重不漏。"""
+    monkeypatch.setattr(ms, "search_ms",
+                        lambda q, limit: {"items": [{"id": f"ms-{i}"} for i in range(3)],
+                                          "note": ""})
+    monkeypatch.setattr(ms, "_get_json",
+                        lambda url, **params: [{"id": f"hf-{i}"} for i in range(60)])
+    r1 = ms.search("all", "q", limit=50, skip=0)
+    assert r1["items"][0]["id"] == "ms-0" and r1["items"][3]["id"] == "hf-0"
+    assert r1["next_skip"] == 50
+    r2 = ms.search("all", "q", limit=50, skip=50)
+    assert r2["items"][0]["id"] == "hf-47", "skip=50 = 3 魔搭 + 47 HF"

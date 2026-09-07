@@ -261,9 +261,11 @@ def _find_pth(voice_id: str):
     return l if l.exists() else None
 
 
-def generate(voice_id: str) -> dict:
+def generate(voice_id: str, download: dict | None = None) -> dict:
     """触发试听生成（后台线程）。同一音色去重；GPU 忙 → skipped 不排队。
 
+    download 提供直链且音色未安装时 → 先把权重下载到市场缓存再转换
+    （与安装共用同一份暂存文件，之后一键安装直接复用、免二次下载）。
     立即返回当前状态；真实生成在 daemon 线程里推进并落 sidecar。
     """
     st = status(voice_id)
@@ -273,7 +275,10 @@ def generate(voice_id: str) -> dict:
         if voice_id in _inflight:
             return {"status": "generating", "url": "", "error": ""}
         _inflight.add(voice_id)
-    threading.Thread(target=_worker, args=(voice_id,), daemon=True).start()
+    if download and _find_pth(voice_id) is None:
+        threading.Thread(target=_worker_pre, args=(voice_id, dict(download)), daemon=True).start()
+    else:
+        threading.Thread(target=_worker, args=(voice_id,), daemon=True).start()
     return {"status": "generating", "url": "", "error": ""}
 
 
@@ -293,7 +298,65 @@ def _worker(voice_id: str):
             _inflight.discard(voice_id)
 
 
-def _do_generate(voice_id: str):
+def _worker_pre(voice_id: str, download: dict):
+    """未安装音色的试听线程：先确保权重落地（必要时下载），再用暂存权重转换。"""
+    try:
+        busy = _gpu_busy()
+        if busy:
+            _mark(voice_id, "skipped", f"{busy}，可稍后手动重试生成试听")
+            return
+        try:
+            pth = _ensure_staged(voice_id, download)
+        except Exception as e:  # noqa: BLE001
+            _mark(voice_id, "failed", f"试听模型下载失败：{e}")
+            return
+        _do_generate(voice_id, pth_override=pth, index_override="")
+    finally:
+        with _lock:
+            _inflight.discard(voice_id)
+
+
+def _ensure_staged(voice_id: str, download: dict) -> Path:
+    """未安装音色的试听前置：确保权重已落在市场下载缓存（与安装共用同一份）。
+
+    - 缓存里已有有效权重 → 直接复用（后续一键安装时 DownloadManager 的幂等
+      分支看到同一文件也会跳过下载，等于试听白嫖了安装的下载量）。
+    - 缺失 → 用 DownloadManager 起一个 preview_<id> 任务下载（白名单/断点
+      续传/信号量限流与安装同链路，进度同样进下载托盘），轮询到 done。
+    """
+    from market_download import get_manager, _torch_header_ok
+    mgr = get_manager()
+    staged = mgr.download_dir / f"{voice_id}.pth"
+    if staged.exists() and _torch_header_ok(staged):
+        return staged
+    name = f"preview_{voice_id}"
+    mgr.start(name=name, url=download.get("url") or "",
+              mirror_url=download.get("mirror_url"),
+              sha256=download.get("sha256"), filename=f"{voice_id}.pth")
+    deadline = time.time() + 3600
+    while time.time() < deadline:
+        st = mgr.task_status(name)
+        s = st.get("status")
+        if s == "done":
+            break
+        if s in ("failed", "cancelled", "interrupted"):
+            raise RuntimeError(str(st.get("error") or s))
+        time.sleep(0.5)
+    else:
+        raise RuntimeError("下载超时")
+    if not staged.exists() or not _torch_header_ok(staged):
+        raise RuntimeError("下载产物不是有效的 PyTorch 存档")
+    return staged
+
+
+def _do_generate(voice_id: str, pth_override: Path | None = None,
+                 index_override: str | None = None):
+    """执行一次试听转换并落 sidecar。
+
+    pth_override/index_override：未安装音色用市场暂存权重转换时由 _worker_pre
+    传入（暂存权重无 index，index_override="" 显式跳过检索）；
+    缺省时走已安装路径（voicebank/logs 下找权重与 index）。
+    """
     if status(voice_id)["status"] == "ready":
         return
     # GPU 忙是瞬时状态 → 优先标 skipped（前端可重试），比 failed 更友好
@@ -304,8 +367,8 @@ def _do_generate(voice_id: str):
     if not RVC_VENV_PY.exists():
         _mark(voice_id, "failed", "RVC 运行环境缺失，无法生成试听（请先安装/配置 RVC 整合包）")
         return
-    pth = _find_pth(voice_id)
-    if not pth or not pth.exists():
+    pth = pth_override if pth_override is not None else _find_pth(voice_id)
+    if not pth or not Path(pth).exists():
         # Windows 上 Path("") == "." 且 exists() 为 True，_find_pth 必须返回 None
         # 而不是空 Path，否则"未安装"的音色会带空路径去 torch.load(".") →
         # 报误导性的 PermissionError: '.'。
@@ -318,9 +381,10 @@ def _do_generate(voice_id: str):
         _mark(voice_id, "failed", f"试听源句合成失败：{e}")
         return
     out = _out_wav(voice_id)
+    index = index_override if index_override is not None else _find_index(voice_id)
     cmd = [str(RVC_VENV_PY), str(INFER_PY),
            "--pth", str(pth),
-           "--index", _find_index(voice_id),
+           "--index", index,
            "--input", str(src), "--output", str(out),
            "--pitch", str(_PITCH), "--index-rate", str(_INDEX_RATE)]
     try:

@@ -1094,8 +1094,9 @@ export async function marketSearch(
   q: string,
   platform: string = "all",
   limit: number = 10,
-): Promise<{ items: MarketItem[]; note: string | null }> {
-  const qs = `q=${encodeURIComponent(q)}&platform=${encodeURIComponent(platform)}&limit=${limit}`;
+  skip: number = 0,
+): Promise<{ items: MarketItem[]; note: string | null; next_skip: number | null }> {
+  const qs = `q=${encodeURIComponent(q)}&platform=${encodeURIComponent(platform)}&limit=${limit}&skip=${skip}`;
   return jsonFetch(`/market/search?${qs}`);
 }
 
@@ -1168,11 +1169,14 @@ export async function marketPreviewStatus(voice_id: string): Promise<MarketPrevi
   return jsonFetch(`/market/preview?voice_id=${encodeURIComponent(voice_id)}`);
 }
 
-export async function marketPreviewTrigger(voice_id: string): Promise<MarketPreview> {
+export async function marketPreviewTrigger(
+  voice_id: string,
+  download?: MarketFileSlot | null,
+): Promise<MarketPreview> {
   return jsonFetch("/market/preview", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ voice_id }),
+    body: JSON.stringify({ voice_id, download: download ?? undefined }),
   });
 }
 

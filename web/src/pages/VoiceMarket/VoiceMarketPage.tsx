@@ -6,6 +6,7 @@ import {
   CloudDownload,
   FileAudio,
   FolderOpen,
+  Headphones,
   Loader2,
   RefreshCw,
   RotateCcw,
@@ -285,11 +286,27 @@ export function MarketPage(p: VoiceMarket) {
               没有找到相关仓库，换个关键词试试。
             </div>
           ) : (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {sorted!.map((item) => (
-                <SearchResultCard key={item.id} item={item} p={p} />
-              ))}
-            </div>
+            <>
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {sorted!.map((item) => (
+                  <SearchResultCard key={item.id} item={item} p={p} />
+                ))}
+              </div>
+              {p.nextSkip != null && (
+                <div className="mt-6 flex flex-col items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void p.loadMore()}
+                    disabled={p.loadingMore}
+                    className="inline-flex items-center gap-2 rounded-md border border-border bg-card/85 px-5 py-2.5 text-sm font-medium text-foreground shadow-md transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    {p.loadingMore ? <Loader2 className="h-4 w-4 animate-spin text-primary" /> : <RefreshCw className="h-4 w-4" />}
+                    {p.loadingMore ? "加载中…" : "加载更多"}
+                  </button>
+                  <span className="text-[11px] text-muted-foreground">已加载 {resultCount} 个 · 数据源最多可翻 200 条</span>
+                </div>
+              )}
+            </>
           )
         ) : p.manifest === null ? (
           <div className="flex items-center gap-2 rounded-2xl border border-border bg-card/80 px-4 py-6 text-sm text-muted-foreground shadow-md backdrop-blur-xl">
@@ -322,6 +339,52 @@ export function MarketPage(p: VoiceMarket) {
 
 // HMCL 风格卡片：左侧大缩略图 + 右侧标签/标题/简介/底部操作；两种数据源共用外壳。
 // 缩略图优先用 manifest 配图（item.image），无图按分类着色 + 首字母占位。
+
+/** 未安装音色的试听槽（先试听后安装）：ready 出播放器，其余态出可点按钮。
+ *  首次试听需先下载模型到市场缓存（约 sizeHintMb），该缓存安装时直接复用。 */
+function PreviewSlot({ voiceId, p, onTrigger, sizeHintMb }: {
+  voiceId: string
+  p: VoiceMarket
+  onTrigger: () => void
+  sizeHintMb?: number
+}) {
+  const prev = p.previews[voiceId]
+  if (prev?.status === "ready") {
+    return <StudioAudioPlayer src={mediaUrl(prev.url)} label="试听" className="min-w-0 flex-1" />
+  }
+  if (prev?.status === "generating") {
+    return (
+      <span
+        className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-muted-foreground"
+        title="首次试听需先下载模型并转换，完成后一键安装可免重复下载"
+      >
+        <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />试听准备中…
+      </span>
+    )
+  }
+  if (prev?.status === "failed" || prev?.status === "skipped") {
+    return (
+      <button
+        type="button"
+        onClick={onTrigger}
+        title={prev.error || "重试生成试听"}
+        className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[11px] text-muted-foreground transition hover:border-primary hover:text-primary"
+      >
+        <RefreshCw className="h-3 w-3 shrink-0" />重试试听
+      </button>
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={onTrigger}
+      title={`先试听再决定是否安装${sizeHintMb ? `（首次需下载模型约 ${sizeHintMb}M）` : "（首次需下载模型）"}；下载过的模型安装时直接复用`}
+      className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[11px] text-muted-foreground transition hover:border-primary hover:text-primary"
+    >
+      <Headphones className="h-3 w-3 shrink-0" />先试听
+    </button>
+  )
+}
 const CATEGORY_TONE: Array<[RegExp, string, string]> = [
   [/卡通|角色/, "from-amber-500/25 to-amber-500/5", "ring-amber-500/30"],
   [/女声/, "from-pink-500/25 to-pink-500/5", "ring-pink-500/30"],
@@ -407,6 +470,9 @@ function MarketCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
             >
               <RefreshCw className="h-3 w-3 shrink-0" />重新生成试听
             </button>
+          )}
+          {!playable && !isInstalled && voiceId && prev?.status !== "ready" && (
+            <PreviewSlot voiceId={voiceId} p={p} onTrigger={() => p.previewItem(item)} sizeHintMb={item.size_hint_mb} />
           )}
           <div className="ml-auto shrink-0">
             {isInstalled ? (
@@ -520,6 +586,11 @@ function SearchResultCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
             {isOpen ? "收起" : "查看文件"}
             {(item.files ?? []).length > 0 && <span className="ml-1 font-mono text-[10px] text-muted-foreground">({item.files!.length})</span>}
           </button>
+          {(() => {
+            const pvVoice = prefs?.voice_id ?? (canQuick ? quickVoiceId : "")
+            if (!pvVoice || p.previews[pvVoice]?.status === "ready") return null
+            return <PreviewSlot voiceId={pvVoice} p={p} onTrigger={() => p.previewItem(item)} sizeHintMb={prefs?.size_hint_mb} />
+          })()}
           <div className="ml-auto shrink-0">
             {prefs?.download ? (
               <button
