@@ -22,7 +22,7 @@ import { mediaUrl } from "@/api/client"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import type { MarketFile, MarketItem } from "@/api/client"
-import type { VoiceMarket } from "@/pages/VoiceMarket/useVoiceMarket"
+import type { VoiceMarket, MarketPlatformFilter } from "@/pages/VoiceMarket/useVoiceMarket"
 import { ACTIVE_PHASE_TEXT, fmtBytes, pctOf } from "@/pages/VoiceMarket/marketFormat"
 
 const PLATFORM_LABEL: Record<string, string> = { hf: "HF", modelscope: "魔搭" }
@@ -186,15 +186,16 @@ export function MarketPage(p: VoiceMarket) {
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
       <header className="sticky top-0 z-30 border-b border-border bg-card/80 px-5 py-4 backdrop-blur-xl sm:px-8 lg:px-12">
         <div className="mx-auto max-w-7xl">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          {/* 第一行：大搜索框 + 大蓝色「搜索」按钮（HMCL 风格） */}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
             <div className="relative min-w-0 flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 value={localQuery}
                 onChange={(e) => setLocalQuery(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && void doSearch(localQuery, platform)}
                 placeholder="搜索音色、作者或关键词（魔搭支持 owner/name 精确路径）"
-                className="w-full rounded-md border border-border bg-background py-2.5 pl-9 pr-9 text-sm text-foreground shadow-md outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary"
+                className="h-11 w-full rounded-md border border-border bg-background pl-10 pr-9 text-sm text-foreground shadow-md outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary"
               />
               {localQuery && (
                 <button
@@ -207,57 +208,61 @@ export function MarketPage(p: VoiceMarket) {
                 </button>
               )}
             </div>
-            <div className="flex shrink-0 items-center gap-1 rounded-md border border-border bg-background p-1 shadow-md">
-              {(["all", "hf", "modelscope"] as const).map((k) => (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => setPlatform(k)}
-                  className={cn(
-                    "rounded px-2.5 py-1.5 text-xs transition",
-                    platform === k ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                  )}
-                >
-                  {k === "all" ? "全部" : PLATFORM_LABEL[k]}
-                </button>
-              ))}
-            </div>
+            <button
+              type="button"
+              onClick={() => void doSearch(localQuery, platform)}
+              disabled={p.searching || !localQuery.trim()}
+              className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-blue-600 px-7 text-sm font-semibold text-white shadow-md transition hover:bg-blue-500 active:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 disabled:pointer-events-none disabled:opacity-50"
+            >
+              {p.searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+              {p.searching ? "搜索中…" : "搜索"}
+            </button>
           </div>
 
-          <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            {p.searching ? (
-              <span className="flex items-center gap-1.5">
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />搜索中…
-              </span>
-            ) : (
-              <span>{statusText}</span>
-            )}
-            {hasQuery && !p.searching && (
-              <button type="button" onClick={clear} className="text-primary transition hover:underline">
-                清除搜索，回到精选
-              </button>
-            )}
-            {!hasQuery && (
-              <span className="hidden sm:inline">· 双源直链一键安装到音色库</span>
-            )}
+          {/* 第二行：来源 / 排序 下拉（HMCL 风格 select）+ 状态行 */}
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
+            <label className="flex items-center gap-1.5">
+              <span className="text-muted-foreground">来源</span>
+              <select
+                value={platform}
+                onChange={(e) => setPlatform(e.target.value as MarketPlatformFilter)}
+                className="h-7 rounded-md border border-border bg-background px-2 text-xs text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                <option value="all">全部</option>
+                <option value="hf">HuggingFace</option>
+                <option value="modelscope">魔搭</option>
+              </select>
+            </label>
             {hasQuery && !p.searching && resultCount > 1 && (
-              <div className="ml-auto flex items-center gap-1">
+              <label className="flex items-center gap-1.5">
                 <span className="text-muted-foreground">排序</span>
-                {SORT_OPTIONS.map(([k, label]) => (
-                  <button
-                    key={k}
-                    type="button"
-                    onClick={() => setSort(k)}
-                    className={cn(
-                      "rounded px-2 py-0.5 transition",
-                      sort === k ? "bg-primary/10 text-primary" : "hover:text-foreground",
-                    )}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+                <select
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as SortKey)}
+                  className="h-7 rounded-md border border-border bg-background px-2 text-xs text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  {SORT_OPTIONS.map(([k, label]) => (
+                    <option key={k} value={k}>{label}</option>
+                  ))}
+                </select>
+              </label>
             )}
+
+            <span className="ml-auto flex items-center gap-1.5">
+              {p.searching ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />搜索中…
+                </>
+              ) : (
+                <span>{statusText}</span>
+              )}
+              {hasQuery && !p.searching && (
+                <button type="button" onClick={clear} className="text-primary transition hover:underline">
+                  清除搜索，回到精选
+                </button>
+              )}
+              {!hasQuery && <span className="hidden sm:inline">· 双源直链一键安装到音色库</span>}
+            </span>
           </div>
         </div>
       </header>
@@ -315,6 +320,21 @@ export function MarketPage(p: VoiceMarket) {
   )
 }
 
+// HMCL 风格卡片：左侧大缩略图占位 + 右侧标签/标题/简介/底部操作；两种数据源共用外壳。
+function MarketThumb({ item }: { item: MarketItem }) {
+  const platformTone = item.platform === "hf" ? "from-amber-500/20 to-amber-500/5" : "from-violet-500/20 to-violet-500/5"
+  const ring = item.platform === "hf" ? "ring-amber-500/30" : "ring-violet-500/30"
+  const Initial = (item.name || item.repo || "?").trim().charAt(0).toUpperCase()
+  return (
+    <div className={cn("relative flex h-20 w-20 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ring-1", platformTone, ring)}>
+      <span className="font-display text-2xl font-semibold text-foreground/80">{Initial}</span>
+      <span className="absolute bottom-1 right-1 rounded-md bg-background/85 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground shadow-sm">
+        {PLATFORM_LABEL[item.platform] ?? item.platform}
+      </span>
+    </div>
+  )
+}
+
 function MarketCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
   const voiceId = item.voice_id ?? ""
   const isInstalled = !!voiceId && p.installed.includes(voiceId)
@@ -333,106 +353,111 @@ function MarketCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
   const previewErr = prev?.status === "failed" || prev?.status === "skipped"
 
   return (
-    <article className="flex flex-col rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl transition hover:shadow-xl">
-      <div className="flex items-center gap-2">
-        <span className="rounded-full bg-primary/10 px-2 py-1 font-mono text-[10px] text-primary">{item.category ?? "音色"}</span>
-        <span className="rounded-full bg-violet-500/15 px-2 py-1 font-mono text-[10px] text-violet-400">
-          {PLATFORM_LABEL[item.platform] ?? item.platform}
-        </span>
-        {item.size_hint_mb != null && (
-          <span className="ml-auto font-mono text-[10px] text-muted-foreground">{fmtBytes(item.size_hint_mb * 1024 * 1024)}</span>
-        )}
-      </div>
-      <h3 className="mt-3 truncate text-base font-semibold text-card-foreground" title={item.name}>{item.name}</h3>
-      <p className="mt-1.5 min-h-[2.5rem] text-xs leading-5 text-muted-foreground">{item.desc}</p>
-      {item.license && (
-        <p className="mt-3 rounded-md border border-amber-500/25 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-4 text-amber-400/90">
-          <ShieldCheck className="mr-1 inline h-3 w-3 translate-y-[-1px]" />{item.license}
-        </p>
-      )}
-      <div className="mt-4 flex items-center gap-2 border-t border-border pt-4">
-        {playable && <StudioAudioPlayer src={item.demo!} label="试听" className="flex-1 min-w-0" />}
-        {!playable && prev?.status === "ready" && (
-          <StudioAudioPlayer src={mediaUrl(prev.url)} label="试听" className="flex-1 min-w-0" />
-        )}
-        {!playable && previewBusy && isInstalled && (
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-muted-foreground">
-            <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />试听生成中…
-          </span>
-        )}
-        {!playable && previewErr && isInstalled && (
-          <button
-            type="button"
-            onClick={() => void p.ensurePreview(voiceId, true)}
-            title={prev.error}
-            className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md border border-border px-3 py-2 text-[11px] text-muted-foreground transition hover:border-primary hover:text-primary"
-          >
-            <RefreshCw className="h-3 w-3 shrink-0" />重新生成试听
-          </button>
-        )}
-        <div className="shrink-0">
-          {isInstalled ? (
-            <div className="flex items-center gap-1.5">
-              {p.backups.includes(voiceId) && (
-                <button
-                  type="button"
-                  disabled={p.installRunning || p.rollbackingId === voiceId}
-                  onClick={() => {
-                    if (!window.confirm(`确定将「${item.name}」回滚到覆盖前的旧版本吗？\n将恢复 .old 备份中的模型，并清除当前版本的试听/质检记录。`)) return
-                    void p.rollbackVoice(voiceId)
-                      .then(() => void p.ensurePreview(voiceId, true))
-                      .catch(() => {})
-                  }}
-                  title="覆盖重装前会自动归档旧版本，安装失败也会自动回滚。此按钮手动恢复上次覆盖前的版本。"
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-3 py-2 text-xs font-medium text-muted-foreground transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
-                >
-                  {p.rollbackingId === voiceId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-                  回滚
-                </button>
-              )}
-              <button
-                type="button"
-                disabled={p.installRunning || p.uninstallingId === voiceId}
-                onClick={() => {
-                  if (!window.confirm(`确定从音色库卸载「${item.name}」吗？\n将删除其模型（logs/${voiceId}）、权重（assets/weights）与下载缓存，不可恢复。`)) return
-                  void p.uninstallVoice(voiceId).catch(() => {})
-                }}
-                className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/20 disabled:pointer-events-none disabled:opacity-50"
-              >
-                {p.uninstallingId === voiceId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                卸载
-              </button>
-            </div>
-          ) : isThis ? (
-            <div className="flex items-center gap-2">
-              <div className="flex h-9 items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3">
-                <div className="h-1 w-16 overflow-hidden rounded-full bg-muted">
-                  <div className="h-full rounded-full bg-primary" style={{ width: `${installPct}%` }} />
-                </div>
-                <span className="font-mono text-[10px] text-primary">{Math.round(installPct)}%</span>
-              </div>
-            </div>
-          ) : isQueued ? (
-            <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-3 py-2 text-xs font-medium text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />排队中
+    <article className="flex gap-4 rounded-2xl border border-border bg-card/85 p-4 shadow-md backdrop-blur-xl transition hover:shadow-lg">
+      <MarketThumb item={item} />
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="rounded-full bg-primary/10 px-2 py-0.5 font-mono text-[10px] text-primary">{item.category ?? "音色"}</span>
+          {item.size_hint_mb != null && (
+            <span className="font-mono text-[10px] text-muted-foreground">{fmtBytes(item.size_hint_mb * 1024 * 1024)}</span>
+          )}
+          {isInstalled && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-medium text-emerald-400">
+              <CheckCircle2 className="h-3 w-3" />已安装
             </span>
-          ) : (
+          )}
+        </div>
+        <h3 className="truncate text-base font-semibold text-card-foreground" title={item.name}>{item.name}</h3>
+        <p className="line-clamp-2 min-h-[2.5rem] text-xs leading-5 text-muted-foreground">{item.desc}</p>
+        {item.license && (
+          <p className="rounded-md border border-amber-500/25 bg-amber-500/10 px-2 py-1 text-[11px] leading-4 text-amber-400/90">
+            <ShieldCheck className="mr-1 inline h-3 w-3 translate-y-[-1px]" />{item.license}
+          </p>
+        )}
+        <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border pt-3">
+          {playable && <StudioAudioPlayer src={item.demo!} label="试听" className="flex-1 min-w-0" />}
+          {!playable && prev?.status === "ready" && (
+            <StudioAudioPlayer src={mediaUrl(prev.url)} label="试听" className="flex-1 min-w-0" />
+          )}
+          {!playable && previewBusy && isInstalled && (
+            <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />试听生成中…
+            </span>
+          )}
+          {!playable && previewErr && isInstalled && (
             <button
               type="button"
-              onClick={() =>
-                void p.startInstall(voiceId, item.download!, {
-                  index: item.index ?? null,
-                  display_name: item.name,
-                  manifest_id: item.id,
-                })
-              }
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              title="有任务进行中时会加入等待队列，完成后自动开始"
+              onClick={() => void p.ensurePreview(voiceId, true)}
+              title={prev.error}
+              className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[11px] text-muted-foreground transition hover:border-primary hover:text-primary"
             >
-              <CloudDownload className="h-3.5 w-3.5" />
-              一键安装
+              <RefreshCw className="h-3 w-3 shrink-0" />重新生成试听
             </button>
           )}
+          <div className="ml-auto shrink-0">
+            {isInstalled ? (
+              <div className="flex items-center gap-1.5">
+                {p.backups.includes(voiceId) && (
+                  <button
+                    type="button"
+                    disabled={p.installRunning || p.rollbackingId === voiceId}
+                    onClick={() => {
+                      if (!window.confirm(`确定将「${item.name}」回滚到覆盖前的旧版本吗？\n将恢复 .old 备份中的模型，并清除当前版本的试听/质检记录。`)) return
+                      void p.rollbackVoice(voiceId)
+                        .then(() => void p.ensurePreview(voiceId, true))
+                        .catch(() => {})
+                    }}
+                    title="覆盖重装前会自动归档旧版本，安装失败也会自动回滚。此按钮手动恢复上次覆盖前的版本。"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    {p.rollbackingId === voiceId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                    回滚
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={p.installRunning || p.uninstallingId === voiceId}
+                  onClick={() => {
+                    if (!window.confirm(`确定从音色库卸载「${item.name}」吗？\n将删除其模型（logs/${voiceId}）、权重（assets/weights）与下载缓存，不可恢复。`)) return
+                    void p.uninstallVoice(voiceId).catch(() => {})
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive transition hover:bg-destructive/20 disabled:pointer-events-none disabled:opacity-50"
+                >
+                  {p.uninstallingId === voiceId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  卸载
+                </button>
+              </div>
+            ) : isThis ? (
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-2.5">
+                  <div className="h-1 w-16 overflow-hidden rounded-full bg-muted">
+                    <div className="h-full rounded-full bg-primary" style={{ width: `${installPct}%` }} />
+                  </div>
+                  <span className="font-mono text-[10px] text-primary">{Math.round(installPct)}%</span>
+                </div>
+              </div>
+            ) : isQueued ? (
+              <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-3 py-1.5 text-xs font-medium text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />排队中
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() =>
+                  void p.startInstall(voiceId, item.download!, {
+                    index: item.index ?? null,
+                    display_name: item.name,
+                    manifest_id: item.id,
+                  })
+                }
+                className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white shadow-md transition hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                title="有任务进行中时会加入等待队列，完成后自动开始"
+              >
+                <CloudDownload className="h-3.5 w-3.5" />
+                一键安装
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </article>
@@ -446,96 +471,86 @@ function SearchResultCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
   const quick = p.quickSlot(item)
   const canQuick = !!quick
   const quickVoiceId = quick ? p.deriveVoiceId(quick.download.name, item.repo) : ""
-  const isInstalled = !!quickVoiceId && p.installed.includes(quickVoiceId)
   const isOpen = p.repoOpen?.id === item.id
 
   return (
-    <article className="flex flex-col rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl transition hover:shadow-xl">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="rounded-full bg-violet-500/15 px-2 py-1 font-mono text-[10px] text-violet-400">
-          {PLATFORM_LABEL[item.platform] ?? item.platform}
-        </span>
-        {(item.tags_zh ?? item.tags ?? []).slice(0, 2).map((t) => (
-          <span key={t} className="rounded-full bg-primary/10 px-2 py-1 font-mono text-[10px] text-primary">{t}</span>
-        ))}
-        {item.downloads != null && item.downloads > 0 && (
-          <span className="ml-auto font-mono text-[10px] text-muted-foreground">下载 {item.downloads.toLocaleString()}</span>
-        )}
-      </div>
-
-      <h3 className="mt-3 truncate text-base font-semibold text-card-foreground" title={item.name}>{item.name}</h3>
-      <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={item.repo}>{item.repo}</p>
-      {item.desc && <p className="mt-1.5 line-clamp-2 min-h-[2.5rem] text-xs leading-5 text-muted-foreground">{item.desc}</p>}
-
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-        {item.likes != null && item.likes > 0 && <span>点赞 {item.likes.toLocaleString()}</span>}
-        {item.updated_at && <span>更新 {item.updated_at}</span>}
-        {(item.files ?? []).length > 0 && <span>{item.files!.length} 个可用文件</span>}
-      </div>
-
-      <div className="mt-4 flex items-center gap-2 border-t border-border pt-4">
-        {isInstalled && (
-          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400">
-            <CheckCircle2 className="h-3.5 w-3.5" />已安装
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={() => void p.openRepo(item)}
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition",
-            isOpen
-              ? "border-primary/50 bg-primary/10 text-primary"
-              : "border-border text-muted-foreground hover:border-primary hover:text-primary",
+    <article className="flex gap-4 rounded-2xl border border-border bg-card/85 p-4 shadow-md backdrop-blur-xl transition hover:shadow-lg">
+      <MarketThumb item={item} />
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {(item.tags_zh ?? item.tags ?? []).slice(0, 3).map((t) => (
+            <span key={t} className="rounded-full bg-primary/10 px-2 py-0.5 font-mono text-[10px] text-primary">{t}</span>
+          ))}
+          {item.downloads != null && item.downloads > 0 && (
+            <span className="font-mono text-[10px] text-muted-foreground">下载 {item.downloads.toLocaleString()}</span>
           )}
-        >
-          <FolderOpen className="h-3.5 w-3.5" />
-          {isOpen ? "收起" : "查看文件"}
-        </button>
-        <div className="ml-auto shrink-0">
-          {prefs?.download ? (
-            <button
-              type="button"
-              onClick={() =>
-                void p.startInstall(prefs.voice_id ?? item.voice_id ?? item.id, prefs.download!, {
-                  index: prefs.index ?? null,
-                  display_name: prefs.name ?? item.name,
-                  manifest_id: prefs.id,
-                })
-              }
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105"
-              title="有任务进行中时会加入等待队列，完成后自动开始"
-            >
-              <CloudDownload className="h-3.5 w-3.5" />安装
-            </button>
-          ) : canQuick ? (
-            <button
-              type="button"
-              onClick={() =>
-                void p.startInstall(quickVoiceId, {
-                  url: quick.download.url ?? "",
-                  mirror_url: quick.download.mirror_url,
-                  sha256: quick.download.sha256,
-                }, {
-                  index: quick.index?.url ? { url: quick.index.url, mirror_url: quick.index.mirror_url } : null,
-                  display_name: quick.download.name.replace(/\.pth$/i, ""),
-                })
-              }
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105"
-              title="有任务进行中时会加入等待队列，完成后自动开始"
-            >
-              <CloudDownload className="h-3.5 w-3.5" />一键安装
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void p.openRepo(item)}
-              className="inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-xs text-muted-foreground transition hover:text-primary"
-              title="仓库含多个权重，请打开文件面板选择"
-            >
-              <CloudDownload className="h-3.5 w-3.5" />选文件安装
-            </button>
+          {item.updated_at && (
+            <span className="font-mono text-[10px] text-muted-foreground">更新 {item.updated_at}</span>
           )}
+        </div>
+        <h3 className="truncate text-base font-semibold text-card-foreground" title={item.name}>{item.name}</h3>
+        <p className="truncate font-mono text-[11px] text-muted-foreground" title={item.repo}>{item.repo}</p>
+        {item.desc && <p className="line-clamp-2 min-h-[2.5rem] text-xs leading-5 text-muted-foreground">{item.desc}</p>}
+        <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border pt-3">
+          <button
+            type="button"
+            onClick={() => void p.openRepo(item)}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition",
+              isOpen
+                ? "border-primary/50 bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:border-primary hover:text-primary",
+            )}
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            {isOpen ? "收起" : "查看文件"}
+            {(item.files ?? []).length > 0 && <span className="ml-1 font-mono text-[10px] text-muted-foreground">({item.files!.length})</span>}
+          </button>
+          <div className="ml-auto shrink-0">
+            {prefs?.download ? (
+              <button
+                type="button"
+                onClick={() =>
+                  void p.startInstall(prefs.voice_id ?? item.voice_id ?? item.id, prefs.download!, {
+                    index: prefs.index ?? null,
+                    display_name: prefs.name ?? item.name,
+                    manifest_id: prefs.id,
+                  })
+                }
+                className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white shadow-md transition hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                title="有任务进行中时会加入等待队列，完成后自动开始"
+              >
+                <CloudDownload className="h-3.5 w-3.5" />安装
+              </button>
+            ) : canQuick ? (
+              <button
+                type="button"
+                onClick={() =>
+                  void p.startInstall(quickVoiceId, {
+                    url: quick.download.url ?? "",
+                    mirror_url: quick.download.mirror_url,
+                    sha256: quick.download.sha256,
+                  }, {
+                    index: quick.index?.url ? { url: quick.index.url, mirror_url: quick.index.mirror_url } : null,
+                    display_name: quick.download.name.replace(/\.pth$/i, ""),
+                  })
+                }
+                className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white shadow-md transition hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                title="有任务进行中时会加入等待队列，完成后自动开始"
+              >
+                <CloudDownload className="h-3.5 w-3.5" />一键安装
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void p.openRepo(item)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-3 py-1.5 text-xs text-muted-foreground transition hover:border-primary hover:text-primary"
+                title="仓库含多个权重，请打开文件面板选择"
+              >
+                <CloudDownload className="h-3.5 w-3.5" />选文件安装
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </article>

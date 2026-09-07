@@ -122,8 +122,12 @@ export function PetGuide({ page, enabled }: { page: string; enabled: boolean }) 
   return (
     <div
       className={cn(
-        "fixed right-4 top-24 z-30 flex items-end gap-3 transition-all duration-500 ease-out lg:right-8",
-        expanded ? "translate-x-0 opacity-100" : "translate-x-2 opacity-90"
+        // 展开讲页时贴主内容区顶部右侧（习惯位置）；讲完收起后挪到屏幕右下角，
+        // 完全脱离任何按钮区，避免挡住右上角的搜索/设置/筛选等高频操作。
+        "fixed z-30 flex items-end gap-3 transition-all duration-500 ease-out",
+        expanded
+          ? "right-4 top-24 lg:right-8 translate-x-0 opacity-100"
+          : "right-4 bottom-4 lg:right-8 translate-x-0 opacity-90",
       )}
     >
       {expanded && (
