@@ -90,9 +90,15 @@ def _read_sidecar(voice_id: str) -> dict:
 
 
 def status(voice_id: str) -> dict:
-    """试听状态：{status, url, error}。wav 存在且非静音才判 ready（防坏文件假 ready）。"""
+    """试听状态：{status, url, error}。wav 存在且非静音才判 ready（防坏文件假 ready）。
+
+    额外一层：源句指纹不匹配（换过源句 / 指纹机制之前的旧缓存）时判 missing，
+    让前端自动重新生成——否则换了源句用户听到的还是旧音色的老音频。
+    """
     wav = _out_wav(voice_id)
     if wav.exists() and _audible(wav):
+        if _stale(voice_id):
+            return {"status": "missing", "url": "", "error": ""}
         return {"status": "ready", "url": preview_url(voice_id), "error": ""}
     if wav.exists():
         return {"status": "failed", "url": "", "error": "试听文件为静音，请重新生成"}
@@ -100,9 +106,11 @@ def status(voice_id: str) -> dict:
     return {"status": sc.get("status") or "missing", "url": "", "error": str(sc.get("error") or "")}
 
 
-def _mark(voice_id: str, st: str, error: str = ""):
+def _mark(voice_id: str, st: str, error: str = "", src_fp: str | None = None):
+    # 未显式传指纹时保留原值：failed/skipped/generating 不该抹掉已有指纹
+    fp = src_fp if src_fp is not None else str(_read_sidecar(voice_id).get("src_fp") or "")
     _sidecar(voice_id).write_text(json.dumps({
-        "status": st, "error": error,
+        "status": st, "error": error, "src_fp": fp,
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }, ensure_ascii=False), encoding="utf-8")
 
@@ -112,6 +120,40 @@ def _mark(voice_id: str, st: str, error: str = ""):
 
 def _src_wav() -> Path:
     return MARKET_DIR / "_preview_src.wav"
+
+
+def _source_fingerprint(src: Path) -> str:
+    """源句指纹（路径 + 大小 + mtime）：源句一换就变，用于让旧试听缓存自动失效。
+
+    为什么需要（2026-09-07）：RVC 是 voice-to-voice，源句音色会残留进输出，
+    换源句后旧试听就不再代表当前效果（此前换内置干净源句后，旧缓存仍带袋鼠腔，
+    而无任何失效机制，用户听到的始终是老音频）。
+    只 stat 不解码音频，前端轮询状态也不会有额外开销。
+    """
+    try:
+        st = src.stat()
+        return f"{src}|{st.st_size}|{st.st_mtime_ns}"
+    except OSError:
+        return f"{src}|missing"
+
+
+def _current_source_path() -> Path | None:
+    """当前会使用的源句路径（只判存在、不解码音频）；还没生成过则返回 None。"""
+    if BUILTIN_SRC.exists():
+        return BUILTIN_SRC
+    cached = _src_wav()
+    return cached if cached.exists() else None
+
+
+def _stale(voice_id: str) -> bool:
+    """试听是否过期：无指纹（指纹机制之前的旧缓存）或源句指纹变了 → 需重新生成。"""
+    fp = str(_read_sidecar(voice_id).get("src_fp") or "")
+    if not fp:
+        return True                      # 旧缓存无法确认源句，一律重生成
+    cur = _current_source_path()
+    if cur is None:
+        return False                     # 源句还没就绪，不因此判过期（避免反复重试）
+    return fp != _source_fingerprint(cur)
 
 
 def _audible(path: Path) -> bool:
@@ -290,7 +332,8 @@ def _do_generate(voice_id: str):
         if not _audible(out):
             out.unlink(missing_ok=True)
             raise RuntimeError("输出为纯静音（源句或模型异常），请重试或换源音色")
-        _mark(voice_id, "ready")
+        # 记下本次使用的源句指纹：下次源句一换，这个缓存就自动失效并重生成
+        _mark(voice_id, "ready", src_fp=_source_fingerprint(src))
     except Exception as e:  # noqa: BLE001
         _mark(voice_id, "failed", f"RVC 推理失败：{e}")
         try:

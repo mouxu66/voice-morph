@@ -235,3 +235,56 @@ def test_try_auto_preview_never_raises(rvc_tmp, market_dir, tmp_path, monkeypatc
     _wait_inflight("demo_voice")
     _wait_inflight("")
     assert mp._inflight == set()
+
+
+# ---- 源句指纹失效（2026-09-07）：换源句后旧试听必须自动重生成 ----
+
+def test_stale_cache_without_fingerprint(rvc_tmp, market_dir):
+    """指纹机制之前的旧缓存（sidecar 无 src_fp）→ 判 missing，触发重新生成。
+
+    线上场景：换内置干净源句后，此前生成的试听仍带袋鼠腔且无任何失效机制。
+    """
+    _tone_wav(mp.MARKET_DIR / "_preview_src.wav")       # 源句存在，可算当前指纹
+    _tone_wav(mp._out_wav("demo_voice"), seconds=3.0)   # 有声旧试听
+    mp._mark("demo_voice", "ready")                     # 旧格式：不写 src_fp
+    assert mp.status("demo_voice")["status"] == "missing"
+
+
+def test_stale_after_source_changed(rvc_tmp, market_dir):
+    """源句一换（内容/文件变）→ 指纹不匹配 → 判 missing，不再返回老音频。"""
+    src = mp.MARKET_DIR / "_preview_src.wav"
+    _tone_wav(src, seconds=2.0)
+    _tone_wav(mp._out_wav("demo_voice"), seconds=3.0)
+    mp._mark("demo_voice", "ready", src_fp=mp._source_fingerprint(src))
+    assert mp.status("demo_voice")["status"] == "ready"     # 指纹匹配 → 有效
+
+    _tone_wav(src, seconds=6.0)                             # 换源句（重写，size/mtime 变）
+    assert mp.status("demo_voice")["status"] == "missing"   # 指纹不匹配 → 过期
+
+
+def test_generate_records_source_fingerprint(rvc_tmp, market_dir, tmp_path, monkeypatch):
+    """生成成功时把源句指纹写进 sidecar，重查为 ready（而非被判过期）。"""
+    src = mp.MARKET_DIR / "_preview_src.wav"
+    _tone_wav(src)
+
+    def fake_run(cmd, **kw):
+        out = cmd[cmd.index("--output") + 1]
+        _tone_wav(out, seconds=3.0)
+        return type("R", (), {"returncode": 0, "stderr": "", "stdout": "OK"})
+
+    monkeypatch.setattr(mp.subprocess, "run", fake_run)
+    mp._do_generate("demo_voice")
+    sc = json.loads(mp._sidecar("demo_voice").read_text("utf-8"))
+    assert sc["src_fp"] == mp._source_fingerprint(src)
+    assert mp.status("demo_voice")["status"] == "ready"
+
+
+def test_mark_preserves_existing_fingerprint(rvc_tmp, market_dir):
+    """failed/skipped/generating 等非就绪态不应抹掉已有指纹（否则会反复重生成）。"""
+    src = mp.MARKET_DIR / "_preview_src.wav"
+    _tone_wav(src)
+    fp = mp._source_fingerprint(src)
+    mp._mark("demo_voice", "ready", src_fp=fp)
+    mp._mark("demo_voice", "failed", "boom")
+    sc = json.loads(mp._sidecar("demo_voice").read_text("utf-8"))
+    assert sc["src_fp"] == fp
