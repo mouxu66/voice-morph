@@ -1,10 +1,10 @@
 import type { MarketTask } from "@/api/client"
 
-/** 安装任务当前百分比：优先安装段（阶段百分比），否则按下载字节数。 */
+/** 安装任务当前百分比：优先安装段（阶段百分比>0 时），否则按下载字节数（下载阶段 install.percent 恒为 0，须回退字节进度）。 */
 export function pctOf(t: MarketTask | null): number {
   if (!t) return 0
   const instPct = t.install?.percent
-  if (instPct != null) return Math.min(100, Math.max(0, instPct))
+  if (instPct != null && instPct > 0) return Math.min(100, Math.max(0, instPct))
   if (t.total && t.total > 0) return Math.min(100, Math.round(((t.done ?? 0) / t.total) * 1000) / 10)
   return 0
 }

@@ -28,19 +28,21 @@ import { ACTIVE_PHASE_TEXT, fmtBytes, pctOf } from "@/pages/VoiceMarket/marketFo
 
 const PLATFORM_LABEL: Record<string, string> = { hf: "HF", modelscope: "魔搭" }
 
-// ---------- 全局安装进度条 ----------
-export function MarketInstallBar(p: Pick<VoiceMarket, "task" | "installRunning" | "installErr" | "setInstallErr" | "cancelInstall">) {
-  if (!p.installRunning && !p.installErr) return null
+// ---------- 全局安装托盘：当前任务 + 等待队列（可单独移除） ----------
+export function MarketInstallBar(p: Pick<VoiceMarket, "task" | "installRunning" | "installErr" | "setInstallErr" | "cancelInstall" | "installQueue">) {
+  const queued = p.installQueue
+  if (!p.installRunning && !p.installErr && queued.length === 0) return null
   const t = p.task
   const install = t?.install
   const name = install?.display_name ?? t?.name ?? ""
   const indeterminate = !!t && !t.total && !install?.percent
   const done = (t?.done ?? 0) > 0 && !!t?.total ? fmtBytes(t!.done!) + " / " + fmtBytes(t!.total!) : ""
+  const hasTop = p.installRunning || p.installErr
 
   return (
     <div className="fixed inset-x-0 bottom-4 z-40 flex justify-center px-4">
       <div className="w-full max-w-2xl rounded-2xl border border-border bg-card/95 p-4 shadow-2xl backdrop-blur-xl">
-        {p.installErr ? (
+        {p.installErr && (
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <p className="flex items-center gap-2 text-sm font-medium text-destructive">
@@ -52,8 +54,10 @@ export function MarketInstallBar(p: Pick<VoiceMarket, "task" | "installRunning" 
               <X className="h-4 w-4" />
             </button>
           </div>
-        ) : (
-          <div className="flex items-center gap-4">
+        )}
+
+        {p.installRunning && (
+          <div className={cn("flex items-center gap-4", p.installErr && "mt-3 border-t border-border pt-3")}>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <CloudDownload className="h-4 w-4 shrink-0 text-primary" />
@@ -82,6 +86,30 @@ export function MarketInstallBar(p: Pick<VoiceMarket, "task" | "installRunning" 
             >
               取消
             </button>
+          </div>
+        )}
+
+        {queued.length > 0 && (
+          <div className={cn("mt-3", hasTop && "border-t border-border pt-3")}>
+            <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+              等待队列 · {queued.length} 个
+            </p>
+            <ul className="mt-1.5 space-y-1">
+              {queued.map((q) => (
+                <li key={q.voice_id} className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                  <span className="min-w-0 flex-1 truncate" title={q.display_name || q.voice_id}>{q.display_name || q.voice_id}</span>
+                  <button
+                    type="button"
+                    onClick={() => void p.cancelInstall(q.voice_id)}
+                    className="shrink-0 rounded-md px-2 py-1 text-[11px] text-muted-foreground transition hover:text-destructive"
+                    aria-label={`移除 ${q.display_name || q.voice_id}`}
+                  >
+                    移除
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </div>
@@ -140,6 +168,7 @@ function MarketCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
   const voiceId = item.voice_id ?? ""
   const isInstalled = !!voiceId && p.installed.includes(voiceId)
   const isThis = p.installRunning && p.installingId === voiceId
+  const isQueued = p.queuedIds.includes(voiceId)
   const installPct = isThis ? pctOf(p.task) : 0
   const playable = p.isPlayable(item.demo)
   const prev = p.previews[voiceId]
@@ -232,10 +261,13 @@ function MarketCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
                 <span className="font-mono text-[10px] text-primary">{Math.round(installPct)}%</span>
               </div>
             </div>
+          ) : isQueued ? (
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-3 py-2 text-xs font-medium text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />排队中
+            </span>
           ) : (
             <button
               type="button"
-              disabled={p.installRunning}
               onClick={() =>
                 void p.startInstall(voiceId, item.download!, {
                   index: item.index ?? null,
@@ -243,10 +275,11 @@ function MarketCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
                   manifest_id: item.id,
                 })
               }
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              title="有任务进行中时会加入等待队列，完成后自动开始"
             >
               <CloudDownload className="h-3.5 w-3.5" />
-              {p.installRunning ? "安装中…" : "一键安装"}
+              一键安装
             </button>
           )}
         </div>
@@ -344,7 +377,7 @@ export function SearchTab(p: VoiceMarket) {
 function SearchResultCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
   const prefs = item.prefs
   const quick = p.quickSlot(item)
-  const canQuick = !p.installRunning && !!quick
+  const canQuick = !!quick
   const quickVoiceId = quick ? p.deriveVoiceId(quick.download.name, item.repo) : ""
   const isInstalled = !!quickVoiceId && p.installed.includes(quickVoiceId)
 
@@ -396,7 +429,6 @@ function SearchResultCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
           {prefs?.download ? (
             <button
               type="button"
-              disabled={p.installRunning}
               onClick={() =>
                 void p.startInstall(prefs.voice_id ?? item.voice_id ?? item.id, prefs.download!, {
                   index: prefs.index ?? null,
@@ -404,7 +436,8 @@ function SearchResultCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
                   manifest_id: prefs.id,
                 })
               }
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105 disabled:pointer-events-none disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105"
+              title="有任务进行中时会加入等待队列，完成后自动开始"
             >
               <CloudDownload className="h-3.5 w-3.5" />安装
             </button>
@@ -421,7 +454,8 @@ function SearchResultCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
                   display_name: quick.download.name.replace(/\.pth$/i, ""),
                 })
               }
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105 disabled:pointer-events-none disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105"
+              title="有任务进行中时会加入等待队列，完成后自动开始"
             >
               <CloudDownload className="h-3.5 w-3.5" />一键安装
             </button>
@@ -575,12 +609,12 @@ function RepoFilePanel({ p }: { p: VoiceMarket }) {
                   )}
                   <button
                     type="button"
-                    disabled={p.installRunning || (idConflict && !wantOverwrite)}
+                    disabled={idConflict && !wantOverwrite}
                     onClick={handleInstall}
                     className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-md transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50"
                   >
                     <CloudDownload className="h-4 w-4" />
-                    {p.installRunning ? "安装中…" : idConflict ? "覆盖安装" : "开始安装"}
+                    {idConflict ? "覆盖安装" : "开始安装"}
                   </button>
                 </>
               ) : (
@@ -589,7 +623,7 @@ function RepoFilePanel({ p }: { p: VoiceMarket }) {
             </div>
             {p.installRunning && (
               <p className="flex items-center gap-1.5 text-xs text-primary">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />统一安装队列：当前有任务在跑，完成后自动轮询此窗口。
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />有任务进行中：点「开始安装」会加入等待队列，当前任务完成后自动开始。
               </p>
             )}
             <div className="flex items-start gap-2 rounded-lg border border-border bg-background/50 px-3 py-2.5 text-[11px] leading-4 text-muted-foreground">
