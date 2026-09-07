@@ -170,6 +170,14 @@ export function useVoiceMarket() {
     }
   }, [])
 
+  // 清空搜索：丢弃结果与提示、收起文件面板，回到精选态
+  const clearSearch = useCallback(() => {
+    setSearchQuery("")
+    setResults(null)
+    setSearchNote(null)
+    setRepoOpen(null)
+  }, [])
+
   // ---- 仓库文件面板（搜索结果的安装选文件） ----
   const [repoOpen, setRepoOpen] = useState<MarketItem | null>(null)
   const [repoFiles, setRepoFiles] = useState<MarketFile[] | null>(null)
@@ -443,6 +451,7 @@ export function useVoiceMarket() {
     results,
     searchNote,
     doSearch,
+    clearSearch,
     repoOpen,
     openRepo,
     repoFiles,

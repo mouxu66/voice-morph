@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   AlertTriangle,
   Archive,
@@ -12,7 +12,6 @@ import {
   Search,
   ScrollText,
   ShieldCheck,
-  Store,
   Trash2,
   TriangleAlert,
   X,
@@ -27,6 +26,13 @@ import type { VoiceMarket } from "@/pages/VoiceMarket/useVoiceMarket"
 import { ACTIVE_PHASE_TEXT, fmtBytes, pctOf } from "@/pages/VoiceMarket/marketFormat"
 
 const PLATFORM_LABEL: Record<string, string> = { hf: "HF", modelscope: "魔搭" }
+
+type SortKey = "relevance" | "downloads" | "updated"
+const SORT_OPTIONS: ReadonlyArray<[SortKey, string]> = [
+  ["relevance", "相关"],
+  ["downloads", "热度"],
+  ["updated", "最新"],
+]
 
 // ---------- 全局安装托盘：完成提示 + 当前任务 + 等待队列（可单独移除） ----------
 export function MarketInstallBar(p: Pick<VoiceMarket, "task" | "installRunning" | "installErr" | "setInstallErr" | "cancelInstall" | "installQueue" | "justFinished">) {
@@ -132,28 +138,155 @@ export function MarketInstallBar(p: Pick<VoiceMarket, "task" | "installRunning" 
   )
 }
 
-// ---------- 推荐 Tab ----------
-export function FeaturedTab(p: VoiceMarket) {
+// ---------- 市场主页：精选与搜索共用同一列表，搜索框常驻顶部 ----------
+export function MarketPage(p: VoiceMarket) {
+  const { doSearch, clearSearch, platform, setPlatform } = p
+  const [localQuery, setLocalQuery] = useState(p.searchQuery)
+  const [sort, setSort] = useState<SortKey>("relevance")
+  const hasQuery = localQuery.trim().length > 0
+
+  // 输入即搜：停手 400ms 自动搜；清空则回到精选
+  useEffect(() => {
+    const q = localQuery.trim()
+    if (!q) {
+      clearSearch()
+      return
+    }
+    const t = window.setTimeout(() => void doSearch(q, platform), 400)
+    return () => window.clearTimeout(t)
+  }, [localQuery, platform, doSearch, clearSearch])
+
+  const clear = () => {
+    setLocalQuery("")
+    clearSearch()
+  }
+
+  // 排序：HF 有下载量/更新时间；魔搭多为精选精确匹配，缺字段时保持原序
+  const sorted = useMemo(() => {
+    if (!p.results) return null
+    if (sort === "relevance") return p.results
+    const arr = [...p.results]
+    if (sort === "downloads") arr.sort((a, b) => (b.downloads ?? b.likes ?? 0) - (a.downloads ?? a.likes ?? 0))
+    else arr.sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""))
+    return arr
+  }, [p.results, sort])
+
+  const resultCount = sorted?.length ?? 0
+  const statusText = p.searching
+    ? "搜索中…"
+    : hasQuery
+      ? sorted === null
+        ? "输入关键词开始搜索"
+        : resultCount === 0
+          ? "没有找到相关仓库"
+          : `找到 ${resultCount} 个仓库`
+      : `精选 ${p.manifest?.length ?? 0} 款优质音色`
+
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
-      <header className="border-b border-border bg-card/30 px-5 py-5 sm:px-8 lg:px-12">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-end justify-between gap-x-6 gap-y-3">
-          <div className="min-w-0">
-            <p className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-primary">
-              <Store className="h-3.5 w-3.5" />VOICE MARKET / 精选清单
-            </p>
-            <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-foreground">精选推荐</h2>
-            <p className="mt-1.5 text-xs leading-5 text-muted-foreground">精选社区优质 RVC 音色，双源直链一键安装到音色库，装完即可用于实时变声与离线工坊。</p>
+      <header className="sticky top-0 z-30 border-b border-border bg-card/80 px-5 py-4 backdrop-blur-xl sm:px-8 lg:px-12">
+        <div className="mx-auto max-w-7xl">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                value={localQuery}
+                onChange={(e) => setLocalQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && void doSearch(localQuery, platform)}
+                placeholder="搜索音色、作者或关键词（魔搭支持 owner/name 精确路径）"
+                className="w-full rounded-md border border-border bg-background py-2.5 pl-9 pr-9 text-sm text-foreground shadow-md outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary"
+              />
+              {localQuery && (
+                <button
+                  type="button"
+                  onClick={clear}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                  aria-label="清空搜索"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-1 rounded-md border border-border bg-background p-1 shadow-md">
+              {(["all", "hf", "modelscope"] as const).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setPlatform(k)}
+                  className={cn(
+                    "rounded px-2.5 py-1.5 text-xs transition",
+                    platform === k ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )}
+                >
+                  {k === "all" ? "全部" : PLATFORM_LABEL[k]}
+                </button>
+              ))}
+            </div>
           </div>
-          {p.manifest && p.manifest.length > 0 && (
-            <span className="shrink-0 rounded-full border border-border bg-background/60 px-3 py-1 text-xs text-muted-foreground">
-              共 {p.manifest.length} 款 · 双源直链
-            </span>
-          )}
+
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {p.searching ? (
+              <span className="flex items-center gap-1.5">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />搜索中…
+              </span>
+            ) : (
+              <span>{statusText}</span>
+            )}
+            {hasQuery && !p.searching && (
+              <button type="button" onClick={clear} className="text-primary transition hover:underline">
+                清除搜索，回到精选
+              </button>
+            )}
+            {!hasQuery && (
+              <span className="hidden sm:inline">· 双源直链一键安装到音色库</span>
+            )}
+            {hasQuery && !p.searching && resultCount > 1 && (
+              <div className="ml-auto flex items-center gap-1">
+                <span className="text-muted-foreground">排序</span>
+                {SORT_OPTIONS.map(([k, label]) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setSort(k)}
+                    className={cn(
+                      "rounded px-2 py-0.5 transition",
+                      sort === k ? "bg-primary/10 text-primary" : "hover:text-foreground",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </header>
+
       <main className="mx-auto max-w-7xl px-5 py-6 sm:px-8 lg:px-12 lg:py-8">
-        {p.manifest === null ? (
+        {p.searchNote && (
+          <div className="mb-5 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-5 text-amber-400">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{p.searchNote}</span>
+          </div>
+        )}
+
+        {hasQuery ? (
+          p.results === null || p.searching ? (
+            <div className="flex items-center gap-2 rounded-2xl border border-border bg-card/80 px-4 py-6 text-sm text-muted-foreground shadow-md backdrop-blur-xl">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />正在搜索…
+            </div>
+          ) : resultCount === 0 ? (
+            <div className="rounded-2xl border border-border bg-card/80 px-4 py-10 text-center text-sm text-muted-foreground shadow-md backdrop-blur-xl">
+              没有找到相关仓库，换个关键词试试。
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {sorted!.map((item) => (
+                <SearchResultCard key={item.id} item={item} p={p} />
+              ))}
+            </div>
+          )
+        ) : p.manifest === null ? (
           <div className="flex items-center gap-2 rounded-2xl border border-border bg-card/80 px-4 py-6 text-sm text-muted-foreground shadow-md backdrop-blur-xl">
             <Loader2 className="h-4 w-4 animate-spin text-primary" />正在加载精选清单…
           </div>
@@ -168,6 +301,9 @@ export function FeaturedTab(p: VoiceMarket) {
             ))}
           </div>
         )}
+
+        {p.repoOpen && <RepoFilePanel p={p} />}
+
         <div className="mt-6 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-5 text-amber-400">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
@@ -303,91 +439,7 @@ function MarketCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
   )
 }
 
-// ---------- 搜索 Tab ----------
-export function SearchTab(p: VoiceMarket) {
-  const [localQuery, setLocalQuery] = useState(p.searchQuery)
-  const submit = () => void p.doSearch(localQuery, p.platform)
-
-  return (
-    <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
-      <header className="border-b border-border bg-card/30 px-5 py-5 sm:px-8 lg:px-12">
-        <div className="mx-auto max-w-7xl">
-          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-            <div className="min-w-0">
-              <p className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-primary">
-                <Search className="h-3.5 w-3.5" />VOICE MARKET / 双源搜索
-              </p>
-              <h2 className="mt-2 font-display text-2xl font-bold tracking-tight text-foreground">搜索音色仓库</h2>
-            </div>
-            <p className="max-w-md text-xs leading-5 text-muted-foreground">
-              在 HuggingFace 与魔搭检索 RVC 音色；打开仓库选择权重（.pth）与可选索引（.index）后一键安装。
-            </p>
-          </div>
-          <div className="mt-4 flex max-w-3xl flex-col gap-3 sm:flex-row">
-            <input
-              value={localQuery}
-              onChange={(e) => setLocalQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submit()}
-              placeholder="例如 rvc / 音色 / 懒羊羊（魔搭支持 owner/name 精确路径）"
-              className="min-w-0 flex-1 rounded-md border border-border bg-background px-3.5 py-2.5 text-sm text-foreground shadow-md outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary"
-            />
-            <div className="flex items-center gap-1 rounded-md border border-border bg-background p-1 shadow-md">
-              {(["all", "hf", "modelscope"] as const).map((k) => (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => p.setPlatform(k)}
-                  className={cn(
-                    "rounded px-2.5 py-1.5 text-xs transition",
-                    p.platform === k ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                  )}
-                >
-                  {k === "all" ? "全部" : PLATFORM_LABEL[k]}
-                </button>
-              ))}
-            </div>
-            <button
-              type="button"
-              onClick={submit}
-              disabled={p.searching || !localQuery.trim()}
-              className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-md transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50"
-            >
-              {p.searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-              {p.searching ? "搜索中…" : "搜索"}
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-7xl px-5 py-6 sm:px-8 lg:px-12 lg:py-8">
-        {p.searchNote && (
-          <div className="mb-5 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-5 text-amber-400">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{p.searchNote}</span>
-          </div>
-        )}
-
-        {p.results === null ? (
-          <div className="rounded-2xl border border-dashed border-border bg-card/60 px-4 py-12 text-center text-sm text-muted-foreground shadow-md backdrop-blur-xl">
-            输入关键词开始搜索；「全部」会合并两源结果（各限一半）。
-          </div>
-        ) : p.results.length === 0 ? (
-          <div className="rounded-2xl border border-border bg-card/80 px-4 py-10 text-center text-sm text-muted-foreground shadow-md backdrop-blur-xl">
-            没有找到相关仓库，换个关键词试试。
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {p.results.map((item) => (
-              <SearchResultCard key={item.id} item={item} p={p} />
-            ))}
-          </div>
-        )}
-
-        {p.repoOpen && <RepoFilePanel p={p} />}
-      </main>
-    </div>
-  )
-}
+// （原「搜索 Tab」已合并进 MarketPage：搜索框常驻顶部，结果与精选共用同一列表）
 
 function SearchResultCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
   const prefs = item.prefs
@@ -395,52 +447,52 @@ function SearchResultCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
   const canQuick = !!quick
   const quickVoiceId = quick ? p.deriveVoiceId(quick.download.name, item.repo) : ""
   const isInstalled = !!quickVoiceId && p.installed.includes(quickVoiceId)
+  const isOpen = p.repoOpen?.id === item.id
 
   return (
-    <article className="rounded-2xl border border-border bg-card/85 p-5 shadow-md backdrop-blur-xl transition hover:shadow-lg">
-      <div className="flex flex-wrap items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-violet-500/15 px-2 py-0.5 font-mono text-[10px] text-violet-400">
-              {PLATFORM_LABEL[item.platform] ?? item.platform}
-            </span>
-            <h3 className="truncate text-sm font-semibold text-card-foreground">{item.name}</h3>
-            {(item.tags_zh ?? item.tags ?? []).slice(0, 3).map((t) => (
-              <span key={t} className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-[10px] text-primary">{t}</span>
-            ))}
-          </div>
-          <p className="mt-1 font-mono text-xs text-muted-foreground">{item.repo}</p>
-          {item.desc && (
-            <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-muted-foreground">{item.desc}</p>
+    <article className="flex flex-col rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl transition hover:shadow-xl">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-full bg-violet-500/15 px-2 py-1 font-mono text-[10px] text-violet-400">
+          {PLATFORM_LABEL[item.platform] ?? item.platform}
+        </span>
+        {(item.tags_zh ?? item.tags ?? []).slice(0, 2).map((t) => (
+          <span key={t} className="rounded-full bg-primary/10 px-2 py-1 font-mono text-[10px] text-primary">{t}</span>
+        ))}
+        {item.downloads != null && item.downloads > 0 && (
+          <span className="ml-auto font-mono text-[10px] text-muted-foreground">下载 {item.downloads.toLocaleString()}</span>
+        )}
+      </div>
+
+      <h3 className="mt-3 truncate text-base font-semibold text-card-foreground" title={item.name}>{item.name}</h3>
+      <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={item.repo}>{item.repo}</p>
+      {item.desc && <p className="mt-1.5 line-clamp-2 min-h-[2.5rem] text-xs leading-5 text-muted-foreground">{item.desc}</p>}
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+        {item.likes != null && item.likes > 0 && <span>点赞 {item.likes.toLocaleString()}</span>}
+        {item.updated_at && <span>更新 {item.updated_at}</span>}
+        {(item.files ?? []).length > 0 && <span>{item.files!.length} 个可用文件</span>}
+      </div>
+
+      <div className="mt-4 flex items-center gap-2 border-t border-border pt-4">
+        {isInstalled && (
+          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400">
+            <CheckCircle2 className="h-3.5 w-3.5" />已安装
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => void p.openRepo(item)}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition",
+            isOpen
+              ? "border-primary/50 bg-primary/10 text-primary"
+              : "border-border text-muted-foreground hover:border-primary hover:text-primary",
           )}
-          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-            {item.downloads != null && item.downloads > 0 && <span>下载 {item.downloads.toLocaleString()}</span>}
-            {item.likes != null && item.likes > 0 && <span>点赞 {item.likes.toLocaleString()}</span>}
-            {item.updated_at && <span>更新 {item.updated_at}</span>}
-            {(item.size_hint_mb != null || (item.files ?? []).length > 0) && (
-              <span>{item.files?.length ? `${item.files.length} 个可用文件` : ""}</span>
-            )}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {isInstalled && (
-            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400">
-              <CheckCircle2 className="h-3.5 w-3.5" />已安装
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={() => void p.openRepo(item)}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition",
-              p.repoOpen?.id === item.id
-                ? "border-primary/50 bg-primary/10 text-primary"
-                : "border-border text-muted-foreground hover:border-primary hover:text-primary",
-            )}
-          >
-            <FolderOpen className="h-3.5 w-3.5" />
-            {p.repoOpen?.id === item.id ? "收起" : "查看文件"}
-          </button>
+        >
+          <FolderOpen className="h-3.5 w-3.5" />
+          {isOpen ? "收起" : "查看文件"}
+        </button>
+        <div className="ml-auto shrink-0">
           {prefs?.download ? (
             <button
               type="button"
@@ -451,7 +503,7 @@ function SearchResultCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
                   manifest_id: prefs.id,
                 })
               }
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105"
               title="有任务进行中时会加入等待队列，完成后自动开始"
             >
               <CloudDownload className="h-3.5 w-3.5" />安装
@@ -469,7 +521,7 @@ function SearchResultCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
                   display_name: quick.download.name.replace(/\.pth$/i, ""),
                 })
               }
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3.5 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105"
               title="有任务进行中时会加入等待队列，完成后自动开始"
             >
               <CloudDownload className="h-3.5 w-3.5" />一键安装

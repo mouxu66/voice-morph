@@ -1,19 +1,13 @@
-import { MergedPageTabs } from "@/components/MergedPageTabs"
 import { useVoiceMarket } from "@/pages/VoiceMarket/useVoiceMarket"
-import { FeaturedTab, MarketInstallBar, SearchTab } from "@/pages/VoiceMarket/VoiceMarketPage"
+import { MarketInstallBar, MarketPage } from "@/pages/VoiceMarket/VoiceMarketPage"
 
-/** 音色市场（合并页）：推荐清单 / 双源搜索，底部常驻安装进度条。 */
+/** 音色市场：单页浏览，搜索框常驻顶部，精选与搜索结果共用同一列表。 */
 export function VoiceMarketRoute() {
   const p = useVoiceMarket()
 
   return (
     <>
-      <MergedPageTabs
-        tabs={[
-          { key: "featured", label: "推荐", content: <FeaturedTab {...p} /> },
-          { key: "search", label: "搜索", content: <SearchTab {...p} /> },
-        ]}
-      />
+      <MarketPage {...p} />
       <MarketInstallBar {...p} />
     </>
   )
