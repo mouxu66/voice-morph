@@ -23,10 +23,15 @@ def _tone_wav(path, seconds: float = 2.0, sr: int = 16000, amp: float = 0.5):
 
 @pytest.fixture()
 def market_dir(tmp_path, monkeypatch):
-    """隔离 outputs/market：避免测试间通过模块级 MARKET_DIR 互相污染。"""
+    """隔离 outputs/market：避免测试间通过模块级 MARKET_DIR 互相污染。
+
+    同时把 BUILTIN_SRC 指到不存在路径，让「voicebank 参考音截取」旧路径仍可被
+    测试到；内置源句优先的行为由 test_ensure_source_prefers_builtin_clean_src 专测。
+    """
     d = tmp_path / "market"
     d.mkdir(parents=True)
     monkeypatch.setattr(mp, "MARKET_DIR", d)
+    monkeypatch.setattr(mp, "BUILTIN_SRC", tmp_path / "builtin_missing.wav")
     return d
 
 
@@ -127,6 +132,25 @@ def test_ensure_source_fails_without_voicebank(tmp_path, market_dir, monkeypatch
         mp._ensure_source()
 
 
+def test_ensure_source_prefers_builtin_clean_src(tmp_path, market_dir, fake_voicebank):
+    """内置干净源句优先于 voicebank 截取（修"试听全是袋鼠味"根因）：
+    只要 BUILTIN_SRC 存在且有声，即使 voicebank 有可用的参考音也不截取。"""
+    _tone_wav(mp.BUILTIN_SRC, seconds=3.0)
+    src = mp._ensure_source()
+    assert src == mp.BUILTIN_SRC
+    x, sr = sf.read(str(src))
+    assert float(np.sqrt(np.mean(x ** 2))) > mp._MIN_RMS
+
+
+def test_ensure_source_builtin_missing_falls_back(tmp_path, market_dir, fake_voicebank):
+    """内置源句缺失/无声 → 退回 voicebank 截取路径，不报错。"""
+    _tone_wav(mp._src_wav())                      # 无声内置 + 有声缓存
+    assert mp._ensure_source() == mp._src_wav()
+    (mp._src_wav()).unlink(missing_ok=True)       # 无缓存 → 从 voicebank 截取
+    src = mp._ensure_source()
+    assert src.exists() and src != mp.BUILTIN_SRC
+
+
 def test_generate_success_marks_ready(rvc_tmp, market_dir, tmp_path, monkeypatch):
     """完整链路（stub 推理子进程）→ 试听落盘，status=ready 且 url 可访问。"""
     _tone_wav(mp.MARKET_DIR / "_preview_src.wav")   # 预置有声源句缓存
@@ -175,6 +199,15 @@ def test_generate_dedupe_via_inflight(rvc_tmp, market_dir):
     st = mp.generate("demo_voice")
     assert st["status"] == "generating"
     mp._inflight.discard("demo_voice")
+
+
+def test_generate_missing_pth_marks_failed(rvc_tmp, market_dir):
+    """音色未安装（无 pth）→ failed + 可读原因，绝不拿空路径去推理
+    （Windows 空 Path==curdir 的坑：Path("").exists() 为 True 会误过守卫）。"""
+    mp._do_generate("missing_voice")
+    st = mp.status("missing_voice")
+    assert st["status"] == "failed"
+    assert "没有可推理" in st["error"]
 
 
 def test_generate_ready_short_circuits_inflight(rvc_tmp, market_dir, tmp_path, monkeypatch):

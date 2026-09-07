@@ -1,14 +1,19 @@
 # -*- coding: utf-8 -*-
 """市场音色安装后自动试听（A2）。
 
-流程：从本机 voicebank 参考音截中段 ~5s 真人声当源句（缓存到
-outputs/market/_preview_src.wav）→ 走 RVC 离线推理（offline_vc_infer.py 子进程，
+流程：用内置干净中文人声源句（assets/preview_source.wav，魔搭官方模型的中文
+示例语音，非袋鼠音色）→ 走 RVC 离线推理（offline_vc_infer.py 子进程，
 与离线变声同链路）→ outputs/market/<id>_preview.wav，供市场卡片与音色库共用播放器。
+
+源句为何用固定干净人声（2026-09-07 修复"试听全是袋鼠味"根因）：此前源句从本机
+voicebank 参考音（唯一音色=袋鼠）截取，RVC 是 voice-to-voice，源句音色会残留在
+输出里，导致每个音色试听都带袋鼠腔。改用与任何目标音色无源关系的中性中文人声后，
+输出只呈现目标音色本身。
 
 源句为何不用 TTS（2026-09-06 懒羊羊试听静音根因）：本机 Qwen3-TTS 对袋鼠等
 真实锚点的零样本克隆本就不可靠（会吐 1s 纯静音/乱码，见 A/B 试听结论），
-静音源句经 RVC 转换后仍是静音。RVC 是 voice-to-voice，直接用真人参考声
-当源句最稳，也最符合"试听音色品质"的目的。
+且 /tts 接口强制要求参考音频，无纯合成路径。RVC 是 voice-to-voice，
+直接用固定真人声当源句最稳，也最符合"试听音色品质"的目的。
 
 状态模型：每个音色一个 sidecar（outputs/market/<id>_preview.json）
     ready      试听已生成（wav 存在且非静音）
@@ -37,8 +42,20 @@ from runtime import VOICEBANK
 # 静音判定阈值：正常语音 RMS 远大于此；数字静音/近静音均视为无声
 _MIN_RMS = 1e-3
 
-# 固定试听句：约 4～5 秒，清晰中性，覆盖多种音色（仅文档用途；源句已改用真人声）
+# 固定试听句：约 4～5 秒，清晰中性，覆盖多种音色（仅文档用途；源句已改用内置干净人声）
 PREVIEW_TEXT = "安装完成，这是一段自动生成的试听，请听听这个新音色的声音品质。"
+
+# 内置干净源句：魔搭官方模型（damo/speech_campplus_sv_zh-cn_16k-common）examples 里的
+# 中文示例语音，16k 单声道 ~5s，与任何市场音色无源关系 —— 试听只呈现目标音色本身
+BUILTIN_SRC = Path(__file__).resolve().parent / "assets" / "preview_source.wav"
+
+# RVC 推理参数（可调）：
+#   pitch=+12 原为低音区真人源句（袋鼠参考音）设计，目标多为卡通/女声高音区音色，
+#   不移调时 f0 跨度大易出电音（2026-09-06 懒羊羊实测 C/D 组对比后定稿）；
+#   源句换成中性人声后可微调（女声目标若显尖/电音可降到 +8~+10）。
+#   index-rate=0.75：加大向目标音色检索的贴力度，压源音色残留。
+_PITCH = 12
+_INDEX_RATE = 0.75
 
 MARKET_DIR = cfg.OUTPUTS_DIR / "market"
 MARKET_DIR.mkdir(parents=True, exist_ok=True)
@@ -133,10 +150,14 @@ def _extract_ref_segment(ref: Path, out: Path, want_s: float = 5.0) -> None:
 
 
 def _ensure_source() -> Path:
-    """返回试听源句 wav：缓存有效直接用；否则从 voicebank 参考音截真人声。
+    """返回试听源句 wav：内置干净人声优先；否则从 voicebank 参考音截真人声。
 
+    内置源句 BUILTIN_SRC 与任何目标音色无源关系，避免 voice-to-voice 残留源音色
+    （修复"所有试听都带袋鼠味"）；缺失/无声时退回旧逻辑（voicebank 参考音）。
     抛 RuntimeError 时带可读原因（无 voicebank / 参考音无声 / 截取失败）。
     """
+    if BUILTIN_SRC.exists() and _audible(BUILTIN_SRC):
+        return BUILTIN_SRC
     cached = _src_wav()
     if cached.exists() and _audible(cached):
         return cached
@@ -188,12 +209,14 @@ def _find_index(voice_id: str) -> str:
     return str(idx) if idx else ""
 
 
-def _find_pth(voice_id: str) -> Path:
+def _find_pth(voice_id: str):
+    """返回可推理的 RVC 权重路径；未安装返回 None（勿返回 Path("")：Windows 上
+    空 Path==curdir，exists() 为 True，会让调用方误判为有模型）。"""
     w = cfg.RVC_ROOT / "assets" / "weights" / f"{voice_id}.pth"
     if w.exists():
         return w
     l = cfg.RVC_ROOT / "logs" / voice_id / f"{voice_id}.pth"
-    return l if l.exists() else Path("")
+    return l if l.exists() else None
 
 
 def generate(voice_id: str) -> dict:
@@ -240,7 +263,10 @@ def _do_generate(voice_id: str):
         _mark(voice_id, "failed", "RVC 运行环境缺失，无法生成试听（请先安装/配置 RVC 整合包）")
         return
     pth = _find_pth(voice_id)
-    if not pth.exists():
+    if not pth or not pth.exists():
+        # Windows 上 Path("") == "." 且 exists() 为 True，_find_pth 必须返回 None
+        # 而不是空 Path，否则"未安装"的音色会带空路径去 torch.load(".") →
+        # 报误导性的 PermissionError: '.'。
         _mark(voice_id, "failed", f"音色 {voice_id} 没有可推理的 RVC 模型")
         return
     _mark(voice_id, "generating")
@@ -250,14 +276,11 @@ def _do_generate(voice_id: str):
         _mark(voice_id, "failed", f"试听源句合成失败：{e}")
         return
     out = _out_wav(voice_id)
-    # pitch=+12：试听源句是真人参考声（音区低），目标多为卡通/女声等高音区音色，
-    # 不移调时 f0 跨度大易出电音（2026-09-06 懒羊羊实测 C/D 组对比后定稿）；
-    # index-rate=0.75：加大向目标音色检索的贴力度，压源音色残留。
     cmd = [str(RVC_VENV_PY), str(INFER_PY),
            "--pth", str(pth),
            "--index", _find_index(voice_id),
            "--input", str(src), "--output", str(out),
-           "--pitch", "12", "--index-rate", "0.75"]
+           "--pitch", str(_PITCH), "--index-rate", str(_INDEX_RATE)]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
                            encoding="utf-8", errors="replace", cwd=str(cfg.RVC_ROOT))
