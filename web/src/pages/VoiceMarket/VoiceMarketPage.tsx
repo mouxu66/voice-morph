@@ -28,16 +28,16 @@ import { ACTIVE_PHASE_TEXT, fmtBytes, pctOf } from "@/pages/VoiceMarket/marketFo
 
 const PLATFORM_LABEL: Record<string, string> = { hf: "HF", modelscope: "魔搭" }
 
-// ---------- 全局安装托盘：当前任务 + 等待队列（可单独移除） ----------
-export function MarketInstallBar(p: Pick<VoiceMarket, "task" | "installRunning" | "installErr" | "setInstallErr" | "cancelInstall" | "installQueue">) {
+// ---------- 全局安装托盘：完成提示 + 当前任务 + 等待队列（可单独移除） ----------
+export function MarketInstallBar(p: Pick<VoiceMarket, "task" | "installRunning" | "installErr" | "setInstallErr" | "cancelInstall" | "installQueue" | "justFinished">) {
   const queued = p.installQueue
-  if (!p.installRunning && !p.installErr && queued.length === 0) return null
+  if (!p.installRunning && !p.installErr && queued.length === 0 && !p.justFinished) return null
   const t = p.task
   const install = t?.install
   const name = install?.display_name ?? t?.name ?? ""
   const indeterminate = !!t && !t.total && !install?.percent
   const done = (t?.done ?? 0) > 0 && !!t?.total ? fmtBytes(t!.done!) + " / " + fmtBytes(t!.total!) : ""
-  const hasTop = p.installRunning || p.installErr
+  const hasTop = p.installRunning || p.installErr || !!p.justFinished
 
   return (
     <div className="fixed inset-x-0 bottom-4 z-40 flex justify-center px-4">
@@ -56,8 +56,23 @@ export function MarketInstallBar(p: Pick<VoiceMarket, "task" | "installRunning" 
           </div>
         )}
 
+        {p.justFinished && (
+          <div className={cn("flex items-center gap-3", p.installErr && "mt-3 border-t border-border pt-3")}>
+            <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />
+            <div className="min-w-0 flex-1">
+              <p className="flex items-center gap-2 text-sm font-medium text-card-foreground">
+                安装完成
+                <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] text-emerald-500">已加入音色库</span>
+              </p>
+              <p className="mt-0.5 truncate text-xs text-muted-foreground" title={p.justFinished.name}>
+                「{p.justFinished.name}」可直接用于实时变声与离线工坊
+              </p>
+            </div>
+          </div>
+        )}
+
         {p.installRunning && (
-          <div className={cn("flex items-center gap-4", p.installErr && "mt-3 border-t border-border pt-3")}>
+          <div className={cn("flex items-center gap-4", (p.installErr || p.justFinished) && "mt-3 border-t border-border pt-3")}>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <CloudDownload className="h-4 w-4 shrink-0 text-primary" />

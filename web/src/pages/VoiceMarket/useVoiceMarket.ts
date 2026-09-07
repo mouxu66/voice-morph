@@ -18,6 +18,7 @@ import {
   type MarketPreview,
   type MarketTask,
 } from "@/api/client"
+import { notify } from "@/lib/notify"
 
 /** 安装进行中的状态集合（其余为终结态） */
 const ACTIVE = new Set(["queued", "downloading_pth", "downloading_index", "staging"])
@@ -52,6 +53,8 @@ export function useVoiceMarket() {
   const [installed, setInstalled] = useState<string[]>([])
   const [task, setTask] = useState<MarketTask | null>(null)
   const [installErr, setInstallErr] = useState("")
+  const [justFinished, setJustFinished] = useState<{ voice_id: string; name: string } | null>(null)
+  const finishTimer = useRef<number | null>(null)   // 完成提示 5s 后自动收起
   const [installingId, setInstallingId] = useState("") // 正在安装的 voice_id（驱动卡片进度）
   const prevStatus = useRef<string>("")
 
@@ -103,8 +106,17 @@ export function useVoiceMarket() {
         const finishedId = t?.install?.voice_id ?? ""
         if (cur && !ACTIVE.has(cur) && (wasActive || activeRef.current)) {
           activeRef.current = false
-          // 后端异步失败（下载/落位失败）此前无任何提示，这里落进托盘错误条
+          // 后端异步失败（下载/落位失败）此前无任何提示，这里落进托盘错误条；
+          // 安装成功托盘直接消失，用成功 toast 补一条完成提示
           if (cur === "failed" && t?.install?.error) setInstallErr(t.install.error)
+          else if (cur === "installed") {
+            const doneName = t?.install?.display_name || t?.install?.voice_id || "音色"
+            notify.success(`「${doneName}」安装完成`)
+            // 托盘补一条「完成」态：直接消失太突兀，停留 5s 再收起（队列续跑时不阻塞）
+            setJustFinished({ voice_id: finishedId, name: doneName })
+            if (finishTimer.current) window.clearTimeout(finishTimer.current)
+            finishTimer.current = window.setTimeout(() => setJustFinished(null), 5000)
+          }
           void refreshInstalled()
           void refreshBackups()
           if (finishedId) void ensurePreviewRef.current(finishedId)
@@ -125,6 +137,13 @@ export function useVoiceMarket() {
       window.clearInterval(timer)
     }
   }, [refreshInstalled, refreshBackups])
+
+  // 卸载时清理完成提示的延时器
+  useEffect(() => {
+    return () => {
+      if (finishTimer.current) window.clearTimeout(finishTimer.current)
+    }
+  }, [])
 
   // ---- 搜索 ----
   const [searching, setSearching] = useState(false)
@@ -404,6 +423,7 @@ export function useVoiceMarket() {
     queuedIds,
     installErr,
     setInstallErr,
+    justFinished,
     refreshInstalled,
     startInstall,
     cancelInstall,
