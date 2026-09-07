@@ -377,7 +377,7 @@ class InstallManager:
                 except Exception as exc:  # noqa: BLE001
                     errs["index"] = exc
 
-            self._set_install(status="downloading_pth", phase="下载权重",
+            self._set_install(status="downloading_pth", phase="下载权重与索引",
                               message="正在下载权重与索引文件 …", percent=_pct_of(0, INSTALL_PHASES))
             pth_t = threading.Thread(target=_dl_pth, daemon=True)
             pth_t.start()

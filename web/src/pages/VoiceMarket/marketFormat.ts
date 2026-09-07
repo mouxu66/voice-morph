@@ -12,7 +12,7 @@ export function pctOf(t: MarketTask | null): number {
 /** 进行中阶段的短文本（安装 5 段 + 裸下载兜底）。 */
 export function ACTIVE_PHASE_TEXT(phase: string): string {
   const map: Record<string, string> = {
-    downloading_pth: "下载权重",
+    downloading_pth: "下载权重与索引",
     downloading_index: "下载索引",
     staging: "注册音色",
     downloading: "下载中",
