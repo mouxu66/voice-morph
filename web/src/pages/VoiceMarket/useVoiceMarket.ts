@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
+  marketBackups,
   marketCancel,
   marketInstall,
   marketInstalled,
@@ -8,6 +9,7 @@ import {
   marketPreviewTrigger,
   marketProgress,
   marketRepo,
+  marketRollback,
   marketSearch,
   marketUninstall,
   type MarketFile,
@@ -56,7 +58,8 @@ export function useVoiceMarket() {
       .then(setManifest)
       .catch(() => setManifest([]))
     void refreshInstalled()
-  }, [refreshInstalled])
+    void refreshBackups()
+  }, [refreshInstalled, refreshBackups])
 
   // 轮询全局进度：常驻 1.5s，busy 防慢响应叠加以防请求堆积
   useEffect(() => {
@@ -79,6 +82,7 @@ export function useVoiceMarket() {
         const finishedId = t?.install?.voice_id ?? ""
         if (wasActive && !ACTIVE.has(cur)) {
           void refreshInstalled()
+          void refreshBackups()
           if (finishedId) void ensurePreview(finishedId)
         }
         prevStatus.current = cur
@@ -197,6 +201,7 @@ export function useVoiceMarket() {
       try {
         const r = await marketUninstall(voice_id)
         await refreshInstalled()
+        await refreshBackups()
         return r
       } catch (e) {
         setInstallErr(e instanceof Error ? e.message : "卸载失败")
@@ -205,7 +210,37 @@ export function useVoiceMarket() {
         setUninstallingId("")
       }
     },
-    [refreshInstalled],
+    [refreshInstalled, refreshBackups],
+  )
+
+  // ---- 历史备份与回滚（覆盖重装自动归档，失败自动回滚，可手动回滚） ----
+  const [backups, setBackups] = useState<string[]>([])
+  const [rollbackingId, setRollbackingId] = useState("")
+
+  const refreshBackups = useCallback(async () => {
+    try {
+      setBackups(await marketBackups())
+    } catch {
+      /* 后端离线时忽略 */
+    }
+  }, [])
+
+  const rollbackVoice = useCallback(
+    async (voice_id: string) => {
+      setInstallErr("")
+      setRollbackingId(voice_id)
+      try {
+        const r = await marketRollback(voice_id)
+        await Promise.all([refreshInstalled(), refreshBackups()])
+        return r
+      } catch (e) {
+        setInstallErr(e instanceof Error ? e.message : "回滚失败")
+        throw e
+      } finally {
+        setRollbackingId("")
+      }
+    },
+    [refreshInstalled, refreshBackups],
   )
 
   // ---- 试听生成（A2：装完自动生成固定句试听，供市场卡片与音色库共用） ----
@@ -291,6 +326,10 @@ export function useVoiceMarket() {
     cancelInstall,
     uninstallingId,
     uninstallVoice,
+    backups,
+    refreshBackups,
+    rollbackingId,
+    rollbackVoice,
     previews,
     ensurePreview,
     searching,

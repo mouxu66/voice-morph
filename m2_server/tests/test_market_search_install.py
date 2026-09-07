@@ -21,7 +21,7 @@ import config
 # 伪权重须过 _torch_header_ok 魔数校验：以 pickle 协议 2 头部 \x80\x02 开头
 PTH_DATA = b"\x80\x02" + os.urandom(512 * 1024 - 2)          # 512KB 伪权重
 IDX_DATA = os.urandom(64 * 1024)           # 64KB 伪索引
-MIRROR_DATA = os.urandom(128 * 1024)       # 镜像文件（内容刻意不同）
+MIRROR_DATA = b"\x80\x02" + os.urandom(128 * 1024 - 2)       # 镜像文件（内容刻意不同，也过魔数校验）
 
 
 class _Ctx:
@@ -576,3 +576,141 @@ def test_stage_writes_both_locations(monkeypatch, tmp_path, mgr, fake_rvc):
     w_pth = fake_rvc / "assets" / "weights" / "dual.pth"
     assert log_pth.read_bytes() == PTH_DATA
     assert w_pth.read_bytes() == PTH_DATA
+
+
+# ---------------- A6 覆盖重装 .old 备份与回滚 ----------------
+
+@pytest.fixture()
+def old_dir(tmp_path):
+    return tmp_path / "old"
+
+
+@pytest.fixture()
+def fake_out(tmp_path, monkeypatch):
+    """隔离 preview/qc 产物目录，避免测试污染真实 outputs。"""
+    out = tmp_path / "out"
+    out.mkdir(parents=True)
+    monkeypatch.setattr(config, "OUTPUTS_DIR", out)
+    return out
+
+
+def _install_v1(ins, voice_id, server_url):
+    ins.run(voice_id, download={"url": f"{server_url}/v.pth"},
+            index={"url": f"{server_url}/v.index"})
+    return _wait_install(ins)
+
+
+def test_overwrite_backs_up_old_version(server_url, mgr, fake_rvc, old_dir):
+    """覆盖重装：旧版本先归档到 .old/<id>/，备份内容即旧版 pth。"""
+    ins = InstallManager(manager=mgr, old_dir=old_dir)
+    _install_v1(ins, "roll_me", server_url)
+    ins.run("roll_me", download={"url": f"{server_url}/mirror.pth"},
+            index={"url": f"{server_url}/v.index"}, overwrite=True)
+    st = _wait_install(ins)
+    assert st["install"]["status"] == "installed"
+    assert (fake_rvc / "logs" / "roll_me" / "roll_me.pth").read_bytes() == MIRROR_DATA
+    snaps = list((old_dir / "roll_me").iterdir())
+    assert len(snaps) == 1
+    assert (snaps[0] / "roll_me.pth").read_bytes() == PTH_DATA    # 归档的是 v1
+    assert "roll_me" in ins.backup_ids()
+
+
+def test_rollback_restores_previous_version(server_url, mgr, fake_rvc, old_dir, fake_out):
+    """回滚：恢复 v1 到 logs + assets，消费备份，并清失效的试听/质检产物。"""
+    ins = InstallManager(manager=mgr, old_dir=old_dir)
+    _install_v1(ins, "rb_voice", server_url)
+    ins.run("rb_voice", download={"url": f"{server_url}/mirror.pth"},
+            index={"url": f"{server_url}/v.index"}, overwrite=True)
+    _wait_install(ins)
+    log_pth = fake_rvc / "logs" / "rb_voice" / "rb_voice.pth"
+    assert log_pth.read_bytes() == MIRROR_DATA
+    # 预置新版本生成的失效产物（preview / qc）
+    (fake_out / "market").mkdir(parents=True, exist_ok=True)
+    (fake_out / "qc").mkdir(parents=True, exist_ok=True)
+    (fake_out / "market" / "rb_voice_preview.json").write_text("{}", encoding="utf-8")
+    (fake_out / "qc" / "rb_voice.json").write_text("{}", encoding="utf-8")
+    res = ins.rollback("rb_voice")
+    assert res["voice_id"] == "rb_voice"
+    assert log_pth.read_bytes() == PTH_DATA
+    assert (fake_rvc / "assets" / "weights" / "rb_voice.pth").read_bytes() == PTH_DATA
+    assert not (old_dir / "rb_voice").exists()                    # 备份被消费
+    assert "rb_voice" not in ins.backup_ids()
+    assert not (fake_out / "market" / "rb_voice_preview.json").exists()
+    assert not (fake_out / "qc" / "rb_voice.json").exists()
+
+
+def test_rollback_rejects_without_backup(server_url, mgr, fake_rvc, old_dir):
+    """首次安装（无历史备份）不可回滚。"""
+    ins = InstallManager(manager=mgr, old_dir=old_dir)
+    _install_v1(ins, "no_bak", server_url)
+    with pytest.raises(InstallError, match="没有可回滚"):
+        ins.rollback("no_bak")
+
+
+def test_rollback_rejects_self_trained(mgr, fake_rvc, old_dir):
+    """非市场来源（无 source.json）拒绝回滚，避免误动自训产物。"""
+    d = fake_rvc / "logs" / "selftrained_rb"
+    d.mkdir(parents=True)
+    (d / "selftrained_rb.pth").write_bytes(PTH_DATA)
+    ins = InstallManager(manager=mgr, old_dir=old_dir)
+    with pytest.raises(InstallError, match="不是市场安装来源"):
+        ins.rollback("selftrained_rb")
+    assert (d / "selftrained_rb.pth").exists()
+
+
+def test_rollback_rejects_when_installing(server_url, mgr, fake_rvc, old_dir):
+    """覆盖重装进行中拒绝回滚（与卸载同样的互斥）。"""
+    ins = InstallManager(manager=mgr, old_dir=old_dir)
+    _install_v1(ins, "busy_rb", server_url)
+    ins.run("busy_rb", download={"url": f"{server_url}/mirror.pth"}, overwrite=True)
+    with pytest.raises(InstallError, match="进行中"):
+        ins.rollback("busy_rb")
+    _wait_install(ins)
+
+
+def test_uninstall_cleans_old_backups(server_url, mgr, fake_rvc, old_dir):
+    """卸载连带清 .old 历史备份（卸载 = 彻底移除）。"""
+    ins = InstallManager(manager=mgr, old_dir=old_dir)
+    _install_v1(ins, "kill_bak", server_url)
+    ins.run("kill_bak", download={"url": f"{server_url}/mirror.pth"}, overwrite=True)
+    _wait_install(ins)
+    assert (old_dir / "kill_bak").exists()
+    ins.uninstall("kill_bak")
+    assert not (old_dir / "kill_bak").exists()
+    assert "kill_bak" not in ins.backup_ids()
+
+
+def test_install_failure_auto_rolls_back(server_url, mgr, fake_rvc, old_dir):
+    """覆盖重装下载失败 → 自动回滚到旧版本；备份不消费（仍可手动回滚）。"""
+    ins = InstallManager(manager=mgr, old_dir=old_dir)
+    _install_v1(ins, "auto_rb", server_url)
+    ins.run("auto_rb", download={"url": f"{server_url}/missing.pth"}, overwrite=True)
+    st = _wait_install(ins)
+    assert st["install"]["status"] == "failed"
+    assert "已自动回滚" in st["install"]["message"]
+    assert (fake_rvc / "logs" / "auto_rb" / "auto_rb.pth").read_bytes() == PTH_DATA
+    assert (fake_rvc / "assets" / "weights" / "auto_rb.pth").read_bytes() == PTH_DATA
+    assert "auto_rb" in ins.backup_ids()
+
+
+def test_prune_old_keeps_newest(tmp_path):
+    """备份裁剪：超出 OLD_KEEP 份时删最旧，保留最新 3 份。"""
+    from market_install import OLD_KEEP
+    old_dir = tmp_path / "old"
+    base = old_dir / "v"
+    for i in range(5):
+        (base / f"20260101_0000{i}").mkdir(parents=True)
+    ins = InstallManager(manager=None, old_dir=old_dir)
+    ins._prune_old("v")
+    names = sorted(p.name for p in base.iterdir())
+    assert names == [f"20260101_0000{i}" for i in range(5 - OLD_KEEP, 5)]
+
+
+# ---------------- A6 API 壳 ----------------
+
+def test_api_backups_and_rollback_validation():
+    resp = _api_client().get("/api/market/backups")
+    assert resp.status_code == 200
+    assert "backups" in resp.json()
+    resp = _api_client().post("/api/market/rollback", json={"voice_id": "never_existed"})
+    assert resp.status_code == 409

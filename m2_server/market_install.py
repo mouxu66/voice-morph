@@ -31,6 +31,10 @@ VOICE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
 INSTALL_PHASES = ("downloading_pth", "downloading_index", "staging")
 
+# 覆盖重装前的旧版本归档目录（RVC 视野之外；卸载时连带清除）
+OLD_DIR = cfg.OUTPUTS_DIR / "market" / ".old"
+OLD_KEEP = 3               # 每个音色最多保留的历史备份份数
+
 
 class InstallError(MarketError):
     """安装编排层业务错误（409 透传给 API）。"""
@@ -39,10 +43,13 @@ class InstallError(MarketError):
 class InstallManager:
     """单安装互斥编排器：串行 pth → index → 落位。"""
 
-    def __init__(self, manager: DownloadManager | None = None):
+    def __init__(self, manager: DownloadManager | None = None,
+                 old_dir: Path | None = None):
         self.manager = manager or get_manager()
+        self.old_dir = Path(old_dir or OLD_DIR)
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._backed_up = False          # 本次覆盖重装是否有旧版本备份（失败自动回滚依据）
 
     # ---- 对外 ----
     def run(self, voice_id: str, download: dict, index: dict | None = None,
@@ -70,7 +77,9 @@ class InstallManager:
                 f"音色 {voice_id} 已存在：{'、'.join(str(p) for p in conflict)}（含自训产物）。"
                 "如需覆盖请显式指定 overwrite=true")
         if conflict:
-            # 覆盖重装：清除旧下载产物（防止 DownloadManager 幂等分支装回旧文件）
+            # 覆盖重装：先归档旧版本（失败自动回滚的后悔药），再清除旧下载产物
+            # （防止 DownloadManager 幂等分支装回旧文件）
+            self._backed_up = self._backup(voice_id)
             for suffix in (".pth", ".index"):
                 self.manager.remove_artifact(f"{voice_id}{suffix}")
         self.manager.set_meta(install={
@@ -104,6 +113,118 @@ class InstallManager:
         if w_pth.exists():
             out.append(w_pth)
         return out
+
+    # ---- 旧版本备份 / 回滚（覆盖重装的后悔药） ----
+
+    def backup_ids(self) -> list[str]:
+        """有 .old 历史备份（可回滚）的 voice_id 列表，供前端决定是否显示回滚按钮。"""
+        if not self.old_dir.is_dir():
+            return []
+        out = []
+        for d in self.old_dir.iterdir():
+            if d.is_dir() and any(p.is_dir() for p in d.iterdir()):
+                out.append(d.name)
+        return sorted(out)
+
+    def _backup(self, voice_id: str) -> bool:
+        """覆盖重装前归档当前版本到 .old/<voice_id>/<ts>/（pth + index + source.json）。
+
+        无旧 pth（理论上的首次覆盖分支）返回 False；归档后按 OLD_KEEP 裁剪最旧备份。
+        """
+        log_dir = cfg.RVC_ROOT / "logs" / voice_id
+        if not (log_dir / f"{voice_id}.pth").exists():
+            return False
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        snap = self.old_dir / voice_id / f"{ts}_{int(time.time() * 1000) % 1000:03d}"
+        snap.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(log_dir / f"{voice_id}.pth", snap / f"{voice_id}.pth")
+        if (log_dir / f"added_{voice_id}.index").exists():
+            shutil.copy2(log_dir / f"added_{voice_id}.index", snap / f"added_{voice_id}.index")
+        src = log_dir / "source.json"
+        if src.exists():
+            shutil.copy2(src, snap / "source.json")
+        self._prune_old(voice_id)
+        return True
+
+    def _prune_old(self, voice_id: str, keep: int = OLD_KEEP) -> None:
+        """每个音色最多保留 keep 份历史备份，超出删最旧。"""
+        old_dir = self.old_dir / voice_id
+        if not old_dir.is_dir():
+            return
+        for p in sorted(old_dir.iterdir())[:-keep]:
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+
+    def _restore_backup(self, voice_id: str) -> dict | None:
+        """用 .old/<voice_id>/ 最新一份备份恢复 logs/ + assets/weights/ + source.json。
+
+        返回恢复描述；无备份或为空返回 None（不抛异常，供自动回滚静默处理）。
+        """
+        old_dir = self.old_dir / voice_id
+        if not old_dir.is_dir():
+            return None
+        snaps = sorted(p for p in old_dir.iterdir() if p.is_dir())
+        if not snaps:
+            return None
+        snap = snaps[-1]
+        log_dir = cfg.RVC_ROOT / "logs" / voice_id
+        weights_dir = cfg.RVC_ROOT / "assets" / "weights"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        weights_dir.mkdir(parents=True, exist_ok=True)
+        pth = snap / f"{voice_id}.pth"
+        if pth.exists():
+            shutil.copy2(pth, log_dir / f"{voice_id}.pth")
+            _link_or_copy(log_dir / f"{voice_id}.pth", weights_dir / f"{voice_id}.pth")
+        idx = snap / f"added_{voice_id}.index"
+        if idx.exists():
+            shutil.copy2(idx, log_dir / f"added_{voice_id}.index")
+        src = snap / "source.json"
+        if src.exists():
+            shutil.copy2(src, log_dir / "source.json")
+        return {"voice_id": voice_id, "snapshot": snap.name,
+                "restored_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+
+    def _try_auto_rollback(self, voice_id: str) -> bool:
+        """本次为覆盖重装且存在备份时，安装失败自动恢复旧版本。返回是否已恢复。"""
+        if not self._backed_up:
+            return False
+        try:
+            restored = self._restore_backup(voice_id)
+        except Exception:  # noqa: BLE001 —— 回滚失败不应掩盖原始错误
+            return False
+        return bool(restored)
+
+    def rollback(self, voice_id: str) -> dict:
+        """回滚到上次覆盖前的版本：恢复最新备份并消费该备份，清失效的试听/质检产物。
+
+        仅限市场来源且有历史备份；安装/下载进行中拒绝执行（同卸载）。
+        """
+        if not voice_id or not VOICE_ID_RE.match(voice_id):
+            raise InstallError(f"非法音色 ID: {voice_id!r}（限字母数字_\\-）")
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise InstallError("已有安装任务在进行中，请稍后再回滚")
+            st = self.manager.progress()
+            if st.get("status") == "downloading":
+                raise InstallError("已有下载任务在进行中，请稍后再回滚")
+        if not self._is_market_installed(voice_id):
+            raise InstallError("音色不是市场安装来源或不存在，无法回滚")
+        old_dir = self.old_dir / voice_id
+        if not old_dir.is_dir():
+            raise InstallError(f"音色 {voice_id} 没有可回滚的历史备份")
+        restored = self._restore_backup(voice_id)
+        if not restored:
+            raise InstallError(f"音色 {voice_id} 的历史备份为空")
+        # 消费该备份：回滚成功后删除，避免残留备份重复回滚
+        shutil.rmtree(old_dir, ignore_errors=True)
+        # 新版本的试听/质检产物对旧版本无效，一并失效
+        for cand in (
+            cfg.OUTPUTS_DIR / "market" / f"{voice_id}_preview.wav",
+            cfg.OUTPUTS_DIR / "market" / f"{voice_id}_preview.json",
+            cfg.OUTPUTS_DIR / "qc" / f"{voice_id}.json",
+        ):
+            cand.unlink(missing_ok=True)
+        return restored
 
     def cancel(self) -> dict:
         """取消进行中的安装（挂起中的下载任务随 manager.cancel 一并取消）。
@@ -199,7 +320,7 @@ class InstallManager:
             paths.append(log_dir)
         if w_pth.exists():
             paths.append(w_pth)
-        # 下载缓存与试听 / 质检孤儿产物
+        # 下载缓存与试听 / 质检孤儿产物；.old 历史备份连带清（卸载 = 彻底移除）
         for cand in (
             self.manager.download_dir / f"{voice_id}.pth",
             self.manager.download_dir / f"{voice_id}.pth.part",
@@ -208,6 +329,7 @@ class InstallManager:
             cfg.OUTPUTS_DIR / "market" / f"{voice_id}_preview.wav",
             cfg.OUTPUTS_DIR / "market" / f"{voice_id}_preview.json",
             cfg.OUTPUTS_DIR / "qc" / f"{voice_id}.json",
+            self.old_dir / voice_id,
         ):
             if cand.exists():
                 paths.append(cand)
@@ -272,9 +394,15 @@ class InstallManager:
             with self._lock:
                 cur = (self.manager.progress().get("install") or {}).get("status")
             if cur != "cancelled":
-                self._set_install(status="failed", message="安装失败", error=str(exc))
+                msg = "安装失败"
+                if self._try_auto_rollback(voice_id):
+                    msg += "（已自动回滚到旧版本）"
+                self._set_install(status="failed", message=msg, error=str(exc))
         except Exception as exc:  # noqa: BLE001 —— 未知异常统一 failed
-            self._set_install(status="failed", message="安装失败",
+            msg = "安装失败"
+            if self._try_auto_rollback(voice_id):
+                msg += "（已自动回滚到旧版本）"
+            self._set_install(status="failed", message=msg,
                               error=f"{exc.__class__.__name__}: {exc}")
 
     def _set_install(self, **kw):

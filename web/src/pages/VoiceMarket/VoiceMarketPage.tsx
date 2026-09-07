@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Search,
   ScrollText,
   ShieldCheck,
@@ -191,18 +192,37 @@ function MarketCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
         )}
         <div className="shrink-0">
           {isInstalled ? (
-            <button
-              type="button"
-              disabled={p.installRunning || p.uninstallingId === voiceId}
-              onClick={() => {
-                if (!window.confirm(`确定从音色库卸载「${item.name}」吗？\n将删除其模型（logs/${voiceId}）、权重（assets/weights）与下载缓存，不可恢复。`)) return
-                void p.uninstallVoice(voiceId).catch(() => {})
-              }}
-              className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/20 disabled:pointer-events-none disabled:opacity-50"
-            >
-              {p.uninstallingId === voiceId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-              卸载
-            </button>
+            <div className="flex items-center gap-1.5">
+              {p.backups.includes(voiceId) && (
+                <button
+                  type="button"
+                  disabled={p.installRunning || p.rollbackingId === voiceId}
+                  onClick={() => {
+                    if (!window.confirm(`确定将「${item.name}」回滚到覆盖前的旧版本吗？\n将恢复 .old 备份中的模型，并清除当前版本的试听/质检记录。`)) return
+                    void p.rollbackVoice(voiceId)
+                      .then(() => void p.ensurePreview(voiceId, true))
+                      .catch(() => {})
+                  }}
+                  title="覆盖重装前会自动归档旧版本，安装失败也会自动回滚。此按钮手动恢复上次覆盖前的版本。"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-3 py-2 text-xs font-medium text-muted-foreground transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
+                >
+                  {p.rollbackingId === voiceId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                  回滚
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={p.installRunning || p.uninstallingId === voiceId}
+                onClick={() => {
+                  if (!window.confirm(`确定从音色库卸载「${item.name}」吗？\n将删除其模型（logs/${voiceId}）、权重（assets/weights）与下载缓存，不可恢复。`)) return
+                  void p.uninstallVoice(voiceId).catch(() => {})
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/20 disabled:pointer-events-none disabled:opacity-50"
+              >
+                {p.uninstallingId === voiceId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                卸载
+              </button>
+            </div>
           ) : isThis ? (
             <div className="flex items-center gap-2">
               <div className="flex h-9 items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3">

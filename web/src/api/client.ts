@@ -1142,6 +1142,21 @@ export async function marketUninstall(voice_id: string): Promise<{ voice_id: str
   });
 }
 
+/** 有历史备份（可回滚）的市场音色 id 列表 */
+export async function marketBackups(): Promise<string[]> {
+  const data = await jsonFetch<{ backups: string[] }>("/market/backups");
+  return data.backups;
+}
+
+/** 回滚到上次覆盖前的版本（消费最新 .old 备份） */
+export async function marketRollback(voice_id: string): Promise<{ voice_id: string }> {
+  return jsonFetch("/market/rollback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ voice_id }),
+  });
+}
+
 // ---- 市场试听（A2：装完自动生成固定句试听） ----
 
 export type MarketPreviewStatus = "ready" | "generating" | "failed" | "skipped" | "missing";

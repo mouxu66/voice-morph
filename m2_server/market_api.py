@@ -117,6 +117,25 @@ def market_installed():
     return {"installed": get_installer().installed_ids()}
 
 
+@router.get("/market/backups")
+def market_backups():
+    """有历史备份（可回滚）的市场音色 id 列表，供前端决定是否显示回滚按钮。"""
+    return {"backups": get_installer().backup_ids()}
+
+
+class RollbackRequest(BaseModel):
+    voice_id: str = Field(..., description="要回滚的音色 ID（须为市场来源且存在历史备份）")
+
+
+@router.post("/market/rollback")
+def market_rollback(req: RollbackRequest):
+    """回滚到上次覆盖前的版本：恢复最新 .old 备份并消费它，清失效的试听/质检产物。"""
+    try:
+        return get_installer().rollback(req.voice_id)
+    except InstallError as exc:
+        raise HTTPException(409, str(exc))
+
+
 class UninstallRequest(BaseModel):
     voice_id: str = Field(..., description="要卸载的音色 ID（须为市场安装来源）")
 
