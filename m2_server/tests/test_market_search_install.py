@@ -714,3 +714,64 @@ def test_api_backups_and_rollback_validation():
     assert "backups" in resp.json()
     resp = _api_client().post("/api/market/rollback", json={"voice_id": "never_existed"})
     assert resp.status_code == 409
+
+
+# ---------------- A7 信号量并发：pth 与 index 并行下载 ----------------
+
+class _ParallelCtx:
+    def __init__(self):
+        self.active = 0
+        self.peak = 0
+        self.lock = threading.Lock()
+        self.files = {}
+
+
+class _ParallelHandler(http.server.BaseHTTPRequestHandler):
+    """慢速 + 并发计数 handler：用于证明安装内 pth/index 同时在线下载。"""
+
+    ctx = _ParallelCtx()
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        with self.ctx.lock:
+            self.ctx.active += 1
+            self.ctx.peak = max(self.ctx.peak, self.ctx.active)
+        try:
+            path = self.path.split("?")[0]
+            data = self.ctx.files.get(path)
+            if data is None:
+                self.send_error(404)
+                return
+            time.sleep(0.15)                 # 拉长下载窗口，让并发可观测
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        finally:
+            with self.ctx.lock:
+                self.ctx.active -= 1
+
+
+@pytest.fixture(scope="module")
+def parallel_server():
+    _ParallelHandler.ctx = _ParallelCtx()
+    _ParallelHandler.ctx.files = {"/v.pth": PTH_DATA, "/v.index": IDX_DATA}
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _ParallelHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.shutdown()
+
+
+def test_install_downloads_pth_and_index_in_parallel(parallel_server, mgr, fake_rvc):
+    """安装内 pth 与 index 并行下载（信号量文件级并发），最终全部装好。"""
+    ins = InstallManager(manager=mgr)
+    ins.run("para", download={"url": f"{parallel_server}/v.pth"},
+            index={"url": f"{parallel_server}/v.index"})
+    st = _wait_install(ins)
+    assert st["install"]["status"] == "installed", st
+    assert (fake_rvc / "logs" / "para" / "para.pth").read_bytes() == PTH_DATA
+    assert (fake_rvc / "logs" / "para" / "added_para.index").read_bytes() == IDX_DATA
+    assert _ParallelHandler.ctx.peak >= 2, \
+        f"pth 与 index 应并行下载，实际峰值并发 {_ParallelHandler.ctx.peak}"

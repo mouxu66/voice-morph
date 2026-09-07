@@ -67,9 +67,9 @@ class InstallManager:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 raise InstallError("已有安装任务在进行中")
-            st = self.manager.progress()
-            if st.get("status") == "downloading":
+            if self.manager.is_busy():
                 raise InstallError("已有下载任务在进行中，请稍后再安装")
+            st = self.manager.progress()
             cur = dict(st)
         conflict = self._conflict_paths(voice_id)
         if conflict and not overwrite:
@@ -204,8 +204,7 @@ class InstallManager:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 raise InstallError("已有安装任务在进行中，请稍后再回滚")
-            st = self.manager.progress()
-            if st.get("status") == "downloading":
+            if self.manager.is_busy():
                 raise InstallError("已有下载任务在进行中，请稍后再回滚")
         if not self._is_market_installed(voice_id):
             raise InstallError("音色不是市场安装来源或不存在，无法回滚")
@@ -238,7 +237,7 @@ class InstallManager:
         install = st.get("install") or {}
         if install.get("status") not in ACTIVE:
             raise InstallError("没有进行中的安装任务")
-        if st.get("status") == "downloading":
+        if self.manager.is_busy():
             try:
                 self.manager.cancel()
             except MarketError:
@@ -304,8 +303,7 @@ class InstallManager:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 raise InstallError("已有安装任务在进行中，请稍后再卸载")
-            st = self.manager.progress()
-            if st.get("status") == "downloading":
+            if self.manager.is_busy():
                 raise InstallError("已有下载任务在进行中，请稍后再卸载")
         log_dir = cfg.RVC_ROOT / "logs" / voice_id
         w_pth = cfg.RVC_ROOT / "assets" / "weights" / f"{voice_id}.pth"
@@ -357,23 +355,46 @@ class InstallManager:
     def _run(self, voice_id: str, download: dict, index: dict | None,
              display_name: str, manifest_id: str = ""):
         try:
+            # pth 与 index 并行下载（下载器按信号量限流，不抢完才开始下一个），
+            # 各自任务名独立，_download_wait 只轮询自己那个任务。
+            errs: dict = {}
+
+            def _dl_pth():
+                try:
+                    self._download_wait(
+                        voice_id, f"install_{voice_id}", download.get("url"),
+                        mirror_url=download.get("mirror_url"), filename=f"{voice_id}.pth",
+                    )
+                except Exception as exc:  # noqa: BLE001 —— 线程内收集，join 后统一抛
+                    errs["pth"] = exc
+
+            def _dl_idx():
+                try:
+                    self._download_wait(
+                        voice_id, f"install_{voice_id}_idx", index.get("url"),
+                        mirror_url=index.get("mirror_url"), filename=f"{voice_id}.index",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    errs["index"] = exc
+
             self._set_install(status="downloading_pth", phase="下载权重",
-                              message="正在下载权重文件 …", percent=_pct_of(0, INSTALL_PHASES))
-            self._download_wait(
-                voice_id, f"install_{voice_id}", download.get("url"),
-                mirror_url=download.get("mirror_url"), filename=f"{voice_id}.pth",
-            )
+                              message="正在下载权重与索引文件 …", percent=_pct_of(0, INSTALL_PHASES))
+            pth_t = threading.Thread(target=_dl_pth, daemon=True)
+            pth_t.start()
+            idx_t = None
+            if index and index.get("url"):
+                idx_t = threading.Thread(target=_dl_idx, daemon=True)
+                idx_t.start()
+            pth_t.join()
+            if idx_t:
+                self._set_install(status="downloading_index", phase="下载索引",
+                                  message="正在下载索引文件 …", percent=_pct_of(1, INSTALL_PHASES))
+                idx_t.join()
+            if errs:
+                raise next(iter(errs.values()))
             pth_file = self.manager.download_dir / f"{voice_id}.pth"
             if not pth_file.exists():
                 raise InstallError("权重下载未产生文件")
-
-            if index and index.get("url"):
-                self._set_install(status="downloading_index", phase="下载索引",
-                                  message="正在下载索引文件 …", percent=_pct_of(1, INSTALL_PHASES))
-                self._download_wait(
-                    voice_id, f"install_{voice_id}_idx", index.get("url"),
-                    mirror_url=index.get("mirror_url"), filename=f"{voice_id}.index",
-                )
 
             self._set_install(status="staging", phase="注册音色",
                               message="正在写入音色库 …", percent=_pct_of(2, INSTALL_PHASES))
@@ -414,13 +435,16 @@ class InstallManager:
 
     def _download_wait(self, voice_id: str, name: str, url: str,
                        mirror_url: str | None, filename: str):
-        """用 DownloadManager 下载单个文件并等待落盘；期间检测取消/失败。"""
+        """用 DownloadManager 下载单个文件并等待落盘；期间检测取消/失败。
+
+        轮询用 task_status(name) 精确查本任务，多任务并发下载时互不干扰。
+        """
         st = self.manager.start(name=name, url=url, mirror_url=mirror_url, filename=filename)
         if st.get("status") != "downloading":
             return
         deadline = time.time() + 3600 * 2          # 2h 兜底（正常 55MB 分钟级）
         while time.time() < deadline:
-            st = self.manager.progress()
+            st = self.manager.task_status(name)
             s, err = st.get("status"), st.get("error") or ""
             if s in ("done", "cancelled", "failed"):
                 if s == "done":

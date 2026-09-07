@@ -22,12 +22,15 @@ MIRROR_DATA = _PTH_PREFIX + os.urandom(256 * 1024 - len(_PTH_PREFIX))  # 镜像�
 
 
 class _Ctx:
-    """共享请求状态：文件表 + 收到的 Range 头记录。"""
+    """共享请求状态：文件表 + 收到的 Range 头记录 + 并发计数。"""
 
     def __init__(self):
         self.files = {"/full.bin": DATA, "/mirror.bin": MIRROR_DATA}
         self.ranges = []                  # 收到的 Range 头列表
         self.requests = {"/fail_main.bin": 0}
+        self.active = 0                   # 当前并发处理中的请求数
+        self.peak = 0                     # 并发峰值（信号量限流断言用）
+        self.lock = threading.Lock()
 
 
 class RangeHandler(http.server.BaseHTTPRequestHandler):
@@ -36,6 +39,15 @@ class RangeHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *a):            # 静默访问日志
         pass
+
+    def _enter(self):
+        with self.ctx.lock:
+            self.ctx.active += 1
+            self.ctx.peak = max(self.ctx.peak, self.ctx.active)
+
+    def _leave(self):
+        with self.ctx.lock:
+            self.ctx.active -= 1
 
     def _serve(self, head_only=False):
         path = self.path.split("?")[0]
@@ -68,15 +80,30 @@ class RangeHandler(http.server.BaseHTTPRequestHandler):
         if head_only:
             return
         if RangeHandler.slow_mode:
+            # 块间限速（sleep 放在每块写入之前）：写完最后一块后立即返回，
+            # 避免"写完后还要 sleep 0.02s"把请求停留计数，造成客户端已完成
+            # 但服务端 active 仍 +1 的重叠窗口（信号量峰值断言被误报 +1）。
             for i in range(0, len(body), 5120):
+                if i:
+                    time.sleep(0.02)
                 self.wfile.write(body[i:i + 5120])
                 self.wfile.flush()
-                time.sleep(0.02)
         else:
             self.wfile.write(body)
 
-    do_GET = lambda self: self._serve()              # noqa: E731
-    do_HEAD = lambda self: self._serve(head_only=True)  # noqa: E731
+    def do_GET(self):
+        self._enter()
+        try:
+            self._serve()
+        finally:
+            self._leave()
+
+    def do_HEAD(self):
+        self._enter()
+        try:
+            self._serve(head_only=True)
+        finally:
+            self._leave()
 
 
 @pytest.fixture(scope="module")
@@ -113,13 +140,15 @@ def _simulate_interrupted(mgr, name, data):
     half = len(data) // 2
     part = mgr.download_dir / f"{name}.pth.part"
     part.write_bytes(data[:half])
-    mgr._state = {
-        "idle": False, "name": name, "status": "interrupted",
+    mgr._tasks[name] = {
+        "name": name, "filename": f"{name}.pth", "status": "interrupted",
         "done": half, "total": len(data), "error": "",
         "dest": str(mgr.download_dir / f"{name}.pth"), "part": str(part),
         "started_at": "2026-01-01 00:00:00", "updated_at": "2026-01-01 00:00:00",
         "url": "", "mirror_url": None, "sha256": None, "expected_size": None,
     }
+    if name not in mgr._order:
+        mgr._order.append(name)
 
 
 def test_full_download_with_sha256(mgr, server_url):
@@ -169,13 +198,17 @@ def test_failover_to_mirror(mgr, server_url):
     assert (mgr.download_dir / "vo.pth").read_bytes() == MIRROR_DATA
 
 
-def test_single_task_mutex(mgr, server_url):
+def test_same_name_rejected_while_active(mgr, server_url):
+    """同名活跃任务拒绝重复启动；异名任务可并行（信号量文件级并发）。"""
     RangeHandler.slow_mode = True
     try:
         mgr.start("slow", f"{server_url}/full.bin")
         with pytest.raises(MarketError):
-            mgr.start("slow2", f"{server_url}/mirror.bin")
+            mgr.start("slow", f"{server_url}/mirror.bin")
         assert mgr.progress()["name"] == "slow"
+        # 异名任务不再被互斥拒绝：并发下载是信号量队列的基础
+        mgr.start("slow2", f"{server_url}/mirror.bin")
+        assert len(mgr.active_names()) >= 2
         _wait(mgr)
     finally:
         RangeHandler.slow_mode = False
@@ -309,3 +342,86 @@ def test_mirror_failover_failed_state_keeps_primary_url(mgr, server_url):
     assert st["status"] == "failed"
     assert st["url"] == f"{server_url}/always_fail.bin"
     assert st.get("attempt_url") == f"{server_url}/always_fail.bin"
+
+
+# ---- 2026-09-07 信号量文件级并发 ----
+
+def test_semaphore_limits_concurrent_downloads(server_url, tmp_path):
+    """并发 4 个下载任务，信号量 max_concurrent=3：同时活跃下载 ≤3，全部完成。"""
+    mgr = DownloadManager(download_dir=tmp_path / "dl",
+                          state_file=tmp_path / "dl" / "downloads.json",
+                          allow_loopback=True, max_concurrent=3)
+    RangeHandler.slow_mode = True
+    RangeHandler.ctx.active = 0
+    RangeHandler.ctx.peak = 0
+    try:
+        for i in range(4):
+            mgr.start(f"con_{i}", f"{server_url}/full.bin")
+        deadline = time.time() + 90
+        while time.time() < deadline and mgr.is_busy():
+            time.sleep(0.05)
+        for i in range(4):
+            st = mgr.task_status(f"con_{i}")
+            assert st.get("status") == "done", f"con_{i}: {st}"
+        assert 1 < RangeHandler.ctx.peak <= 3, \
+            f"信号量应把并发限到 ≤3，实际峰值 {RangeHandler.ctx.peak}"
+    finally:
+        RangeHandler.slow_mode = False
+
+
+def test_cancel_single_task_leaves_others(mgr, server_url):
+    """cancel(name) 只取消指定任务，其它并行任务不受影响继续完成。"""
+    RangeHandler.slow_mode = True
+    try:
+        mgr.start("keep_a", f"{server_url}/full.bin")
+        mgr.start("kill_b", f"{server_url}/full.bin")
+        mgr.cancel("kill_b")
+        st = mgr.task_status("kill_b")
+        deadline = time.time() + 10
+        while time.time() < deadline and st.get("status") != "cancelled":
+            time.sleep(0.05)
+            st = mgr.task_status("kill_b")
+        assert st.get("status") == "cancelled"
+        assert not (mgr.download_dir / "kill_b.pth.part").exists()
+        # keep_a 未被取消，照常下到 done
+        st = mgr.task_status("keep_a")
+        deadline = time.time() + 90
+        while time.time() < deadline and st.get("status") == "downloading":
+            time.sleep(0.05)
+            st = mgr.task_status("keep_a")
+        assert st.get("status") == "done"
+    finally:
+        RangeHandler.slow_mode = False
+
+
+def test_progress_returns_earliest_active_with_list(mgr, server_url):
+    """多任务下 progress() 返回最早活跃任务，并附 active 列表（兼容主任务语义）。"""
+    RangeHandler.slow_mode = True
+    try:
+        mgr.start("p1", f"{server_url}/full.bin")
+        mgr.start("p2", f"{server_url}/full.bin")
+        st = mgr.progress()
+        assert st["name"] == "p1"
+        assert set(st["active"]) >= {"p1", "p2"}
+        _wait(mgr)
+    finally:
+        RangeHandler.slow_mode = False
+
+
+def test_semaphore_queue_no_task_lost(mgr, server_url):
+    """信号量排队不丢任务：max_concurrent=1 串行完成 3 个任务，全部 done。"""
+    RangeHandler.slow_mode = True
+    try:
+        mgr = DownloadManager(download_dir=mgr.download_dir,
+                              state_file=mgr.state_file,
+                              allow_loopback=True, max_concurrent=1)
+        for i in range(3):
+            mgr.start(f"q_{i}", f"{server_url}/mirror.bin")
+        deadline = time.time() + 90
+        while time.time() < deadline and mgr.is_busy():
+            time.sleep(0.05)
+        for i in range(3):
+            st = mgr.task_status(f"q_{i}")
+            assert st.get("status") == "done", f"q_{i}: {st}"
+    finally:
+        RangeHandler.slow_mode = False

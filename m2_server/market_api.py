@@ -4,11 +4,11 @@
   - GET  /api/market/manifest    内置精选清单（推荐 Tab）
   - GET  /api/market/search      双源搜索（hf / modelscope / all）
   - GET  /api/market/repo        仓库文件列表（选文件 / 看详情）
-  - POST /api/market/download    断点续传下载（单文件）
+  - POST /api/market/download    断点续传下载（多任务并发，信号量限流）
   - GET  /api/market/progress    下载 / 安装进度轮询
   - POST /api/market/install     一键安装到 RVC 音色库（.pth + 可选 .index）
   - GET  /api/market/installed   已安装音色 id 列表（前端标"已装"角标）
-  - POST /api/market/cancel      取消当前下载 / 安装
+  - POST /api/market/cancel      取消下载 / 安装（可按任务名精准取消）
 """
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -96,7 +96,7 @@ def market_repo(repo: str = "", platform: str = "hf", recursive: bool = False):
 
 @router.post("/market/install")
 def market_install(req: InstallRequest):
-    """一键安装音色到 RVC 音色库：串行下载 pth → 可选 index → 落位 logs/assets。"""
+    """一键安装音色到 RVC 音色库：并行下载 pth + index → 落位 logs/assets。"""
     dl = {"url": req.download.url, "mirror_url": req.download.mirror_url,
           "sha256": req.download.sha256}
     idx = {"url": req.index.url, "mirror_url": req.index.mirror_url} if req.index else None
@@ -179,7 +179,10 @@ def market_preview_trigger(req: PreviewRequest):
 
 @router.post("/market/download")
 def market_download(req: DownloadRequest):
-    """启动（或续传）下载任务；已有任务在跑返回 409。"""
+    """启动（或续传）一个下载任务；同名活跃任务返回 409。
+
+    多任务可并行（文件级并发，信号量限制同时下载数，默认 3）。
+    """
     try:
         st = get_manager().start(
             name=req.name, url=req.url, mirror_url=req.mirror_url,
