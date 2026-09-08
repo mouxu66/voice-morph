@@ -22,6 +22,18 @@ def find_pth(exp: str, log_dir: Path) -> Path | None:
     return next(log_dir.glob("G_*.pth"), None)
 
 
+def find_index(exp: str) -> Path | None:
+    """找该音色的特征检索库 logs/<exp>/added_*.index；没有则返回 None。
+
+    没有 index 也能推理（index_rate 会被强制置 0），只是音色相似度略降。
+    """
+    try:
+        log_dir, _ = cfg.rvc_exp_dirs(exp)
+    except Exception:  # noqa: BLE001
+        log_dir = cfg.RVC_ROOT / "logs" / exp
+    return next(iter(sorted(log_dir.glob("added_*.index"))), None)
+
+
 def source_meta(exp: str) -> dict:
     """市场安装元数据：logs/<exp>/source.json（市场安装落盘；自训/导入无此文件）。
 

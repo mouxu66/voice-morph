@@ -278,7 +278,9 @@ export async function runOfflineVc(
   denoise: boolean,
   postSeedVc = false,
   /** 降噪强度：light=轻·保弱声 standard=标准 strong=强力（不限压制） */
-  enhanceLevel = "standard"
+  enhanceLevel = "standard",
+  /** 语气来源：keep=保留源音频语气（RVC 默认） relay=重铸语气（ASR→TTS→RVC） */
+  prosody: "keep" | "relay" = "keep"
 ): Promise<{ ok: boolean; voice_id: string }> {
   const form = new FormData();
   form.append("file", file);
@@ -288,6 +290,7 @@ export async function runOfflineVc(
   form.append("denoise", String(denoise));
   form.append("post_seedvc", String(postSeedVc));
   form.append("enhance_level", enhanceLevel);
+  form.append("prosody", prosody);
   const res = await fetch(BASE + "/offlinevc/run", { method: "POST", body: form });
   if (!res.ok) {
     let detail = res.statusText;
@@ -683,6 +686,10 @@ export type CascadeStatus = {
   p95_asr_s: number;
   avg_tts_s: number;
   p95_tts_s: number;
+  /** 末尾接 RVC 时的音色归属；空串=未启用（音色靠 TTS 克隆） */
+  rvc_voice?: string;
+  rvc_error?: string;
+  last_rvc_s?: number;
   last_audio_s: number;
   last_fast: boolean | null;
   chunks: number;
@@ -711,6 +718,8 @@ export async function cascadeStart(opts?: {
   voiceId?: string;
   chunkMaxS?: number;
   mode?: "stream" | "whole";
+  /** 末尾接 RVC 的音色 ID：文字仍由 TTS 说，音色改由 RVC 替换（空=不接） */
+  rvcVoice?: string;
 }): Promise<CascadeStartResult> {
   return jsonFetch<CascadeStartResult>("/cascade/start", {
     method: "POST",
@@ -719,6 +728,7 @@ export async function cascadeStart(opts?: {
       voice_id: opts?.voiceId ?? null,
       chunk_max_s: opts?.mode === "whole" ? null : (opts?.chunkMaxS ?? null),
       mode: opts?.mode ?? "stream",
+      rvc_voice: opts?.rvcVoice ?? null,
     }),
   });
 }

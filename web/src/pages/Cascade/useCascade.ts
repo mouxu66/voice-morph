@@ -3,8 +3,10 @@ import {
   cascadeStart,
   cascadeStatus,
   cascadeStop,
+  listRvcVoices,
   listVoices,
   type CascadeStatus,
+  type RvcVoice,
 } from "@/api/client"
 import type { VoiceInfo } from "@/types"
 
@@ -21,6 +23,7 @@ import type { VoiceInfo } from "@/types"
 const LS_VOICE = "vm_cascade_voice"
 const LS_MODE = "vm_cascade_mode"
 const LS_CHUNK = "vm_cascade_chunk"
+const LS_RVC_VOICE = "vm_cascade_rvc_voice"
 
 type Feedback = { tone: "ok" | "error" | "info"; text: string }
 
@@ -56,6 +59,9 @@ export function useCascade() {
     const v = Number(readLS(LS_CHUNK))
     return Number.isFinite(v) && v >= 2 && v <= 15 ? v : 6
   })
+  // 末尾是否接 RVC：null=不接（音色靠 TTS 克隆），否则为该 RVC 音色 ID
+  const [rvcVoices, setRvcVoices] = useState<RvcVoice[]>([])
+  const [rvcVoice, setRvcVoice] = useState<string | null>(() => readLS(LS_RVC_VOICE) || null)
   const [starting, setStarting] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [feedback, setFeedback] = useState<Feedback | null>(null)
@@ -67,6 +73,22 @@ export function useCascade() {
   useEffect(() => writeLS(LS_VOICE, selectedVoice ?? ""), [selectedVoice])
   useEffect(() => writeLS(LS_MODE, mode), [mode])
   useEffect(() => writeLS(LS_CHUNK, String(chunkMaxS)), [chunkMaxS])
+  useEffect(() => writeLS(LS_RVC_VOICE, rvcVoice ?? ""), [rvcVoice])
+
+  // RVC 音色清单只在进页面时拉一次（/rvc/voices 要遍历日志目录，不进 1s 轮询）
+  useEffect(() => {
+    let alive = true
+    listRvcVoices()
+      .then((r) => { if (alive) setRvcVoices(r.voices ?? []) })
+      .catch(() => { /* 后端未启动时静默 */ })
+    return () => { alive = false }
+  }, [])
+
+  // 选中的 RVC 音色被删掉后自动断开，避免带着无效 ID 启动
+  useEffect(() => {
+    if (!rvcVoices.length || !rvcVoice) return
+    if (!rvcVoices.some((v) => v.id === rvcVoice)) setRvcVoice(null)
+  }, [rvcVoices, rvcVoice])
 
   // 音色清单里没有当前选中项时（首次加载 / 音色被删），自动挑一个
   useEffect(() => {
@@ -83,6 +105,7 @@ export function useCascade() {
         voiceId: selectedVoice ?? undefined,
         chunkMaxS: chunkMaxS,
         mode,
+        rvcVoice: rvcVoice ?? undefined,
       })
       if (r.warming) {
         pendingRetryRef.current = true
@@ -101,7 +124,7 @@ export function useCascade() {
     } finally {
       setStarting(false)
     }
-  }, [selectedVoice, chunkMaxS, mode])
+  }, [selectedVoice, chunkMaxS, mode, rvcVoice])
 
   const startRef = useRef(start)
   useEffect(() => {
@@ -170,6 +193,9 @@ export function useCascade() {
     voices,
     selectedVoice,
     selectVoice: setSelectedVoice,
+    rvcVoices,
+    rvcVoice,
+    setRvcVoice,
     status,
     running,
     mode,

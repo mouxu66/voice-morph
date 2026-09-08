@@ -26,6 +26,7 @@ const STAGE_LABEL: Record<string, string> = {
   capturing: "聆听中",
   asr: "识别中",
   tts: "合成中",
+  rvc: "变声中",
   playing: "播放中",
   error: "出错",
 }
@@ -138,6 +139,9 @@ export function CascadePage(p: ReturnType<typeof useCascade>) {
             这是 RVC 直接转换做不到的。说完一句约 1.5~2s 后播出，适合通话；微信里把录音设备指向 CABLE Output 即可。
           </p>
           <div className="mt-5 flex flex-wrap items-center gap-2">
+            <StatusBadge ok={Boolean(s?.rvc_voice) && !s?.rvc_error} tone={s?.rvc_error ? "warn" : "auto"}>
+              {s?.rvc_error ? "RVC 未接管（音色仍靠克隆）" : s?.rvc_voice ? `音色=RVC · ${s.rvc_voice}` : "音色=TTS 克隆"}
+            </StatusBadge>
             <StatusBadge ok={workerReady} tone={warming ? "busy" : "warn"}>
               TTS 引擎{workerReady ? "就绪" : warming ? "加载中" : "未启动"}
             </StatusBadge>
@@ -221,6 +225,50 @@ export function CascadePage(p: ReturnType<typeof useCascade>) {
               })}
             </div>
           )}
+
+          <div className="mt-4 rounded-xl border border-border bg-muted/30 p-3.5">
+            <label className="flex cursor-pointer items-start gap-2 text-sm text-card-foreground">
+              <input
+                type="checkbox"
+                checked={p.rvcVoice !== null}
+                disabled={running || !p.rvcVoices.length}
+                onChange={(e) =>
+                  p.setRvcVoice(e.target.checked ? (p.rvcVoice ?? p.rvcVoices[0]?.id ?? null) : null)
+                }
+                className="mt-0.5 h-4 w-4 accent-[var(--primary)]"
+              />
+              <span>
+                音色改由 RVC 决定
+                <span className="ml-1 text-xs text-muted-foreground">
+                  （不勾 = 音色靠 TTS 克隆；勾上 = 腔调仍由 TTS 说，音色交给 RVC 替换，像目标音色的把握更高，每句多 0.2~0.5s）
+                </span>
+              </span>
+            </label>
+            {p.rvcVoice !== null && p.rvcVoices.length > 0 && (
+              <div className="mt-2.5 flex items-center gap-2">
+                <select
+                  value={p.rvcVoice ?? ""}
+                  disabled={running}
+                  onChange={(e) => p.setRvcVoice(e.target.value || null)}
+                  className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-card px-2.5 text-sm text-card-foreground"
+                >
+                  {p.rvcVoices.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.display_name ?? v.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {p.rvcVoice !== null && (
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                说话腔调优先取该音色自己的参考音频；市场下载的音色多数没有参考音频，会回退到内置默认腔调（音色本身仍由 RVC 保证）。
+              </p>
+            )}
+            {!p.rvcVoices.length && (
+              <p className="mt-2 text-xs text-muted-foreground">还没有可推理的 RVC 模型，先到实时变声页训练一个，或从音色市场安装。</p>
+            )}
+          </div>
         </section>
 
         <div className="grid gap-8 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">

@@ -52,8 +52,17 @@ async def offlinevc_run(
     denoise: bool = Form(False),
     post_seedvc: bool = Form(False),
     enhance_level: str = Form("standard"),
+    prosody: str = Form("keep"),
 ):
-    """提交离线变声任务。pitch 为半音数（男转女 +12，女转男 -12）。"""
+    """提交离线变声任务。pitch 为半音数（男转女 +12，女转男 -12）。
+
+    prosody 语气来源：
+        keep  = 保留源音频的抑扬顿挫（RVC 默认行为，含说话人口音与口头禅）
+        relay = 重铸语气：先 ASR 转文字，再用目标音色的参考音重新合成，
+                然后才送进 RVC —— 口音/口头禅/犹豫被清掉，音色仍由 RVC 决定
+    """
+    if prosody not in ("keep", "relay"):
+        raise HTTPException(status_code=400, detail=f"prosody 参数非法: {prosody}")
     with _ovc_lock:
         if OFFLINEVC_STATE["running"]:
             raise HTTPException(status_code=409, detail="已有转换任务在跑，请稍候")
@@ -86,18 +95,20 @@ async def offlinevc_run(
     threading.Thread(
         target=_ovc_worker,
         args=(raw_path, voice_id, pth, pitch, index_rate, denoise, post_seedvc, stamp),
-        kwargs={"enhance_level": enhance_level},
+        kwargs={"enhance_level": enhance_level, "prosody": prosody},
         daemon=True,
     ).start()
-    return {"ok": True, "voice_id": voice_id}
+    return {"ok": True, "voice_id": voice_id, "prosody": prosody}
 
 
 def _ovc_worker(raw_path: Path, voice_id: str, pth: Path,
                 pitch: int, index_rate: float, denoise: bool,
-                post_seedvc: bool, stamp: int, enhance_level: str = "standard"):
+                post_seedvc: bool, stamp: int, enhance_level: str = "standard",
+                prosody: str = "keep"):
     import soundfile as sf
 
     in_path = OUT / f"ovc_in_{stamp}.wav"
+    relay_path = OUT / f"ovc_relay_{stamp}.wav"
     out_path = OUT / f"offlinevc_{stamp}.wav"
     index = next(iter((cfg.RVC_ROOT / "logs" / voice_id).glob("added_*.index")), None)
     try:
@@ -124,6 +135,13 @@ def _ovc_worker(raw_path: Path, voice_id: str, pth: Path,
                 cmd = [find_ffmpeg(), "-y", "-loglevel", "error", "-i", str(raw_path),
                        "-af", af + "aresample=16000", "-ac", "1", str(in_path)]
                 subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+        # 语气重铸：ASR 转文字 → 用目标音色的参考音重新合成，再交给 RVC。
+        # 放在降噪之后（ASR 吃干净音频更准）、RVC 之前（RVC 只管换音色）。
+        if prosody == "relay":
+            OFFLINEVC_STATE.update(message="语气重铸中…（转文字 → 重新合成，约 10~30 秒）")
+            from prosody_relay import relay
+            relay(in_path, voice_id, relay_path).replace(in_path)
 
         OFFLINEVC_STATE.update(message="RVC 推理中…（整段单次推理，几十秒到几分钟）")
         cmd = [str(RVC_VENV_PY), str(INFER_PY),
@@ -161,7 +179,7 @@ def _ovc_worker(raw_path: Path, voice_id: str, pth: Path,
                          f"/api/media/outputs/{out_path.name}", duration_s,
                          params={"pitch": pitch, "index_rate": index_rate,
                                  "denoise": denoise, "post_seedvc": post_seedvc,
-                                 "enhance_level": enhance_level})
+                                 "enhance_level": enhance_level, "prosody": prosody})
         OFFLINEVC_STATE.update(
             running=False, status="done", message="完成",
             url=f"/api/media/outputs/{out_path.name}",
@@ -171,7 +189,7 @@ def _ovc_worker(raw_path: Path, voice_id: str, pth: Path,
         OFFLINEVC_STATE.update(running=False, status="error", message="",
                                error=str(e))
     finally:
-        for p in (raw_path, in_path):
+        for p in (raw_path, in_path, relay_path):
             try:
                 p.unlink(missing_ok=True)
             except Exception:

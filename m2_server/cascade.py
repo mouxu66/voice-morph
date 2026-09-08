@@ -32,6 +32,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import config as cfg
+import prosody_relay
+from rvc_common import ensure_infer_pth, find_index
 from rvc_live import _audio, _reset_audio
 
 ROOT = cfg.ROOT
@@ -119,6 +121,7 @@ class CascadeStartReq(BaseModel):
     silence_ms: int | None = None
     prime_s: float | None = None  # 播放预缓冲秒数（越大越抗抖动、首块越晚出声）
     mode: str = "stream"  # stream=按句流式 | whole=等整段说完（低打断感、高延迟）
+    rvc_voice: str | None = None  # 末尾接 RVC 的音色 ID（空=TTS 直出，音色靠克隆）
 
 
 router = APIRouter(prefix="/api")
@@ -140,6 +143,22 @@ def cascade_start(req: CascadeStartReq | None = None):
             raise HTTPException(status_code=404,
                                 detail=f"音色 [{body.voice_id}] 不存在或没有参考音频")
         ref_audio = str(ref)
+
+    # 末尾接 RVC 时，TTS 参考音优先跟目标音色同源（用户选的「语气=目标音色腔调」）：
+    # 有该音色的参考音频就用，没有（市场下载的多数如此）则回退内置默认，
+    # 此时腔调来自默认参考音、音色仍由 RVC 决定。
+    rvc_pth = rvc_index = ""
+    if body.rvc_voice:
+        pth = ensure_infer_pth(body.rvc_voice)
+        if pth is None:
+            raise HTTPException(status_code=404,
+                                detail=f"音色 [{body.rvc_voice}] 没有可推理的 RVC 模型，先到实时变声页训练")
+        rvc_pth = str(pth)
+        idx = find_index(body.rvc_voice)
+        if idx:
+            rvc_index = str(idx)
+        if not body.ref_audio:
+            ref_audio = prosody_relay.resolve_ref_audio(body.rvc_voice)
     if not ref_audio:
         ref_audio = str(DEFAULT_REF)
     if not Path(ref_audio).exists():
@@ -181,6 +200,8 @@ def cascade_start(req: CascadeStartReq | None = None):
         cmd += ["--silence-ms", str(body.silence_ms)]
     if body.prime_s is not None:
         cmd += ["--prime-s", str(body.prime_s)]
+    if rvc_pth:
+        cmd += ["--rvc-pth", rvc_pth, "--rvc-index", rvc_index]
 
     # 存档本次启动参数：全局热键一键重启时复用（否则只能用默认音色）
     try:
@@ -189,7 +210,7 @@ def cascade_start(req: CascadeStartReq | None = None):
                 "voice_id": body.voice_id, "ref_audio": ref_audio,
                 "ref_text": body.ref_text, "chunk_max_s": chunk_max_s,
                 "silence_ms": body.silence_ms, "prime_s": body.prime_s,
-                "mode": body.mode,
+                "mode": body.mode, "rvc_voice": body.rvc_voice,
             }, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
@@ -314,6 +335,10 @@ def cascade_status():
         "p95_asr_s": child.get("p95_asr_s", 0.0),
         "avg_tts_s": child.get("avg_tts_s", 0.0),
         "p95_tts_s": child.get("p95_tts_s", 0.0),
+        # 末尾接 RVC（音色归属）：rvc_voice 为空=未启用
+        "rvc_voice": child.get("rvc_voice", ""),
+        "rvc_error": child.get("rvc_error", ""),
+        "last_rvc_s": child.get("last_rvc_s", 0.0),
         "last_audio_s": child.get("last_audio_s", 0.0),
         "last_fast": child.get("last_fast"),
         "chunks": child.get("chunks", 0),

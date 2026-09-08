@@ -64,6 +64,8 @@ STATE = {
     "avg_asr_s": 0.0, "p95_asr_s": 0.0, "avg_tts_s": 0.0, "p95_tts_s": 0.0,
     "input_device": "", "output_device": "",
     "enhance": "", "error": "", "updated_at": "",
+    # 末尾接 RVC（TTS 只管怎么说，RVC 决定谁在说）
+    "rvc_voice": "", "rvc_error": "", "last_rvc_s": 0.0,
 }
 _latencies: deque = deque(maxlen=20)
 _asr_hist: deque = deque(maxlen=30)
@@ -379,6 +381,42 @@ class Cascade:
         self.fail_streak = 0
         self.pending_lat: dict[int, float] = {}
         self.out_chunks: list[np.ndarray] = []
+        self.rvc_engine = None
+        self._load_rvc()
+
+    def _load_rvc(self):
+        """常驻加载 RVC 模型（只此一次）：TTS 只管怎么说，音色由 RVC 决定。
+
+        逐块起子进程会慢 3~5s/句，故必须在进程内常驻。加载失败不致命——
+        记到 STATE["rvc_error"] 让前端提示，链路退回 TTS 直出继续可用。
+        """
+        if not getattr(self.args, "rvc_pth", ""):
+            return
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))   # m2_server 目录
+        STATE["rvc_voice"] = Path(self.args.rvc_pth).parent.name
+        STATE["rvc_error"] = ""
+        _write_state()          # 加载要 30s+，先让前端看到进度
+        try:
+            from offline_vc_infer import load_vc
+            t0 = time.time()
+            self.rvc_engine = load_vc(self.args.rvc_pth, self.args.rvc_index)
+            print(f"[cascade] RVC 已常驻 {STATE['rvc_voice']} "
+                  f"({self.rvc_engine.tgt_sr}Hz, {time.time() - t0:.1f}s)", flush=True)
+        except Exception as e:  # noqa: BLE001
+            STATE["rvc_error"] = f"{type(e).__name__}: {e}"[:300]
+            print(f"[cascade] RVC 加载失败，退回 TTS 直出: {e}", flush=True)
+        _write_state()
+
+    def _to_rvc(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """TTS 输出 → RVC 换音色 → 回到播放采样率。"""
+        from offline_vc_infer import convert_audio
+        a16 = _resample(audio, sr, 16000) if sr != 16000 else audio
+        y = convert_audio(self.rvc_engine, a16,
+                          self.args.rvc_pitch, self.args.rvc_index_rate)
+        if self.rvc_engine.tgt_sr != SR_OUT:
+            y = _resample(y, self.rvc_engine.tgt_sr, SR_OUT)
+        return y
 
     def warmup(self):
         """坑 #3/#4：等 worker 就绪后预热两件事——
@@ -396,6 +434,15 @@ class Cascade:
         audio, sr, fast = self.worker.tts("好", self.args.ref_audio, self.args.ref_text)
         print(f"[cascade] TTS 预热完成 {time.time() - t0:.1f}s "
               f"(fast={fast}, {len(audio) / sr:.1f}s 音频已丢弃)", flush=True)
+        if self.rvc_engine is not None:
+            t0 = time.time()
+            try:
+                n = int(0.3 * SR_OUT)
+                warm = (0.1 * np.sin(2 * np.pi * 220 * np.arange(n) / SR_OUT)).astype(np.float32)
+                self._to_rvc(warm, SR_OUT)
+                print(f"[cascade] RVC 预热完成 {time.time() - t0:.1f}s", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"[cascade] RVC 预热失败（首句会偏慢）: {e}", flush=True)
 
     def process(self, pcm: np.ndarray, speech_end_ts: float | None) -> None:
         global _PLAYER
@@ -427,8 +474,16 @@ class Cascade:
             audio = _resample(audio, sr, SR_OUT)
         STATE.update(last_tts_s=round(tts_s, 2), last_fast=fast,
                      last_audio_s=round(len(audio) / SR_OUT, 2))
-        print(f"[cascade] {dur:.1f}s -> 「{text}」 asr {asr_s:.2f}s tts {tts_s:.2f}s "
-              f"fast={fast} -> {len(audio) / SR_OUT:.1f}s 音频", flush=True)
+        rvc_note = ""
+        if self.rvc_engine is not None:
+            _set_stage("rvc")
+            t0 = time.time()
+            audio = self._to_rvc(audio, SR_OUT)
+            rvc_s = time.time() - t0
+            STATE["last_rvc_s"] = round(rvc_s, 2)
+            rvc_note = f" rvc {rvc_s:.2f}s"
+        print(f"[cascade] {dur:.1f}s -> 「{text}」 asr {asr_s:.2f}s tts {tts_s:.2f}s"
+              f"{rvc_note} fast={fast} -> {len(audio) / SR_OUT:.1f}s 音频", flush=True)
         self.fail_streak = 0
         if self.args.file:
             self.out_chunks.append(audio)
@@ -726,6 +781,11 @@ def main():
     p.add_argument("--atten-lim", default=None,
                    help="增强最大压制 dB（弱人声保护：小=温和，0/none=不限）；"
                         "默认取 VM_CASCADE_ATTEN_LIM，再默认 12")
+    p.add_argument("--rvc-pth", default="",
+                   help="末尾接 RVC：权重路径（空=不接，音色由 TTS 克隆）")
+    p.add_argument("--rvc-index", default="", help="RVC 特征检索库 added_*.index")
+    p.add_argument("--rvc-pitch", type=int, default=0, help="RVC 变调半音数")
+    p.add_argument("--rvc-index-rate", type=float, default=0.5)
     p.add_argument("--asr-only", action="store_true",
                    help="只转写不合成不播放（实时变声期间的桌宠字幕），无声卡操作")
     args = p.parse_args()

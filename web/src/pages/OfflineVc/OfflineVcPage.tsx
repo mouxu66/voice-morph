@@ -246,6 +246,30 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
                 )}
               </div>
 
+              <div className="mt-3">
+                <p className="text-sm font-medium text-card-foreground">语气来源</p>
+                <div className="mt-1.5 flex flex-col gap-1.5">
+                  <label className="flex cursor-pointer items-start gap-2 text-sm text-card-foreground">
+                    <input type="radio" name="prosody" checked={p.prosody === "keep"}
+                      onChange={() => p.setProsody("keep")}
+                      className="mt-0.5 h-4 w-4 accent-[var(--primary)]" />
+                    <span>
+                      跟随我的语气
+                      <span className="ml-1 text-xs text-muted-foreground">（保留你说话的抑扬顿挫，口音与口头禅也会一起带进去）</span>
+                    </span>
+                  </label>
+                  <label className="flex cursor-pointer items-start gap-2 text-sm text-card-foreground">
+                    <input type="radio" name="prosody" checked={p.prosody === "relay"}
+                      onChange={() => p.setProsody("relay")}
+                      className="mt-0.5 h-4 w-4 accent-[var(--primary)]" />
+                    <span>
+                      重铸语气（文字中转）
+                      <span className="ml-1 text-xs text-muted-foreground">（先转文字，再用目标音色的腔调重新合成一遍才变声：口音与口头禅被清掉，额外约 10~30 秒）</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+
               <label className="mt-3 flex cursor-pointer items-start gap-2 text-sm text-card-foreground">
                 <input type="checkbox" checked={p.postSeedVc} onChange={(e) => p.setPostSeedVc(e.target.checked)}
                   className="mt-0.5 h-4 w-4 accent-[var(--primary)]" />

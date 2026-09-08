@@ -37,6 +37,7 @@ export function useOfflineVc() {
   const [denoise, setDenoise] = useState(true)
   const [enhanceLevel, setEnhanceLevel] = useState("standard")
   const [postSeedVc, setPostSeedVc] = useState(false)
+  const [prosody, setProsody] = useState<"keep" | "relay">("keep")
   const [submitting, setSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState("")
   const [status, setStatus] = useState<OfflineVcStatus | null>(null)
@@ -267,7 +268,7 @@ export function useOfflineVc() {
         if (it.status === "done") continue
         updateItem(it.id, { status: "running", error: "", url: undefined })
         try {
-          await runOfflineVc(it.file, voiceId, pitch, indexRate, denoise, postSeedVc, enhanceLevel)
+          await runOfflineVc(it.file, voiceId, pitch, indexRate, denoise, postSeedVc, enhanceLevel, prosody)
           setStatus({
             running: true, status: "running", message: `批量转换：${it.name}`,
             voice_id: voiceId, url: "", duration_s: 0, error: "",
@@ -285,7 +286,7 @@ export function useOfflineVc() {
     } finally {
       setBatchProcessing(false)
     }
-  }, [batchProcessing, running, voiceId, pitch, indexRate, denoise, postSeedVc, enhanceLevel, waitDone, updateItem])
+  }, [batchProcessing, running, voiceId, pitch, indexRate, denoise, postSeedVc, enhanceLevel, prosody, waitDone, updateItem])
 
   const canSubmit = !running && !batchProcessing && !submitting && Boolean(audioFile) && Boolean(voiceId)
 
@@ -294,7 +295,7 @@ export function useOfflineVc() {
     setSubmitting(true)
     setErrorMessage("")
     try {
-      await runOfflineVc(audioFile, voiceId, pitch, indexRate, denoise, postSeedVc, enhanceLevel)
+      await runOfflineVc(audioFile, voiceId, pitch, indexRate, denoise, postSeedVc, enhanceLevel, prosody)
       setStatus({
         running: true, status: "running", message: "已提交",
         voice_id: voiceId, url: "", duration_s: 0, error: "",
@@ -305,7 +306,7 @@ export function useOfflineVc() {
     } finally {
       setSubmitting(false)
     }
-  }, [canSubmit, audioFile, voiceId, pitch, indexRate, denoise, postSeedVc, enhanceLevel, startPoll])
+  }, [canSubmit, audioFile, voiceId, pitch, indexRate, denoise, postSeedVc, enhanceLevel, prosody, startPoll])
 
   useEffect(() => () => {
     stopPoll()
@@ -336,6 +337,8 @@ export function useOfflineVc() {
     setEnhanceLevel,
     postSeedVc,
     setPostSeedVc,
+    prosody,
+    setProsody,
     submitting,
     running,
     canSubmit,

@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """离线变声推理 CLI（由 m2_server/offline_vc.py 用 D:\\RVC\\.venv 的 python 子进程调用）。
 
+两条链路共用本模块的加载/转换实现：
+  - 离线：CLI main()，一次加载转一个文件
+  - 级联实时：cascade_stream 常驻进程 import load_vc/convert_audio，
+    模型只加载一次，逐句 TTS 输出即时转换（逐句起子进程会慢 3~5s）
+
 走 RVC 文件级推理链路 infer/vc（Pipeline 自动按静音切块拼接，支持任意长度音频）；
 不用 rtrvc.RVC——那是实时块式设计，cache_pitch 固定 1024 帧，整段超 10s 会溢出报错。
 用法：
@@ -10,21 +15,123 @@
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 
 
-def main():
-    # 从 VM_RVC_ROOT 读取（与 config.py 一致），未设置回退 D:\RVC，保证换机可移植。
-    # （放在 main 内：模块级 chdir 会污染 pytest 导入环境，且便于对 postprocess 做单测）
+def setup_env() -> str:
+    """把 RVC 根目录接进 sys.path 并补齐 infer/vc 需要的环境变量（幂等）。
+
+    级联实时链路在同一进程里常驻复用本模块，故用 setdefault、可重复调用。
+    注意：会 chdir 到 RVC 根目录（infer/vc 按相对路径加载 rmvpe 等资源），
+    调用方后续文件操作请用绝对路径。
+    """
     rvc_root = os.environ.get("VM_RVC_ROOT", r"D:\RVC")
-    sys.path.insert(0, rvc_root)
+    if rvc_root not in sys.path:
+        sys.path.insert(0, rvc_root)
     os.environ["PYTHONPATH"] = rvc_root
     os.chdir(rvc_root)
-    # infer/vc/pipeline.py 加载 rmvpe 等资源依赖 webui 启动时设置的环境变量
     os.environ.setdefault("RVC_CUDA_GRAPH", "0")
     os.environ.setdefault("weight_root", "assets/weights")
     os.environ.setdefault("index_root", "logs")
     os.environ.setdefault("rmvpe_root", "assets/rmvpe")
+    return rvc_root
 
+
+@dataclass
+class RvcEngine:
+    """一次加载、反复使用的 RVC 转换引擎（模型常驻 GPU，避免逐块重载）。"""
+
+    vc: object
+    tgt_sr: int
+    index: str          # 已校验存在；空串 = 不做特征检索
+    if_f0: int
+    version: str
+    pth: str
+
+
+def load_vc(pth: str, index: str = "") -> RvcEngine:
+    """加载 RVC 模型（离线子进程与级联常驻共用同一套逻辑）。
+
+    不用 rtrvc.RVC：那是实时块式设计，cache_pitch 固定 1024 帧，整段超 10s
+    会溢出报错。统一走 infer/vc 的 Pipeline（自动按静音切块拼接，任意长度）。
+    """
+    setup_env()
+    # RVC configs/config.py 在 import 时会 parser.parse_args() 严格解析 sys.argv，
+    # 见到调用方自己的参数会直接报错退出；import 期间临时清空，之后还原。
+    saved_argv = sys.argv
+    sys.argv = [sys.argv[0]]
+    try:
+        import torch
+
+        from configs.config import Config
+        from infer.module.models import (
+            SynthesizerTrnMs256NSFsid,
+            SynthesizerTrnMs256NSFsid_nono,
+            SynthesizerTrnMs768NSFsid,
+            SynthesizerTrnMs768NSFsid_nono,
+        )
+        from infer.vc.modules import VC
+        from infer.vc.pipeline import Pipeline
+        from infer.vc.utils import load_hubert
+
+        config = Config()
+        config.device = torch.device("cuda")
+        config.is_half = True
+
+        # 手动填充 VC 实例（get_vc 依赖 weight_root 环境变量与 Gradio 回调，绕开它）
+        # weights_only=True：仅允许 dict/list/str/int/tensor 等基础类型反序列化，
+        # 防止第三方 ckpt 的 __reduce__ 载荷触发任意代码执行（坏文件此处即报错，不后移）
+        cpt = torch.load(pth, map_location="cpu", weights_only=True)
+        tgt_sr = cpt["config"][-1]
+        cpt["config"][-3] = cpt["weight"]["emb_g.weight"].shape[0]  # n_spk
+        if_f0 = cpt.get("f0", 1)
+        version = cpt.get("version", "v1")
+
+        synth_cls = {
+            ("v1", 1): SynthesizerTrnMs256NSFsid,
+            ("v1", 0): SynthesizerTrnMs256NSFsid_nono,
+            ("v2", 1): SynthesizerTrnMs768NSFsid,
+            ("v2", 0): SynthesizerTrnMs768NSFsid_nono,
+        }[(version, if_f0)]
+        net_g = synth_cls(*cpt["config"], is_half=config.is_half)
+        del net_g.enc_q
+        net_g.load_state_dict(cpt["weight"], strict=False)
+        net_g.eval().to(config.device)
+        net_g = net_g.half() if config.is_half else net_g.float()
+
+        vc = VC(config)
+        vc.cpt, vc.tgt_sr, vc.if_f0, vc.version = cpt, tgt_sr, if_f0, version
+        vc.net_g = net_g
+        vc.pipeline = Pipeline(tgt_sr, config)
+        vc.hubert_model = load_hubert(config)
+    finally:
+        sys.argv = saved_argv
+
+    return RvcEngine(vc=vc, tgt_sr=tgt_sr, index=index if (index and os.path.exists(index)) else "",
+                     if_f0=if_f0, version=version, pth=pth)
+
+
+def convert_audio(engine: RvcEngine, audio: "np.ndarray", pitch: int = 0,
+                  index_rate: float = 0.5) -> "np.ndarray":
+    """把 16k float 音频转成目标音色，返回后处理后的 float32 数组（engine.tgt_sr）。
+
+    级联实时链路对每一句 TTS 输出调用一次；模型常驻，故无逐次加载开销。
+    """
+    import numpy as np
+
+    audio_in = np.asarray(audio, dtype=np.float32)
+    audio_max = np.abs(audio_in).max() / 0.95
+    if audio_max > 1:
+        audio_in = audio_in / audio_max
+    audio_out = engine.vc.pipeline.pipeline(
+        engine.vc.hubert_model, engine.vc.net_g, 0, audio_in, [0.0, 0.0, 0.0], pitch,
+        "rmvpe", engine.index, index_rate if engine.index else 0.0,
+        engine.if_f0, engine.tgt_sr, 0, 0.25, engine.version, 0.33,
+    )
+    return postprocess_audio(audio_out.astype("float32"), engine.tgt_sr)
+
+
+def main():
     p = argparse.ArgumentParser()
     p.add_argument("--pth", required=True)
     p.add_argument("--index", default="")
@@ -33,72 +140,17 @@ def main():
     p.add_argument("--pitch", type=int, default=0, help="变调半音数，男转女 +12")
     p.add_argument("--index-rate", type=float, default=0.5)
     args = p.parse_args()
-    # RVC configs/config.py 在 import 时会 parser.parse_args() 严格解析 sys.argv，
-    # 见到我们的 --pth/--input 会直接报错退出；解析完自己的参数后清空 argv 再 import。
-    sys.argv = [sys.argv[0]]
 
-    import numpy as np
-    import soundfile as sf
-    import torch
-
-    from configs.config import Config
-    from infer.module.models import (
-        SynthesizerTrnMs256NSFsid,
-        SynthesizerTrnMs256NSFsid_nono,
-        SynthesizerTrnMs768NSFsid,
-        SynthesizerTrnMs768NSFsid_nono,
-    )
-    from infer.vc.modules import VC
-    from infer.vc.pipeline import Pipeline
-    from infer.vc.utils import load_hubert
-
-    config = Config()
-    config.device = torch.device("cuda")
-    config.is_half = True
-
-    # 手动填充 VC 实例（get_vc 依赖 weight_root 环境变量与 Gradio 回调，绕开它）
-    # weights_only=True：仅允许 dict/list/str/int/tensor 等基础类型反序列化，
-    # 防止第三方 ckpt 的 __reduce__ 载荷触发任意代码执行（坏文件此处即报错，不后移）
-    cpt = torch.load(args.pth, map_location="cpu", weights_only=True)
-    tgt_sr = cpt["config"][-1]
-    cpt["config"][-3] = cpt["weight"]["emb_g.weight"].shape[0]  # n_spk
-    if_f0 = cpt.get("f0", 1)
-    version = cpt.get("version", "v1")
-
-    synth_cls = {
-        ("v1", 1): SynthesizerTrnMs256NSFsid,
-        ("v1", 0): SynthesizerTrnMs256NSFsid_nono,
-        ("v2", 1): SynthesizerTrnMs768NSFsid,
-        ("v2", 0): SynthesizerTrnMs768NSFsid_nono,
-    }[(version, if_f0)]
-    net_g = synth_cls(*cpt["config"], is_half=config.is_half)
-    del net_g.enc_q
-    net_g.load_state_dict(cpt["weight"], strict=False)
-    net_g.eval().to(config.device)
-    net_g = net_g.half() if config.is_half else net_g.float()
-
-    vc = VC(config)
-    vc.cpt, vc.tgt_sr, vc.if_f0, vc.version = cpt, tgt_sr, if_f0, version
-    vc.net_g = net_g
-    vc.pipeline = Pipeline(tgt_sr, config)
-    vc.hubert_model = load_hubert(config)
-
-    index = args.index if (args.index and os.path.exists(args.index)) else ""
     from infer.audio import load_audio
 
+    engine = load_vc(args.pth, args.index)
     audio_in = load_audio(args.input, 16000)
-    audio_max = np.abs(audio_in).max() / 0.95
-    if audio_max > 1:
-        audio_in /= audio_max
-    audio_out = vc.pipeline.pipeline(
-        vc.hubert_model, vc.net_g, 0, audio_in, [0.0, 0.0, 0.0], args.pitch,
-        "rmvpe", index, args.index_rate if index else 0.0, vc.if_f0, vc.tgt_sr,
-        0, 0.25, vc.version, 0.33,
-    )
+    y = convert_audio(engine, audio_in, args.pitch, args.index_rate)
 
-    y = postprocess_audio(audio_out.astype("float32"), vc.tgt_sr)
-    sf.write(args.output, y, vc.tgt_sr)
-    print("OK %.2fs @%dHz" % (len(y) / vc.tgt_sr, vc.tgt_sr))
+    import soundfile as sf
+
+    sf.write(args.output, y, engine.tgt_sr)
+    print("OK %.2fs @%dHz" % (len(y) / engine.tgt_sr, engine.tgt_sr))
 
 
 def postprocess_audio(y, out_sr):

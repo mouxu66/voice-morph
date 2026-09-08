@@ -268,6 +268,18 @@ ensure_worker = _ensure_worker
 post = _post
 
 
+def transcribe(path: str, vad_filter: bool = True, fast: bool = False,
+               timeout: int = 600) -> dict:
+    """语音转写：wav 路径 -> {text, quality}。语气中转链路的 ASR 环节。
+
+    vad_filter：交给 whisper 内部过滤静音（语气中转对整段人声有效，保持默认）；
+    fast：走快速转写通道（质量略降）。
+    """
+    _ensure_worker()
+    return json.loads(_post("/transcribe", {"path": path, "vad_filter": vad_filter,
+                                            "fast": fast}, timeout=timeout))
+
+
 def tts(text: str, ref_audio: str, ref_text: str = "", language: str = "Chinese",
         voice_id: str = "", style_ref: str = "", style_ref_text: str = "",
         seg_chars: int = 0) -> bytes:
