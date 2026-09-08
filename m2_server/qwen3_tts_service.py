@@ -1,16 +1,26 @@
 """Qwen3-TTS 通用音色服务 · 常驻推理（venv312 / torch2.8cu129）。
 
-职责（v2 重构：去袋鼠专用化）：
+职责（v3 重构：换 faster-qwen3-tts 真·流式后端）：
     1. /analyze  音色挖掘：对切片批量做 whisper 转写 + 说话人声纹提取 + 贪心聚类，
        按簇返回候选音色（每簇含最干净、最具代表性的切片），供前端迭代试听筛选
-    2. /tts      按传入的参考音频+文字稿动态克隆合成（ICL 模式），prompt 按参考缓存
-    3. /health   就绪探测
+    2. /tts      按传入的参考音频+文字稿动态克隆合成（ICL 模式），prompt 由模型内部缓存
+    3. /tts_stream 真·流式克隆合成：generate_voice_clone_streaming 逐块 yield 音频，
+       首包延迟从「整句生成完」降到「首个 chunk_size 音频块」（≈chunk_size/12 秒）
+    4. /health   就绪探测
 
 为什么独立成服务：
     m2_server 主进程运行在项目的 .venv(torch2.9+cu128，给 RVC 转换用)，
     而 Qwen3-TTS 必须跑在 venv312(torch2.8+cu129，支持 RTX5060 Blackwell)。
     两者 CUDA/torch 版本不兼容，不能同进程，故由 qwen3_tts.py 懒启动本服务常驻，
     监听 8001，通过 HTTP 转发请求，解耦互不干扰。
+
+v3 变更（2026-09-08）：
+    官方 qwen_tts 0.1.1 库不暴露真·流式音频出口（non_streaming_mode 仅模拟流式文本输入）。
+    改用社区加速器 faster-qwen3-tts（同 Qwen3-TTS 模型权重、Apache2.0 风格 MIT 许可）：
+    其内部用 CUDA Graph 重写推理循环，generate_voice_clone_streaming 真·逐块 yield 音频，
+    自带 warmup() 预热图。因此彻底移除我们自己的 fast_tts.py CUDA Graph 引擎（其依赖的
+    旧 Qwen3TTSModel 内部结构在 transformers>=5 下已失效，且与 faster 的图重复冲突）。
+    声纹提取改走 MODEL.model.create_voice_clone_prompt（base_model 封装层）。
 
 启动：
     D:/变声/tts_trial/venv312/Scripts/python.exe qwen3_tts_service.py
@@ -29,7 +39,7 @@ import soundfile as sf
 import torch
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse
-from qwen_tts import Qwen3TTSModel
+from faster_qwen3_tts import FasterQwen3TTS
 
 try:
     import config as _cfg
@@ -40,64 +50,39 @@ except ImportError:  # 直接运行 worker（cwd 非 m2_server）时回退环境
         os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tts_models", "qwen3-tts-1.7b-base")))
 WHISPER_SIZE = os.environ.get("VM_WHISPER_SIZE", "small")
 
-app = FastAPI(title="Qwen3-TTS 通用音色 worker")
+app = FastAPI(title="Qwen3-TTS 通用音色 worker (faster-qwen3-tts)")
 MODEL = None
 WHISPER = None
 WHISPER_SR = 16000
-# prompt 缓存：key=(ref_audio_path, ref_text, x_vector_only) -> prompt 对象
-_PROMPT_CACHE: dict = {}
 # 微调模型缓存：同一时刻只驻留一个 custom_voice 模型（显存换模型走 LRU=1）
 _ALT_MODEL: dict = {"dir": None, "model": None}
-# CUDA Graph 加速引擎（fast_tts.py）：VM_FAST_TTS=0 关闭；请求体 {"fast": false} 单次关闭
-FAST_TTS = os.environ.get("VM_FAST_TTS", "1") == "1"
 # ICL 克隆参考音频时长上限：超长参考（>10s）既慢又会劣化，且文字稿与音频错位时
 # 模型会照着长参考拖长输出、生成乱叫。超限自动截前段 + 文字稿按比例截断。
 REF_MAX_S = float(os.environ.get("VM_REF_MAX_S", "10.0"))
 # 长文 ICL 分段上限（字符）：>0 时按句切段、逐段复用同一短风格参考合成再拼接，
 # 规避"长文本单次 ICL 生成"在 8GB 显存上的崩溃/乱叫；VM_TTS_SEG_CHARS=0 关闭。
 _SEG_MAX_CHARS = int(os.environ.get("VM_TTS_SEG_CHARS", "60"))
-_FAST: dict = {"eng": None, "model_id": None}
 # GPU 串行锁：端点把推理放进线程池并行执行（避免堵死事件循环），GPU 调用必须互斥
 _GPU_LOCK = threading.Lock()
-
-
-def _get_fast_engine():
-    """懒建 CUDA Graph 引擎；跟随当前驻留的基座 MODEL（换模型后自动重建）。"""
-    if MODEL is None:
-        return None
-    if _FAST["eng"] is None or _FAST["model_id"] != id(MODEL):
-        _release_fast_engine()
-        try:
-            from fast_tts import FastVoiceCloneEngine
-            _FAST.update(eng=FastVoiceCloneEngine(MODEL), model_id=id(MODEL))
-            print("[fast_tts] engine ready (CUDA Graph)", flush=True)
-        except Exception as exc:
-            import traceback
-            print(f"[fast_tts] engine init FAIL: {exc}\n{traceback.format_exc()}",
-                  flush=True)
-            _FAST.update(eng=None, model_id=None)
-    return _FAST["eng"]
-
-
-def _release_fast_engine():
-    """释放引擎（图与 StaticCache 会钉住模型权重，换驻留模型前必须调用）。"""
-    if _FAST["eng"] is not None:
-        _FAST.update(eng=None, model_id=None)
-        gc.collect()
-        torch.cuda.empty_cache()
-        print("[fast_tts] engine released", flush=True)
+# faster 流式 chunk 大小（codec steps）：越小首包越早，默认 12 ≈ 1s 音频/块
+_STREAM_CHUNK = int(os.environ.get("VM_TTS_CHUNK", "12"))
 
 
 @app.on_event("startup")
 def _load():
     global MODEL
-    MODEL = Qwen3TTSModel.from_pretrained(
-        MODEL_DIR, device_map="cuda:0", dtype=torch.bfloat16)
+    MODEL = FasterQwen3TTS.from_pretrained(
+        MODEL_DIR, device="cuda", dtype=torch.bfloat16,
+        attn_implementation="sdpa", max_seq_len=4096, qwentts_use_fa=False)
+    # 捕获 predictor/talker CUDA 图，消除首句/首包开销（等价于旧 fast_tts 引擎的作用）
+    MODEL.warmup()
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": 6, "fast_tts": _FAST["eng"] is not None}
+    warmed = bool(MODEL is not None and getattr(MODEL, "_warmed_up", False))
+    return {"status": "ok", "version": 7, "tts_engine": "faster-qwen3-tts",
+            "warmed_up": warmed}
 
 
 def _get_whisper():
@@ -140,14 +125,14 @@ def _transcribe(path: str, vad_filter: bool = True, fast: bool = False) -> dict:
 def _speaker_embedding(path: str) -> np.ndarray:
     """提取切片的说话人声纹（与克隆时同一个编码器，空间一致）。
 
-    走 create_voice_clone_prompt(x_vector_only) 路径取 ref_spk_embedding——
-    该路径在 A/B 试听脚本中实测稳定；直接调 model.extract_speaker_embedding
-    会遇到 bf16 CUDA tensor 转 numpy 的兼容坑。
+    faster-qwen3-tts 把声纹 API 收进 base_model（MODEL.model.create_voice_clone_prompt），
+    旧 MODEL.create_voice_clone_prompt 公开方法已移除。x_vector_only 模式只取说话人向量、
+    与参考长度无关，ref_text 被忽略。
     """
     with _GPU_LOCK:
-        prompt = MODEL.create_voice_clone_prompt(ref_audio=path, ref_text=".",
-                                                 x_vector_only_mode=True)
-    item = prompt[0] if isinstance(prompt, list) else prompt
+        items = MODEL.model.create_voice_clone_prompt(
+            ref_audio=path, ref_text=".", x_vector_only_mode=True)
+    item = items[0] if isinstance(items, (list, tuple)) else items
     emb = item.ref_spk_embedding
     if torch.is_tensor(emb):
         emb = emb.detach().float().cpu().numpy()  # bf16 CUDA tensor -> fp32 numpy
@@ -252,41 +237,34 @@ def _trim_ref(ref_audio: str, ref_text: str) -> tuple:
     return tmp, ref_text
 
 
-def _build_prompt(ref_audio: str, ref_text: str, xvec_only: bool):
-    key = (ref_audio, ref_text, xvec_only)
-    if key not in _PROMPT_CACHE:
-        if not xvec_only:
-            ref_audio, ref_text = _trim_ref(ref_audio, ref_text)
-        _PROMPT_CACHE[key] = MODEL.create_voice_clone_prompt(
-            ref_audio=ref_audio, ref_text=ref_text or "占位", x_vector_only_mode=xvec_only)
-    return _PROMPT_CACHE[key]
+def _gen_kwargs(body: dict) -> dict:
+    """透传生成参数白名单：faster API 不支持 use_cache 等旧字段，只放它认的。"""
+    out = {}
+    for k in ("do_sample", "max_new_tokens", "top_k", "temperature",
+              "top_p", "repetition_penalty"):
+        if body.get(k) is not None:
+            out[k] = body[k]
+    return out
 
 
 def _tts_blocking(text: str, language: str, ref_audio: str, ref_text: str,
-                  gen_kwargs: dict, use_fast: bool):
-    """同步 GPU 推理（由端点放进线程池执行）：fast 优先，失败回退原版 generate_voice_clone。"""
+                  gen_kwargs: dict) -> tuple:
+    """同步 GPU 推理（由端点放进线程池执行）：直接走 faster 原生 generate_voice_clone。
+
+    faster 后端自带 CUDA Graph 加速（warmup 已捕获），等价旧 fast_tts 引擎且零额外依赖。
+    xvec_only 模式（ref_text 为空）只取说话人声纹，与参考文字稿无关。
+    """
     with _GPU_LOCK:
-        prompt = _build_prompt(ref_audio, ref_text, not ref_text.strip())
-        if use_fast:
-            eng = _get_fast_engine()
-            if eng is not None:
-                try:
-                    wavs, sr = eng.generate(text=[text], language=[language],
-                                            voice_clone_prompt=prompt, **gen_kwargs)
-                    return wavs, sr, True
-                except Exception as exc:
-                    eng.stats["fallbacks"] += 1
-                    print(f"[tts] fast path FAIL -> fallback: "
-                          f"{type(exc).__name__}: {exc}", flush=True)
         wavs, sr = MODEL.generate_voice_clone(
-            text=[text], language=[language], voice_clone_prompt=prompt, **gen_kwargs)
-        return wavs, sr, False
+            text=text, language=language, ref_audio=ref_audio, ref_text=ref_text,
+            xvec_only=not (ref_text or "").strip(), **gen_kwargs)
+        return wavs, sr, True
 
 
 def _split_segments(text: str, max_chars: int = _SEG_MAX_CHARS) -> list:
     """把长文按句尾标点切分成适合单次 ICL 生成的段，超长句再硬切。
 
-    - 参考音频是"短风格参考"，每段都复用同一个 prompt，保证整段音色/节奏一致；
+    - 参考音频是"短风格参考"，每段都复用同一个参考，保证整段音色/节奏一致；
     - 单段不过长，避免一次生成过大导致 8GB 显存崩溃或 WDDM 慢路径。
     """
     if max_chars <= 0:
@@ -318,7 +296,7 @@ def _split_segments(text: str, max_chars: int = _SEG_MAX_CHARS) -> list:
 
 
 def _tts_style_blocking(text: str, language: str, style_audio: str,
-                        style_text: str, gen_kwargs: dict, use_fast: bool,
+                        style_text: str, gen_kwargs: dict,
                         seg_chars: int = _SEG_MAX_CHARS):
     """风格参考 ICL 合成：音频未带文字稿则先 whisper 转写，再按段复用同一
     短风格参考逐段生成并拼接。返回 (wav, sr, n_segs, fast_used)。
@@ -331,28 +309,20 @@ def _tts_style_blocking(text: str, language: str, style_audio: str,
         style_text = (tr.get("text") or "").strip()
         if not style_text:
             style_text = "占位"
-    key = (style_audio, style_text, False)
-    with _GPU_LOCK:
-        if key not in _PROMPT_CACHE:
-            sa, st = _trim_ref(style_audio, style_text)  # ≤REF_MAX_S，规避长参考 ICL 崩溃
-            _PROMPT_CACHE[key] = MODEL.create_voice_clone_prompt(
-                ref_audio=sa, ref_text=st, x_vector_only_mode=False)
+    sa, st = _trim_ref(style_audio, style_text)  # ≤REF_MAX_S，规避长参考 ICL 崩溃
     segs = _split_segments(text, seg_chars)
     sr = None
     wavs_all = []
-    fast_used = False
     for seg in segs:
         if seg.strip() == "":
             continue
-        w, s, fu = _tts_blocking(seg, language, style_audio,
-                                 style_text, gen_kwargs, use_fast)
+        w, s, _fu = _tts_blocking(seg, language, sa, st, gen_kwargs)
         wavs_all.append(w[0])
         sr = s
-        fast_used = fast_used or fu
     if sr is None:
         return [np.zeros(0, dtype=np.float32)], 24000, 0, False
     # 返回 list（包一层），与端点 sf.write(buf, wavs[0], sr) 的取数组约定对齐
-    return [np.concatenate(wavs_all)], sr, len(wavs_all), fast_used
+    return [np.concatenate(wavs_all)], sr, len(wavs_all), True
 
 
 @app.post("/emb")
@@ -391,25 +361,17 @@ async def tts(req: Request):
         return Response(b"", status_code=400)
     if not (ref_audio or style_ref):
         return Response(b"", status_code=400)
-    # 生成参数按需透传（性能调优用）。
-    # do_sample=False 走贪心：省掉逐步 top-k 采样的 Python 开销；
-    # 级联实时链路对首包延迟敏感时值得一试，代价是韵律多样性略降。
-    gen_kwargs = {}
-    for k in ("do_sample", "use_cache", "max_new_tokens", "top_k", "temperature"):
-        if body.get(k) is not None:
-            gen_kwargs[k] = body[k]
-    use_fast = FAST_TTS and body.get("fast", True)
+    gen_kwargs = _gen_kwargs(body)
     if style_ref.strip() and os.path.isfile(style_ref):
         seg = seg_chars if seg_chars > 0 else _SEG_MAX_CHARS
         wavs, sr, n_segs, fast_used = await asyncio.get_running_loop().run_in_executor(
             None, lambda: _tts_style_blocking(text, language, style_ref, style_text,
-                                              gen_kwargs, use_fast, seg))
+                                              gen_kwargs, seg))
     else:
         # GPU 推理放线程池执行：async 端点里同步推理会堵死整个事件循环
         # （级联流式时 /health /transcribe /状态查询全卡死，坑 5）
         wavs, sr, fast_used = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: _tts_blocking(text, language, ref_audio, ref_text,
-                                        gen_kwargs, use_fast))
+            None, lambda: _tts_blocking(text, language, ref_audio, ref_text, gen_kwargs))
     buf = io.BytesIO()
     sf.write(buf, wavs[0], sr, format="WAV")
     return Response(content=buf.getvalue(), media_type="audio/wav",
@@ -420,7 +382,7 @@ def _frame_pcm(arr: "np.ndarray") -> bytes:
     """把一段 float32 音频打成「4 字节小端长度 + 原始 float32 PCM」帧。
 
     流式端点逐段 yield 这种帧；客户端按长度前缀切回 float32 数组即可拼接。
-    Qwen3 输出恒为 24kHz 单声道 float32，采样率写在响应头 X-Sample-Rate。
+    Qwen3-TTS（含 faster 后端）输出恒为 24kHz 单声道 float32，采样率写在响应头 X-Sample-Rate。
     """
     a = np.ascontiguousarray(arr, dtype=np.float32)
     return struct.pack("<I", a.nbytes) + a.tobytes()
@@ -428,16 +390,16 @@ def _frame_pcm(arr: "np.ndarray") -> bytes:
 
 @app.post("/tts_stream")
 async def tts_stream(req: Request):
-    """分段流式合成：与 /tts 同入参，但逐段生成、逐段推流，显著降低首包延迟。
+    """真·流式克隆合成：与 /tts 同入参，但 generate_voice_clone_streaming 逐块 yield 音频。
 
-    为什么能降延迟：Qwen3-TTS 本身不支持真·逐帧流式（库里 non_streaming_mode
-    仅模拟流式文本输入，不开流式生成），所以这里在文本层分段——长句切成短段，
-    每段生成完立刻 yield，客户端边收边播。实时级联里 6s 长块（数十字）会被切成
-    多段，首段比整句早 1~2s 出声。短句（<seg_chars）只有 1 段，退化为整句返回，
-    与不流式等价、无回归。
+    为什么是真·流式（v3 升级）：
+        官方 qwen_tts 库整段生成完才回包；faster-qwen3-tts 的 generate_voice_clone_streaming
+        内部按 chunk_size（codec steps）自回归，每产出一块音频就 yield 一次——首包延迟从
+        「整句生成完」降到「首个 ~chunk_size/12 秒音频块」，实时级联（relay）首句出声提前 1~2s。
 
     协议：application/octet-stream，每帧 = uint32(小端)长度 + float32 PCM；
-    响应头 X-Sample-Rate=24000、X-Format=f32le。风格参考(style_ref)模式回退整段单帧。
+        响应头 X-Sample-Rate=24000、X-Format=f32le。风格参考(style_ref)模式同样走真流式
+        （ref_audio=style_ref，ref_text=style_text；style_text 空则退化为 x-vector 克隆）。
     """
     body = await req.json()
     text = body.get("text", "")
@@ -446,39 +408,28 @@ async def tts_stream(req: Request):
     ref_text = body.get("ref_text", "")
     style_ref = body.get("style_ref", "")
     style_text = body.get("style_ref_text", "")
-    seg_chars = int(body.get("seg_chars") or 16)
+    ref = ref_audio or style_ref
+    rt = ref_text or style_text
     if not text.strip():
         return Response(b"", status_code=400)
-    if not (ref_audio or style_ref):
+    if not ref:
         return Response(b"", status_code=400)
-    gen_kwargs = {}
-    for k in ("do_sample", "use_cache", "max_new_tokens", "top_k", "temperature"):
-        if body.get(k) is not None:
-            gen_kwargs[k] = body[k]
-    use_fast = FAST_TTS and body.get("fast", True)
+    gen_kwargs = _gen_kwargs(body)
+    # 流式块大小：优先 chunk_size，兼容旧 seg_chars（文本分段语义本版已不再适用）
+    chunk_size = int(body.get("chunk_size") or body.get("seg_chars") or _STREAM_CHUNK)
+    xvec_only = not (rt or "").strip()
 
-    async def gen():
-        loop = asyncio.get_running_loop()
-        if style_ref.strip() and os.path.isfile(style_ref):
-            seg = seg_chars if seg_chars > 0 else _SEG_MAX_CHARS
-            wavs, sr, _n, _fu = await loop.run_in_executor(
-                None, lambda: _tts_style_blocking(text, language, style_ref,
-                                                  style_text, gen_kwargs, use_fast, seg))
-            yield _frame_pcm(wavs[0])
-            return
-        for s in _split_segments(text, seg_chars):
-            if not s.strip():
-                continue
-            wavs, sr, _fu = await loop.run_in_executor(
-                None, lambda s=s: _tts_blocking(s, language, ref_audio, ref_text,
-                                               gen_kwargs, use_fast))
-            yield _frame_pcm(wavs[0])
+    def gen_sync():
+        with _GPU_LOCK:
+            for audio_chunk, _sr, _timing in MODEL.generate_voice_clone_streaming(
+                    text=text, language=language, ref_audio=ref, ref_text=rt,
+                    chunk_size=chunk_size, xvec_only=xvec_only, **gen_kwargs):
+                yield _frame_pcm(audio_chunk)
 
     return StreamingResponse(
-        gen(), media_type="application/octet-stream",
+        gen_sync(), media_type="application/octet-stream",
         headers={"X-Sample-Rate": "24000", "X-Format": "f32le",
-                 "X-Fast-TTS": "1" if use_fast else "0",
-                 "Cache-Control": "no-store"})
+                 "X-Fast-TTS": "1", "Cache-Control": "no-store"})
 
 
 @app.post("/transcribe")
@@ -503,25 +454,29 @@ def _get_custom_model(model_dir: str):
     """加载（或取缓存的）custom_voice 微调模型。显存策略：与基座互斥驻留。
 
     8GB 卡上基座(3.6G)+微调模型(3.6G)+whisper 同时驻留太紧，切换时先释放另一个。
+    faster 后端加载后需 warmup 捕获 CUDA 图。
     """
     global MODEL
     if os.path.normpath(model_dir) == os.path.normpath(MODEL_DIR):
         if MODEL is None:
-            MODEL = Qwen3TTSModel.from_pretrained(
-                MODEL_DIR, device_map="cuda:0", dtype=torch.bfloat16)
+            MODEL = FasterQwen3TTS.from_pretrained(
+                MODEL_DIR, device="cuda", dtype=torch.bfloat16,
+                attn_implementation="sdpa", max_seq_len=4096, qwentts_use_fa=False)
+            MODEL.warmup()
         return MODEL
     if _ALT_MODEL["dir"] == os.path.normpath(model_dir) and _ALT_MODEL["model"] is not None:
         return _ALT_MODEL["model"]
-    # 换模型：先卸掉现驻留的（无论基座还是旧微调）；fast 引擎钉着基座权重，必须先放
-    _release_fast_engine()
+    # 换模型：先卸掉现驻留的（无论基座还是旧微调）
     if _ALT_MODEL["model"] is not None:
         _ALT_MODEL.update(dir=None, model=None)
     if MODEL is not None:
         MODEL = None
     gc.collect()
     torch.cuda.empty_cache()
-    m = Qwen3TTSModel.from_pretrained(model_dir, device_map="cuda:0", dtype=torch.bfloat16)
-    _PROMPT_CACHE.clear()
+    m = FasterQwen3TTS.from_pretrained(
+        model_dir, device="cuda", dtype=torch.bfloat16,
+        attn_implementation="sdpa", max_seq_len=4096, qwentts_use_fa=False)
+    m.warmup()
     _ALT_MODEL.update(dir=os.path.normpath(model_dir), model=m)
     return m
 
