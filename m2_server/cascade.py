@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import threading
+import logging
 import time
 from pathlib import Path
 
@@ -35,6 +36,8 @@ import config as cfg
 import prosody_relay
 from rvc_common import (ensure_infer_pth, find_index, _find_pids_by_cmdline, _kill_pids)
 from rvc_live import _audio, _reset_audio
+
+logger = logging.getLogger(__name__)
 
 ROOT = cfg.ROOT
 STREAM_PY = Path(__file__).resolve().parent / "cascade_stream.py"
@@ -78,7 +81,8 @@ def _worker_health(timeout: float = 2.0) -> bool:
         with urllib.request.urlopen("http://127.0.0.1:8001/health",
                                     timeout=timeout) as resp:
             return resp.status == 200
-    except Exception:
+    except Exception as e:
+        logger.debug("[cascade] 健康检查端口 8001 不可达（worker 未起）: %s", e)
         return False
 
 
@@ -101,7 +105,8 @@ def _warm_worker():
 def _read_child_state() -> dict:
     try:
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.debug("[cascade] 读取子进程状态文件失败（返回空）: %s", e)
         return {}
 
 
@@ -204,8 +209,8 @@ def cascade_start(req: CascadeStartReq | None = None):
                 "silence_ms": body.silence_ms, "prime_s": body.prime_s,
                 "mode": body.mode, "rvc_voice": body.rvc_voice,
             }, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("[cascade] 写入启动参数快照失败（可忽略）: %s", e)
     logf = open(RUN_LOG, "ab")
     try:
         proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=logf,
@@ -292,7 +297,8 @@ def cascade_last_start():
     try:
         return json.loads(
             (cfg.OUTPUTS_DIR / "cascade_last_start.json").read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.debug("[cascade] 读取最近一次启动参数失败（返回空）: %s", e)
         return {}
 
 
