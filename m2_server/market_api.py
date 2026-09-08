@@ -10,7 +10,11 @@
   - GET  /api/market/installed   已安装音色 id 列表（前端标"已装"角标）
   - POST /api/market/cancel      取消下载 / 安装（可按任务名精准取消）
 """
+import re
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from runtime import API_PREFIX
@@ -59,6 +63,23 @@ class PreviewRequest(BaseModel):
 def market_manifest():
     """内置精选清单（含每条的 download/index 直链与镜像）。"""
     return {"items": get_manifest()}
+
+
+# 精选配图目录（文件名白名单校验，防路径穿越；无图返回 404 前端走首字母占位）。
+_IMG_DIR = Path(__file__).resolve().parent / "assets" / "market_imgs"
+_IMG_MEDIA = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
+
+
+@router.get("/market/image/{name}")
+def market_image(name: str):
+    """精选条目配图：assets/market_imgs/<voice_id>.<ext>。"""
+    if not re.fullmatch(r"[a-z0-9_]+\.(png|jpe?g|webp)", name, re.IGNORECASE):
+        raise HTTPException(status_code=404, detail="image not found")
+    p = _IMG_DIR / name
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="image not found")
+    media = _IMG_MEDIA[name.rsplit(".", 1)[1].lower()]
+    return FileResponse(str(p), media_type=media, headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.get("/market/search")

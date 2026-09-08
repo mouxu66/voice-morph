@@ -399,7 +399,7 @@ function MarketThumb({ item }: { item: MarketItem }) {
   return (
     <div className={cn("relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-gradient-to-br ring-1", grad, ring)}>
       {item.image ? (
-        <img src={item.image} alt="" loading="lazy" className="h-full w-full object-cover" />
+        <img src={mediaUrl(item.image)} alt="" loading="lazy" className="h-full w-full object-cover" />
       ) : (
         <span className="flex h-full w-full items-center justify-center font-display text-2xl font-semibold text-foreground/80">
           {Initial}

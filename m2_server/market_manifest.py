@@ -10,7 +10,26 @@ voice_id 用 ASCII（RVC logs/assets 目录名要求安全字符），display_na
 下载 URL 全部落在域名白名单（hf-mirror.com / huggingface.co / modelscope.cn）。
 版权提示：社区自训音色多为"仅供学习研究"，这里统一标注 license，前端展示提醒。
 """
+from pathlib import Path
 from urllib.parse import quote
+
+from runtime import API_PREFIX
+
+# 精选条目配图：assets/market_imgs/<voice_id>.<ext>，存在即自动挂 /api/market/image/ 直链。
+# 角色向音色用网络搜集的形象图（懒羊羊/曼波/孙悟空/派大星），人设向用 OpenMoji 主题图标
+# （CC BY-SA 4.0, © hfg-gmuend/openmoji）。无图条目前端按分类配色首字母占位。
+_IMG_DIR = Path(__file__).resolve().parent / "assets" / "market_imgs"
+_IMG_EXTS = ("png", "jpg", "jpeg", "webp")
+
+
+def _attach_image(item: dict) -> dict:
+    """有本地配图则附加 image 字段（相对 /api 路径，前端过 mediaUrl 转绝对）。"""
+    for ext in _IMG_EXTS:
+        if (_IMG_DIR / f"{item['voice_id']}.{ext}").is_file():
+            item["image"] = f"{API_PREFIX}/market/image/{item['voice_id']}.{ext}"
+            break
+    return item
+
 
 HF_BASE = "https://hf-mirror.com"          # 主源（本机可达；镜像=HF 官方）
 HF_OFFICIAL = "https://huggingface.co"     # mirror_url 用官方（远端可用，本机不可达）
@@ -184,13 +203,13 @@ MANIFEST: list[dict] = [
 
 
 def get_manifest() -> list[dict]:
-    """返回清单副本（避免调用方改到模块级常量）。"""
-    return [dict(item) for item in MANIFEST]
+    """返回清单副本（避免调用方改到模块级常量），并自动挂配图。"""
+    return [_attach_image(dict(item)) for item in MANIFEST]
 
 
 def find_manifest_item(item_id: str) -> dict | None:
     """按条目标识（id 或 voice_id）查找清单项。"""
     for item in MANIFEST:
         if item.get("id") == item_id or item.get("voice_id") == item_id:
-            return dict(item)
+            return _attach_image(dict(item))
     return None
