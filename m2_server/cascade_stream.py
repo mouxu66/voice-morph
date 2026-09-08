@@ -28,6 +28,7 @@ import io
 import json
 import os
 import queue
+import struct
 import sys
 import threading
 import time
@@ -336,6 +337,31 @@ class Worker:
         fast = r.headers.get("X-Fast-TTS") == "1"
         return audio, sr, fast
 
+    def tts_stream(self, text: str, ref_audio: str, ref_text: str,
+                   seg_chars: int = 16, timeout: tuple = (15, 180)):
+        """流式合成：逐段 yield (float32 音频, sr)。
+
+        协议对齐 worker /tts_stream：每帧 = uint32(小端)长度 + float32 PCM(24k)。
+        客户端边收边拼，首段到手即可送播放器，首包延迟取决于第一段生成耗时。
+        """
+        r = requests.post(self.base + "/tts_stream", stream=True, timeout=timeout,
+                          json={"text": text, "language": "Chinese",
+                                "ref_audio": ref_audio, "ref_text": ref_text,
+                                "fast": True, "seg_chars": seg_chars})
+        if r.status_code != 200:
+            raise RuntimeError(f"TTS 流式失败 HTTP {r.status_code}")
+        sr = int(r.headers.get("X-Sample-Rate", "24000"))
+        buf = b""
+        for chunk in r.iter_content(chunk_size=4096):
+            buf += chunk
+            while len(buf) >= 4:
+                n = struct.unpack("<I", buf[:4])[0]
+                if len(buf) < 4 + n:
+                    break
+                pcm = np.frombuffer(buf[4:4 + n], dtype=np.float32)
+                buf = buf[4 + n:]
+                yield np.ascontiguousarray(pcm, dtype=np.float32), sr
+
 
 def _resample(x: np.ndarray, sr_from: int, sr_to: int) -> np.ndarray:
     if sr_from == sr_to:
@@ -467,6 +493,43 @@ class Cascade:
             return
         _set_stage("tts")
         t0 = time.time()
+        # ---- 流式 TTS：逐段生成、逐段 enqueue / RVC，首段立即出声 ----
+        if self.args.tts_stream:
+            fast = False
+            total_audio_s = 0.0
+            rvc_s = 0.0
+            first_seq = None
+            for seg, sr in self.worker.tts_stream(
+                    text, self.args.ref_audio, self.args.ref_text,
+                    seg_chars=self.args.tts_seg_chars):
+                if sr != SR_OUT:
+                    seg = _resample(seg, sr, SR_OUT)
+                if self.rvc_engine is not None:
+                    _set_stage("rvc")
+                    t0r = time.time()
+                    seg = self._to_rvc(seg, SR_OUT)
+                    rvc_s = time.time() - t0r
+                    STATE["last_rvc_s"] = round(rvc_s, 2)
+                total_audio_s += len(seg) / SR_OUT
+                self.fail_streak = 0
+                if self.args.file:
+                    self.out_chunks.append(seg)
+                    continue
+                _set_stage("playing")
+                seq = _PLAYER.enqueue(seg)
+                if first_seq is None:
+                    first_seq = seq
+                    if speech_end_ts:
+                        self.pending_lat[seq] = speech_end_ts
+            tts_s = time.time() - t0
+            _update_stage_stats("tts", tts_s)
+            STATE.update(last_tts_s=round(tts_s, 2),
+                         last_audio_s=round(total_audio_s, 2))
+            print(f"[cascade] 流式「{text}」 tts {tts_s:.2f}s "
+                  f"rvc_last {rvc_s:.2f}s -> {total_audio_s:.1f}s 音频", flush=True)
+            STATE["chunks"] += 1
+            return
+        # ---- 非流式（fallback / 显式关闭） ----
         audio, sr, fast = self.worker.tts(text, self.args.ref_audio, self.args.ref_text)
         tts_s = time.time() - t0
         _update_stage_stats("tts", tts_s)
@@ -788,6 +851,14 @@ def main():
     p.add_argument("--rvc-index-rate", type=float, default=0.5)
     p.add_argument("--asr-only", action="store_true",
                    help="只转写不合成不播放（实时变声期间的桌宠字幕），无声卡操作")
+    p.add_argument("--tts-stream", action="store_true", default=True,
+                   help="relay 用分段流式 TTS（逐段出声，降低首包延迟）；"
+                        "默认开，--no-tts-stream 关闭走整句")
+    p.add_argument("--no-tts-stream", dest="tts_stream", action="store_false",
+                   help="关闭分段流式 TTS（调试用）")
+    p.add_argument("--tts-seg-chars", type=int, default=16,
+                   help="流式 TTS 单段最大字符数：越小首包越早（但段数多、prefill 开销升）；"
+                        "0 表示整句不分段")
     args = p.parse_args()
 
     base = Path(__file__).resolve().parent.parent

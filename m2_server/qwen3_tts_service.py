@@ -20,6 +20,7 @@ import gc
 import io
 import os
 import re
+import struct
 import threading
 import time
 
@@ -27,7 +28,7 @@ import numpy as np
 import soundfile as sf
 import torch
 from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from qwen_tts import Qwen3TTSModel
 
 try:
@@ -413,6 +414,71 @@ async def tts(req: Request):
     sf.write(buf, wavs[0], sr, format="WAV")
     return Response(content=buf.getvalue(), media_type="audio/wav",
                     headers={"X-Fast-TTS": "1" if fast_used else "0"})
+
+
+def _frame_pcm(arr: "np.ndarray") -> bytes:
+    """把一段 float32 音频打成「4 字节小端长度 + 原始 float32 PCM」帧。
+
+    流式端点逐段 yield 这种帧；客户端按长度前缀切回 float32 数组即可拼接。
+    Qwen3 输出恒为 24kHz 单声道 float32，采样率写在响应头 X-Sample-Rate。
+    """
+    a = np.ascontiguousarray(arr, dtype=np.float32)
+    return struct.pack("<I", a.nbytes) + a.tobytes()
+
+
+@app.post("/tts_stream")
+async def tts_stream(req: Request):
+    """分段流式合成：与 /tts 同入参，但逐段生成、逐段推流，显著降低首包延迟。
+
+    为什么能降延迟：Qwen3-TTS 本身不支持真·逐帧流式（库里 non_streaming_mode
+    仅模拟流式文本输入，不开流式生成），所以这里在文本层分段——长句切成短段，
+    每段生成完立刻 yield，客户端边收边播。实时级联里 6s 长块（数十字）会被切成
+    多段，首段比整句早 1~2s 出声。短句（<seg_chars）只有 1 段，退化为整句返回，
+    与不流式等价、无回归。
+
+    协议：application/octet-stream，每帧 = uint32(小端)长度 + float32 PCM；
+    响应头 X-Sample-Rate=24000、X-Format=f32le。风格参考(style_ref)模式回退整段单帧。
+    """
+    body = await req.json()
+    text = body.get("text", "")
+    language = body.get("language", "Chinese")
+    ref_audio = body.get("ref_audio", "")
+    ref_text = body.get("ref_text", "")
+    style_ref = body.get("style_ref", "")
+    style_text = body.get("style_ref_text", "")
+    seg_chars = int(body.get("seg_chars") or 16)
+    if not text.strip():
+        return Response(b"", status_code=400)
+    if not (ref_audio or style_ref):
+        return Response(b"", status_code=400)
+    gen_kwargs = {}
+    for k in ("do_sample", "use_cache", "max_new_tokens", "top_k", "temperature"):
+        if body.get(k) is not None:
+            gen_kwargs[k] = body[k]
+    use_fast = FAST_TTS and body.get("fast", True)
+
+    async def gen():
+        loop = asyncio.get_running_loop()
+        if style_ref.strip() and os.path.isfile(style_ref):
+            seg = seg_chars if seg_chars > 0 else _SEG_MAX_CHARS
+            wavs, sr, _n, _fu = await loop.run_in_executor(
+                None, lambda: _tts_style_blocking(text, language, style_ref,
+                                                  style_text, gen_kwargs, use_fast, seg))
+            yield _frame_pcm(wavs[0])
+            return
+        for s in _split_segments(text, seg_chars):
+            if not s.strip():
+                continue
+            wavs, sr, _fu = await loop.run_in_executor(
+                None, lambda s=s: _tts_blocking(s, language, ref_audio, ref_text,
+                                               gen_kwargs, use_fast))
+            yield _frame_pcm(wavs[0])
+
+    return StreamingResponse(
+        gen(), media_type="application/octet-stream",
+        headers={"X-Sample-Rate": "24000", "X-Format": "f32le",
+                 "X-Fast-TTS": "1" if use_fast else "0",
+                 "Cache-Control": "no-store"})
 
 
 @app.post("/transcribe")
