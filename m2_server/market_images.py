@@ -8,13 +8,14 @@
   3. 都没有        前端按分类配色 + 首字母占位（image 字段缺省）
 
 远程图库（业界做法：Modrinth icon_url / CurseForge thumbnail / GitHub 图床+CDN 缓存）：
-  VM_MARKET_IMG_REPO 配置为 GitHub 仓库（如 "user/voice-market-assets"，public），
+  图源中心化、客户端零配置——默认图库 repo 内置（mouxu66/voice-market-assets，public），
+  所有用户桌面端启动/刷新市场时自动经 jsdelivr 同步；作者换图 = 往仓库推文件。
   仓库结构：
       images.json                {"revision": "<任意字符串，内容变了就换>", "imgs": {"<voice_id>": "imgs/x.png"}}
       imgs/<voice_id>.png|jpg    图片文件
   同步通道：cdn.jsdelivr.net/gh（国内可达、免认证；分支引用 CDN 缓存约 12h，
   换图最多延迟半天）→ 失败回退 raw.githubusercontent.com。
-  换图/加图 = 往仓库推文件 + 更新 images.json 的 revision，桌面端刷新市场即自动拉新。
+  VM_MARKET_IMG_REPO 环境变量可换库；设为空则禁用远程层（只用打包图）。
 """
 import json
 import os
@@ -36,7 +37,9 @@ SYNC_TTL = 6 * 3600                      # 远程清单刷新间隔（秒）
 _HTTP_TIMEOUT = (5, 30)                  # (连接, 读取) 超时
 _IMG_EXTS = ("png", "jpg", "jpeg", "webp")
 
-_REPO = os.environ.get("VM_MARKET_IMG_REPO", "").strip()   # "user/repo"，空=禁用
+_REPO = os.environ.get("VM_MARKET_IMG_REPO", "mouxu66/voice-market-assets").strip()
+# 默认图库内置在产品里（业界做法：图源中心化，客户端零配置，jsdelivr CDN 全球可达）。
+# 设 VM_MARKET_IMG_REPO 可换库，设 VM_MARKET_IMG_REPO= 空可禁用远程层（只用打包图）。
 _CDN_TPL = "https://cdn.jsdelivr.net/gh/{repo}@main/{path}"
 _FALLBACK_TPL = "https://raw.githubusercontent.com/{repo}/main/{path}"
 
