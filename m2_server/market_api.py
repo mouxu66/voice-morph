@@ -11,12 +11,12 @@
   - POST /api/market/cancel      取消下载 / 安装（可按任务名精准取消）
 """
 import re
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+import market_images
 from runtime import API_PREFIX
 from market_download import get_manager, MarketError
 from market_install import get_installer, InstallError
@@ -65,20 +65,20 @@ def market_manifest():
     return {"items": get_manifest()}
 
 
-# 精选配图目录（文件名白名单校验，防路径穿越；无图返回 404 前端走首字母占位）。
-_IMG_DIR = Path(__file__).resolve().parent / "assets" / "market_imgs"
+# 配图解析：远程图库缓存 > 打包图（market_images），文件名/音色 ID 白名单防路径穿越。
 _IMG_MEDIA = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
 
 
 @router.get("/market/image/{name}")
 def market_image(name: str):
-    """精选条目配图：assets/market_imgs/<voice_id>.<ext>。"""
-    if not re.fullmatch(r"[a-z0-9_]+\.(png|jpe?g|webp)", name, re.IGNORECASE):
+    """精选条目配图：/market/image/<voice_id> 或 <voice_id>.<ext>（兼容旧格式）。"""
+    stem = re.sub(r"\.(png|jpe?g|webp)$", "", name, flags=re.IGNORECASE)
+    if not re.fullmatch(r"[a-z0-9_]{1,64}", stem, re.IGNORECASE):
         raise HTTPException(status_code=404, detail="image not found")
-    p = _IMG_DIR / name
-    if not p.is_file():
+    p = market_images.local_image_path(stem.lower())
+    if p is None:
         raise HTTPException(status_code=404, detail="image not found")
-    media = _IMG_MEDIA[name.rsplit(".", 1)[1].lower()]
+    media = _IMG_MEDIA.get(p.suffix.lower().lstrip("."), "application/octet-stream")
     return FileResponse(str(p), media_type=media, headers={"Cache-Control": "public, max-age=86400"})
 
 

@@ -503,21 +503,22 @@ def test_manifest_attaches_local_images():
     with_img = [i for i in items if i.get("image")]
     assert with_img, "精选清单应有配图条目"
     assert all(i["image"].startswith("/api/market/image/") for i in with_img)
-    # 懒羊羊双源条目各自命中同款角色图（文件按 voice_id 命名，HF 为副本）
+    # 懒羊羊双源条目各自命中（URL 按 voice_id，不带扩展名）
     by_vid = {i["voice_id"]: i for i in items}
-    assert by_vid["lanyangyang"]["image"].endswith("/lanyangyang.png")
-    assert by_vid["katoong_lanyangyang"]["image"].endswith("/katoong_lanyangyang.png")
+    assert by_vid["lanyangyang"]["image"].endswith("/lanyangyang")
+    assert by_vid["katoong_lanyangyang"]["image"].endswith("/katoong_lanyangyang")
 
 
 def test_api_market_image_serves_and_guards():
     """配图端点：存在的文件 200 + 正确 MIME；非法名 / 不存在 404；路径穿越绝不返回文件内容。"""
     client = _api_client()
-    resp = client.get("/api/market/image/lanyangyang.png")
+    resp = client.get("/api/market/image/lanyangyang")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("image/png")
     assert len(resp.content) > 1000
+    assert client.get("/api/market/image/lanyangyang.png").status_code == 200   # 兼容旧格式
+    assert client.get("/api/market/image/definitely_missing").status_code == 404
     assert client.get("/api/market/image/definitely_missing.png").status_code == 404
-    assert client.get("/api/market/image/evil.py").status_code == 404
     # %2F/%2e 穿越变体：不会命中图片路由（顶多落 SPA catch-all 返回 HTML），绝不回图片/源码
     for bad in ("..%2Fserver.py", "%2e%2e%2fserver.py", "..%5Cserver.py"):
         r = client.get(f"/api/market/image/{bad}")

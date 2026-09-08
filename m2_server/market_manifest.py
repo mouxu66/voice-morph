@@ -13,21 +13,20 @@ voice_id 用 ASCII（RVC logs/assets 目录名要求安全字符），display_na
 from pathlib import Path
 from urllib.parse import quote
 
-from runtime import API_PREFIX
+from market_images import image_url
 
-# 精选条目配图：assets/market_imgs/<voice_id>.<ext>，存在即自动挂 /api/market/image/ 直链。
-# 角色向音色用网络搜集的形象图（懒羊羊/曼波/孙悟空/派大星），人设向用 OpenMoji 主题图标
-# （CC BY-SA 4.0, © hfg-gmuend/openmoji）。无图条目前端按分类配色首字母占位。
-_IMG_DIR = Path(__file__).resolve().parent / "assets" / "market_imgs"
-_IMG_EXTS = ("png", "jpg", "jpeg", "webp")
+# 精选条目配图：优先远程图库缓存（VM_MARKET_IMG_REPO 自动同步），回退打包图
+# assets/market_imgs/<voice_id>.<ext>。角色向音色用网络搜集的形象图（懒羊羊/曼波/
+# 孙悟空/派大星），人设向用 OpenMoji 主题图标（CC BY-SA 4.0, © hfg-gmuend/openmoji）。
+# 无图条目前端按分类配色首字母占位。解析逻辑统一在 market_images 模块。
+ASSET_DIR = Path(__file__).resolve().parent / "assets" / "market_imgs"
 
 
 def _attach_image(item: dict) -> dict:
     """有本地配图则附加 image 字段（相对 /api 路径，前端过 mediaUrl 转绝对）。"""
-    for ext in _IMG_EXTS:
-        if (_IMG_DIR / f"{item['voice_id']}.{ext}").is_file():
-            item["image"] = f"{API_PREFIX}/market/image/{item['voice_id']}.{ext}"
-            break
+    url = image_url(item["voice_id"])
+    if url:
+        item["image"] = url
     return item
 
 

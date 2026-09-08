@@ -161,6 +161,13 @@ app.include_router(clips_router)
 app.include_router(tts_router)
 app.include_router(mine_router)
 app.include_router(market_router)
+
+# 音色市场远程图库：启动后台自动同步（VM_MARKET_IMG_REPO 未配置时为 no-op）
+try:
+    from market_images import start_background_sync
+    start_background_sync()
+except Exception:
+    pass
 app.include_router(capture_router)
 app.include_router(ab_router)
 app.include_router(ab_chain_router)
