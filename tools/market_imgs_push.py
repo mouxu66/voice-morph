@@ -1,15 +1,15 @@
 """把市场精选配图推送到 GitHub 图库仓库（远程图库同步的云端侧）。
 
-前置（一次性，本机终端）：
-  1. GitHub 网页上新建 **public** 空仓库（如 mouxu66/voice-market-assets）
-     —— 必须 public，jsdelivr CDN 才能加速。
+前置（一次性）：
+  1. GitHub 上有 **public** 图库仓库（如 mouxu66/voice-market-assets）——必须 public，
+     jsdelivr CDN 才能加速。本机已建好；换号时用 API 或网页重建即可。
   2. 本机 git 已能推 GitHub（credential manager 登录过，推过任意 repo 即可）。
 
 用法：
   python tools/market_imgs_push.py --repo mouxu66/voice-market-assets
 
-之后桌面端在 D:/变声/.env 加一行 VM_MARKET_IMG_REPO=mouxu66/voice-market-assets，
-重启桌面端即自动同步；以后换图 = 改 assets 里的图后重跑本脚本（revision 自动更新，
+图库地址已内置为产品默认值（market_images._REPO），.env 无需配置；
+以后换图 = 改 assets 里的图后重跑本脚本（revision 自动更新，
 客户端 6h 内拉新，jsdelivr 分支缓存最多延迟 ~12h）。
 """
 import argparse
@@ -69,7 +69,7 @@ def main() -> None:
              "commit", "-m", f"market imgs {revision}"], cwd=work)
         run(["git", "push", "origin", f"HEAD:{args.branch}"], cwd=work)
     print(f"OK: {len(files)} imgs pushed, revision={revision}")
-    print(f"下一步：在 D:/变声/.env 加  VM_MARKET_IMG_REPO={args.repo}  然后重启桌面端")
+    print("客户端刷新市场即自动拉新（TTL 6h；jsdelivr 分支缓存最多延迟 ~12h）")
 
 
 if __name__ == "__main__":
