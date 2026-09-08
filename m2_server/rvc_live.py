@@ -11,6 +11,7 @@
 实验名(exp)即音色 ID：训练接口可传任意 exp/dataset，不再锁定单一音色。
 """
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -29,6 +30,8 @@ except ImportError:  # 兜底：直接以模块方式运行时
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
     import config as cfg
 from rvc_common import ensure_infer_pth, exp_display_name, exp_snapshot, exp_source, find_pth
+
+logger = logging.getLogger(__name__)
 
 API_PREFIX = "/api"
 
@@ -125,7 +128,8 @@ def _find_asr_pids() -> list[int]:
             capture_output=True, text=True, timeout=20,
         ).stdout
         return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
-    except Exception:
+    except Exception as e:
+        logger.warning("[asr_pid] 枚举实时转写子进程失败: %s", e)
         return []
 
 
@@ -143,8 +147,8 @@ def _stop_asr_proc():
         try:
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
                            capture_output=True, timeout=30)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[asr] 停止转写子进程 %s 失败（可忽略）: %s", pid, e)
 
 
 def _asr_state() -> dict:
@@ -155,8 +159,8 @@ def _asr_state() -> dict:
         try:
             data = json.loads(ASR_STATE_FILE.read_text(encoding="utf-8"))
             res.update({k: data.get(k, res[k]) for k in res})
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[asr] 读取转写状态文件失败（用进程存活兜底）: %s", e)
     res["running"] = _asr_proc_alive()
     return res
 
@@ -214,8 +218,8 @@ def _find_realtime_pids() -> list[int]:
             capture_output=True, text=True, timeout=20,
         ).stdout
         pids = [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("[realtime] 枚举实时变声进程失败（状态可能失真）: %s", e)
     _pid_cache.update(ts=now, pids=pids)
     return pids
 
@@ -236,7 +240,8 @@ def _find_train_pids() -> list[int]:
             capture_output=True, text=True, timeout=20,
         ).stdout
         return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
-    except Exception:
+    except Exception as e:
+        logger.warning("[train] 枚举训练进程失败（状态可能失真）: %s", e)
         return []
 
 
@@ -249,6 +254,7 @@ def _reset_audio():
         data = _audio("reset")
         return True, data
     except Exception as e:
+        logger.warning("[audio] 重置音频设备失败: %s", e)
         return False, str(e)
 
 
@@ -262,18 +268,18 @@ def _auto_clean():
         try:
             _audio("restore")
         except Exception as e:
-            print(f"[auto_clean] restore 失败，尝试 reset 兜底: {e}", flush=True)
+            logger.warning("[auto_clean] restore 失败，尝试 reset 兜底: %s", e)
             ok, detail = _reset_audio()
             if not ok:
-                print(f"[auto_clean] reset 兜底也失败: {detail}", flush=True)
+                logger.error("[auto_clean] reset 兜底也失败: %s", detail)
             else:
-                print("[auto_clean] reset 兜底成功，声卡已还原", flush=True)
+                logger.info("[auto_clean] reset 兜底成功，声卡已还原")
         else:
             if backup.exists():
-                print("[auto_clean] restore 后备份残留，走 reset 兜底", flush=True)
+                logger.warning("[auto_clean] restore 后备份残留，走 reset 兜底")
                 _reset_audio()
             else:
-                print("[auto_clean] restore 成功，声卡已还原", flush=True)
+                logger.info("[auto_clean] restore 成功，声卡已还原")
         _state["live"].update(running=False, pid=None, audio_switched=False)
 
 
@@ -299,7 +305,8 @@ def _read_qc(exp: str):
         return None
     try:
         return json.loads(f.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.warning("[qc] 读取质检结果 %s 失败: %s", f, e)
         return None
 
 
@@ -337,14 +344,14 @@ def _maybe_run_qc(exp: str, log_dir: Path):
                 subprocess.run(
                     [sys.executable, str(QC_PY), "--voice", exp],
                     capture_output=True, timeout=1800)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[qc] 音色质检 %s 执行失败（已忽略）: %s", exp, e)
             finally:
                 _QC_INFLIGHT.discard(exp)
 
         threading.Thread(target=_job, daemon=True).start()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("[qc] 触发音色质检 %s 失败（已忽略）: %s", exp, e)
 
 
 # 各阶段在日志中的标记 → (阶段名, 权重%)。顺序即执行顺序，取"最后命中"的阶段。
@@ -455,7 +462,8 @@ def _system_default_input() -> str | None:
             capture_output=True, text=True, timeout=60, cwd=str(RVC_ROOT),
         ).stdout
         return json.loads(out.strip().splitlines()[-1])
-    except Exception:
+    except Exception as e:
+        logger.warning("[device] 读取系统默认录音设备失败: %s", e)
         return None
 
 
@@ -496,8 +504,8 @@ def _resolve_device_names() -> tuple[str, str] | None:
                 break
         if inp and outp:
             return inp, outp
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("[device] 枚举/匹配音频设备失败，沿用旧配置: %s", e)
     return None
 
 
@@ -508,7 +516,8 @@ def _apply_model_config() -> bool:
     if CONFIG_JSON.exists():
         try:
             cfg_json = json.loads(CONFIG_JSON.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.warning("[config] 读取 RVC config.json 失败，重置为空白配置: %s", e)
             cfg_json = {}
     idx = next(log_dir.glob("added_*.index"), None)
     if idx is None:
@@ -547,7 +556,8 @@ def _live_stream_ready() -> bool:
             f.seek(max(0, size - 8192))
             tail = f.read().decode("utf-8", "replace")
         return _STREAM_READY_MARK in tail
-    except Exception:
+    except Exception as e:
+        logger.debug("[stream] 读取实时日志判断流就绪失败: %s", e)
         return False
 
 
@@ -562,7 +572,8 @@ def _find_monitor_pids() -> list[int]:
             capture_output=True, text=True, timeout=20,
         ).stdout
         return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
-    except Exception:
+    except Exception as e:
+        logger.warning("[monitor] 枚举监听回环进程失败: %s", e)
         return []
 
 
@@ -572,8 +583,8 @@ def _kill_monitor():
         try:
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
                            capture_output=True, timeout=30)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[monitor] 停止监听进程 %s 失败（可忽略）: %s", pid, e)
 
 
 def _start_monitor(gain: float) -> bool:
@@ -593,7 +604,7 @@ def _start_monitor(gain: float) -> bool:
         log.close()
         return True
     except Exception as e:
-        print(f"[live] 自我监听拉起失败（不影响变声）: {e}", flush=True)
+        logger.warning("[live] 自我监听拉起失败（不影响变声）: %s", e)
         return False
 
 
@@ -602,7 +613,8 @@ def _live_input_device() -> str | None:
     try:
         data = json.loads(CONFIG_JSON.read_text(encoding="utf-8"))
         return data.get("sg_input_device")
-    except Exception:
+    except Exception as e:
+        logger.debug("[live] 读当前输入设备失败: %s", e)
         return None
 
 
@@ -621,11 +633,11 @@ def _live_waiter(proc: subprocess.Popen):
         _audio("restore")
     except Exception as e:
         error = f"自动还原声卡失败: {e}"
-        print(f"[live_waiter] {error}，尝试 reset 兜底", flush=True)
+        logger.warning("[live_waiter] %s，尝试 reset 兜底", error)
         ok, detail = _reset_audio()
         if not ok:
             error = f"自动还原声卡失败: {e}；reset 兜底也失败: {detail}"
-            print(f"[live_waiter] {error}", flush=True)
+            logger.error("[live_waiter] %s", error)
         else:
             error = ""
     _state["live"].update(running=False, pid=None, audio_switched=False, error=error)
@@ -710,8 +722,8 @@ def rvc_voices():
                 try:
                     display = str(json.loads(meta.read_text(encoding="utf-8")).get("display_name")
                                   or exp_display_name(d.name))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("[voices] 读取音色 %s 的 display_name 失败（回退目录名）: %s", d.name, e)
             items[d.name] = {"id": d.name, "display_name": display,
                              "has_reference": True, "qc": _read_qc(d.name),
                              "source": _read_source(d.name), **exp_snapshot(d.name)}
@@ -848,7 +860,7 @@ def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
             asr_log.close()
             asr_started = True
     except Exception as e:
-        print(f"[live] 实时转写子进程拉起失败（桌宠字幕不可用）: {e}", flush=True)
+        logger.warning("[live] 实时转写子进程拉起失败（桌宠字幕不可用）: %s", e)
 
     # 自我监听（独立进程）：把 CABLE Output 回环到耳机，让自己听得到变声
     monitor_started = False
@@ -879,8 +891,8 @@ def rvc_live_stop():
     for p in targets:
         try:
             subprocess.run(["taskkill", "/PID", str(p), "/T", "/F"], capture_output=True, timeout=30)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[stop] 停止实时变声进程 %s 失败（可忽略）: %s", p, e)
     _pid_cache["ts"] = None  # 清缓存，stop 后 status 立即反映真实状态
     _state["live"].update(running=False, pid=None, audio_switched=False,
                           monitor=False)
