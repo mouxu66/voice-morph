@@ -10,6 +10,7 @@ import type { HistoryItem, TagCount } from "@/api/client"
 import { StudioAudioPlayer } from "./StudioAudioPlayer"
 import { cn } from "@/lib/utils"
 import { ErrorPanel } from "@/components/ErrorPanel"
+import { voiceOptionLabel } from "@/lib/voiceLabel"
 
 const PAGE = 30
 
@@ -152,7 +153,7 @@ export function WorksLibrary({ voices }: { voices: { id: string; display_name?: 
         >
           <option value="">全部音色</option>
           {voices.map((v) => (
-            <option key={v.id} value={v.id}>{v.display_name ?? v.id}</option>
+            <option key={v.id} value={v.id}>{voiceOptionLabel(v)}</option>
           ))}
         </select>
         <button

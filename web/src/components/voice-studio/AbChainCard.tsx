@@ -6,6 +6,7 @@ import type { VoiceInfo } from "@/types"
 import { StudioAudioPlayer } from "./StudioAudioPlayer"
 import { cn } from "@/lib/utils"
 import { ErrorPanel } from "@/components/ErrorPanel"
+import { voiceOptionLabel } from "@/lib/voiceLabel"
 
 const LINKS = [
   { key: "rvc", name: "RVC", desc: "保音高、整段转换，需要已训练模型" },
@@ -170,7 +171,7 @@ export function AbChainCard({ voices, backendUp }: { voices: VoiceInfo[]; backen
             className="mt-1.5 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
             {voices.map((v) => (
-              <option key={v.id} value={v.id}>{v.display_name ?? v.id}</option>
+              <option key={v.id} value={v.id}>{voiceOptionLabel(v)}</option>
             ))}
           </select>
         </div>

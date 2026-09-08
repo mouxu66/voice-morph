@@ -6,6 +6,7 @@ import type { VoiceInfo } from "@/types"
 import { StudioAudioPlayer } from "./StudioAudioPlayer"
 import { cn } from "@/lib/utils"
 import { ErrorPanel } from "@/components/ErrorPanel"
+import { voiceOptionLabel } from "@/lib/voiceLabel"
 
 type Tag = "A" | "B"
 
@@ -83,7 +84,7 @@ export function AbCompareCard({ voices, backendUp }: { voices: VoiceInfo[]; back
             className="mt-1.5 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
             {voices.map((v) => (
-              <option key={v.id} value={v.id} disabled={v.id === bId}>{v.display_name ?? v.id}</option>
+              <option key={v.id} value={v.id} disabled={v.id === bId}>{voiceOptionLabel(v)}</option>
             ))}
           </select>
         </div>
@@ -96,7 +97,7 @@ export function AbCompareCard({ voices, backendUp }: { voices: VoiceInfo[]; back
             className="mt-1.5 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
             {voices.map((v) => (
-              <option key={v.id} value={v.id} disabled={v.id === aId}>{v.display_name ?? v.id}</option>
+              <option key={v.id} value={v.id} disabled={v.id === aId}>{voiceOptionLabel(v)}</option>
             ))}
           </select>
         </div>

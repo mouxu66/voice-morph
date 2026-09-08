@@ -11,6 +11,7 @@ import {
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import type { useSeedVc } from "@/pages/SeedVc/useSeedVc"
+import { voiceOptionLabel } from "@/lib/voiceLabel"
 
 export function SeedVcPage(p: ReturnType<typeof useSeedVc>) {
   const st = p.status
@@ -93,7 +94,7 @@ export function SeedVcPage(p: ReturnType<typeof useSeedVc>) {
                     <select value={p.voiceId} onChange={(e) => p.setVoiceId(e.target.value)}
                       className="w-full rounded-md border border-border bg-background px-3 py-2.5 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary">
                       {p.voices.map((v) => (
-                        <option key={v.id} value={v.id}>{v.display_name ?? v.id}</option>
+                        <option key={v.id} value={v.id}>{voiceOptionLabel(v)}</option>
                       ))}
                     </select>
                   ) : (

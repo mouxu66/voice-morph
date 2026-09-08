@@ -543,6 +543,8 @@ export type RvcVoice = {
   trained_at: string;
   /** 音色入库自动质检结果（outputs/qc/<id>.json；未质检时为 null） */
   qc?: VoiceQc | null;
+  /** 来源标记：market=市场安装；自训/本地导入无标记 */
+  source?: string;
 };
 
 export type RvcVoicesInfo = {

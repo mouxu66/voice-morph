@@ -3,6 +3,7 @@
 原先这些逻辑在 rvc_live.py / server.py / offline_vc.py 各写一份，
 抽到此处统一，避免「找权重的规则改了、有的模块还在用旧规则」。
 """
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +20,42 @@ def find_pth(exp: str, log_dir: Path) -> Path | None:
     if p.exists():
         return p
     return next(log_dir.glob("G_*.pth"), None)
+
+
+def source_meta(exp: str) -> dict:
+    """市场安装元数据：logs/<exp>/source.json（市场安装落盘；自训/导入无此文件）。
+
+    市场音色安装时写入 {"source": "market", "display_name": "卡通·懒羊羊", ...}，
+    自训实验没有该文件 → 返回空 dict，调用方据此区分「市场下载」与「自己训练」。
+    """
+    try:
+        log_dir, _ = cfg.rvc_exp_dirs(exp)
+        raw = json.loads((log_dir / "source.json").read_text("utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def exp_source(exp: str) -> str:
+    """来源标记：market（市场安装）/ ""（自训或本地导入）。"""
+    return str(source_meta(exp).get("source") or "")
+
+
+def exp_display_name(exp: str, fallback: str | None = None) -> str:
+    """音色中文显示名，优先级：市场 source.json > 实验目录 meta.json > 目录名。
+
+    市场音色安装时自带中文名；自训实验可在 logs/<exp>/meta.json 里写
+    {"display_name": "袋鼠骑士 v2"} 自定义，没有就退回英文目录名。
+    """
+    name = source_meta(exp).get("display_name")
+    if not name:
+        try:
+            log_dir, _ = cfg.rvc_exp_dirs(exp)
+            meta = json.loads((log_dir / "meta.json").read_text("utf-8"))
+            name = (meta or {}).get("display_name")
+        except Exception:  # noqa: BLE001
+            name = None
+    return str(name) if name else (fallback or exp)
 
 
 def exp_snapshot(exp: str) -> dict:

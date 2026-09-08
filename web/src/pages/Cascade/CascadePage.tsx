@@ -17,6 +17,7 @@ import type { ReactNode } from "react"
 import type { useCascade } from "@/pages/Cascade/useCascade"
 import { cn } from "@/lib/utils"
 import { ErrorPanel } from "@/components/ErrorPanel"
+import { VoiceSourceBadge } from "@/components/voice-studio/VoiceSourceBadge"
 
 const STAGE_LABEL: Record<string, string> = {
   idle: "未启动",
@@ -201,9 +202,12 @@ export function CascadePage(p: ReturnType<typeof useCascade>) {
                       </span>
                       {active && <CheckCircle2 className="h-4 w-4 text-primary" />}
                     </div>
-                    <p className="w-full truncate text-sm font-semibold text-card-foreground" title={v.display_name ?? v.id}>
-                      {v.display_name ?? v.id}
-                    </p>
+                    <div className="flex w-full items-center gap-1.5">
+                      <p className="min-w-0 flex-1 truncate text-sm font-semibold text-card-foreground" title={v.display_name ?? v.id}>
+                        {v.display_name ?? v.id}
+                      </p>
+                      <VoiceSourceBadge voice={v} />
+                    </div>
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
                         {v.kind === "finetuned" ? "微调音色" : "克隆音色"}

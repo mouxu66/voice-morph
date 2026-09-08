@@ -1,6 +1,7 @@
 import { AudioWaveform, CheckCircle2, Database, Radio, Sparkles } from "lucide-react"
 import type { RvcVoice } from "@/api/client"
 import { cn } from "@/lib/utils"
+import { VoiceSourceBadge } from "@/components/voice-studio/VoiceSourceBadge"
 
 /**
  * 实时变声的音色选择器。
@@ -67,9 +68,12 @@ export function RvcVoicePicker({ voices, selectedId, onSelect, liveExp, classNam
               {active && <CheckCircle2 className="h-4 w-4 text-primary" />}
             </div>
 
-            <p className="w-full truncate text-sm font-semibold text-card-foreground" title={v.display_name}>
-              {v.display_name}
-            </p>
+            <div className="flex w-full items-center gap-1.5">
+              <p className="min-w-0 flex-1 truncate text-sm font-semibold text-card-foreground" title={v.display_name}>
+                {v.display_name}
+              </p>
+              <VoiceSourceBadge voice={v} />
+            </div>
             <p className="w-full truncate font-mono text-[10px] text-muted-foreground" title={v.id}>
               {v.id}
             </p>

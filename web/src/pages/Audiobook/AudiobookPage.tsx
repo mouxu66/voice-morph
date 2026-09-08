@@ -13,6 +13,7 @@ import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { mediaUrl } from "@/api/client"
 import type { useAudiobook } from "@/pages/Audiobook/useAudiobook"
+import { voiceOptionLabel } from "@/lib/voiceLabel"
 
 export function AudiobookPage(p: ReturnType<typeof useAudiobook>) {
   const st = p.status
@@ -59,7 +60,7 @@ export function AudiobookPage(p: ReturnType<typeof useAudiobook>) {
                   className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2.5 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
                   {p.voices.map((v) => (
-                    <option key={v.id} value={v.id}>{v.display_name ?? v.id}</option>
+                    <option key={v.id} value={v.id}>{voiceOptionLabel(v)}</option>
                   ))}
                 </select>
               ) : (

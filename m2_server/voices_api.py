@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 import config as cfg
 from common import MAX_UPLOAD_BYTES, is_valid_voice_id, selected_voice
-from rvc_common import exp_snapshot
+from rvc_common import exp_display_name, exp_snapshot, exp_source
 from runtime import API_PREFIX, CLIPS_DIR, RAW_DIR, VIDEO_SUFFIXES, VOICEBANK, clip_prefix
 
 router = APIRouter(prefix=API_PREFIX)
@@ -26,18 +26,6 @@ def _read_meta(meta_path: Path) -> dict:
         return json.loads(meta_path.read_text("utf-8"))
     except Exception:
         return {}
-
-
-def _rvc_source(exp: str) -> str:
-    """RVC 实验音色的来源标记（logs/<exp>/source.json → "market"/""）。
-
-    市场安装的模型由 market_install 落 source.json；自训/导入无标记。
-    """
-    src = cfg.RVC_ROOT / "logs" / exp / "source.json"
-    try:
-        return str(json.loads(src.read_text(encoding="utf-8")).get("source") or "")
-    except Exception:
-        return ""
 
 
 def _market_preview_url(exp: str) -> str:
@@ -67,10 +55,9 @@ def list_voices():
         ref = d / "reference.wav"
         if not d.is_dir() or not ref.exists():
             continue
-        display = d.name
+        # 中文名优先级：音色库 meta.json > 市场 source.json > 实验 meta.json > 目录名
         meta = _read_meta(meta_path) if (meta_path := d / "meta.json").exists() else {}
-        if meta.get("display_name"):
-            display = str(meta["display_name"])
+        display = str(meta.get("display_name") or "") or exp_display_name(d.name)
         items[d.name] = {
             "id": d.name,
             "display_name": display,
@@ -78,7 +65,7 @@ def list_voices():
             "duration_s": round(len(AudioSegment.from_wav(str(ref))) / 1000, 1),
             "kind": meta.get("kind") or "clone",
             "has_reference": True,
-            "source": _rvc_source(d.name),
+            "source": exp_source(d.name),
             **exp_snapshot(d.name),
         }
 
@@ -94,12 +81,12 @@ def list_voices():
                 continue
             items[d.name] = {
                 "id": d.name,
-                "display_name": d.name,
+                "display_name": exp_display_name(d.name),
                 "reference": "",
                 "duration_s": 0,
                 "kind": "rvc_model",
                 "has_reference": False,
-                "source": _rvc_source(d.name),
+                "source": exp_source(d.name),
                 "preview_url": _market_preview_url(d.name),
                 **snap,
             }

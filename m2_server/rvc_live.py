@@ -28,7 +28,7 @@ except ImportError:  # 兜底：直接以模块方式运行时
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
     import config as cfg
-from rvc_common import ensure_infer_pth, exp_snapshot, find_pth
+from rvc_common import ensure_infer_pth, exp_display_name, exp_snapshot, exp_source, find_pth
 
 API_PREFIX = "/api"
 
@@ -307,12 +307,9 @@ def _read_source(exp: str) -> str:
     """读取该音色的来源标记（logs/<exp>/source.json → "market"/""）。
 
     市场安装的 RVC 模型由 market_install 落 source.json；自训/本地导入无标记。
+    实现统一走 rvc_common.exp_source，避免两处规则漂移。
     """
-    src = cfg.RVC_ROOT / "logs" / exp / "source.json"
-    try:
-        return str(json.loads(src.read_text(encoding="utf-8")).get("source") or "")
-    except Exception:
-        return ""
+    return exp_source(exp)
 
 
 def _maybe_run_qc(exp: str, log_dir: Path):
@@ -711,12 +708,13 @@ def rvc_voices():
             meta = d / "meta.json"
             if meta.exists():
                 try:
-                    display = str(json.loads(meta.read_text(encoding="utf-8")).get("display_name") or d.name)
+                    display = str(json.loads(meta.read_text(encoding="utf-8")).get("display_name")
+                                  or exp_display_name(d.name))
                 except Exception:
                     pass
             items[d.name] = {"id": d.name, "display_name": display,
                              "has_reference": True, "qc": _read_qc(d.name),
-                             **exp_snapshot(d.name)}
+                             "source": _read_source(d.name), **exp_snapshot(d.name)}
 
     logs = cfg.RVC_ROOT / "logs"
     if logs.exists():
@@ -727,7 +725,7 @@ def rvc_voices():
             # 音色库里没有、又没训练产物也没语料的目录属于噪音，不展示
             if not (snap["pth_exists"] or snap["index_exists"] or snap["dataset_count"]):
                 continue
-            items[d.name] = {"id": d.name, "display_name": d.name,
+            items[d.name] = {"id": d.name, "display_name": exp_display_name(d.name),
                              "has_reference": False, "qc": _read_qc(d.name),
                              "source": _read_source(d.name), **snap}
 

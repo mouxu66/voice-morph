@@ -18,6 +18,7 @@ import { downloadUrl } from "@/lib/download"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import type { useOfflineVc } from "@/pages/OfflineVc/useOfflineVc"
+import { voiceOptionLabel } from "@/lib/voiceLabel"
 
 const PITCH_PRESETS: [string, number][] = [
   ["原调", 0], ["男→女 +12", 12], ["女→男 -12", -12], ["+5 清亮", 5], ["-5 低沉", -5],
@@ -155,7 +156,7 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
                   <select id="ovc-voice" value={p.voiceId} onChange={(e) => p.setVoiceId(e.target.value)}
                     className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2.5 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary">
                     {p.rvcVoices.map((v) => (
-                      <option key={v.id} value={v.id}>{v.display_name ?? v.id}</option>
+                      <option key={v.id} value={v.id}>{voiceOptionLabel(v)}</option>
                     ))}
                   </select>
                 ) : (
