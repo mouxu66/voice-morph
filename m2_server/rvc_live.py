@@ -29,7 +29,7 @@ except ImportError:  # 兜底：直接以模块方式运行时
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
     import config as cfg
-from rvc_common import ensure_infer_pth, exp_display_name, exp_snapshot, exp_source, find_pth
+from rvc_common import (ensure_infer_pth, exp_display_name, exp_snapshot, exp_source, find_pth, _find_pids_by_cmdline, _kill_pids)
 
 logger = logging.getLogger(__name__)
 
@@ -118,19 +118,7 @@ _asr_pid_cache: dict = {"ts": None, "alive": False}
 
 
 def _find_asr_pids() -> list[int]:
-    """按命令行找出 asr-only 转写子进程（cascade_stream.py --asr-only）。"""
-    try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-             "Where-Object { $_.CommandLine -match 'cascade_stream.+asr-only' } | "
-             "Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, timeout=20,
-        ).stdout
-        return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
-    except Exception as e:
-        logger.warning("[asr_pid] 枚举实时转写子进程失败: %s", e)
-        return []
+    return _find_pids_by_cmdline("cascade_stream.+asr-only")
 
 
 def _asr_proc_alive() -> bool:
@@ -143,12 +131,7 @@ def _asr_proc_alive() -> bool:
 def _stop_asr_proc():
     """查杀实时转写子进程（按命令行匹配，覆盖 pid 丢失场景）。"""
     _asr_pid_cache["ts"] = None
-    for pid in _find_asr_pids():
-        try:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, timeout=30)
-        except Exception as e:
-            logger.debug("[asr] 停止转写子进程 %s 失败（可忽略）: %s", pid, e)
+    _kill_pids(_find_asr_pids(), "asr")
 
 
 def _asr_state() -> dict:
@@ -231,18 +214,7 @@ def _realtime_alive() -> bool:
 
 def _find_train_pids() -> list[int]:
     """按命令行找出所有训练驱动进程（覆盖服务重启后内存态丢失的场景）。"""
-    try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-             "Where-Object { $_.CommandLine -match 'train_rvc_voice|train_meituan_rat' } | "
-             "Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, timeout=20,
-        ).stdout
-        return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
-    except Exception as e:
-        logger.warning("[train] 枚举训练进程失败（状态可能失真）: %s", e)
-        return []
+    return _find_pids_by_cmdline("train_rvc_voice|train_meituan_rat")
 
 
 def _reset_audio():
@@ -888,11 +860,7 @@ def rvc_live_stop():
     targets = set(_find_realtime_pids())
     if not targets and _state["live"]["pid"]:
         targets.add(_state["live"]["pid"])
-    for p in targets:
-        try:
-            subprocess.run(["taskkill", "/PID", str(p), "/T", "/F"], capture_output=True, timeout=30)
-        except Exception as e:
-            logger.debug("[stop] 停止实时变声进程 %s 失败（可忽略）: %s", p, e)
+    _kill_pids(list(targets), "stop")
     _pid_cache["ts"] = None  # 清缓存，stop 后 status 立即反映真实状态
     _state["live"].update(running=False, pid=None, audio_switched=False,
                           monitor=False)

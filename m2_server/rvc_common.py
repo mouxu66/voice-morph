@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 
 import config as cfg
+import logging
+import subprocess
 
 
 def find_pth(exp: str, log_dir: Path) -> Path | None:
@@ -120,3 +122,33 @@ def ensure_infer_pth(voice_id: str) -> Path | None:
         return infer_pth
     except Exception:
         return None
+
+
+def _find_pids_by_cmdline(pattern: str) -> list[int]:
+    """按命令行正则匹配枚举 python.exe 进程 PID；失败返回 [] 并记日志。
+
+    统一封装 PowerShell 进程枚举，rvc_live / cascade 共用，消除重复实现。
+    """
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+             "Where-Object { $_.CommandLine -match '%s' } | "
+             "Select-Object -ExpandProperty ProcessId" % pattern],
+            capture_output=True, text=True, timeout=20,
+        ).stdout
+        return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
+    except Exception as e:
+        logger.warning("枚举进程失败(pattern=%r): %s", pattern, e)
+        return []
+
+
+def _kill_pids(pids: list[int], label: str = "") -> None:
+    """强杀进程列表（/T 连带子进程，/F 强制）；单个失败只记日志不中断。"""
+    tag = f"[{label}] " if label else ""
+    for pid in pids:
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=30)
+        except Exception as e:
+            logger.debug("%s停止进程 %s 失败（可忽略）: %s", tag, pid, e)

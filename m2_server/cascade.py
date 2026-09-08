@@ -33,7 +33,7 @@ from pydantic import BaseModel
 
 import config as cfg
 import prosody_relay
-from rvc_common import ensure_infer_pth, find_index
+from rvc_common import (ensure_infer_pth, find_index, _find_pids_by_cmdline, _kill_pids)
 from rvc_live import _audio, _reset_audio
 
 ROOT = cfg.ROOT
@@ -56,22 +56,14 @@ _pid_cache: dict = {"ts": None, "pids": []}
 
 
 def _find_cascade_pids() -> list[int]:
-    """按命令行找 cascade_stream.py 进程（覆盖服务重启后内存 pid 丢失）。"""
+    """按命令行找 cascade_stream.py 进程（覆盖服务重启后内存 pid 丢失）。
+
+    带 1s 缓存：status 每 3s 被前端轮询，每次都起 PowerShell 进程太重。
+    """
     now = time.time()
     if _pid_cache["ts"] is not None and now - _pid_cache["ts"] < 1.0:
         return _pid_cache["pids"]
-    pids: list[int] = []
-    try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-             "Where-Object { $_.CommandLine -match 'cascade_stream' } | "
-             "Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, timeout=20,
-        ).stdout
-        pids = [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
-    except Exception:
-        pass
+    pids = _find_pids_by_cmdline("cascade_stream")
     _pid_cache.update(ts=now, pids=pids)
     return pids
 
@@ -276,12 +268,7 @@ def cascade_stop():
     targets = set(_find_cascade_pids())
     if not targets and _STATE["pid"]:
         targets.add(_STATE["pid"])
-    for p in targets:
-        try:
-            subprocess.run(["taskkill", "/PID", str(p), "/T", "/F"],
-                           capture_output=True, timeout=30)
-        except Exception:
-            pass
+    _kill_pids(list(targets), "stop")
     _pid_cache["ts"] = None
     _STATE.update(running=False, pid=None, audio_switched=False)
     try:
