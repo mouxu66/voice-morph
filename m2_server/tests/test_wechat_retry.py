@@ -71,7 +71,7 @@ def test_do_send_success_outcome_ok(tmp_path, monkeypatch):
     monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
     monkeypatch.setattr(wv, "_foreground_wechat", lambda: None)
     monkeypatch.setattr(wv, "_trigger_record", lambda: None)
-    monkeypatch.setattr(wv, "_finish_record", lambda: None)
+    monkeypatch.setattr(wv, "_finish_record", lambda: True)   # 点击发送成功
     monkeypatch.setattr(wv, "_play_to_cable", lambda w, d: None)
     monkeypatch.setattr(wv, "_wav_duration", lambda p: 1.0)
     monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))

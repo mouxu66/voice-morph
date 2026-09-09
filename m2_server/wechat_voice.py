@@ -54,9 +54,9 @@ OUTPUT_DEVICE_KEYWORD = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "CABLE Input")
 RECORD_METHOD = os.environ.get("VM_WECHAT_RECORD_METHOD", "mic").strip().lower()
 if RECORD_METHOD not in ("mic", "alt"):
     raise RuntimeError(f"VM_WECHAT_RECORD_METHOD 只支持 mic/alt，当前: {RECORD_METHOD}")
-# 话筒图标相对微信聊天窗口右下角的偏移（物理像素；不同窗口尺寸/主题可微调）
-MIC_OFFSET_X = int(os.environ.get("VM_WECHAT_MIC_OFFSET_X", "-58"))
-MIC_OFFSET_Y = int(os.environ.get("VM_WECHAT_MIC_OFFSET_Y", "-30"))
+# 话筒图标相对微信聊天窗口右下角的偏移（物理像素；2026-09-09 本机 1299x1609 窗口实测校准）
+MIC_OFFSET_X = int(os.environ.get("VM_WECHAT_MIC_OFFSET_X", "-157"))
+MIC_OFFSET_Y = int(os.environ.get("VM_WECHAT_MIC_OFFSET_Y", "-63"))
 # 发语音按键：RECORD_METHOD=alt 时生效。默认 alt；微信里改过快捷键就用 VM_WECHAT_RECORD_KEY 指定。
 RECORD_KEY = os.environ.get("VM_WECHAT_RECORD_KEY", "alt")
 LEAD_S = float(os.environ.get("VM_WECHAT_LEAD_S", "0.35"))   # 按住后等待录音开始
@@ -246,11 +246,172 @@ def _mouse_left(down: bool) -> None:
     _send_input_mouse(MOUSEEVENTF_LEFTDOWN if down else MOUSEEVENTF_LEFTUP)
 
 
+# PostMessage 状态：按住期间的 (目标窗口, lparam)，松开时用同一窗口/坐标
+_postmsg_ctx: tuple[int, int] | None = None
+_rect_ctx: tuple[int, int, int, int] | None = None   # 录音中的窗口 rect（finish 找绿钮用）
+_record_via: str | None = None    # 本次录音启动方式：postmsg / realclick / None
+_exstyle_restore: tuple[int, int] | None = None  # (渲染子窗口 hwnd, 原扩展样式) 实时点击路径用
+WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP = 0x200, 0x201, 0x202
+MK_LBUTTON = 0x0001
+
+
+# ---------------- 渲染子窗口与 WS_EX_TRANSPARENT（借鉴 wechatauto-replica guia.py） ----------------
+
+def _find_render_hwnd(main_hwnd: int) -> int:
+    """枚举微信主窗口子窗口，找 Qt 自绘渲染层（类名前缀 MMUIRenderSubWindow*，取最大面积）。
+
+    微信 4.x 聊天区是独立渲染子窗口（MMUIRenderSubWindow / MMUIRenderSubWindowHW 等
+    变体），鼠标事件要落到它上面才算数。找不到时返回主窗口句柄（回退）。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    u = _user32()
+    hits: list[tuple[int, int]] = []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def cb(h, _lp):
+        buf = ctypes.create_unicode_buffer(256)
+        u.GetClassNameW(h, buf, 256)
+        if buf.value.startswith("MMUIRenderSubWindow"):
+            r = wintypes.RECT()
+            if u.GetWindowRect(h, ctypes.byref(r)):
+                area = max(0, r.right - r.left) * max(0, r.bottom - r.top)
+                if area > 0:
+                    hits.append((area, h))
+        return True
+
+    u.EnumChildWindows(main_hwnd, WNDENUMPROC(cb), 0)
+    if not hits:
+        return main_hwnd
+    hits.sort(key=lambda t2: t2[0], reverse=True)
+    return hits[0][1]
+
+
+def _exstyle_clear_transparent(hwnd: int) -> int | None:
+    """临时去掉窗口的 WS_EX_TRANSPARENT 样式位，返回原扩展样式（本就没有则返回 None）。
+
+    根因（wechatauto-replica 同款发现）：微信渲染子窗口设置
+    WS_EX_LAYERED | WS_EX_TRANSPARENT，真实/SendInput 注入的鼠标点击会
+    **穿透**到主窗口而到不了渲染层——这就是"模拟点击话筒没反应"的机理。
+    摘掉该位后点击能被渲染窗口接收，用完必须恢复（保证画面正常合成）。
+    """
+    import ctypes
+    u = _user32()
+    GWL_EXSTYLE, WS_EX_TRANSPARENT = -20, 0x20
+    old = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    if old & WS_EX_TRANSPARENT:
+        u.SetWindowLongW(hwnd, GWL_EXSTYLE, old & ~WS_EX_TRANSPARENT)
+        time.sleep(0.05)
+        return old
+    return None
+
+
+def _exstyle_restore_if_needed() -> None:
+    """恢复渲染子窗口的扩展样式（realclick 路径结束时调用）。"""
+    global _exstyle_restore
+    if _exstyle_restore:
+        hwnd, old = _exstyle_restore
+        try:
+            _user32().SetWindowLongW(hwnd, -20, old)
+        except Exception:
+            pass
+        _exstyle_restore = None
+        time.sleep(0.05)
+
+
+def _postmsg_mouse(screen_point: tuple[int, int] | None, down: bool = False,
+                   up: bool = False, target: int | None = None,
+                   lparam: int | None = None) -> tuple[int, int] | None:
+    """把鼠标按下/抬起直投微信窗口过程（绕过被过滤的注入输入队列）。
+
+    down=True：定位光标下实际子窗口 → 客户区坐标 → MOUSEMOVE+LBUTTONDOWN，
+    返回 (target, lparam) 供配对 UP 使用；up=True：向指定 target 发 LBUTTONUP。
+    失败返回 None（调用方回退 SendInput）。
+    """
+    import ctypes
+    from ctypes import wintypes
+    u = _user32()
+    try:
+        if down and screen_point:
+            pt = wintypes.POINT(*screen_point)
+            win = u.WindowFromPoint(pt)
+            if not win:
+                return None
+            cp = wintypes.POINT(*screen_point)
+            u.ScreenToClient(win, ctypes.byref(cp))
+            lp = (cp.y & 0xFFFF) << 16 | (cp.x & 0xFFFF)
+            u.PostMessageW(win, WM_MOUSEMOVE, 0, lp)
+            time.sleep(0.04)
+            u.PostMessageW(win, WM_LBUTTONDOWN, MK_LBUTTON, lp)
+            return win, lp
+        if up and target is not None and lparam is not None:
+            u.PostMessageW(target, WM_LBUTTONUP, 0, lparam)
+            return target, lparam
+    except Exception:
+        return None
+    return None
+
+
 def _mic_point(rect: tuple[int, int, int, int],
                offset_x: int = MIC_OFFSET_X, offset_y: int = MIC_OFFSET_Y) -> tuple[int, int]:
     """由窗口 rect 计算话筒图标坐标（输入框右下角、发送按钮左侧，可配置偏移）。"""
     left, top, right, bottom = rect
     return (right + offset_x, bottom + offset_y)
+
+
+def _ncc_match(img: np.ndarray, tpl: np.ndarray) -> tuple[tuple[int, int] | None, float]:
+    """灰度归一化互相关模板匹配（numpy 纯实现，零 cv2 依赖）。
+
+    实测坑：下采样会毁掉细线条图标（话筒线条仅 1-2px，隔行抽点匹配分数从 1.0 掉到 0.62），
+    必须 ds=1 全精度。搜索区控制在右下 340x150 内，全精度匹配 <1s。
+    返回 (窗口内模板左上角坐标, 分数)。
+    """
+    ih, iw = img.shape
+    th, tw = tpl.shape
+    if ih < th or iw < tw:
+        return None, -1.0
+    t = tpl.astype(np.float64)
+    t0 = t - t.mean()
+    t_norm = np.sqrt((t0 ** 2).sum())
+    if t_norm == 0:
+        return None, -1.0
+    best_score, best_pos = -2.0, None
+    for y in range(ih - th + 1):
+        for x in range(iw - tw + 1):
+            win = img[y:y + th, x:x + tw].astype(np.float64)
+            w0 = win - win.mean()
+            denom = np.sqrt((w0 ** 2).sum()) * t_norm
+            if denom < 1e-6:
+                continue
+            score = float((w0 * t0).sum() / denom)
+            if score > best_score:
+                best_score, best_pos = score, (x, y)
+    return best_pos, best_score
+
+
+# 话筒图标模板（从真实微信窗口截图裁剪；缺失/不匹配时回退固定偏移）
+MIC_TEMPLATE = cfg.ROOT / "m2_server" / "assets" / "wechat_mic_template.png"
+
+
+def _find_mic_icon(rect: tuple[int, int, int, int], thresh: float = 0.75) -> tuple[int, int] | None:
+    """截图微信窗口右下角，模板匹配定位话筒图标。返回屏幕坐标；失败返回 None。"""
+    try:
+        from PIL import Image as PILImage
+        from PIL import ImageGrab
+        tpl_img = PILImage.open(MIC_TEMPLATE).convert("L")
+        l, t, r, b = rect
+        box = (max(0, r - 340), max(0, b - 150), r, b)   # 搜索区：右下 340x150
+        shot = ImageGrab.grab(bbox=box).convert("L")
+        pos, score = _ncc_match(np.asarray(shot), np.asarray(tpl_img))
+        if pos is None or score < thresh:
+            return None
+        tw, thh = tpl_img.size
+        cx = box[0] + pos[0] + tw // 2    # 匹配位置 + 模板中心
+        cy = box[1] + pos[1] + thh // 2
+        return cx, cy
+    except Exception:
+        return None
 
 
 def _window_rect(hwnd: int) -> tuple[int, int, int, int]:
@@ -260,6 +421,42 @@ def _window_rect(hwnd: int) -> tuple[int, int, int, int]:
     if not _user32().GetWindowRect(hwnd, ctypes.byref(rect)):
         raise RuntimeError("GetWindowRect 失败")
     return rect.left, rect.top, rect.right, rect.bottom
+
+
+def _ensure_onscreen(hwnd: int) -> None:
+    """把微信窗口挪回所在显示器的工作区（防止底边超出屏幕/被任务栏遮挡话筒）。
+
+    实测坑：窗口底边超出屏幕时，自动隐藏的任务栏弹出会正好盖住输入框右下角，
+    鼠标点击会点到任务栏上。挪窗用 SetWindowPos，保持窗口尺寸不变。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+    u = _user32()
+    mi = MONITORINFO()
+    mi.cbSize = ctypes.sizeof(MONITORINFO)
+    hmon = u.MonitorFromWindow(hwnd, 2)   # MONITOR_DEFAULTTONEAREST
+    if not hmon or not u.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+        return
+    l, t, r, b = _window_rect(hwnd)
+    wa = mi.rcWork
+    dx = dy = 0
+    if b > wa.bottom:
+        dy = wa.bottom - b
+    if r > wa.right:
+        dx = wa.right - r
+    if l + dx < wa.left:
+        dx = wa.left - l
+    if t + dy < wa.top:
+        dy = wa.top - t
+    if dx or dy:
+        # SWP_NOSIZE(0x1) | SWP_NOZORDER(0x4) | SWP_NOACTIVATE(0x10)
+        u.SetWindowPos(hwnd, 0, l + dx, t + dy, 0, 0, 0x1 | 0x4 | 0x10)
+        time.sleep(0.15)
 
 
 def _find_wechat_hwnd() -> int:
@@ -323,28 +520,141 @@ def _foreground_wechat() -> int:
     return hwnd
 
 
+def _wait_record_overlay(rect: tuple[int, int, int, int], timeout: float = 6.0) -> bool:
+    """轮询等待录音浮层出现（以浮层上的绿色发送钮为标志）。
+
+    实测：PostMessage DOWN 触发录音有随机延迟（0~几十秒，微信 UI 忙闲而定），
+    必须确认浮层出现后才能开始播放音频，否则录到的是静音。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _find_green_send(rect, retries=1):
+            return True
+        time.sleep(0.3)
+    return False
+
+
 def _trigger_record() -> None:
-    """开始录制语音消息：mic=鼠标按住话筒；alt=按住快捷键。"""
+    """开始录制语音消息。
+
+    mic 路径（默认）优先 PostMessage 直投窗口消息（2026-09-09 实测唯一有效：
+    微信 4.x 过滤 SendInput 注入的鼠标按下，hover 有效但 click 无效；
+    PostMessage 绕过输入队列直达 Qt 窗口过程）。按下后轮询等浮层出现，
+    超时补发一次 DOWN；录音真正启动不了则抛错（走引导式手动发送降级）。
+    """
+    global _postmsg_ctx, _rect_ctx, _record_via, _exstyle_restore
+    _postmsg_ctx = None
+    _rect_ctx = None
+    _record_via = None
     if RECORD_METHOD == "mic":
         hwnd = _foreground_wechat()
+        _ensure_onscreen(hwnd)                 # 防止窗口底边超屏被任务栏遮挡
         rect = _window_rect(hwnd)
-        x, y = _mic_point(rect)
-        _mouse_move_abs(x, y)
-        time.sleep(0.12)          # 微信对 hover 有响应延迟
+        _rect_ctx = rect
+        point = _find_mic_icon(rect)           # 模板匹配优先（适应窗口尺寸/位置变化）
+        if point is None:
+            point = _mic_point(rect)           # 回退：相对右下角固定偏移
+        # 主路：PostMessage 直投窗口过程（不动用户光标）
+        res = _postmsg_mouse(point, down=True)
+        if res:
+            _postmsg_ctx = res
+            if _wait_record_overlay(rect):
+                _record_via = "postmsg"
+                return
+            # 浮层未出现：DOWN 可能被吞，补发一次
+            res = _postmsg_mouse(point, down=True)
+            if res:
+                _postmsg_ctx = res
+                if _wait_record_overlay(rect, timeout=8.0):
+                    _record_via = "postmsg"
+                    return
+        # 兜底（借鉴 wechatauto-replica）：渲染子窗口带 WS_EX_TRANSPARENT，
+        # 真实/SendInput 点击会穿透到主窗口——临时摘掉该样式位再真实按下，
+        # 松开即官方"松开自动发送"，无需找浮层按钮。摘掉的样式在 finish 恢复。
+        render = _find_render_hwnd(hwnd)
+        old_ex = _exstyle_clear_transparent(render)
+        if old_ex is not None:
+            _exstyle_restore = (render, old_ex)
+        _mouse_move_abs(*point)
+        time.sleep(0.12)
         _mouse_left(True)
-    else:
-        _foreground_wechat()
-        vk, scan = _record_key_code()
-        _send_input_kb(vk, scan, False)
+        if _wait_record_overlay(rect, timeout=8.0):
+            _record_via = "realclick"
+            return
+        _exstyle_restore_if_needed()
+        raise RuntimeError("微信录音未能启动（浮层未出现），请稍后重试")
+    _foreground_wechat()
+    vk, scan = _record_key_code()
+    _send_input_kb(vk, scan, False)
 
 
-def _finish_record() -> None:
-    """结束录制并发送语音消息：mic=松开左键（官方交互：松开自动发送）；alt=松开快捷键。"""
-    if RECORD_METHOD == "mic":
-        _mouse_left(False)
-    else:
+def _find_green_send(rect: tuple[int, int, int, int], retries: int = 4) -> tuple[int, int] | None:
+    """录音浮层上的绿色 ↑ 发送按钮：按微信绿 (18,199,125) 色域找质心。
+
+    浮层渲染有延迟，重试几次；找不到返回 None（调用方点 × 取消兜底）。
+    """
+    from PIL import ImageGrab
+    l, t, r, b = rect
+    for _ in range(retries):
+        img = np.asarray(ImageGrab.grab(bbox=(max(0, r - 560), max(0, b - 140), r, b))
+                         .convert("RGB")).astype(int)
+        green = (img[:, :, 1] > 150) & (img[:, :, 0] < 120) & \
+                (img[:, :, 2] > 80) & (img[:, :, 2] < 180)
+        ys, xs = np.nonzero(green)
+        if len(xs) > 50:
+            return int(xs.mean()) + (r - 560), int(ys.mean()) + (b - 140)
+        time.sleep(0.4)
+    return None
+
+
+def _finish_record() -> bool:
+    """结束录音并让微信发送/丢弃。
+
+    按启动路径分流（2026-09-09 实测机制）：
+    - realclick（摘 WS_EX_TRANSPARENT 后真实按下）：SendInput 抬起即可——
+      官方交互"松开自动发送"，注入的 UP 经真实输入队列送达（样式位已摘除，
+      点击不会穿透）。
+    - postmsg（PostMessage 直投按下）：PostMessage 的 WM_LBUTTONUP 会被微信
+      忽略（录到 60s 自动截断），所以结束必须点浮层上的绿色 ↑ 发送按钮；
+      找不到按钮时点 × 取消（宁可不发，不留挂起录音）。
+    返回 True=已发送，False=已取消。
+    """
+    global _postmsg_ctx, _rect_ctx, _record_via
+    try:
+        if RECORD_METHOD == "mic":
+            if _record_via == "postmsg" and _postmsg_ctx:
+                target, lparam = _postmsg_ctx
+                rect = _rect_ctx or _window_rect(_find_wechat_hwnd())
+                send_pt = _find_green_send(rect)
+                time.sleep(0.25)   # 尾音缓冲
+                if send_pt:
+                    _postmsg_mouse(send_pt, down=True)
+                    _postmsg_mouse(None, up=True, target=target, lparam=lparam)
+                    return True
+                # 兜底：点 × 取消（× 在话筒原位置左侧约 218px）
+                cancel_pt = _cancel_point(rect)
+                if cancel_pt:
+                    _postmsg_mouse(cancel_pt, down=True)
+                    _postmsg_mouse(None, up=True, target=target, lparam=lparam)
+                return False
+            # realclick / SendInput 直按路径：松开即发送
+            _mouse_left(False)
+            return True
         vk, scan = _record_key_code()
         _send_input_kb(vk, scan, True)
+        return True
+    finally:
+        _postmsg_ctx = None
+        _rect_ctx = None
+        _record_via = None
+        _exstyle_restore_if_needed()
+
+
+def _cancel_point(rect: tuple[int, int, int, int]) -> tuple[int, int] | None:
+    """录音浮层 × 取消按钮位置（实测在话筒原位置左侧约 218px）。"""
+    l, t, r, b = rect
+    mx, my = _mic_point(rect)
+    return (mx - 218, my)
 
 
 # ---------------- wav 时长（stdlib wave；合成产物是标准 PCM wav） ----------------
@@ -600,11 +910,21 @@ def _do_send(req: SendVoiceReq):
         _play_to_cable(wav, duration)
         steps.append(f"已播放 {duration:.1f}s 到微信录音")
 
-        # 5) 松开 → 结束录制并自动发送
+        # 5) 结束录音：realclick=松开即发送；postmsg=点浮层 ↑ 发送按钮（找不到则自动取消）
         time.sleep(TAIL_S)
-        _finish_record()
-        steps.append(f"已松开{hold_name}，语音已发送")
-        time.sleep(0.6)
+        via = _record_via
+        sent = _finish_record()
+        if sent:
+            steps.append("已松开话筒，语音已发送" if via == "realclick"
+                         else "已点击浮层发送按钮，语音已发送")
+            time.sleep(0.6)
+        else:
+            steps.append("未找到发送按钮，已取消录音（本次未发送）")
+            restored, restore_err = _safe_restore()
+            return {"ok": True, "outcome": "cancelled", "method": RECORD_METHOD,
+                    "wav": wav.name, "duration_s": round(duration, 1),
+                    "steps": steps, "restored": restored, "restore_error": restore_err,
+                    "_history": _append_history(wav, duration, "cancelled")}
     except Exception as exc:
         # 失败也要：①松开录音键/鼠标（防止按住不放卡死）②还原声卡（reset 兜底）
         try:

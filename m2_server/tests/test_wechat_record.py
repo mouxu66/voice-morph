@@ -3,6 +3,7 @@
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -52,10 +53,10 @@ def test_record_key_rejects_unknown():
 # ---------------- 话筒坐标计算 ----------------
 
 def test_mic_point_from_window_rect():
-    # 1920x1080 窗口，默认偏移 (-58, -30)
+    # 1920x1040 窗口，默认偏移 (-157, -63)（2026-09-09 本机实测校准值）
     rect = (0, 0, 1920, 1040)
     x, y = wv._mic_point(rect)
-    assert (x, y) == (1920 - 58, 1040 - 30)
+    assert (x, y) == (1920 - 157, 1040 - 63)
 
 
 def test_mic_point_custom_offset(monkeypatch):
@@ -161,18 +162,248 @@ def test_trigger_and_finish_alt_path(monkeypatch):
 
 
 def test_trigger_and_finish_mic_path(monkeypatch):
-    """mic 路径：trigger=移动+左键按下、finish=左键抬起，不碰键盘。"""
+    """mic 路径：PostMessage 失败回退 SendInput——移动+左键按下、抬起（松开即发送）。"""
     kb_calls, mouse_calls = [], []
     seq = []
     monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
     monkeypatch.setattr(wv, "_send_input_kb", lambda *a: kb_calls.append(a))
+    monkeypatch.setattr(wv, "_postmsg_mouse", lambda *a, **k: None)   # post 失败 → 回退
     monkeypatch.setattr(wv, "_mouse_left", lambda down: mouse_calls.append(down))
     monkeypatch.setattr(wv, "_mouse_move_abs", lambda x, y: seq.append((x, y)))
     monkeypatch.setattr(wv, "_foreground_wechat", lambda: 999)
     monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (0, 0, 1600, 900))
+    monkeypatch.setattr(wv, "_find_render_hwnd", lambda hwnd: 888)
+    monkeypatch.setattr(wv, "_exstyle_clear_transparent", lambda hwnd: 0x90120)
+    monkeypatch.setattr(wv, "_exstyle_restore_if_needed", lambda: None)
+    monkeypatch.setattr(wv, "_wait_record_overlay", lambda rect, timeout=6.0: True)
     wv._trigger_record()
+    assert wv._record_via == "realclick"         # 走真实点击路径
+    assert wv._exstyle_restore == (888, 0x90120)  # 摘样式待恢复
     assert kb_calls == []                        # 不发键盘
     assert mouse_calls == [True]                 # 左键按下
     assert seq == [(1600 + wv.MIC_OFFSET_X, 900 + wv.MIC_OFFSET_Y)]
     wv._finish_record()
     assert mouse_calls == [True, False]          # 松开 → 微信自动发送
+
+
+def test_trigger_mic_realclick_only_after_postmsg_overlay_timeout(monkeypatch):
+    """PostMessage 按下成功但浮层始终不出现 → 两次尝试后才走 realclick 兜底。"""
+    calls, mouse_calls = [], []
+    monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
+
+    def fake_post(point=None, down=False, up=False, target=None, lparam=None):
+        if down:
+            calls.append(("down", point))
+            return (0x1234, 0xabcd)
+        return (target, lparam)
+
+    monkeypatch.setattr(wv, "_postmsg_mouse", fake_post)
+    monkeypatch.setattr(wv, "_mouse_left", lambda down: mouse_calls.append(down))
+    monkeypatch.setattr(wv, "_mouse_move_abs", lambda x, y: None)
+    monkeypatch.setattr(wv, "_foreground_wechat", lambda: 1)
+    monkeypatch.setattr(wv, "_ensure_onscreen", lambda hwnd: None)
+    monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (0, 0, 1600, 900))
+    monkeypatch.setattr(wv, "_find_mic_icon", lambda rect: (1443, 837))
+    waits = {"n": 0}
+
+    def fake_wait(rect, timeout=6.0):
+        waits["n"] += 1
+        return waits["n"] >= 3   # postmsg 两次超时，realclick 后第三次出现
+
+    monkeypatch.setattr(wv, "_wait_record_overlay", fake_wait)
+    monkeypatch.setattr(wv, "_find_render_hwnd", lambda hwnd: 555)
+    monkeypatch.setattr(wv, "_exstyle_clear_transparent", lambda hwnd: 0x20)
+    monkeypatch.setattr(wv, "_exstyle_restore_if_needed", lambda: None)
+    wv._trigger_record()
+    assert calls == [("down", (1443, 837)), ("down", (1443, 837))]   # 补发过一次
+    assert mouse_calls == [True]                                     # 最终真实按下
+    assert wv._record_via == "realclick"
+
+
+def test_trigger_mic_prefers_postmessage(monkeypatch):
+    """PostMessage 是主路径：按下/抬起走窗口消息，不碰真实鼠标。"""
+    calls = []
+    mouse_calls = []
+    monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
+
+    def fake_post(point=None, down=False, up=False, target=None, lparam=None):
+        if down:
+            calls.append(("down", point))
+            return (0x1234, 0x0609abcd)
+        calls.append(("up", target, lparam))
+        return (target, lparam)
+
+    monkeypatch.setattr(wv, "_postmsg_mouse", fake_post)
+    monkeypatch.setattr(wv, "_mouse_left", lambda down: mouse_calls.append(down))
+    monkeypatch.setattr(wv, "_foreground_wechat", lambda: 1)
+    monkeypatch.setattr(wv, "_ensure_onscreen", lambda hwnd: None)
+    monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (0, 0, 1600, 900))
+    monkeypatch.setattr(wv, "_find_mic_icon", lambda rect: (1443, 837))
+    monkeypatch.setattr(wv, "_wait_record_overlay", lambda rect, timeout=6.0: True)
+    wv._trigger_record()
+    assert calls == [("down", (1443, 837))]      # 按下用模板匹配坐标
+    assert mouse_calls == []                     # 不碰真实鼠标
+    monkeypatch.setattr(wv, "_find_green_send", lambda rect, retries=4: (1800, 1530))
+    wv._finish_record()
+    assert calls[-1] == ("up", 0x1234, 0x0609abcd) or calls[-2] == ("down", (1800, 1530))
+
+
+def test_trigger_mic_prefers_template_match(monkeypatch):
+    """SendInput 回退路径：模板命中时用匹配坐标，未命中回退固定偏移。"""
+    seq = []
+    mouse_calls = []
+    monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
+    monkeypatch.setattr(wv, "_send_input_kb", lambda *a: None)
+    monkeypatch.setattr(wv, "_postmsg_mouse", lambda *a, **k: None)   # post 失败
+    monkeypatch.setattr(wv, "_mouse_left", lambda down: mouse_calls.append(down))
+    monkeypatch.setattr(wv, "_mouse_move_abs", lambda x, y: seq.append((x, y)))
+    monkeypatch.setattr(wv, "_foreground_wechat", lambda: 1)
+    monkeypatch.setattr(wv, "_ensure_onscreen", lambda hwnd: None)
+    monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (0, 0, 1600, 900))
+    monkeypatch.setattr(wv, "_find_render_hwnd", lambda hwnd: 555)
+    monkeypatch.setattr(wv, "_exstyle_clear_transparent", lambda hwnd: None)
+    monkeypatch.setattr(wv, "_wait_record_overlay", lambda rect, timeout=6.0: True)
+    monkeypatch.setattr(wv, "_find_mic_icon", lambda rect: (1443, 837))
+    wv._trigger_record()
+    assert seq == [(1443, 837)]                  # 模板匹配坐标优先
+
+    seq.clear()
+    monkeypatch.setattr(wv, "_find_mic_icon", lambda rect: None)
+    wv._trigger_record()
+    assert seq == [(1600 + wv.MIC_OFFSET_X, 900 + wv.MIC_OFFSET_Y)]  # 回退偏移
+
+
+# ---------------- 渲染子窗口与 WS_EX_TRANSPARENT（社区方案吸收） ----------------
+
+class _FakeUser32Enum:
+    """支持 EnumChildWindows / GetClassNameW / GetWindowRect 的 user32 替身。"""
+
+    def __init__(self, classes, sizes):
+        self.classes, self.sizes = classes, sizes
+
+    def EnumChildWindows(self, parent, cb, lp):
+        for h in self.classes:
+            cb(h, lp)
+        return 1
+
+    def GetClassNameW(self, h, buf, n):
+        buf.value = self.classes.get(h, "")
+        return 1
+
+    def GetWindowRect(self, h, r):
+        import ctypes
+        from ctypes import wintypes
+        rect = ctypes.cast(r, ctypes.POINTER(wintypes.RECT)).contents
+        rect.left, rect.top, rect.right, rect.bottom = self.sizes.get(h, (0, 0, 0, 0))
+        return 1
+
+
+def test_find_render_hwnd_picks_largest(monkeypatch):
+    """多个 MMUIRenderSubWindow* 子窗口时取面积最大；其余类名忽略。"""
+    fake = _FakeUser32Enum(
+        {11: "Chrome_WidgetWin_0", 12: "MMUIRenderSubWindowHW", 13: "MMUIRenderSubWindow"},
+        {11: (0, 0, 100, 100), 12: (0, 0, 200, 200), 13: (0, 0, 800, 600)})
+    monkeypatch.setattr(wv, "_user32", lambda: fake)
+    assert wv._find_render_hwnd(7) == 13
+
+
+def test_find_render_hwnd_fallback_to_main(monkeypatch):
+    """找不到渲染子窗口（旧版微信/类名变更）→ 回退主窗口句柄。"""
+    fake = _FakeUser32Enum({11: "Chrome_WidgetWin_0"}, {11: (0, 0, 100, 100)})
+    monkeypatch.setattr(wv, "_user32", lambda: fake)
+    assert wv._find_render_hwnd(7) == 7
+
+
+def test_exstyle_clear_transparent_and_restore(monkeypatch):
+    """带 WS_EX_TRANSPARENT 的窗口：摘除返回原样式，恢复写回；无该位则不动。"""
+    styles = {55: 0x90120}          # 含 0x20 位
+    set_calls = []
+
+    def get_long(hwnd, idx):
+        return styles.get(hwnd, 0)
+
+    def set_long(hwnd, idx, val):
+        set_calls.append((hwnd, val))
+        styles[hwnd] = val
+        return 1
+
+    fake = type("U", (), {"GetWindowLongW": staticmethod(get_long),
+                          "SetWindowLongW": staticmethod(set_long)})()
+    monkeypatch.setattr(wv, "_user32", lambda: fake)
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    old = wv._exstyle_clear_transparent(55)
+    assert old == 0x90120
+    assert styles[55] == 0x90100                   # 0x20 位已摘除
+    wv._exstyle_restore = (55, old)
+    wv._exstyle_restore_if_needed()
+    assert styles[55] == 0x90120                   # 已恢复
+    assert wv._exstyle_restore is None
+    # 无该位：返回 None，不写样式
+    styles[56] = 0x90100
+    assert wv._exstyle_clear_transparent(56) is None
+    assert all(h != 56 for h, _ in set_calls)
+
+
+# ---------------- NCC 模板匹配 ----------------
+
+def _make_icon_img(cx: int, cy: int, size: int = 36) -> np.ndarray:
+    """合成一个'圆环图标'灰度图（细线条，模拟微信话筒）。"""
+    yy, xx = np.mgrid[0:size, 0:size]
+    d = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    img = np.full((size, size), 245.0)
+    ring = np.abs(d - 12) < 1.6          # 半径 12 的细圆环
+    img[ring] = 60.0
+    return img
+
+
+def test_ncc_match_finds_exact_position():
+    scene = np.full((150, 340), 245.0)
+    true_x, true_y = 165, 69
+    scene[true_y:true_y + 36, true_x:true_x + 36] = _make_icon_img(18, 18)
+    tpl = _make_icon_img(18, 18)
+    pos, score = wv._ncc_match(scene, tpl)
+    assert pos == (true_x, true_y)
+    assert score > 0.95
+
+
+def test_ncc_match_rejects_flat_scene():
+    scene = np.full((150, 340), 245.0)   # 纯色无图标
+    tpl = _make_icon_img(18, 18)
+    pos, score = wv._ncc_match(scene, tpl)
+    assert score < 0.75                  # 阈值拦截 → 回退固定偏移
+
+
+def test_ncc_match_tiny_image_returns_none():
+    pos, score = wv._ncc_match(np.zeros((10, 10)), np.zeros((36, 36)))
+    assert pos is None and score == -1.0
+
+
+# ---------------- 绿色发送按钮定位 ----------------
+
+def test_find_green_send_hit(monkeypatch):
+    """浮层有微信绿 (18,199,125) 按钮时返回其质心屏幕坐标。"""
+    from PIL import Image
+    scene = np.full((140, 560, 3), 247, dtype=np.uint8)
+    scene[100:120, 480:500] = (18, 199, 125)       # 绿钮
+    grabs = [Image.fromarray(scene)]
+    monkeypatch.setattr("PIL.ImageGrab.grab", lambda **k: grabs.pop(0))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    got = wv._find_green_send((0, 0, 1938, 1609), retries=1)
+    assert got is not None
+    gx, gy = got
+    assert 1378 + 480 <= gx <= 1378 + 500
+    assert 1469 + 100 <= gy <= 1469 + 120
+
+
+def test_find_green_send_miss(monkeypatch):
+    """纯灰浮层 → None（调用方点 × 取消）。"""
+    from PIL import Image
+    scene = np.full((140, 560, 3), 247, dtype=np.uint8)
+    monkeypatch.setattr("PIL.ImageGrab.grab", lambda **k: Image.fromarray(scene))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    assert wv._find_green_send((0, 0, 1938, 1609), retries=1) is None
+
+
+def test_cancel_point_offset():
+    cx, cy = wv._cancel_point((0, 0, 1938, 1609))
+    assert (cx, cy) == (1938 - 157 - 218, 1609 - 63)
