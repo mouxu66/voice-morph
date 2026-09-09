@@ -1,6 +1,7 @@
 import {
   ArrowDown,
   CheckCircle2,
+  ChevronDown,
   CircleAlert,
   Database,
   Download,
@@ -11,10 +12,11 @@ import {
   Radio,
   RefreshCw,
   Square,
+  Terminal,
   Upload,
   WandSparkles,
 } from "lucide-react"
-import type { ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import type { useLive } from "@/pages/Live/useLive"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { LiveLevelMeter } from "@/components/voice-studio/LiveLevelMeter"
@@ -130,6 +132,23 @@ export function LivePage(p: ReturnType<typeof useLive>) {
   const trainRunning = Boolean(p.trainStatus?.running)
   const genRunning = Boolean(p.genStatus?.running)
   const logLines = p.trainStatus?.log_tail ?? []
+
+  // 训练日志默认收起，不占页面空间；出现新错误时自动弹出
+  const [logOpen, setLogOpen] = useState(false)
+  const logErrRef = useRef<string | null>(null)
+  const logError = p.trainStatus?.error ?? ""
+  useEffect(() => {
+    if (logError && logError !== logErrRef.current) {
+      logErrRef.current = logError
+      setLogOpen(true)
+    }
+    if (!logError) logErrRef.current = null
+  }, [logError])
+  const logSummary = logError
+    ? "有错误，点开查看"
+    : trainRunning
+      ? `${p.trainStatus?.stage || "进行中"} · ${Math.round(p.trainStatus?.percent ?? 0)}%`
+      : `已停止 · ${logLines.length} 行`
 
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
@@ -515,14 +534,31 @@ export function LivePage(p: ReturnType<typeof useLive>) {
           </section>
         </div>
 
-        {/* 04 训练日志 */}
+        {/* 04 训练日志：默认收起成一行，点击展开；出错自动弹出 */}
         {(logLines.length > 0 || trainRunning) && (
           <section>
-            <div className="mb-3">
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">04 / 日志</p>
-              <h3 className="mt-1 text-lg font-semibold text-card-foreground">训练输出</h3>
-            </div>
-            <TrainLogConsole lines={logLines} running={trainRunning} />
+            <button
+              type="button"
+              onClick={() => setLogOpen((v) => !v)}
+              aria-expanded={logOpen}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+                logError
+                  ? "border-destructive/40 bg-destructive/10 text-destructive hover:border-destructive/60"
+                  : "border-border bg-card/70 text-card-foreground hover:border-primary/40",
+              )}
+            >
+              <Terminal className="h-3.5 w-3.5 shrink-0" />
+              <span>训练日志</span>
+              <span className={cn("truncate text-[11px]", logError ? "text-destructive/80" : "text-muted-foreground")}>
+                {logSummary}
+              </span>
+              {trainRunning && !logError && (
+                <span className="ml-1 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" aria-hidden />
+              )}
+              <ChevronDown className={cn("ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", logOpen && "rotate-180")} />
+            </button>
+            {logOpen && <TrainLogConsole lines={logLines} running={trainRunning} className="mt-2" />}
           </section>
         )}
 
