@@ -86,8 +86,8 @@ def test_do_send_failure_auto_fallback(tmp_path, monkeypatch):
     _make_wav(tmp_path)
     monkeypatch.setattr(wv, "AUTO_FALLBACK", True)
     monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
-    monkeypatch.setattr(wv, "_foreground_wechat", lambda: (_ for _ in ()).throw(RuntimeError("微信窗口找不到")))
-    monkeypatch.setattr(wv, "_trigger_record", lambda: None)
+    # 新结构：前台化+定位+按下都并入 _trigger_record，失败注入点改为它
+    monkeypatch.setattr(wv, "_trigger_record", lambda: (_ for _ in ()).throw(RuntimeError("微信窗口找不到")))
     monkeypatch.setattr(wv, "_finish_record", lambda: None)
     monkeypatch.setattr(wv, "_play_to_cable", lambda w, d: None)
     monkeypatch.setattr(wv, "_wav_duration", lambda p: 1.0)
@@ -105,10 +105,10 @@ def test_do_send_failure_no_fallback(tmp_path, monkeypatch):
     _make_wav(tmp_path)
     monkeypatch.setattr(wv, "AUTO_FALLBACK", False)
     monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
-    monkeypatch.setattr(wv, "_foreground_wechat", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(wv, "_trigger_record", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(wv, "_finish_record", lambda: None)
     monkeypatch.setattr(wv, "_wav_duration", lambda p: 1.0)
     monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))
-    monkeypatch.setattr(wv, "_key", lambda *a, **k: None)
     from wechat_voice import SendVoiceReq
     res = wv._do_send(SendVoiceReq(wav="tts_x.wav"))
     assert res.status_code == 500
