@@ -29,6 +29,7 @@ except ImportError:  # 兜底：直接以模块方式运行时
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
     import config as cfg
+import live_settings
 from rvc_common import (ensure_infer_pth, exp_display_name, exp_snapshot, exp_source, find_pth, _find_pids_by_cmdline, _kill_pids)
 
 logger = logging.getLogger(__name__)
@@ -445,8 +446,11 @@ def _resolve_device_names() -> tuple[str, str] | None:
     配置里必须写完整枚举名（如 "CABLE Input (VB-Audio Virtual Cable)"），
     写短名会导致 GUI 内匹配失败而回退到默认设备（曾导致输出落到真实扬声器）。
 
-    输入设备默认跟随系统默认录音设备（插耳机用耳机麦、拔了回内置麦）；
-    设了 VM_LIVE_INPUT_DEVICE 时优先按关键词匹配，方便锁定特定设备。
+    输入设备候选优先级（A7 输入设备选择器）：
+      1. live_settings.input_device —— 用户在界面上显式选的（手机当麦克风/USB 麦）
+      2. 系统默认录音设备 —— 未显式选择时跟随（插耳机用耳机麦、拔了回内置麦）
+      3. VM_LIVE_INPUT_DEVICE 环境变量 —— 旧的锁定手段，兼容保留
+      4. "Microsoft 声音映射器" —— 兜底
     """
     try:
         out = subprocess.run(
@@ -464,8 +468,9 @@ def _resolve_device_names() -> tuple[str, str] | None:
         mme = [d for d in items if d.get("api") == "MME"]
         outp = next((d["name"] for d in mme
                      if d["out"] > 0 and _device_matches(d["name"], OUTPUT_DEVICE)), None)
-        # 输入候选按优先级：系统默认录音设备 → 环境变量指定 → MME 默认映射器
-        candidates = [_system_default_input(), INPUT_DEVICE, "Microsoft 声音映射器"]
+        explicit = live_settings.get()["input_device"]
+        candidates = [explicit, _system_default_input(), INPUT_DEVICE,
+                      "Microsoft 声音映射器"]
         inp = None
         for want in candidates:
             if not want:
@@ -502,6 +507,10 @@ def _apply_model_config() -> bool:
     # 基线参数统一覆盖：否则 GUI 上次遗留的实验性滑杆值会一直生效，
     # 而"实时听起来怪"绝大多数是这些参数导致的，不是模型问题。
     cfg_json.update(REALTIME_TUNING)
+    # A8 输入降噪：live_settings.denoise（默认开）写入 RVC 自带 I_noise_reduce。
+    # RVC 内置输入降噪 = 帧级 crossfade 降噪，代价约 +40ms 延迟（min(crossfade, 0.04)）；
+    # 无头模式下 GUI 复选框永远 False，所以必须在每次启动时显式写入。
+    cfg_json["I_noise_reduce"] = bool(live_settings.get()["denoise"])
     # 设备必须用枚举出的精确全名；解析失败时保留旧值（GUI 至少能用上次可用的配置）
     resolved = _resolve_device_names()
     if resolved:
@@ -648,6 +657,91 @@ def rvc_live_status(exp_name: str | None = None):
         "monitor_gain": _state["live"].get("monitor_gain"),
         # 实时转写（桌宠字幕）：running=转写子进程存活；stage/last_text 供桌宠渲染
         **{f"asr_{k}": v for k, v in _asr_state().items()},
+    }
+
+
+def _mme_input_devices() -> list[dict]:
+    """枚举 MME 主机 API 下的输入设备（与 RVC 实时链路同视角），同名去重。
+
+    MME 会把同一物理设备列出多次（如重复的"麦克风阵列"），且名字截断到 31 字符；
+    去重保序，附 is_default 标记（系统默认录音设备）。sounddevice 缺失时返回空列表。
+    """
+    try:
+        import sounddevice as sd
+    except Exception as e:  # pragma: no cover - 环境缺库时前端显示空列表
+        logger.warning("[devices] sounddevice 不可用: %s", e)
+        return []
+    try:
+        apis = sd.query_hostapis()
+        mme_idx = next((i for i, a in enumerate(apis) if a["name"] == "MME"), None)
+        default_name = ""
+        try:
+            default_name = sd.query_devices(kind="input")["name"] or ""
+        except Exception:
+            pass
+        seen: dict[str, dict] = {}
+        for d in sd.query_devices():
+            if d["hostapi"] != mme_idx or d["max_input_channels"] <= 0:
+                continue
+            name = (d["name"] or "").strip()
+            if not name or name in seen:
+                continue
+            seen[name] = {"name": name, "is_default": name == default_name}
+        return list(seen.values())
+    except Exception as e:
+        logger.warning("[devices] 枚举输入设备失败: %s", e)
+        return []
+
+
+class LiveDevicesPayload(BaseModel):
+    input_device: str | None = None
+    denoise: bool | None = None
+
+
+@router.get("/rvc/live/audio_devices")
+def rvc_live_audio_devices():
+    """实时输入设备清单 + 当前设置（A7）。
+
+    items 供前端下拉；explicit=用户显式选择（空串=跟随系统默认）；
+    current=上次变声实际用的输入设备（RVC config.json）；denoise=输入降噪开关。
+    """
+    return {
+        "ok": True,
+        "items": _mme_input_devices(),
+        "explicit": live_settings.get()["input_device"],
+        "current": _live_input_device(),
+        "denoise": live_settings.get()["denoise"],
+        "running": _live_proc_alive(),
+    }
+
+
+@router.post("/rvc/live/audio_devices")
+def rvc_live_audio_devices_set(payload: LiveDevicesPayload):
+    """保存实时输入设备/降噪设置（A7/A8）。
+
+    input_device 传空串 = 跟随系统默认录音设备；非空按关键词匹配（MIME 截断名也
+    能对上，见 _device_matches）。变声运行中修改不中断，但设备切换需重启变声生效
+    （needs_restart=true 由前端提示）；降噪开关同样在下次启动时写入 RVC config。
+    """
+    if payload.input_device is not None:
+        want = payload.input_device.strip()
+        if want:
+            items = _mme_input_devices()
+            if not items:
+                raise HTTPException(status_code=503, detail="无法枚举音频设备，稍后重试")
+            if not any(_device_matches(d["name"], want) for d in items):
+                raise HTTPException(status_code=400, detail=f"找不到输入设备：{want}")
+        data = live_settings.update(input_device=want)
+    else:
+        data = live_settings.get()
+    if payload.denoise is not None:
+        data = live_settings.update(denoise=payload.denoise)
+    return {
+        "ok": True,
+        "input_device": data["input_device"],
+        "denoise": data["denoise"],
+        "running": _live_proc_alive(),
+        "needs_restart": _live_proc_alive(),
     }
 
 

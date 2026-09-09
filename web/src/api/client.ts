@@ -650,6 +650,39 @@ export async function rvcLiveReset(): Promise<{ ok: boolean; reset?: boolean; er
   return jsonFetch("/rvc/live/reset", { method: "POST" })
 }
 
+// ---- A7 实时输入设备选择 / A8 输入降噪 ----
+
+export type LiveAudioDevice = {
+  name: string;
+  is_default: boolean;
+};
+
+export type LiveAudioDevices = {
+  ok: boolean;
+  items: LiveAudioDevice[];
+  /** 用户显式选择的设备关键词（空串 = 跟随系统默认录音设备） */
+  explicit: string;
+  /** 上次变声实际用的输入设备（RVC config.json），未启动过为 null */
+  current: string | null;
+  denoise: boolean;
+  running: boolean;
+};
+
+export async function getLiveAudioDevices(): Promise<LiveAudioDevices> {
+  return jsonFetch<LiveAudioDevices>("/rvc/live/audio_devices");
+}
+
+/** input_device 传空串 = 跟随系统默认；变声运行中修改需重启变声生效（needs_restart） */
+export async function setLiveAudioDevices(payload: { input_device?: string; denoise?: boolean }): Promise<{
+  ok: boolean;
+  input_device: string;
+  denoise: boolean;
+  running: boolean;
+  needs_restart: boolean;
+}> {
+  return jsonFetch("/rvc/live/audio_devices", { method: "POST", body: JSON.stringify(payload) });
+}
+
 export async function rvcTrainStatus(expName?: string): Promise<RvcTrainStatus> {
   const qs = expName ? `?exp_name=${encodeURIComponent(expName)}` : "";
   return jsonFetch<RvcTrainStatus>(`/rvc/train/status${qs}`);

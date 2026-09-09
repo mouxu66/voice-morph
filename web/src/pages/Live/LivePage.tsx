@@ -5,6 +5,7 @@ import {
   Database,
   Download,
   Loader2,
+  Mic,
   Mic2,
   Play,
   Radio,
@@ -256,6 +257,68 @@ export function LivePage(p: ReturnType<typeof useLive>) {
                 当前正在用「{p.liveExp}」变声。要换成「{voiceName}」，请先点「停止实时变声」再启动。
               </p>
             )}
+
+            {/* A7/A8：输入麦克风选择 + 输入降噪 —— 未启动时也可设置，启动后按所选设备采音 */}
+            <div className="space-y-3 rounded-md border border-border bg-background/60 px-3 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="flex items-center gap-1.5 text-xs font-medium text-card-foreground">
+                    <Mic className="h-3.5 w-3.5 text-primary" />
+                    输入麦克风
+                  </p>
+                  <p className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground">
+                    {p.audioDevices?.explicit
+                      ? `已指定：${p.audioDevices.explicit}`
+                      : "跟随系统默认录音设备（手机当麦克风/USB 麦选这里）"}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <select
+                    aria-label="选择输入麦克风"
+                    value={p.audioDevices?.explicit ?? ""}
+                    onChange={(e) => void p.saveAudioDevice(e.target.value)}
+                    disabled={!p.audioDevices || p.audioDevices.items.length === 0}
+                    className="h-8 max-w-[190px] rounded-md border border-border bg-card px-2 text-xs text-card-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
+                  >
+                    <option value="">跟随系统默认</option>
+                    {p.audioDevices?.items.map((d) => (
+                      <option key={d.name} value={d.name}>
+                        {d.name}
+                        {d.is_default ? "（默认）" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void p.refreshAudioDevices()}
+                    aria-label="刷新设备列表（插上新麦克风后点这里）"
+                    className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between border-t border-border/60 pt-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-card-foreground">输入降噪</p>
+                  <p className="text-[11px] leading-4 text-muted-foreground">
+                    压掉环境噪声再变声（约 +40ms 延迟）
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={p.audioDevices?.denoise ?? true}
+                  onClick={() => void p.toggleDenoise(!(p.audioDevices?.denoise ?? true))}
+                  className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${p.audioDevices?.denoise ? "bg-primary" : "bg-muted-foreground/30"}`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-background shadow transition-all ${p.audioDevices?.denoise ? "left-[18px]" : "left-0.5"}`}
+                  />
+                </button>
+              </div>
+            </div>
 
             <LiveLevelMeter active={p.liveOn} />
 

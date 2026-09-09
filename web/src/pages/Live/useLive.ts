@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   exportRvcDataset,
   generateRvcDataset,
+  getLiveAudioDevices,
   getRvcGenStatus,
   listRvcDataset,
   listRvcVoices,
@@ -11,6 +12,8 @@ import {
   rvcLiveStop,
   rvcTrainStart,
   rvcTrainStatus,
+  setLiveAudioDevices,
+  type LiveAudioDevices,
   type RvcGenStatus,
   type RvcLiveStatus,
   type RvcTrainStatus,
@@ -55,6 +58,8 @@ export function useLive() {
   const [generating, setGenerating] = useState(false)
   const [importing, setImporting] = useState(false)
   const [feedback, setFeedback] = useState<Feedback | null>(null)
+  // A7/A8：输入设备清单与降噪开关设置（挂载时加载 + 保存后刷新）
+  const [audioDevices, setAudioDevices] = useState<LiveAudioDevices | null>(null)
 
   // 供按钮点击后立即刷新（不必等下一次轮询）
   const tickRef = useRef<() => void>(() => {})
@@ -259,6 +264,61 @@ export function useLive() {
     [],
   )
 
+  // ---- A7/A8：输入设备选择 + 输入降噪 ----
+
+  const refreshAudioDevices = useCallback(async () => {
+    try {
+      setAudioDevices(await getLiveAudioDevices())
+    } catch {
+      /* 后端未启动时静默，与主轮询一致 */
+    }
+  }, [])
+
+  // 挂载时拉一次；插拔 USB 麦/手机连接后可点刷新按钮
+  useEffect(() => {
+    void refreshAudioDevices()
+  }, [refreshAudioDevices])
+
+  const saveAudioDevice = useCallback(
+    async (keyword: string) => {
+      setFeedback(null)
+      try {
+        const r = await setLiveAudioDevices({ input_device: keyword })
+        setAudioDevices((prev) =>
+          prev ? { ...prev, explicit: r.input_device, running: r.running } : prev,
+        )
+        setFeedback(
+          r.needs_restart
+            ? { tone: "info", text: "输入麦克风已保存，重启变声后生效。" }
+            : { tone: "ok", text: "输入麦克风已保存。" },
+        )
+      } catch (error) {
+        setFeedback({ tone: "error", text: msgOf(error, "保存输入麦克风失败") })
+        void refreshAudioDevices() // 校验失败时回读真实状态，避免下拉显示假值
+      }
+    },
+    [refreshAudioDevices],
+  )
+
+  const toggleDenoise = useCallback(
+    async (on: boolean) => {
+      setFeedback(null)
+      try {
+        const r = await setLiveAudioDevices({ denoise: on })
+        setAudioDevices((prev) => (prev ? { ...prev, denoise: r.denoise } : prev))
+        setFeedback(
+          r.needs_restart
+            ? { tone: "info", text: on ? "输入降噪已开启，重启变声后生效。" : "输入降噪已关闭，重启变声后生效。" }
+            : { tone: on ? "ok" : "info", text: on ? "输入降噪已开启。" : "输入降噪已关闭。" },
+        )
+      } catch (error) {
+        setFeedback({ tone: "error", text: msgOf(error, "降噪开关失败") })
+        void refreshAudioDevices()
+      }
+    },
+    [refreshAudioDevices],
+  )
+
   return {
     voicesInfo,
     voices: voicesInfo?.voices ?? [],
@@ -286,6 +346,10 @@ export function useLive() {
     start,
     stop,
     toggleMonitor,
+    audioDevices,
+    refreshAudioDevices,
+    saveAudioDevice,
+    toggleDenoise,
     train,
     generateCorpus,
     importCorpus,

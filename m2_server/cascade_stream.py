@@ -56,6 +56,22 @@ FRAME_N = SR_IN * FRAME_MS // 1000
 INPUT_KEYWORD = os.environ.get("VM_LIVE_INPUT_DEVICE", "麦克风阵列")
 OUTPUT_KEYWORD = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "CABLE Input")
 
+
+def _live_input_keyword() -> str:
+    """输入设备关键词：用户在界面上显式选的（live_settings）优先，否则回退环境变量。
+
+    A7 输入设备选择器：手机当麦克风/USB 麦在界面上选了哪个设备，级联链路的
+    真麦采集就换到哪个。设置文件读取失败一律回退旧行为，绝不阻塞采集。
+    """
+    try:
+        from live_settings import get
+        explicit = get()["input_device"]
+        if explicit:
+            return explicit
+    except Exception:
+        pass
+    return INPUT_KEYWORD
+
 STATE = {
     "running": True, "stage": "init", "pid": os.getpid(),
     "last_text": "", "last_asr_s": 0.0, "last_tts_s": 0.0, "last_audio_s": 0.0,
@@ -387,7 +403,7 @@ def find_device(keyword: str, is_input: bool) -> int:
 
 
 def resolve_devices() -> tuple[int, int, str, str]:
-    dev_in = find_device(INPUT_KEYWORD, is_input=True)
+    dev_in = find_device(_live_input_keyword(), is_input=True)
     dev_out = find_device(OUTPUT_KEYWORD, is_input=False)
     name_in = sd.query_devices(dev_in)["name"]
     # 坑 #2：输入绝不能是 CABLE，否则 CABLE Output→采集→合成→CABLE Input 回环啸叫
@@ -761,7 +777,7 @@ def run_live_asr(args):
     只共享采集真麦（WASAPI 共享模式允许多客户端），转写结果写独立状态文件，
     由 /api/rvc/live/status 合并返回。绝不碰声卡配置，绝不采 CABLE。
     """
-    dev_in = find_device(INPUT_KEYWORD, is_input=True)
+    dev_in = find_device(_live_input_keyword(), is_input=True)
     name_in = sd.query_devices(dev_in)["name"]
     if "cable" in name_in.lower():
         raise RuntimeError(f"输入设备解析到了 {name_in}，会造成回环，拒绝启动")
