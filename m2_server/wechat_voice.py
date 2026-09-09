@@ -568,12 +568,17 @@ _overlay_baseline: np.ndarray | None = None
 
 
 def _grab_bottom_gray(rect: tuple[int, int, int, int]) -> np.ndarray:
-    """截取窗口右下角（浮层出现的位置）灰度图，用于差分比较。"""
+    """截取窗口右下角（浮层出现的位置）灰度图，用于差分比较。
+
+    高度 140 与 _find_green_send 同一区域：浮层只在底部 140 高内变化（× 取消 +
+    录音波纹 + ↑绿钮），上方是聊天内容保持不动——若 box 过高（260）混合聊天
+    像素会把信号稀释到 0.1~0.2 量级，触发不了阈值（2026-09-09 实测）。
+    """
     from PIL import ImageGrab
     l, t, r, b = rect
     u = _user32()
     sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
-    box = (max(0, min(r, sw) - 560), max(0, min(b, sh) - 260), min(r, sw), min(b, sh))
+    box = (max(0, min(r, sw) - 560), max(0, min(b, sh) - 140), min(r, sw), min(b, sh))
     return np.asarray(ImageGrab.grab(bbox=box).convert("L")).astype(np.int16)
 
 
@@ -588,25 +593,17 @@ def _snapshot_overlay_baseline(rect: tuple[int, int, int, int]) -> None:
 
 
 def _wait_record_overlay(rect: tuple[int, int, int, int], timeout: float = 6.0) -> bool:
-    """轮询等待录音浮层出现（与按下前的基线做灰度差分）。
+    """轮询等待录音浮层出现。
 
-    实测：PostMessage DOWN 触发录音有随机延迟（UI 忙闲而定），必须确认浮层
-    真的出现后再播放音频，否则录到的是静音。
+    2026-09-09 真机验证：mic DOWN 后浮层起/录音中，"↑绿钮"是唯一可靠的
+    状态指示（HSV (18,199,125) 微信绿，>50 像素即可确认）—— 灰度差分在
+    浮层 vs 输入条之间差异 < 0.2，常驻 mic/录音图标灰度相近，阈值无法区分。
+    浮层未起时输入条只有灰色 ↑"发送"按钮（非绿色），绿点搜索返回 None。
     """
-    base = _overlay_baseline
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if base is None:
-            # 没有基线（截图不可用）：退化为绿钮判据，宁可放过不可漏掉
-            if _find_green_send(rect, retries=1):
-                return True
-        else:
-            try:
-                cur = _grab_bottom_gray(rect)
-                if cur.shape == base.shape and float(np.abs(cur - base).mean()) > OVERLAY_DIFF:
-                    return True
-            except Exception:
-                pass
+        if _find_green_send(rect, retries=1):
+            return True
         time.sleep(0.3)
     return False
 
@@ -614,10 +611,11 @@ def _wait_record_overlay(rect: tuple[int, int, int, int], timeout: float = 6.0) 
 def _trigger_record() -> None:
     """开始录制语音消息。
 
-    mic 路径（默认）优先 PostMessage 直投窗口消息（2026-09-09 实测唯一有效：
-    微信 4.x 过滤 SendInput 注入的鼠标按下，hover 有效但 click 无效；
-    PostMessage 绕过输入队列直达 Qt 窗口过程）。按下后轮询等浮层出现，
-    超时补发一次 DOWN；录音真正启动不了则抛错（走引导式手动发送降级）。
+    mic 路径（默认）：摘 WS_EX_TRANSPARENT + SendInput 真按话筒，**按住不松**，
+    等浮层（绿钮）出现即代表录音已开始。结束由 _finish_record 在绿钮处松手完成
+    （微信"按住说话→上滑到绿钮松手发送"手势，录的是真实时长，不会 60s 截断）。
+
+    alt 路径：SendInput 按下 Alt 键（_finish_record 再抬起）。
     """
     global _postmsg_ctx, _rect_ctx, _record_via, _exstyle_restore
     _postmsg_ctx = None
@@ -628,27 +626,8 @@ def _trigger_record() -> None:
         _ensure_onscreen(hwnd)                 # 防止窗口底边超屏被任务栏遮挡
         rect = _window_rect(hwnd)
         _rect_ctx = rect
-        point = _find_mic_icon(rect)           # 模板匹配优先（适应窗口尺寸/位置变化）
-        if point is None:
-            point = _mic_point(rect)           # 回退：相对右下角固定偏移
-        _snapshot_overlay_baseline(rect)       # 按下前存基线（判据用差分，不用绿钮）
-        # 主路：PostMessage 直投窗口过程（不动用户光标）
-        res = _postmsg_mouse(point, down=True)
-        if res:
-            _postmsg_ctx = res
-            if _wait_record_overlay(rect):
-                _record_via = "postmsg"
-                return
-            # 浮层未出现：DOWN 可能被吞，补发一次
-            res = _postmsg_mouse(point, down=True)
-            if res:
-                _postmsg_ctx = res
-                if _wait_record_overlay(rect, timeout=8.0):
-                    _record_via = "postmsg"
-                    return
-        # 兜底（借鉴 wechatauto-replica）：渲染子窗口带 WS_EX_TRANSPARENT，
-        # 真实/SendInput 点击会穿透到主窗口——临时摘掉该样式位再真实按下，
-        # 松开即官方"松开自动发送"，无需找浮层按钮。摘掉的样式在 finish 恢复。
+        point = _find_mic_icon(rect) or _mic_point(rect)
+        # 摘样式（必做）+ SendInput 真按 mic（按住不松，等 finish 在绿钮处松开）
         render = _find_render_hwnd(hwnd)
         old_ex = _exstyle_clear_transparent(render)
         if old_ex is not None:
@@ -659,6 +638,11 @@ def _trigger_record() -> None:
         if _wait_record_overlay(rect, timeout=8.0):
             _record_via = "realclick"
             return
+        # 浮层未出现：best-effort 松开 + 还原样式 + 抛错走降级
+        try:
+            _mouse_left(False)
+        except Exception:
+            pass
         _exstyle_restore_if_needed()
         raise RuntimeError("微信录音未能启动（浮层未出现），请稍后重试")
     _foreground_wechat()
@@ -694,36 +678,37 @@ def _find_green_send(rect: tuple[int, int, int, int], retries: int = 4) -> tuple
 def _finish_record() -> bool:
     """结束录音并让微信发送/丢弃。
 
-    按启动路径分流（2026-09-09 实测机制）：
-    - realclick（摘 WS_EX_TRANSPARENT 后真实按下）：SendInput 抬起即可——
-      官方交互"松开自动发送"，注入的 UP 经真实输入队列送达（样式位已摘除，
-      点击不会穿透）。
-    - postmsg（PostMessage 直投按下）：PostMessage 的 WM_LBUTTONUP 会被微信
-      忽略（录到 60s 自动截断），所以结束必须点浮层上的绿色 ↑ 发送按钮；
-      找不到按钮时点 × 取消（宁可不发，不留挂起录音）。
+    mic 路径（realclick）：trigger 时在话筒处 SendInput DOWN 一直按住，
+    这里把光标移到浮层绿钮再 SendInput UP —— 这就是微信"上滑到绿钮松手发送"
+    手势，UP 落在绿钮的"松开发送区"会**结束录音并发送真实时长**（不再 60s
+    截断）。找不到绿钮则点 × 取消（松手 = 取消），避免挂起录音。
+
+    alt 路径：SendInput 抬起 Alt 键。
     返回 True=已发送，False=已取消。
     """
-    global _postmsg_ctx, _rect_ctx, _record_via
+    global _postmsg_ctx, _rect_ctx, _record_via, _exstyle_restore
     try:
         if RECORD_METHOD == "mic":
-            if _record_via == "postmsg" and _postmsg_ctx:
-                target, lparam = _postmsg_ctx
-                rect = _rect_ctx or _window_rect(_find_wechat_hwnd())
-                send_pt = _find_green_send(rect)
-                time.sleep(0.25)   # 尾音缓冲
-                if send_pt:
-                    _postmsg_mouse(send_pt, down=True)
-                    _postmsg_mouse(None, up=True, target=target, lparam=lparam)
-                    return True
-                # 兜底：点 × 取消（× 在话筒原位置左侧约 218px）
-                cancel_pt = _cancel_point(rect)
-                if cancel_pt:
-                    _postmsg_mouse(cancel_pt, down=True)
-                    _postmsg_mouse(None, up=True, target=target, lparam=lparam)
-                return False
-            # realclick / SendInput 直按路径：松开即发送
-            _mouse_left(False)
-            return True
+            rect = _rect_ctx or _window_rect(_find_wechat_hwnd())
+            time.sleep(TAIL_S)   # 尾音缓冲（等 wav 尾音真正录进去）
+            # 找浮层绿钮（微信绿 (18,199,125)）
+            send_pt = _find_green_send(rect)
+            if send_pt:
+                # 关键：mouse 仍处于 trigger 时的按下态，只移动光标到绿钮再
+                # 松手，等价"按住 mic → 上滑到绿钮 → 松手"。样式位此刻仍摘除
+                # （_exstyle_restore 在 finally 才恢复），UP 能正常送达渲染窗口。
+                _mouse_move_abs(*send_pt)
+                time.sleep(0.12)
+                _mouse_left(False)   # 松手 = 发送
+                return True
+            # 没找到绿钮（浮层异常）：移到 × 取消后松手，避免挂起录音
+            cancel_pt = _cancel_point(rect)
+            if cancel_pt:
+                _mouse_move_abs(*cancel_pt)
+                time.sleep(0.12)
+                _mouse_left(False)
+            return False
+        # alt 路径：SendInput Alt 抬起
         vk, scan = _record_key_code()
         _send_input_kb(vk, scan, True)
         return True

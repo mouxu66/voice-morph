@@ -162,90 +162,80 @@ def test_trigger_and_finish_alt_path(monkeypatch):
 
 
 def test_trigger_and_finish_mic_path(monkeypatch):
-    """mic 路径：PostMessage 失败回退 SendInput——移动+左键按下、抬起（松开即发送）。"""
-    kb_calls, mouse_calls = [], []
-    seq = []
+    """mic 路径：SendInput 按住话筒 → _finish_record 拖到绿钮松手发送。"""
+    kb_calls, mouse_calls, moves = [], [], []
     monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
     monkeypatch.setattr(wv, "_send_input_kb", lambda *a: kb_calls.append(a))
-    monkeypatch.setattr(wv, "_postmsg_mouse", lambda *a, **k: None)   # post 失败 → 回退
+    monkeypatch.setattr(wv, "_postmsg_mouse", lambda *a, **k: None)
     monkeypatch.setattr(wv, "_mouse_left", lambda down: mouse_calls.append(down))
-    monkeypatch.setattr(wv, "_mouse_move_abs", lambda x, y: seq.append((x, y)))
+    monkeypatch.setattr(wv, "_mouse_move_abs", lambda x, y: moves.append((x, y)))
     monkeypatch.setattr(wv, "_foreground_wechat", lambda: 999)
     monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (0, 0, 1600, 900))
+    monkeypatch.setattr(wv, "_find_mic_icon", lambda rect: None)  # 强制走 _mic_point
     monkeypatch.setattr(wv, "_find_render_hwnd", lambda hwnd: 888)
     monkeypatch.setattr(wv, "_exstyle_clear_transparent", lambda hwnd: 0x90120)
     monkeypatch.setattr(wv, "_exstyle_restore_if_needed", lambda: None)
     monkeypatch.setattr(wv, "_wait_record_overlay", lambda rect, timeout=6.0: True)
     wv._trigger_record()
-    assert wv._record_via == "realclick"         # 走真实点击路径
-    assert wv._exstyle_restore == (888, 0x90120)  # 摘样式待恢复
-    assert kb_calls == []                        # 不发键盘
-    assert mouse_calls == [True]                 # 左键按下
-    assert seq == [(1600 + wv.MIC_OFFSET_X, 900 + wv.MIC_OFFSET_Y)]
-    wv._finish_record()
-    assert mouse_calls == [True, False]          # 松开 → 微信自动发送
+    assert wv._record_via == "realclick"
+    assert wv._exstyle_restore == (888, 0x90120)
+    assert kb_calls == []
+    assert mouse_calls == [True]
+    assert moves == [(1600 + wv.MIC_OFFSET_X, 900 + wv.MIC_OFFSET_Y)]
+    monkeypatch.setattr(wv, "_find_green_send", lambda rect, retries=4: (1800, 1530))
+    monkeypatch.setattr(wv, "_cancel_point", lambda rect: None)
+    assert wv._finish_record() is True
+    assert moves[-1:] == [(1800, 1530)]   # 先移到绿钮
+    assert mouse_calls == [True, False]   # 再松手发送
 
 
-def test_trigger_mic_realclick_only_after_postmsg_overlay_timeout(monkeypatch):
-    """PostMessage 按下成功但浮层始终不出现 → 两次尝试后才走 realclick 兜底。"""
-    calls, mouse_calls = [], []
+def test_trigger_mic_realclick_releases_on_overlay_timeout(monkeypatch):
+    """SendInput 真按话筒后浮层始终不出现 → 自动松开并抛错，避免一直按住。"""
+    mouse_calls = []
     monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
-
-    def fake_post(point=None, down=False, up=False, target=None, lparam=None):
-        if down:
-            calls.append(("down", point))
-            return (0x1234, 0xabcd)
-        return (target, lparam)
-
-    monkeypatch.setattr(wv, "_postmsg_mouse", fake_post)
+    monkeypatch.setattr(wv, "_postmsg_mouse", lambda *a, **k: None)  # 已废弃
     monkeypatch.setattr(wv, "_mouse_left", lambda down: mouse_calls.append(down))
     monkeypatch.setattr(wv, "_mouse_move_abs", lambda x, y: None)
     monkeypatch.setattr(wv, "_foreground_wechat", lambda: 1)
     monkeypatch.setattr(wv, "_ensure_onscreen", lambda hwnd: None)
     monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (0, 0, 1600, 900))
     monkeypatch.setattr(wv, "_find_mic_icon", lambda rect: (1443, 837))
-    waits = {"n": 0}
-
-    def fake_wait(rect, timeout=6.0):
-        waits["n"] += 1
-        return waits["n"] >= 3   # postmsg 两次超时，realclick 后第三次出现
-
-    monkeypatch.setattr(wv, "_wait_record_overlay", fake_wait)
+    monkeypatch.setattr(wv, "_wait_record_overlay", lambda rect, timeout=6.0: False)
     monkeypatch.setattr(wv, "_find_render_hwnd", lambda hwnd: 555)
     monkeypatch.setattr(wv, "_exstyle_clear_transparent", lambda hwnd: 0x20)
     monkeypatch.setattr(wv, "_exstyle_restore_if_needed", lambda: None)
-    wv._trigger_record()
-    assert calls == [("down", (1443, 837)), ("down", (1443, 837))]   # 补发过一次
-    assert mouse_calls == [True]                                     # 最终真实按下
-    assert wv._record_via == "realclick"
+    with pytest.raises(RuntimeError, match="录音未能启动"):
+        wv._trigger_record()
+    assert mouse_calls == [True, False]          # 按住 + 超时后松开
+    assert wv._record_via is None
 
 
-def test_trigger_mic_prefers_postmessage(monkeypatch):
-    """PostMessage 是主路径：按下/抬起走窗口消息，不碰真实鼠标。"""
-    calls = []
-    mouse_calls = []
+def test_trigger_and_finish_mic_drag_to_green(monkeypatch):
+    """mic 路径：SendInput 按住话筒 → _finish_record 拖到绿钮 → 松手发送。"""
+    mouse_calls, moves = [], []
     monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
-
-    def fake_post(point=None, down=False, up=False, target=None, lparam=None):
-        if down:
-            calls.append(("down", point))
-            return (0x1234, 0x0609abcd)
-        calls.append(("up", target, lparam))
-        return (target, lparam)
-
-    monkeypatch.setattr(wv, "_postmsg_mouse", fake_post)
+    monkeypatch.setattr(wv, "_postmsg_mouse", lambda *a, **k: None)
     monkeypatch.setattr(wv, "_mouse_left", lambda down: mouse_calls.append(down))
+    monkeypatch.setattr(wv, "_mouse_move_abs", lambda x, y: moves.append((x, y)))
     monkeypatch.setattr(wv, "_foreground_wechat", lambda: 1)
     monkeypatch.setattr(wv, "_ensure_onscreen", lambda hwnd: None)
     monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (0, 0, 1600, 900))
     monkeypatch.setattr(wv, "_find_mic_icon", lambda rect: (1443, 837))
     monkeypatch.setattr(wv, "_wait_record_overlay", lambda rect, timeout=6.0: True)
+    monkeypatch.setattr(wv, "_find_render_hwnd", lambda hwnd: 555)
+    monkeypatch.setattr(wv, "_exstyle_clear_transparent", lambda hwnd: 0x20)
+    monkeypatch.setattr(wv, "_exstyle_restore_if_needed", lambda: None)
+
     wv._trigger_record()
-    assert calls == [("down", (1443, 837))]      # 按下用模板匹配坐标
-    assert mouse_calls == []                     # 不碰真实鼠标
+    assert wv._record_via == "realclick"
+    assert mouse_calls == [True]          # 只按不松
+    assert moves == [(1443, 837)]
+
     monkeypatch.setattr(wv, "_find_green_send", lambda rect, retries=4: (1800, 1530))
-    wv._finish_record()
-    assert calls[-1] == ("up", 0x1234, 0x0609abcd) or calls[-2] == ("down", (1800, 1530))
+    monkeypatch.setattr(wv, "_cancel_point", lambda rect: None)  # 确保不发取消
+    assert wv._finish_record() is True
+    assert moves[-1:] == [(1800, 1530)]   # 先移到绿钮
+    assert mouse_calls == [True, False]   # 然后松手
 
 
 def test_trigger_mic_prefers_template_match(monkeypatch):
@@ -471,27 +461,19 @@ def test_ensure_onscreen_rescues_fully_offscreen_top(monkeypatch):
     assert moves == [(639, 0)]           # 顶边拉回工作区顶部
 
 
-# ---------------- 录音浮层：灰度差分判据（2026-09-09 标定） ----------------
+# ---------------- 录音浮层：绿钮判据（2026-09-09 真机验证） ----------------
 
-def test_overlay_diff_detects_change(monkeypatch):
-    """界面变化超过阈值 → 判定浮层出现。"""
-    base = np.full((260, 560), 200, dtype=np.int16)
-    changed = base.copy()
-    changed[:] = 60                      # 差分 140 >> 阈值 1.0
-    frames = iter([base, changed])
-
-    monkeypatch.setattr(wv, "_grab_bottom_gray", lambda rect: next(frames))
+def test_wait_record_overlay_true_when_green_present(monkeypatch):
+    """绿钮出现 → 判定录音浮层已起。"""
+    monkeypatch.setattr(wv, "_find_green_send", lambda rect, retries=1: (1844, 1531))
     monkeypatch.setattr(wv.time, "sleep", lambda s: None)
-    wv._snapshot_overlay_baseline((0, 0, 1938, 1600))
     assert wv._wait_record_overlay((0, 0, 1938, 1600), timeout=1.0) is True
 
 
-def test_overlay_diff_ignores_static(monkeypatch):
-    """界面完全没变 → 不算浮层（实测静态差分恒为 0.000）。"""
-    base = np.full((260, 560), 200, dtype=np.int16)
-    monkeypatch.setattr(wv, "_grab_bottom_gray", lambda rect: base)
+def test_wait_record_overlay_false_when_green_absent(monkeypatch):
+    """没有绿钮 → 判定浮层未起。"""
+    monkeypatch.setattr(wv, "_find_green_send", lambda rect, retries=1: None)
     monkeypatch.setattr(wv.time, "sleep", lambda s: None)
-    wv._snapshot_overlay_baseline((0, 0, 1938, 1600))
     assert wv._wait_record_overlay((0, 0, 1938, 1600), timeout=1.0) is False
 
 
