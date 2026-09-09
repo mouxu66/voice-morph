@@ -28,12 +28,15 @@
 """
 
 import json
+import logging
 import os
 import subprocess
 import threading
 import time
 import wave
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import soundfile as sf
@@ -47,6 +50,11 @@ router = APIRouter(prefix="/api/wechat", tags=["wechat"])
 
 AUDIO_PS1 = cfg.ROOT / "m2_server" / "audio_config.ps1"
 RVC_VENV_PY = cfg.RVC_ROOT / ".venv" / "Scripts" / "python.exe"
+
+# 子进程一律隐藏控制台窗口（Windows CREATE_NO_WINDOW）。
+# 弹出的 PowerShell/Python 蓝窗会短暂遮挡微信右下角，让 _find_green_send
+# 截图截到控制台 → 浮层检测误判 → 自动发送整体降级（2026-09-09 实测事故）。
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 # 输出目标（cascade_stream 同款关键词）：wav 播进 CABLE Input，微信从 CABLE Output 录
 OUTPUT_DEVICE_KEYWORD = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "CABLE Input")
 # 发语音方式：mic=鼠标长按输入框右下角话筒图标（默认，官方交互）
@@ -76,9 +84,13 @@ def _run_audio(action: str) -> dict:
     try:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-File", str(AUDIO_PS1), "-action", action],
+             "-WindowStyle", "Hidden", "-File", str(AUDIO_PS1), "-action", action],
             capture_output=True, text=True, timeout=120,
             encoding="utf-8", errors="replace",
+            # 关键：不弹控制台窗口。实测（2026-09-09）弹出的 PowerShell 蓝窗会
+            # 短暂遮挡微信右下角，导致 _find_green_send 截图截到控制台 →
+            # 浮层检测连续误判 → 自动发送整体降级为手动。
+            creationflags=_NO_WINDOW,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"audio_config {action} 执行超时(120s)")
@@ -131,6 +143,7 @@ def _play_to_cable(wav: Path, duration_s: float) -> None:
             [str(RVC_VENV_PY), "-c", _PLAY_SCRIPT, str(wav), OUTPUT_DEVICE_KEYWORD,
              str(LEAD_S), str(TAIL_S)],
             capture_output=True, text=True, timeout=duration_s + 30,
+            creationflags=_NO_WINDOW,   # 同上：播放期间不得弹出控制台遮挡微信
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError("播放到 CABLE Input 超时")
@@ -392,6 +405,18 @@ def _ncc_match(img: np.ndarray, tpl: np.ndarray) -> tuple[tuple[int, int] | None
 
 # 话筒图标模板（从真实微信窗口截图裁剪；缺失/不匹配时回退固定偏移）
 MIC_TEMPLATE = cfg.ROOT / "m2_server" / "assets" / "wechat_mic_template.png"
+TEMPLATE_DIR = cfg.ROOT / "m2_server" / "assets"
+
+
+def _mic_templates() -> list[Path]:
+    """所有话筒模板（assets/wechat_mic_template*.png）。
+
+    实测（2026-09-09）：微信输入框右下角的图标组会随界面状态左右漂移约 20px，
+    且图标渲染细节随之变化——单一模板换一种界面状态就掉到 0.33 分。
+    因此支持多模板，取最高分；命中率不足时由 _mic_point 固定偏移兜底。
+    """
+    files = sorted(TEMPLATE_DIR.glob("wechat_mic_template*.png"))
+    return files or [MIC_TEMPLATE]
 
 
 def _find_mic_icon(rect: tuple[int, int, int, int], thresh: float = 0.75) -> tuple[int, int] | None:
@@ -399,14 +424,23 @@ def _find_mic_icon(rect: tuple[int, int, int, int], thresh: float = 0.75) -> tup
     try:
         from PIL import Image as PILImage
         from PIL import ImageGrab
-        tpl_img = PILImage.open(MIC_TEMPLATE).convert("L")
         l, t, r, b = rect
         box = (max(0, r - 340), max(0, b - 150), r, b)   # 搜索区：右下 340x150
-        shot = ImageGrab.grab(bbox=box).convert("L")
-        pos, score = _ncc_match(np.asarray(shot), np.asarray(tpl_img))
-        if pos is None or score < thresh:
+        shot = np.asarray(ImageGrab.grab(bbox=box).convert("L"))
+        best: tuple[float, tuple[int, int], tuple[int, int]] | None = None
+        for tpl_path in _mic_templates():
+            try:
+                tpl_img = PILImage.open(tpl_path).convert("L")
+            except Exception:
+                continue
+            pos, score = _ncc_match(shot, np.asarray(tpl_img))
+            if pos is None:
+                continue
+            if best is None or score > best[0]:
+                best = (score, pos, tpl_img.size)
+        if best is None or best[0] < thresh:
             return None
-        tw, thh = tpl_img.size
+        score, pos, (tw, thh) = best
         cx = box[0] + pos[0] + tw // 2    # 匹配位置 + 模板中心
         cy = box[1] + pos[1] + thh // 2
         return cx, cy
@@ -445,14 +479,18 @@ def _ensure_onscreen(hwnd: int) -> None:
     l, t, r, b = _window_rect(hwnd)
     wa = mi.rcWork
     dx = dy = 0
+    # 优先级：底边 > 右边 > 顶边/左边。
+    # 话筒在窗口右下角，底边被（自动隐藏的）任务栏压住会直接导致点击失效；
+    # 而最大化窗口的 top 常为负值（Windows 把边框裁到屏外），此时若为了
+    # 「顶边不溢出」把窗口往下推，反而会把底边推出屏幕 —— 实测踩过（2026-09-09）。
     if b > wa.bottom:
         dy = wa.bottom - b
+    elif t < wa.top and b <= wa.top:      # 仅当窗口整体在上边界之外才拉回
+        dy = wa.top - t
     if r > wa.right:
         dx = wa.right - r
-    if l + dx < wa.left:
+    elif l < wa.left and r <= wa.left:    # 仅当窗口整体在左边界之外才拉回
         dx = wa.left - l
-    if t + dy < wa.top:
-        dy = wa.top - t
     if dx or dy:
         # SWP_NOSIZE(0x1) | SWP_NOZORDER(0x4) | SWP_NOACTIVATE(0x10)
         u.SetWindowPos(hwnd, 0, l + dx, t + dy, 0, 0, 0x1 | 0x4 | 0x10)
@@ -520,16 +558,55 @@ def _foreground_wechat() -> int:
     return hwnd
 
 
-def _wait_record_overlay(rect: tuple[int, int, int, int], timeout: float = 6.0) -> bool:
-    """轮询等待录音浮层出现（以浮层上的绿色发送钮为标志）。
+# 录音浮层判定：灰度差分阈值。
+# 实测标定（2026-09-09）：静态界面相邻快照差分恒为 0.000；浮层弹出后稳定在
+# 2.329 —— 信噪比极佳，取 1.0 留 5 倍余量。
+# 注意：不能用「绿色发送钮是否存在」判据——微信输入框的绿色「发送(S)」按钮是
+# 常驻的，非录音态也能匹配到，会导致假阳性（以为在录音，实际录到静音）。
+OVERLAY_DIFF = float(os.environ.get("VM_WECHAT_OVERLAY_DIFF", "1.0"))
+_overlay_baseline: np.ndarray | None = None
 
-    实测：PostMessage DOWN 触发录音有随机延迟（0~几十秒，微信 UI 忙闲而定），
-    必须确认浮层出现后才能开始播放音频，否则录到的是静音。
+
+def _grab_bottom_gray(rect: tuple[int, int, int, int]) -> np.ndarray:
+    """截取窗口右下角（浮层出现的位置）灰度图，用于差分比较。"""
+    from PIL import ImageGrab
+    l, t, r, b = rect
+    u = _user32()
+    sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+    box = (max(0, min(r, sw) - 560), max(0, min(b, sh) - 260), min(r, sw), min(b, sh))
+    return np.asarray(ImageGrab.grab(bbox=box).convert("L")).astype(np.int16)
+
+
+def _snapshot_overlay_baseline(rect: tuple[int, int, int, int]) -> None:
+    """按下话筒前存一张基线，供 _wait_record_overlay 做差分。"""
+    global _overlay_baseline
+    try:
+        _overlay_baseline = _grab_bottom_gray(rect)
+    except Exception as e:      # 截图失败不该阻断发送
+        logger.warning("[wechat] 基线快照失败，浮层检测将退化为绿色按钮判据: %s", e)
+        _overlay_baseline = None
+
+
+def _wait_record_overlay(rect: tuple[int, int, int, int], timeout: float = 6.0) -> bool:
+    """轮询等待录音浮层出现（与按下前的基线做灰度差分）。
+
+    实测：PostMessage DOWN 触发录音有随机延迟（UI 忙闲而定），必须确认浮层
+    真的出现后再播放音频，否则录到的是静音。
     """
+    base = _overlay_baseline
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if _find_green_send(rect, retries=1):
-            return True
+        if base is None:
+            # 没有基线（截图不可用）：退化为绿钮判据，宁可放过不可漏掉
+            if _find_green_send(rect, retries=1):
+                return True
+        else:
+            try:
+                cur = _grab_bottom_gray(rect)
+                if cur.shape == base.shape and float(np.abs(cur - base).mean()) > OVERLAY_DIFF:
+                    return True
+            except Exception:
+                pass
         time.sleep(0.3)
     return False
 
@@ -554,6 +631,7 @@ def _trigger_record() -> None:
         point = _find_mic_icon(rect)           # 模板匹配优先（适应窗口尺寸/位置变化）
         if point is None:
             point = _mic_point(rect)           # 回退：相对右下角固定偏移
+        _snapshot_overlay_baseline(rect)       # 按下前存基线（判据用差分，不用绿钮）
         # 主路：PostMessage 直投窗口过程（不动用户光标）
         res = _postmsg_mouse(point, down=True)
         if res:
@@ -595,14 +673,20 @@ def _find_green_send(rect: tuple[int, int, int, int], retries: int = 4) -> tuple
     """
     from PIL import ImageGrab
     l, t, r, b = rect
+    # 取域必须 clamp 到屏幕内：bbox 超出屏幕时 PIL 会把屏外部分填黑，
+    # 若绿钮正好落在填黑区就永远检测不到（最大化窗口底边常溢出几像素）。
+    u = _user32()
+    sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+    box = (max(0, min(r, sw) - 560), max(0, min(b, sh) - 140), min(r, sw), min(b, sh))
+    if box[2] <= box[0] or box[3] <= box[1]:
+        return None
     for _ in range(retries):
-        img = np.asarray(ImageGrab.grab(bbox=(max(0, r - 560), max(0, b - 140), r, b))
-                         .convert("RGB")).astype(int)
+        img = np.asarray(ImageGrab.grab(bbox=box).convert("RGB")).astype(int)
         green = (img[:, :, 1] > 150) & (img[:, :, 0] < 120) & \
                 (img[:, :, 2] > 80) & (img[:, :, 2] < 180)
         ys, xs = np.nonzero(green)
         if len(xs) > 50:
-            return int(xs.mean()) + (r - 560), int(ys.mean()) + (b - 140)
+            return int(xs.mean()) + box[0], int(ys.mean()) + box[1]
         time.sleep(0.4)
     return None
 

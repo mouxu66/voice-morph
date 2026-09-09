@@ -407,3 +407,98 @@ def test_find_green_send_miss(monkeypatch):
 def test_cancel_point_offset():
     cx, cy = wv._cancel_point((0, 0, 1938, 1609))
     assert (cx, cy) == (1938 - 157 - 218, 1609 - 63)
+
+
+# ---------------- _ensure_onscreen 边界（2026-09-09 真机踩坑回归） ----------------
+
+def _fake_user32_for_onscreen(monkeypatch, workarea, moves):
+    """构造最小 user32 桩：记录 SetWindowPos 调用。"""
+
+    class FakeUser32:
+        def __init__(self):
+            self.monitor = workarea
+            self.moves = moves
+
+        def MonitorFromWindow(self, hwnd, flag):
+            return 1
+
+        def GetMonitorInfoW(self, hmon, mi):
+            import ctypes
+            # mi 是 byref 包装，必须 cast 回 MONITORINFO 才能取字段
+            info = ctypes.cast(mi, ctypes.POINTER(type(mi._obj))).contents
+            l, t, r, b = self.monitor
+            info.rcWork.left, info.rcWork.top = l, t
+            info.rcWork.right, info.rcWork.bottom = r, b
+            return 1
+
+        def SetWindowPos(self, hwnd, _a, x, y, _w, _h, _f):
+            self.moves.append((x, y))
+            return 1
+
+    fake = FakeUser32()
+    monkeypatch.setattr(wv, "_user32", lambda: fake)
+    return fake
+
+
+def test_ensure_onscreen_pulls_bottom_in(monkeypatch):
+    """底边超出工作区 → 上移，底边贴合工作区。"""
+    moves: list = []
+    _fake_user32_for_onscreen(monkeypatch, (0, 0, 2560, 1600), moves)
+    monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (639, 0, 1938, 1609))
+    wv._ensure_onscreen(1)
+    assert moves == [(639, -9)]          # 上移 9px，底边回到 1600
+
+
+def test_ensure_onscreen_does_not_push_down_maximized(monkeypatch):
+    """回归：最大化窗口 top 为负但底边正常时，不许为了拉回顶边把底边推出屏幕。
+
+    实测事故：窗口 (639,-9,1938,1600) 被旧逻辑「修正」成 (639,0,1938,1609)，
+    底边反而超出屏幕 9px，话筒区域被裁导致模板匹配失败（score -0.07）。
+    """
+    moves: list = []
+    _fake_user32_for_onscreen(monkeypatch, (0, 0, 2560, 1600), moves)
+    monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (639, -9, 1938, 1600))
+    wv._ensure_onscreen(1)
+    assert moves == []                   # 一动不动
+
+
+def test_ensure_onscreen_rescues_fully_offscreen_top(monkeypatch):
+    """窗口整体在工作区上方之外 → 拉回。"""
+    moves: list = []
+    _fake_user32_for_onscreen(monkeypatch, (0, 0, 2560, 1600), moves)
+    monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (639, -1700, 1938, -100))
+    wv._ensure_onscreen(1)
+    assert moves == [(639, 0)]           # 顶边拉回工作区顶部
+
+
+# ---------------- 录音浮层：灰度差分判据（2026-09-09 标定） ----------------
+
+def test_overlay_diff_detects_change(monkeypatch):
+    """界面变化超过阈值 → 判定浮层出现。"""
+    base = np.full((260, 560), 200, dtype=np.int16)
+    changed = base.copy()
+    changed[:] = 60                      # 差分 140 >> 阈值 1.0
+    frames = iter([base, changed])
+
+    monkeypatch.setattr(wv, "_grab_bottom_gray", lambda rect: next(frames))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    wv._snapshot_overlay_baseline((0, 0, 1938, 1600))
+    assert wv._wait_record_overlay((0, 0, 1938, 1600), timeout=1.0) is True
+
+
+def test_overlay_diff_ignores_static(monkeypatch):
+    """界面完全没变 → 不算浮层（实测静态差分恒为 0.000）。"""
+    base = np.full((260, 560), 200, dtype=np.int16)
+    monkeypatch.setattr(wv, "_grab_bottom_gray", lambda rect: base)
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    wv._snapshot_overlay_baseline((0, 0, 1938, 1600))
+    assert wv._wait_record_overlay((0, 0, 1938, 1600), timeout=1.0) is False
+
+
+def test_overlay_falls_back_to_green_when_no_baseline(monkeypatch):
+    """截图不可用（基线为 None）→ 退化为绿钮判据，宁可放过不可漏掉。"""
+    wv._overlay_baseline = None
+    monkeypatch.setattr(wv, "_find_green_send", lambda rect, retries=1: (1863, 1436))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    assert wv._wait_record_overlay((0, 0, 1938, 1600), timeout=1.0) is True
+    wv._overlay_baseline = None          # 还原，避免污染其他用例
