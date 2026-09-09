@@ -21,6 +21,14 @@ export interface DiagnoseInfo {
   items: DiagnoseItem[];
 }
 
+// 发送链路自检（/api/audio/send_chain）；items 复用 DiagnoseItem 结构
+export interface SendChainInfo {
+  ok: boolean;
+  all_ok: boolean;
+  stale: boolean;
+  items: DiagnoseItem[];
+}
+
 export interface VoiceInfo {
   id: string;
   display_name?: string;

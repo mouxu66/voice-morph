@@ -1,4 +1,4 @@
-import type { ClipItem, DiagnoseInfo, HealthInfo, VideoItem, VoiceInfo, VoiceQc } from "../types";
+import type { ClipItem, DiagnoseInfo, HealthInfo, SendChainInfo, VideoItem, VoiceInfo, VoiceQc } from "../types";
 
 // 后端统一挂在 /api 前缀下。
 // 开发模式：走 vite proxy（/api -> 8000），用相对地址；
@@ -470,6 +470,11 @@ export async function applyAudioConfig(): Promise<AudioConfigResult> {
 
 export async function restoreAudioConfig(): Promise<AudioConfigResult> {
   return jsonFetch<AudioConfigResult>("/audio/restore", { method: "POST" });
+}
+
+/** 发送链路自检（A1）：只读检查虚拟声卡/默认设备/备份残留，items 与 /diagnose 同构。 */
+export async function sendChainCheck(): Promise<SendChainInfo> {
+  return jsonFetch<SendChainInfo>("/audio/send_chain");
 }
 
 // ---- RVC 袋鼠训练集（Qwen3-TTS 批量生成） ----

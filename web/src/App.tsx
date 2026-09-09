@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react"
-import { Activity, Download, Eye, EyeOff, HardDrive, Moon, Monitor, RotateCcw, Settings2, Sparkles, Stethoscope, Sun } from "lucide-react"
+import { Activity, Cable, Download, Eye, EyeOff, HardDrive, Moon, Monitor, RotateCcw, Settings2, Sparkles, Stethoscope, Sun } from "lucide-react"
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { getHealth, listVoices, rvcLiveReset } from "@/api/client"
 import { StudioNav } from "@/components/voice-studio/StudioNav"
 import { EnvHealth } from "@/components/EnvHealth"
+import { SendChainCheck } from "@/components/SendChainCheck"
 import { StoragePanel } from "@/components/StoragePanel"
 import { PetGuide } from "@/components/PetGuide"
 import { UpdateDialog } from "@/components/UpdateDialog"
@@ -56,6 +57,7 @@ function AppChrome({
   const [theme, setTheme] = useState<ThemeMode>(getStoredTheme())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [envOpen, setEnvOpen] = useState(false)
+  const [chainOpen, setChainOpen] = useState(false)
   const [storageOpen, setStorageOpen] = useState(false)
   const [restoring, setRestoring] = useState(false)
   const [restoreMsg, setRestoreMsg] = useState("")
@@ -161,6 +163,9 @@ function AppChrome({
               <span className={`h-2 w-2 rounded-full ${online ? "bg-primary animate-pulse" : serviceState === "starting" ? "bg-yellow-500 animate-pulse" : "bg-destructive"}`} />
               <span className="hidden sm:inline">{online ? "本地服务在线" : serviceState === "starting" ? "服务启动中…" : "本地服务离线"}</span>
             </button>
+            <button type="button" onClick={() => setChainOpen(true)} className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-card text-muted-foreground shadow-md transition hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label="发送链路自检" title="发送链路自检：变声能不能送进微信/QQ/游戏">
+              <Cable className="h-4 w-4" />
+            </button>
             <button type="button" onClick={() => setEnvOpen(true)} className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-card text-muted-foreground shadow-md transition hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label="环境体检">
               <Stethoscope className="h-4 w-4" />
             </button>
@@ -173,6 +178,7 @@ function AppChrome({
       </header>
       <div className="fixed inset-x-0 top-16 z-10 border-b border-border bg-card/80 py-1.5 backdrop-blur-xl lg:hidden"><StudioNav /></div>
       <EnvHealth open={envOpen} onClose={() => setEnvOpen(false)} />
+      <SendChainCheck open={chainOpen} onClose={() => setChainOpen(false)} />
       <StoragePanel open={storageOpen} onClose={() => setStorageOpen(false)} />
       <UpdateDialog
         open={updateOpen}
