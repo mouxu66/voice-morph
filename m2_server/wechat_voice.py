@@ -77,6 +77,111 @@ AUTO_FALLBACK = os.environ.get("VM_WECHAT_AUTO_FALLBACK", "1") == "1"
 
 _send_lock = threading.Lock()
 _play_proc = None   # 正在向 CABLE 播放的子进程，供 /stop_play 中止
+PLAY_WORKER_ENABLED = os.environ.get("VM_WECHAT_PLAY_WORKER", "1") == "1"
+PLAY_WORKER_SCRIPT = cfg.ROOT / "m2_server" / "play_worker.py"
+_play_worker_proc = None   # 常驻播放 worker（play_worker.py），复用同进程省冷导入
+
+
+class _PlayWorkerHandle:
+    """对常驻播放 worker 的一次播放会话，伪装成 subprocess.Popen 供 _wait_play_start/_wait_play_done 复用。
+
+    发送已序列化（_send_lock），所以 worker 的 stdout 行协议按命令顺序消费即可：
+    本 handle 负责读自己这条命令的 playing / done（或 error）。
+    """
+
+    def __init__(self, proc: "subprocess.Popen"):
+        self.proc = proc
+
+    @property
+    def stdout(self):
+        return self.proc.stdout
+
+    def poll(self):
+        return self.proc.poll()
+
+    def kill(self):
+        # 错误路径：杀掉整个常驻 worker（下次发送自动重启，会再付一次冷导入，可接受）。
+        _stop_play_worker()
+
+    def wait(self, timeout: float | None = None):
+        deadline = time.time() + (timeout or 60.0)
+        while time.time() < deadline:
+            line = self.proc.stdout.readline() if self.proc.stdout else ""
+            if not line:
+                raise RuntimeError("播放 worker 已退出（stdout 关闭）")
+            if '"done"' in line:
+                return 0
+            if '"error"' in line:
+                msg = ""
+                try:
+                    msg = json.loads(line).get("msg", "")
+                except Exception:
+                    pass
+                raise RuntimeError(f"播放 worker 失败: {msg}")
+        raise RuntimeError("播放 worker 等待 done 超时")
+
+
+def _get_play_worker() -> "subprocess.Popen | None":
+    """拿到常驻播放 worker（懒启动 + 复用）；失败返回 None（调用方退回一次性子进程）。"""
+    global _play_worker_proc
+    if _play_worker_proc is not None and _play_worker_proc.poll() is None:
+        return _play_worker_proc
+    try:
+        if not RVC_VENV_PY.exists():
+            raise RuntimeError(f"找不到 RVC venv 解释器: {RVC_VENV_PY}")
+        if not PLAY_WORKER_SCRIPT.exists():
+            raise RuntimeError(f"找不到 play_worker.py: {PLAY_WORKER_SCRIPT}")
+        proc = subprocess.Popen(
+            [str(RVC_VENV_PY), str(PLAY_WORKER_SCRIPT), OUTPUT_DEVICE_KEYWORD],
+            stdout=subprocess.PIPE, stdin=subprocess.PIPE, text=True, bufsize=1,
+            creationflags=_NO_WINDOW,
+        )
+        line = proc.stdout.readline() if proc.stdout else ""
+        if not line or '"ready"' not in line:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            raise RuntimeError(f"play worker 未就绪: {line[:200]!r}")
+        _play_worker_proc = proc
+        logger.info("[wechat] 播放 worker 已就绪（常驻，省冷导入）")
+        return proc
+    except Exception as e:
+        logger.warning("[wechat] 播放 worker 启动失败，回退一次性播放: %s", e)
+        return None
+
+
+def _stop_play_worker() -> None:
+    """杀掉常驻播放 worker（错误路径 / 重启用）。"""
+    global _play_worker_proc
+    proc = _play_worker_proc
+    _play_worker_proc = None
+    if proc is None:
+        return
+    try:
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        proc.kill()
+    except Exception:
+        pass
+
+
+def _persist_verify(verify_steps: list[str]) -> None:
+    """把后台 UIA 校验结果写回发送历史最后一条（异步线程调用，不阻塞返回）。
+
+    发送已序列化，最后一条必是本次刚落的历史；发完才起本线程，故无竞态。
+    """
+    try:
+        if not HISTORY_FILE.exists():
+            return
+        hist = json.loads(HISTORY_FILE.read_text("utf-8"))
+        if hist:
+            hist[-1].setdefault("verify", []).extend(verify_steps)
+            HISTORY_FILE.write_text(json.dumps(hist, ensure_ascii=False), "utf-8")
+    except Exception as e:
+        logger.debug("[wechat] 写回校验结果失败: %s", e)
 
 # -------- UIA 结构化访问（方案 A，2026-09-10）--------
 # 微信 4.x 聊天区自绘，UIA 默认只有 Qt 空壳；热激活后能拿到带矩形的结构化控件。
@@ -218,8 +323,8 @@ print("DONE", flush=True)
 '''
 
 
-def _start_play(wav: Path) -> subprocess.Popen:
-    """后台启动播放子进程（不阻塞），返回 proc。真正开播时 stdout 打一行 PLAYING。"""
+def _start_play_oneshot(wav: Path) -> subprocess.Popen:
+    """一次性播放子进程（回退路径）：冷导入 numpy/sounddevice/soundfile 后播 wav。"""
     if not RVC_VENV_PY.exists():
         raise RuntimeError(f"找不到 RVC venv 解释器: {RVC_VENV_PY}（sounddevice 在该环境）")
     return subprocess.Popen(
@@ -230,14 +335,35 @@ def _start_play(wav: Path) -> subprocess.Popen:
     )
 
 
-def _wait_play_start(proc: subprocess.Popen, timeout: float = 40.0) -> bool:
-    """阻塞等到子进程真正开始播放（stdout 出 PLAYING）。超时/崩溃返回 False。
+def _start_play(wav: Path):
+    """启动播放：优先复用常驻 worker（省 ~2.5-3s 冷导入），失败退回一次性子进程。
 
+    返回对象同时满足 _wait_play_start（读 stdout 的 playing 行）与 _wait_play_done
+    （wait 到 done）的契约——worker 走 _PlayWorkerHandle，一次性走真实 Popen。
+    """
+    if PLAY_WORKER_ENABLED:
+        proc = _get_play_worker()
+        if proc is not None:
+            cmd = json.dumps({"wav": str(wav), "lead": PLAY_LEAD_S, "tail": TAIL_S})
+            try:
+                proc.stdin.write(cmd + "\n")
+                proc.stdin.flush()
+                return _PlayWorkerHandle(proc)
+            except Exception as e:
+                logger.warning("[wechat] 播放命令发送失败，回退一次性播放: %s", e)
+                _stop_play_worker()
+    return _start_play_oneshot(wav)
+
+
+def _wait_play_start(proc, timeout: float = 40.0) -> bool:
+    """阻塞等到子进程/worker 真正开始播放（stdout 出 playing 信号）。超时/崩溃返回 False。
+
+    一次性子进程打 `PLAYING`；常驻 worker 打 `{"type":"playing"}`——都含 "play" 子串。
     子进程起不来时 stdout 会关闭，readline() 立即返回空串，不会卡死。
     """
     try:
         line = proc.stdout.readline() if proc.stdout else ""
-        return "PLAYING" in (line or "")
+        return bool(line) and "play" in (line or "").lower()
     except Exception:
         return False
 
@@ -735,7 +861,7 @@ def _wait_record_overlay(rect: tuple[int, int, int, int], timeout: float = 6.0) 
     return False
 
 
-def _trigger_record() -> None:
+def _trigger_record(ui: dict | None = None) -> None:
     """开始录制语音消息。
 
     mic 路径（默认）：摘 WS_EX_TRANSPARENT + SendInput **单击**语音按钮，微信
@@ -745,15 +871,24 @@ def _trigger_record() -> None:
     反而起不了浮层——旧实现（按住等松手）已废弃。
 
     alt 路径：SendInput 按下 Alt 键（_finish_record 再抬起）。
+
+    ui：可选，_do_send 并行准备阶段算好的 {hwnd, rect, mic}，命中则跳过
+        前台化/找话筒（与播放子进程冷导入并行，省 ~1s）。
     """
     global _postmsg_ctx, _rect_ctx, _record_via, _exstyle_restore
     _postmsg_ctx = None
     _rect_ctx = None
     _record_via = None
     if RECORD_METHOD == "mic":
-        hwnd = _foreground_wechat()
-        _ensure_onscreen(hwnd)                 # 防止窗口底边超屏被任务栏遮挡
-        rect = _window_rect(hwnd)
+        if ui and ui.get("hwnd"):
+            hwnd = ui["hwnd"]
+            rect = ui["rect"]
+            cached_mic = ui.get("mic")
+        else:
+            hwnd = _foreground_wechat()
+            _ensure_onscreen(hwnd)                 # 防止窗口底边超屏被任务栏遮挡
+            rect = _window_rect(hwnd)
+            cached_mic = None
         _rect_ctx = rect
         # 首选 UIA 点击（2026-09-10 方案 A）：UIA 走 COM 调用，不经系统输入队列，
         # 天然不受 WS_EX_TRANSPARENT 点击穿透影响，也不用摘样式位、不依赖坐标。
@@ -765,7 +900,7 @@ def _trigger_record() -> None:
             except Exception as e:
                 logger.debug("[wechat] UIA 点击语音按钮失败，回退像素链路: %s", e)
         # 降级：摘 WS_EX_TRANSPARENT + SendInput 单击语音按钮
-        point = _find_mic_icon(rect) or _mic_point(rect)
+        point = cached_mic or (_find_mic_icon(rect) or _mic_point(rect))
         # 摘样式（必做）+ SendInput 单击语音按钮
         render = _find_render_hwnd(hwnd)
         old_ex = _exstyle_clear_transparent(render)
@@ -1267,40 +1402,68 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
             _run_audio("apply")
             steps.append(f"[{time.time()-_tw:.1f}s] 麦克风已切到 CABLE Output")
 
-        # 3) 先把播放子进程拉起来（后台）。它 import 重库要 2~3s，这段绝不能落在录音区间里，
-        #    否则语音开头会多出 2~3s 空白（实测 2.7s 音频被录成 7"）。
+        # 3) 起播放（常驻 worker 复用 / 一次性子进程）。冷导入若发生，与下面的 UI 准备并行。
+        _t_play = time.time()
         proc = _start_play(wav)
-        if _wait_play_start(proc):
-            steps.append(f"[{time.time()-_tw:.1f}s] 播放已开始（含 {PLAY_LEAD_S}s 静音头，覆盖录音启动延迟）")
+
+        # --- 并行：播放子进程冷导入（worker 已预热则≈0）期间，把微信前台化 + 找话筒算好 ---
+        # 这段 UI 准备 ~0.5-1s，原本串行排在切卡/导入之后纯等；现在与播放导入重叠，省 ~1s。
+        _ui: dict = {}
+
+        def _prep_ui() -> None:
+            try:
+                h = _foreground_wechat()
+                _ensure_onscreen(h)                      # 防止窗口底边超屏被任务栏遮挡
+                r = _window_rect(h)
+                _ui["hwnd"] = h
+                _ui["rect"] = r
+                _ui["mic"] = _find_mic_icon(r) or _mic_point(r)
+            except Exception as e:
+                _ui["err"] = e
+
+        _prep_t = threading.Thread(target=_prep_ui, daemon=True)
+        _prep_t.start()
+        play_ready = _wait_play_start(proc)             # 主线程等导入/ready（与 _prep_ui 并行）
+        _prep_t.join()
+        if play_ready:
+            steps.append(f"[{time.time()-_tw:.1f}s] 播放就绪（冷导入 {time.time()-_t_play:.1f}s，"
+                         f"已与 UI 准备并行）")
         else:
             steps.append("⚠ 未等到播放开始信号，仍按原计划录音（开头可能被削）")
 
-        # 4) 微信前台 → 点语音按钮开始录制（此刻静音头正在播，正好盖住微信启动延迟）
-        _trigger_record()
+        # 4) 点语音按钮开始录制（UI 已并行准备好，直接复用；准备失败则退回原路径重算）
+        _trigger_record(ui=_ui if not _ui.get("err") else None)
         if RECORD_METHOD == "mic":
             steps.append(f"[{time.time()-_tw:.1f}s] " + ("UIA 已点击语音按钮，开始录音" if _record_via == "uia"
                          else "已点击话筒图标，开始录音"))
         else:
             steps.append(f"[{time.time()-_tw:.1f}s] 已按住 {RECORD_KEY.upper()} 开始录音")
 
-        # 5) 等 wav 真正播完（播完 = 子进程退出）
+        # 5) 等 wav 真正播完（播完 = 子进程退出 / worker 回 done）
         _wait_play_done(proc, duration)
         steps.append(f"[{time.time()-_tw:.1f}s] 已播放 {duration:.1f}s 到微信录音")
 
-        # 5) 结束录音：realclick=松开即发送；postmsg=点浮层 ↑ 发送按钮（找不到则自动取消）
+        # 6) 结束录音并发送
         #    播放脚本尾部已自带 TAIL_S 静音，这里只留极小缓冲给声卡驱动（再多就是白录空白）
         time.sleep(0.15)
         via = _record_via
         sent = _finish_record()
+        _hist_appended = False
         if sent:
             steps.append(f"[{time.time()-_tw:.1f}s] " + {
                 "uia": "UIA 点击语音按钮录音 → 已点发送钮，语音已发送",
                 "realclick": "已点击语音按钮 → 已点发送钮，语音已发送",
                 "postmsg": "已点浮层发送按钮，语音已发送",
             }.get(via, "语音已发送"))
-            time.sleep(0.6)
+            # 发送已成功：UIA 校验只是安全网，放后台线程不阻塞返回（省 ~0.5-3s）
             if uia_active:
-                steps.extend(_uia_verify_sent(before_msg, duration, before_count))
+                _append_history(wav, duration, "ok")
+                _hist_appended = True
+                threading.Thread(
+                    target=lambda: _persist_verify(_uia_verify_sent(before_msg, duration, before_count)),
+                    daemon=True,
+                ).start()
+                steps.append("UIA 发送后校验：后台线程进行中（结果写入发送历史）")
         else:
             steps.append("未找到发送按钮，已取消录音（本次未发送）")
             restored, restore_err = _safe_restore()
@@ -1336,15 +1499,16 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
             "steps": steps, "restored": restored, "restore_error": restore_err})
 
     # 6) 还原原声卡（reset 兜底）
+    _t_restore = time.time()
     restored, restore_err = _safe_restore()
     if restore_err:
-        steps.append(f"声卡还原：{restore_err}")
+        steps.append(f"[{time.time()-_tw:.1f}s] 声卡还原：{restore_err}")
     else:
-        steps.append("声卡已还原")
+        steps.append(f"[{time.time()-_tw:.1f}s] 声卡已还原（{time.time()-_t_restore:.1f}s）")
 
     return {"ok": True, "outcome": "ok", "method": RECORD_METHOD, "wav": wav.name, "duration_s": round(duration, 1),
             "steps": steps, "restored": restored, "restore_error": restore_err,
-            "_history": _append_history(wav, duration, "ok")}
+            "_history": (True if _hist_appended else _append_history(wav, duration, "ok"))}
 
 
 def _guided_fallback(wav: Path, duration: float, steps: list[str]) -> dict:

@@ -200,8 +200,9 @@ def test_warmup_records_each_step(monkeypatch):
                          "started_at": 0.0, "finished_at": 0.0, "error": ""})
     monkeypatch.setattr(wm, "_warm_tts", lambda: None)
     monkeypatch.setattr(wm, "_warm_rvc", lambda: None)
+    monkeypatch.setattr(wm, "_warm_play_worker", lambda: None)   # 本测试只验 TTS/RVC 计时
     st = wm.run()
-    assert [s["step"] for s in st["steps"]] == ["TTS worker", "RVC"]
+    assert [s["step"] for s in st["steps"]] == ["TTS worker", "RVC", "微信播放worker"]
     assert all(s["ok"] for s in st["steps"])
 
 
@@ -213,6 +214,7 @@ def test_warmup_one_step_failure_does_not_abort(monkeypatch):
     monkeypatch.setattr(wm, "_warm_tts",
                         lambda: (_ for _ in ()).throw(RuntimeError("GPU 被占")))
     monkeypatch.setattr(wm, "_warm_rvc", lambda: None)
+    monkeypatch.setattr(wm, "_warm_play_worker", lambda: None)
     st = wm.run()
     assert st["steps"][0]["ok"] is False and "GPU" in st["steps"][0]["detail"]
     assert st["steps"][1]["ok"] is True

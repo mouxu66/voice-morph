@@ -245,7 +245,7 @@ def test_do_send_uses_pre_apply_instead_of_second_sync_apply(tmp_path, monkeypat
     task = FakeTask()
     monkeypatch.setattr(wv, "_PendingApply", FakeTask)
     monkeypatch.setattr(wv, "_foreground_wechat", lambda: None)
-    monkeypatch.setattr(wv, "_trigger_record", lambda: None)
+    monkeypatch.setattr(wv, "_trigger_record", lambda *a, **k: None)
     monkeypatch.setattr(wv, "_finish_record", lambda: True)
     monkeypatch.setattr(wv, "_start_play", lambda w: _FakeProc())
     monkeypatch.setattr(wv, "_wait_play_start", lambda p, t=40.0: True)
@@ -265,7 +265,7 @@ def test_do_send_without_pre_apply_keeps_sync_apply(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(wv, "_run_audio", lambda a: calls.append(a) or {"ok": True})
     monkeypatch.setattr(wv, "_foreground_wechat", lambda: None)
-    monkeypatch.setattr(wv, "_trigger_record", lambda: None)
+    monkeypatch.setattr(wv, "_trigger_record", lambda *a, **k: None)
     monkeypatch.setattr(wv, "_finish_record", lambda: True)
     monkeypatch.setattr(wv, "_start_play", lambda w: _FakeProc())
     monkeypatch.setattr(wv, "_wait_play_start", lambda p, t=40.0: True)

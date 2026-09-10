@@ -66,8 +66,18 @@ def _warm_rvc() -> None:
     rvc_warmup(voice)
 
 
+def _warm_play_worker() -> None:
+    """预热常驻播放 worker：把 numpy/sounddevice/soundfile 的冷导入付在启动时，
+    之后每条语音只收播放命令，省 ~2.5-3s（与 RVC 常驻 worker 同理）。"""
+    from wechat_voice import _get_play_worker
+    proc = _get_play_worker()
+    if proc is None:
+        # _get_play_worker 内部已记 warning 并回退一次性；预热阶段不抛，记一步即可
+        raise RuntimeError("播放 worker 不可用（将退回一次性播放）")
+
+
 def run() -> dict:
-    """按顺序预热 TTS 与 RVC，返回统计（谁失败都不抛出，记进 steps）。"""
+    """按顺序预热 TTS、RVC 与微信播放 worker，返回统计（谁失败都不抛出，记进 steps）。"""
     t0 = time.time()
     with _lock:
         if _state["running"] or _state["done"]:
@@ -75,7 +85,7 @@ def run() -> dict:
         _state["running"] = True
         _state["started_at"] = t0
 
-    steps = (("TTS worker", _warm_tts), ("RVC", _warm_rvc))
+    steps = (("TTS worker", _warm_tts), ("RVC", _warm_rvc), ("微信播放worker", _warm_play_worker))
     for name, fn in steps:
         s = time.time()
         try:
