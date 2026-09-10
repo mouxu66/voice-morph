@@ -365,3 +365,145 @@ def test_ensure_staged_downloads_when_missing(monkeypatch, tmp_path):
     out = mp._ensure_staged("vy", {"url": "https://hf-mirror.com/y/y.pth"})
     assert out == staged
     assert fake.started == ("preview_vy", "vy.pth"), "任务名 preview_*、文件名与安装共用 <id>.pth"
+
+
+# -------- A2 健壮性增强（2026-09-10）：A 输出质量关 / B 瞬态重试 / C GPU忙补生成 --------
+
+
+def _sine(path, seconds: float = 3.0, amp: float = 0.4, sr: int = 16000):
+    t = np.linspace(0, seconds, int(sr * seconds), endpoint=False)
+    sf.write(str(path), (amp * np.sin(2 * np.pi * 220 * t)).astype(np.float32), sr)
+
+
+# ---- A：输出质量关（防"有声但废"漏过纯响度检查）----
+
+def test_quality_ok_passes_normal(tmp_path):
+    """正常有声 wav（峰值合理、时长合理、无 NaN）→ 合格。"""
+    p = tmp_path / "ok.wav"
+    _sine(p)
+    assert mp._quality_ok(p) == (True, "")
+
+
+def test_quality_rejects_clipping(tmp_path):
+    """大量样本顶到满幅 → 判削顶破音（_audible 查不出的"有声但废"）。"""
+    p = tmp_path / "clip.wav"
+    x = np.zeros(16000 * 3, dtype=np.float32)
+    x[:2000] = 1.0                     # 占比 ~4.2% > 2% 阈值
+    sf.write(str(p), x, 16000)
+    ok, why = mp._quality_ok(p)
+    assert not ok and "削顶" in why
+
+
+def test_quality_rejects_nan(tmp_path):
+    """输出含 NaN → 判模型崩溃（不放过成 ready，否则播放器直接哑/爆）。"""
+    p = tmp_path / "nan.wav"
+    x = (0.4 * np.ones(16000 * 3)).astype(np.float32)
+    x[0] = np.nan
+    sf.write(str(p), x, 16000, subtype="FLOAT")   # PCM16 会把 NaN 量化掉，须写 float 保真
+    ok, why = mp._quality_ok(p)
+    assert not ok and "NaN" in why
+
+
+def test_quality_rejects_too_short(tmp_path):
+    """输出被截断成极短（<0.5s）→ 不合格。"""
+    p = tmp_path / "short.wav"
+    sf.write(str(p), np.full(1600, 0.4, dtype=np.float32), 16000)   # 0.1s
+    ok, why = mp._quality_ok(p)
+    assert not ok and "过短" in why
+
+
+# ---- B：瞬态失败自愈（子进程偶发崩溃重试一次）----
+
+def test_transient_retry_succeeds_on_second_attempt(rvc_tmp, market_dir, monkeypatch):
+    """首次推理子进程崩（如 CUDA OOM）→ 自动重试 → 第二次成功 → ready。"""
+    _sine(mp.MARKET_DIR / "_preview_src.wav")
+    calls = {"n": 0}
+
+    def fake_run(cmd, **kw):
+        calls["n"] += 1
+        out = cmd[cmd.index("--output") + 1]
+        if calls["n"] == 1:
+            return type("R", (), {"returncode": 1, "stderr": "CUDA out of memory", "stdout": ""})
+        _sine(out, seconds=3.0)
+        return type("R", (), {"returncode": 0, "stderr": "", "stdout": "OK"})
+
+    monkeypatch.setattr(mp.subprocess, "run", fake_run)
+    mp._do_generate("demo_voice")
+    assert calls["n"] == 2, "应重试一次"
+    assert mp.status("demo_voice")["status"] == "ready"
+
+
+def test_transient_retry_exhausted_marks_failed(rvc_tmp, market_dir, monkeypatch):
+    """两次都崩 → failed 且带原因 + 清理半成品产物。"""
+    _sine(mp.MARKET_DIR / "_preview_src.wav")
+
+    def fake_run(cmd, **kw):
+        return type("R", (), {"returncode": 1, "stderr": "CUDA error: device-side assert", "stdout": ""})
+
+    monkeypatch.setattr(mp.subprocess, "run", fake_run)
+    mp._do_generate("demo_voice")
+    st = mp.status("demo_voice")
+    assert st["status"] == "failed"
+    assert "RVC 推理失败" in st["error"]
+    assert not (mp.MARKET_DIR / "demo_voice_preview.wav").exists()
+
+
+def test_transient_retry_cleans_partial_output(rvc_tmp, market_dir, monkeypatch):
+    """首次失败会留下半成品 wav → 重试成功后以新产物为准，不被旧残file干扰。"""
+    _sine(mp.MARKET_DIR / "_preview_src.wav")
+    calls = {"n": 0}
+
+    def fake_run(cmd, **kw):
+        calls["n"] += 1
+        out = cmd[cmd.index("--output") + 1]
+        if calls["n"] == 1:
+            sf.write(out, np.zeros(1600, dtype=np.float32), 16000)   # 半成品（截断）
+            return type("R", (), {"returncode": 1, "stderr": "boom", "stdout": ""})
+        _sine(out, seconds=3.0)
+        return type("R", (), {"returncode": 0, "stderr": "", "stdout": "OK"})
+
+    monkeypatch.setattr(mp.subprocess, "run", fake_run)
+    mp._do_generate("demo_voice")
+    assert mp.status("demo_voice")["status"] == "ready"
+
+
+# ---- C：GPU 忙标 skipped 后延时自动补生成 ----
+
+def test_worker_backoff_recovers_after_gpu_busy(rvc_tmp, market_dir, monkeypatch):
+    """安装收尾自动触发时 GPU 忙 → skipped，后台延时后空闲则自动补生成到 ready。"""
+    _sine(mp.MARKET_DIR / "_preview_src.wav")
+    busy_calls = {"n": 0}
+
+    def fake_busy():
+        busy_calls["n"] += 1
+        return "离线变声任务正在运行" if busy_calls["n"] == 1 else ""
+
+    monkeypatch.setattr(mp, "_gpu_busy", fake_busy)
+    monkeypatch.setattr(mp, "_BACKOFF_S", 0)          # 测试不等 20s
+
+    def fake_run(cmd, **kw):
+        out = cmd[cmd.index("--output") + 1]
+        _sine(out, seconds=3.0)
+        return type("R", (), {"returncode": 0, "stderr": "", "stdout": "OK"})
+
+    monkeypatch.setattr(mp.subprocess, "run", fake_run)
+    mp._inflight.clear()
+    mp._worker("demo_voice")
+    _wait_inflight("demo_voice")
+    assert mp.status("demo_voice")["status"] == "ready"
+    assert busy_calls["n"] >= 2, "补生成前应重新检查 GPU 占用"
+
+
+def test_worker_backoff_stays_skipped_when_still_busy(rvc_tmp, market_dir, monkeypatch):
+    """延时后 GPU 仍忙 → 维持 skipped（不硬跑、不误标 failed），交前端手动重试。"""
+    _sine(mp.MARKET_DIR / "_preview_src.wav")
+    monkeypatch.setattr(mp, "_gpu_busy", lambda: "实时变声正在运行")
+    monkeypatch.setattr(mp, "_BACKOFF_S", 0)
+    monkeypatch.setattr(mp.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("GPU 忙时不应推理")))
+    mp._inflight.clear()
+    mp._worker("demo_voice")
+    _wait_inflight("demo_voice")
+    st = mp.status("demo_voice")
+    assert st["status"] == "skipped"
+    assert "实时变声正在运行" in st["error"]

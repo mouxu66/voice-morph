@@ -42,6 +42,14 @@ from runtime import VOICEBANK
 # 静音判定阈值：正常语音 RMS 远大于此；数字静音/近静音均视为无声
 _MIN_RMS = 1e-3
 
+# GPU 忙自动补生成延时（秒）：skipped 后后台等这么久再试一次，仍忙则维持 skipped
+_BACKOFF_S = 20
+
+# 输出质量关阈值（A2 健壮性增强，2026-09-10）：防"有声但废"的破音/截断/NaN 漏过
+_QUALITY_MIN_DUR = 0.5     # 试听短于此（秒）→ 视为截断/异常
+_QUALITY_MAX_DUR = 60.0    # 试听长于此（秒）→ 异常
+_QUALITY_CLIP_RATIO = 0.02 # 峰值>0.995 的样本占比超此 → 削顶破音
+
 # 源句台词 —— 仅文档用途，改这个常量**不会**改变试听音频。
 # 试听是 RVC voice-to-voice：听到的内容由 assets/preview_source.wav 决定，与文本无关。
 # 要换台词就换源句音频：python tools/make_preview_source.py --text "新台词"
@@ -171,6 +179,40 @@ def _audible(path: Path) -> bool:
         return False
 
 
+def _quality_ok(path: Path) -> tuple[bool, str]:
+    """试听输出质量关（A2 健壮性，2026-09-10）：在 _audible 的纯响度之外，再挡掉
+    破音/削顶/截断/NaN——这些"有声但废"的情况 _audible 查不出来，会漏成假 ready。
+
+    只查可客观判定的异常；音色像不像、好不好听是主观项，无法自动检测，交给人耳。
+    返回 (是否合格, 不合格原因)；合格时原因为空串。
+    """
+    try:
+        x, sr = sf.read(str(path))
+    except Exception as e:  # noqa: BLE001
+        return False, f"试听文件读取失败：{e}"
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+    x = np.asarray(x, dtype=np.float64)
+    if x.size == 0:
+        return False, "空音频"
+    if not np.all(np.isfinite(x)):
+        return False, "输出含 NaN/Inf（模型崩溃）"
+    dur = x.size / sr
+    if dur < _QUALITY_MIN_DUR:
+        return False, f"试听过短（{dur:.2f}s，疑似截断）"
+    if dur > _QUALITY_MAX_DUR:
+        return False, f"试听过长（{dur:.1f}s，异常）"
+    peak = float(np.max(np.abs(x)))
+    if peak > 1.0:
+        return False, "输出削顶/爆音（峰值>1.0）"
+    clip_ratio = float(np.mean(np.abs(x) > 0.995))
+    if clip_ratio > _QUALITY_CLIP_RATIO:
+        return False, f"输出存在明显削顶（破音，占比{clip_ratio:.1%}）"
+    if float(np.sqrt(np.mean(x ** 2))) <= _MIN_RMS:
+        return False, "静音（RMS 过低）"
+    return True, ""
+
+
 def _extract_ref_segment(ref: Path, out: Path, want_s: float = 5.0) -> None:
     """从参考音截中段 ~want_s 秒当试听源句（真人声；中段避开开头静音/呼吸声）。"""
     x, sr = sf.read(str(ref))
@@ -295,6 +337,9 @@ def try_auto_preview(voice_id: str):
 def _worker(voice_id: str):
     try:
         _do_generate(voice_id)
+        # C（2026-09-10）：GPU 忙标 skipped 后，后台等一会再自动试一次。
+        # 安装收尾自动触发的试听无人盯着，自愈比等用户手动重试更稳；仍忙则维持 skipped。
+        _maybe_backoff(voice_id, None, None)
     finally:
         with _lock:
             _inflight.discard(voice_id)
@@ -303,19 +348,32 @@ def _worker(voice_id: str):
 def _worker_pre(voice_id: str, download: dict):
     """未安装音色的试听线程：先确保权重落地（必要时下载），再用暂存权重转换。"""
     try:
-        busy = _gpu_busy()
-        if busy:
-            _mark(voice_id, "skipped", f"{busy}，可稍后手动重试生成试听")
-            return
         try:
             pth = _ensure_staged(voice_id, download)
         except Exception as e:  # noqa: BLE001
             _mark(voice_id, "failed", f"试听模型下载失败：{e}")
             return
         _do_generate(voice_id, pth_override=pth, index_override="")
+        # C：与已安装路径一致，GPU 忙标 skipped 后延时自动补生成一次
+        _maybe_backoff(voice_id, pth, "")
     finally:
         with _lock:
             _inflight.discard(voice_id)
+
+
+def _maybe_backoff(voice_id: str, pth_override: Path | None, index_override: str | None):
+    """C（2026-09-10）：刚被标 skipped（GPU 忙）的音色，后台等一会再自动试一次；
+    仍忙或已被其他路径置 ready 则不动，维持 skipped 交前端手动重试。
+
+    由 _worker / _worker_pre 在 _do_generate 返回后调用——此时 inflight 仍被调用方
+    持有，本函数内不再重复 aquire，避免与用户手动重试/安装重触发竞争。
+    """
+    if status(voice_id)["status"] != "skipped":
+        return
+    time.sleep(_BACKOFF_S)
+    if status(voice_id)["status"] == "ready" or _gpu_busy():
+        return
+    _do_generate(voice_id, pth_override=pth_override, index_override=index_override)
 
 
 def _ensure_staged(voice_id: str, download: dict) -> Path:
@@ -389,20 +447,36 @@ def _do_generate(voice_id: str, pth_override: Path | None = None,
            "--index", index,
            "--input", str(src), "--output", str(out),
            "--pitch", str(_PITCH), "--index-rate", str(_INDEX_RATE)]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
-                           encoding="utf-8", errors="replace", cwd=str(cfg.RVC_ROOT))
-        if r.returncode != 0 or not out.exists():
+    # B（2026-09-10）：瞬态失败自愈——RVC 子进程偶发 CUDA/OOM 崩溃，重试一次再下定论
+    r = None
+    last_err = "无错误输出"
+    for attempt in range(2):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
+                               encoding="utf-8", errors="replace", cwd=str(cfg.RVC_ROOT))
+            if r.returncode == 0 and out.exists():
+                break
             tail = (r.stderr or r.stdout or "").strip().splitlines()[-3:]
-            raise RuntimeError(" | ".join(tail)[-300:] or "无错误输出")
-        if not _audible(out):
-            out.unlink(missing_ok=True)
-            raise RuntimeError("输出为纯静音（源句或模型异常），请重试或换源音色")
-        # 记下本次使用的源句指纹：下次源句一换，这个缓存就自动失效并重生成
-        _mark(voice_id, "ready", src_fp=_source_fingerprint(src))
-    except Exception as e:  # noqa: BLE001
-        _mark(voice_id, "failed", f"RVC 推理失败：{e}")
+            last_err = "RVC 推理失败：" + (" | ".join(tail)[-300:] or "无错误输出")
+        except Exception as e:  # noqa: BLE001
+            last_err = f"RVC 推理异常：{e}"
+        if attempt < 1:
+            time.sleep(1.5)
+    if r is None or r.returncode != 0 or not out.exists():
         try:
             out.unlink(missing_ok=True)
         except Exception:
             pass
+        _mark(voice_id, "failed", last_err)
+        return
+    # A（2026-09-10）：输出质量关——防"有声但废"（破音/削顶/截断/NaN）漏过纯响度检查
+    ok, why = _quality_ok(out)
+    if not ok:
+        try:
+            out.unlink(missing_ok=True)
+        except Exception:
+            pass
+        _mark(voice_id, "failed", f"试听质量不合格：{why}")
+        return
+    # 记下本次使用的源句指纹：下次源句一换，这个缓存就自动失效并重生成
+    _mark(voice_id, "ready", src_fp=_source_fingerprint(src))

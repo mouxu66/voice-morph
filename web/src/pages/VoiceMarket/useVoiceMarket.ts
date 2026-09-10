@@ -377,7 +377,9 @@ export function useVoiceMarket() {
   const [previews, setPreviews] = useState<Record<string, MarketPreview>>({})
   const previewLocks = useRef<Set<string>>(new Set())
 
-  /** 确保该音色试听可用：缺失/生成中就触发任务并轮询到终结（ready/failed/skipped）。
+  /** 确保该音色试听可用：缺失/生成中就触发任务并轮询到终结（ready/failed）。
+   *  skipped（GPU 忙）是可自愈中间态：后端会延时自动补生成，前端再多等一个自愈窗口，
+   *  窗口内仍忙才定论 skipped，交用户手动重试。
    *  force=true 时忽略终结态强制重新生成（用于「重试」按钮）。
    *  download：音色未安装时的权重直链——后端先下载到市场缓存再转换，
    *  该缓存与安装共用，之后一键安装免二次下载（2026-09-07 先试听后安装）。 */
@@ -388,7 +390,7 @@ export function useVoiceMarket() {
       const put = (r: MarketPreview) => setPreviews((v) => ({ ...v, [voice_id]: r }))
       try {
         let r = await marketPreviewStatus(voice_id)
-        if (!force && (r.status === "ready" || r.status === "failed" || r.status === "skipped")) {
+        if (!force && (r.status === "ready" || r.status === "failed")) {
           put(r)
           return
         }
@@ -401,6 +403,8 @@ export function useVoiceMarket() {
           return
         }
         const maxTries = download ? 300 : 90       // 带下载的试听最长 ~10 分钟；纯转换 ~3 分钟
+        const skipWaitTries = 15                   // GPU 忙自愈窗口 ~30s（后端 _BACKOFF_S=20s）
+        let skippedTries = 0
         for (let i = 0; i < maxTries; i++) {
           await new Promise((res) => setTimeout(res, 2000))
           try {
@@ -408,10 +412,16 @@ export function useVoiceMarket() {
           } catch {
             r = { status: "missing", url: "", error: "" }
           }
-          if (r.status === "ready" || r.status === "failed" || r.status === "skipped") {
+          if (r.status === "ready" || r.status === "failed") {
             put(r)
             return
           }
+          if (r.status === "skipped") {
+            put(r)                                 // 先如实显示"等待中"，卡片可手动重试
+            if (++skippedTries >= skipWaitTries) return
+            continue
+          }
+          skippedTries = 0                         // 回到生成中/缺失 → 重置自愈窗口
         }
         put({ status: "failed", url: "", error: "试听生成超时，请稍后重试" })
       } catch (e) {
