@@ -155,3 +155,14 @@ def test_pack_gif_skin_expired_names(gif_file, tmp_path):
             "gif_map": {"idle": "no-such.gif"}}
     rows = pack_gif_skin([gif_file], tmp_path, meta)
     assert rows["idle"]["sheet"] is None
+
+def test_gif_to_strip_rejects_too_many_frames(tmp_path, monkeypatch):
+    """预告片式长 gif（如 227 帧 demo 动图）→ 帧数预检人话报错，不进 hstack。"""
+    import pet_skin_build as sb
+    src = tmp_path / "demo.gif"
+    src.write_bytes(b"x")
+    monkeypatch.setattr(sb, "probe_frames", lambda p: 227)
+    monkeypatch.setattr(sb, "probe_size", lambda p: (766, 638))
+    with pytest.raises(SkinBuildError, match="帧数过多"):
+        sb._gif_to_strip(src, tmp_path / "out.webp")
+    assert not (tmp_path / "out.webp").exists()

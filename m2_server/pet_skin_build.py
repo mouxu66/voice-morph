@@ -43,6 +43,8 @@ DEFAULT_ROW_MAP = {"idle": 0, "listen": 1, "play": 2, "build": 2, "think": 4, "e
 # 各状态默认动画周期（秒），与现有芙宁娜保持一致
 DEFAULT_DUR = {"idle": 3.0, "listen": 3.0, "think": 3.0, "play": 1.8, "build": 1.4, "error": 3.0}
 
+MAX_GIF_FRAMES = 96  # gif 帧数上限：横 strip 总宽 = N×frameW，超限滤镜/webp（≤16383px）都扛不住
+
 _SKIN_ID_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 
@@ -135,6 +137,12 @@ def _gif_to_strip(src: Path, out: Path) -> None:
     w, h = probe_size(src)
     w = max(2, w - (w % 2))   # hstack 需要偶数宽
     h = max(2, h - (h % 2))
+    if n > MAX_GIF_FRAMES or n * w > 16000:
+        # 预告片式长 gif（如 repo demo 动图 227 帧）不适合做皮肤：提前人话报错，
+        # 别等 hstack 拼出十几万像素宽的滤镜图再吐 Invalid argument。
+        raise SkinBuildError(
+            f"gif 帧数过多（{n} 帧 × {w}px，横条总宽 {n * w}px）"
+            f"不适合转成皮肤动画（上限 {MAX_GIF_FRAMES} 帧）")
     if n <= 1:
         cmd = [find_ffmpeg(), "-y", "-i", str(src), "-vf", f"scale={w}:{h}",
                "-frames:v", "1", "-c:v", "libwebp", "-lossless", "0", "-q:v", "80", str(out)]
