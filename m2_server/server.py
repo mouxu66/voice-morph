@@ -47,6 +47,7 @@ from media_api import router as media_router
 from mine_api import router as mine_router
 from market_api import router as market_router
 from offline_vc import router as offlinevc_router
+from pet_market_api import router as pet_market_router
 from pipeline_api import router as pipeline_router
 from raw_media_api import router as raw_media_router
 from rvc_dataset_api import router as rvc_dataset_router
@@ -161,6 +162,14 @@ app.include_router(clips_router)
 app.include_router(tts_router)
 app.include_router(mine_router)
 app.include_router(market_router)
+app.include_router(pet_market_router)
+
+# 人偶市场：确保默认内置皮肤（芙宁娜）物化到 outputs（幂等，失败不阻塞）
+try:
+    from pet_market import ensure_default_bundle
+    ensure_default_bundle()
+except Exception:
+    pass
 
 # 音色市场远程图库：启动后台自动同步（VM_MARKET_IMG_REPO 未配置时为 no-op）
 try:
