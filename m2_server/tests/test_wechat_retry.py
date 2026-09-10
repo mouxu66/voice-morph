@@ -1,4 +1,5 @@
 """F5 微信语音自动重试单测（mock 掉 ctypes / 音频 / 播放）。"""
+import json
 import sys
 from pathlib import Path
 
@@ -66,6 +67,19 @@ def test_safe_restore_both_fail(monkeypatch):
     assert "reset" in err
 
 
+def test_restore_async_writes_back_to_history(monkeypatch, tmp_path):
+    """_restore_async 应调用 _safe_restore 并把结果写回发送历史最后一条。"""
+    monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))
+    hist_file = tmp_path / "wechat_send_history.json"
+    hist_file.write_text(json.dumps([{"wav": "tts_x.wav", "duration_s": 1.0,
+                                      "ts": 1, "outcome": "ok"}]), encoding="utf-8")
+    monkeypatch.setattr(wv, "HISTORY_FILE", hist_file)
+    wv._restore_async()          # 直接调用（即后台线程实体），同步跑完
+    data = json.loads(hist_file.read_text("utf-8"))
+    assert data[-1]["restored"] is True
+    assert data[-1].get("restore_error", "MISSING") == ""
+
+
 # ---------------- _do_send 成功 / 降级 / 失败 ----------------
 
 class _FakeProc:
@@ -95,7 +109,9 @@ def test_do_send_success_outcome_ok(tmp_path, monkeypatch):
     res = wv._do_send(SendVoiceReq(wav="tts_x.wav"))
     assert res["ok"] is True
     assert res["outcome"] == "ok"
-    assert res["restored"] is True
+    # 声卡还原已交后台线程，立即返回时 restored=None（pending），最终结果写回历史
+    assert res["restored"] is None
+    assert any("后台线程" in s for s in res["steps"])
 
 
 def test_do_send_failure_auto_fallback(tmp_path, monkeypatch):

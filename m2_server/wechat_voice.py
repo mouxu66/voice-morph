@@ -183,6 +183,31 @@ def _persist_verify(verify_steps: list[str]) -> None:
     except Exception as e:
         logger.debug("[wechat] 写回校验结果失败: %s", e)
 
+
+def _restore_async() -> None:
+    """后台线程还原声卡并写回发送历史最后一条，不阻塞 _do_send 返回（省 ~3s 同步等待）。
+
+    与下一步 _run_audio('apply') 通过 _restore_lock 互斥，避免同时改默认音频设备抢设备。
+    发送已落库（_append_history 在起本线程前完成），最后一条必是本次，无竞态。
+    """
+    try:
+        with _restore_lock:
+            restored, restore_err = _safe_restore()
+        with _history_lock:
+            try:
+                if HISTORY_FILE.exists():
+                    hist = json.loads(HISTORY_FILE.read_text("utf-8"))
+                    if hist:
+                        hist[-1]["restored"] = restored
+                        hist[-1]["restore_error"] = restore_err
+                        HISTORY_FILE.write_text(
+                            json.dumps(hist, ensure_ascii=False), "utf-8")
+            except Exception as e:
+                logger.debug("[wechat] 写回还原结果失败: %s", e)
+    except Exception as e:
+        logger.debug("[wechat] 后台还原失败: %s", e)
+
+
 # -------- UIA 结构化访问（方案 A，2026-09-10）--------
 # 微信 4.x 聊天区自绘，UIA 默认只有 Qt 空壳；热激活后能拿到带矩形的结构化控件。
 # 这里只把「检测录音浮层 / 定位浮层按钮 / 校验发送结果」交给 UIA，像素链路
@@ -211,10 +236,23 @@ def _uia_center(box: tuple[int, int, int, int] | None) -> tuple[int, int] | None
 
 # ---------------- audio_config.ps1（复用 rvc_live 的调用方式） ----------------
 
+# 声卡还原串行化：后台还原线程与下一步 _run_audio('apply') 互斥，避免同时改默认音频设备抢设备。
+_restore_lock = threading.Lock()
+# 历史写串行化：_persist_verify（UIA 校验）与 _restore_async（声卡还原）都是后台线程，
+# 都做「读-改-写」历史文件，必须互斥，否则一个的写会被另一个覆盖。
+_history_lock = threading.Lock()
+
+
 def _run_audio(action: str) -> dict:
     if not AUDIO_PS1.exists():
         raise RuntimeError(f"缺 audio_config.ps1: {AUDIO_PS1}")
+    # apply 与后台还原互斥：下一步切卡若撞上上一条还在后台还原，会同时改默认音频设备 →
+    # 抢设备导致状态不确定。用 _restore_lock 挡住，apply 等还原收尾再切。
+    acquired = False
     try:
+        if action == "apply":
+            _restore_lock.acquire()
+            acquired = True
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
              "-WindowStyle", "Hidden", "-File", str(AUDIO_PS1), "-action", action],
@@ -227,6 +265,9 @@ def _run_audio(action: str) -> dict:
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"audio_config {action} 执行超时(120s)")
+    finally:
+        if acquired:
+            _restore_lock.release()
     out = (proc.stdout or "").strip()
     if not out:
         err = (proc.stderr or "").strip()
@@ -1455,15 +1496,20 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
                 "realclick": "已点击语音按钮 → 已点发送钮，语音已发送",
                 "postmsg": "已点浮层发送按钮，语音已发送",
             }.get(via, "语音已发送"))
-            # 发送已成功：UIA 校验只是安全网，放后台线程不阻塞返回（省 ~0.5-3s）
+            # 发送已成功：先落历史（后台写回校验/还原结果都依赖它）
+            _append_history(wav, duration, "ok")
+            _hist_appended = True
+            # UIA 校验只是安全网，放后台线程不阻塞返回（省 ~0.5-3s）
             if uia_active:
-                _append_history(wav, duration, "ok")
-                _hist_appended = True
                 threading.Thread(
                     target=lambda: _persist_verify(_uia_verify_sent(before_msg, duration, before_count)),
                     daemon=True,
                 ).start()
                 steps.append("UIA 发送后校验：后台线程进行中（结果写入发送历史）")
+            # 声卡还原 ~3s，放后台线程：下一步切卡由 _restore_lock 等它收尾，不抢设备，
+            # 也不阻塞本次返回（省 ~3s 同步等待）。
+            threading.Thread(target=_restore_async, daemon=True).start()
+            steps.append(f"[{time.time()-_tw:.1f}s] 声卡还原已交后台线程（不阻塞返回，约 3s）")
         else:
             steps.append("未找到发送按钮，已取消录音（本次未发送）")
             restored, restore_err = _safe_restore()
@@ -1498,16 +1544,10 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
             "ok": False, "outcome": "failed", "error": str(exc),
             "steps": steps, "restored": restored, "restore_error": restore_err})
 
-    # 6) 还原原声卡（reset 兜底）
-    _t_restore = time.time()
-    restored, restore_err = _safe_restore()
-    if restore_err:
-        steps.append(f"[{time.time()-_tw:.1f}s] 声卡还原：{restore_err}")
-    else:
-        steps.append(f"[{time.time()-_tw:.1f}s] 声卡已还原（{time.time()-_t_restore:.1f}s）")
-
+    # 6) 声卡还原已在上一步交后台线程（_restore_async），此处不阻塞直接返回。
+    #    立即返回的 restored 记为 None（pending），最终结果由后台线程写回发送历史。
     return {"ok": True, "outcome": "ok", "method": RECORD_METHOD, "wav": wav.name, "duration_s": round(duration, 1),
-            "steps": steps, "restored": restored, "restore_error": restore_err,
+            "steps": steps, "restored": None,
             "_history": (True if _hist_appended else _append_history(wav, duration, "ok"))}
 
 
