@@ -4,13 +4,20 @@ import {
   petApply,
   petCancel,
   petDetail,
+  petDiscovery,
+  petDiscoveryRemove,
   petInstall,
   petInstalled,
   petManifest,
   petProgress,
+  petScanCancel,
+  petScanProgress,
+  petScanStart,
   petUninstall,
   type PetAppliedSkin,
+  type PetDiscoveryItem,
   type PetInstalledItem,
+  type PetScanProgress,
   type PetSkinDetail,
   type PetSkinItem,
   type PetTaskItem,
@@ -168,6 +175,86 @@ export function usePetMarket() {
     setDetailId("")
   }, [])
 
+  // ---- GitHub 扫描器（发现 Tab） ----
+  const [scan, setScan] = useState<PetScanProgress>(() => ({
+    status: "idle", phase: "", step: "", total: 0, current: 0,
+    repos_seen: 0, repos_lic_skip: 0, repos_tree_skip: 0,
+    candidates: 0, built_ok: 0, built_fail: 0, atlas_skip: 0,
+    error: "", finished_at: "",
+  }))
+  const [discovery, setDiscovery] = useState<PetDiscoveryItem[] | null>(null)
+  const scanBusy = useRef(false)
+
+  const refreshDiscovery = useCallback(async () => {
+    try {
+      setDiscovery(await petDiscovery())
+    } catch {
+      /* 后端离线时忽略 */
+    }
+  }, [])
+
+  // 扫描进行中：1s 轮询进度；结束后刷新发现列表
+  const scannerRunning = scan.status === "running"
+  useEffect(() => {
+    if (!scannerRunning) return
+    let alive = true
+    const timer = window.setInterval(async () => {
+      if (scanBusy.current) return
+      scanBusy.current = true
+      try {
+        const p = await petScanProgress()
+        if (!alive) return
+        setScan(p)
+        if (p.status !== "running") void refreshDiscovery()
+      } catch {
+        /* 后端离线 */
+      } finally {
+        scanBusy.current = false
+      }
+    }, 1000)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [scannerRunning, refreshDiscovery])
+
+  const startScan = useCallback(async () => {
+    try {
+      setScan(await petScanStart())
+      notify.info("开始扫描 GitHub 开源桌宠素材…")
+    } catch (e) {
+      notify.error(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
+  // 挂载时同步一次扫描状态（页面刷新后仍能看到进行中的扫描）与发现列表
+  useEffect(() => {
+    void petScanProgress().then(setScan).catch(() => {})
+    void refreshDiscovery()
+  }, [refreshDiscovery])
+
+  const cancelScan = useCallback(async () => {
+    try {
+      setScan(await petScanCancel())
+      notify.info("正在取消扫描…")
+    } catch (e) {
+      notify.error(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
+  const removeDiscovery = useCallback(
+    async (id: string) => {
+      try {
+        await petDiscoveryRemove(id)
+        notify.info("已从发现列表移除")
+        void refreshDiscovery()
+      } catch (e) {
+        notify.error(e instanceof Error ? e.message : String(e))
+      }
+    },
+    [refreshDiscovery],
+  )
+
   return {
     manifest,
     installed,
@@ -184,5 +271,11 @@ export function usePetMarket() {
     cancelTask,
     applySkin,
     uninstallSkin,
+    scan,
+    discovery,
+    startScan,
+    cancelScan,
+    removeDiscovery,
+    refreshDiscovery,
   }
 }

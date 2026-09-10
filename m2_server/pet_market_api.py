@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from runtime import API_PREFIX
 import pet_market
+import pet_scan
 
 router = APIRouter(prefix=API_PREFIX)
 
@@ -108,6 +109,47 @@ def pet_image(name: str):
         if cand.exists():
             return FileResponse(cand)
     raise HTTPException(status_code=404, detail="preview not found")
+
+
+@router.post("/pet-market/scan")
+def pet_scan_start():
+    """启动 GitHub 扫描器（后台线程；同一时间仅一个，进行中触发 → 409）。"""
+    try:
+        return pet_scan.start_scan()
+    except pet_scan.ScanError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/pet-market/scan/progress")
+def pet_scan_progress():
+    """扫描进度轮询（阶段/仓库进度/候选统计/错误/取消标记）。"""
+    return pet_scan.progress_scan()
+
+
+@router.post("/pet-market/scan/cancel")
+def pet_scan_cancel():
+    """请求取消扫描（正在处理的候选跑完即停）。"""
+    try:
+        return pet_scan.cancel_scan()
+    except pet_scan.ScanError as exc:
+        if "没有运行中" in str(exc):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/pet-market/discovery")
+def pet_discovery():
+    """发现 Tab：扫描器「扫描即上线」的候选皮肤（附已安装标记）。"""
+    return {"items": pet_scan.discovery_items()}
+
+
+@router.delete("/pet-market/discovery/{skin_id}")
+def pet_discovery_remove(skin_id: str):
+    """下线候选：从 ext 清单移除（不物理删已安装目录）。"""
+    try:
+        return pet_scan.remove_discovery(skin_id)
+    except pet_scan.ScanError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/pet-market/install")

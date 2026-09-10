@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import {
   CheckCircle2,
   CloudDownload,
@@ -6,16 +6,18 @@ import {
   Loader2,
   Palette,
   PawPrint,
+  Radar,
   Search,
   Sparkles,
   SquareX,
+  Star,
   Trash2,
   X,
   XCircle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { mediaUrl } from "@/api/client"
-import type { PetInstalledItem, PetSkinDetail, PetSkinItem, PetTaskItem } from "@/api/client"
+import type { PetDiscoveryItem, PetInstalledItem, PetSkinDetail, PetSkinItem, PetTaskItem } from "@/api/client"
 import type { PetMarket } from "@/pages/PetMarket/usePetMarket"
 import { PET_ACTIVE, PET_BUSY } from "@/pages/PetMarket/usePetMarket"
 
@@ -38,6 +40,36 @@ const STATE_LABEL: Record<string, string> = {
 
 function skinBadge(text: string, cls: string) {
   return <span className={cn("rounded-full px-2 py-0.5 font-mono text-[10px]", cls)}>{text}</span>
+}
+
+/** 顶部 Tab 按钮（皮肤库 / 发现），带可选数量角标 */
+function TabBtn({ active, onClick, icon, badge, children }: {
+  active: boolean
+  onClick: () => void
+  icon?: ReactNode
+  badge?: number
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "relative inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium transition",
+        active
+          ? "bg-primary/10 text-primary shadow-sm"
+          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+      )}
+    >
+      {icon}
+      {children}
+      {badge !== undefined && badge > 0 && (
+        <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 font-mono text-[9px] text-primary-foreground">
+          {badge}
+        </span>
+      )}
+    </button>
+  )
 }
 
 function skinName(p: PetMarket, id: string) {
@@ -208,10 +240,15 @@ function TaskRow({ t, name, p }: { t: PetTaskItem; name: string; p: PetMarket })
   )
 }
 
-// ---------- 市场主页：搜索 + 分类筛选 + 皮肤卡片 ----------
+// ---------- 市场主页：Tab（皮肤库 / 发现） + 搜索 + 分类筛选 + 卡片 ----------
 export function PetMarketPage(p: PetMarket) {
+  const [tab, setTab] = useState<"market" | "discovery">("market")
   const [cat, setCat] = useState<string>("全部")
   const [query, setQuery] = useState("")
+
+  useEffect(() => {
+    void p.refreshDiscovery()
+  }, [p.refreshDiscovery])
 
   const cats = useMemo(() => {
     const set = new Set<string>((p.manifest ?? []).map((m) => m.category ?? "其他"))
@@ -248,8 +285,22 @@ export function PetMarketPage(p: PetMarket) {
               <p className="mt-0.5 text-xs text-muted-foreground">
                 给桌面人偶换个外观：全部素材来自开源社区、许可可分发，一键安装即时换肤。
               </p>
+              <div className="mt-3 flex w-fit items-center gap-1 rounded-full border border-border bg-background/60 p-1">
+                <TabBtn active={tab === "market"} onClick={() => setTab("market")} icon={<PawPrint className="h-3.5 w-3.5" />}>
+                  皮肤库
+                </TabBtn>
+                <TabBtn
+                  active={tab === "discovery"}
+                  onClick={() => setTab("discovery")}
+                  icon={<Radar className="h-3.5 w-3.5" />}
+                  badge={(p.discovery?.length ?? 0) > 0 ? p.discovery?.length : undefined}
+                >
+                  发现
+                </TabBtn>
+              </div>
             </div>
-            <div className="flex flex-col gap-2 sm:items-end">
+            {tab === "market" && (
+              <div className="flex flex-col gap-2 sm:items-end">
               <div className="relative w-full sm:w-64">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <input
@@ -288,39 +339,46 @@ export function PetMarketPage(p: PetMarket) {
                 ))}
               </div>
             </div>
+            )}
           </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-7xl px-5 py-6 sm:px-8 lg:px-12 lg:py-8">
-        {p.manifest === null ? (
-          <div className="flex items-center gap-2 rounded-2xl border border-border bg-card/80 px-4 py-6 text-sm text-muted-foreground shadow-md backdrop-blur-xl">
-            <Loader2 className="h-4 w-4 animate-spin text-primary" />正在加载皮肤清单…
-          </div>
-        ) : items.length === 0 ? (
-          <div className="rounded-2xl border border-border bg-card/80 px-4 py-8 text-center text-sm text-muted-foreground shadow-md backdrop-blur-xl">
-            {query || cat !== "全部" ? "没有匹配的皮肤，换个关键词或分类试试。" : "该分类下暂无皮肤（后端未启动或清单未配置）。"}
-          </div>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {items.map((item) => (
-              <SkinCard
-                key={item.id}
-                item={item}
-                applied={appliedId === item.id}
-                installedItem={installedMap.get(item.id)}
-                p={p}
-              />
-            ))}
-          </div>
-        )}
+        {tab === "market" ? (
+          <>
+            {p.manifest === null ? (
+              <div className="flex items-center gap-2 rounded-2xl border border-border bg-card/80 px-4 py-6 text-sm text-muted-foreground shadow-md backdrop-blur-xl">
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />正在加载皮肤清单…
+              </div>
+            ) : items.length === 0 ? (
+              <div className="rounded-2xl border border-border bg-card/80 px-4 py-8 text-center text-sm text-muted-foreground shadow-md backdrop-blur-xl">
+                {query || cat !== "全部" ? "没有匹配的皮肤，换个关键词或分类试试。" : "该分类下暂无皮肤（后端未启动或清单未配置）。"}
+              </div>
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {items.map((item) => (
+                  <SkinCard
+                    key={item.id}
+                    item={item}
+                    applied={appliedId === item.id}
+                    installedItem={installedMap.get(item.id)}
+                    p={p}
+                  />
+                ))}
+              </div>
+            )}
 
-        <div className="mt-6 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-5 text-amber-400">
-          <Sparkles className="mt-0.5 h-4 w-4 shrink-0" />
-          <p>
-            素材均来自开源社区并按各自许可分发（MIT / Apache-2.0 / CC0 等），收到皮肤包时会附上来源与许可文件。请遵守对应许可并勿商用受限素材。
-          </p>
-        </div>
+            <div className="mt-6 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-5 text-amber-400">
+              <Sparkles className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>
+                素材均来自开源社区并按各自许可分发（MIT / Apache-2.0 / CC0 等），收到皮肤包时会附上来源与许可文件。请遵守对应许可并勿商用受限素材。
+              </p>
+            </div>
+          </>
+        ) : (
+          <DiscoveryTab p={p} />
+        )}
       </main>
 
       <PetDetailDrawer p={p} />
@@ -653,5 +711,213 @@ function SkinAnim({ detail, size = 96 }: { detail: PetSkinDetail; size?: number 
         }}
       />
     </div>
+  )
+}
+
+// ---------- 发现 Tab：GitHub 扫描工具 + 扫描即上线的候选皮肤 ----------
+function DiscoveryTab({ p }: { p: PetMarket }) {
+  const s = p.scan
+  const running = s.status === "running"
+  const progress = s.total > 0 ? Math.min(100, Math.round((s.current / s.total) * 100)) : 0
+  const items = p.discovery
+
+  const Stat = ({ label, value, tone }: { label: string; value: number | string; tone?: string }) => (
+    <span
+      className={cn(
+        "rounded-md border px-2 py-0.5 font-mono text-[10px]",
+        tone ?? "border-border bg-muted/50 text-muted-foreground",
+      )}
+    >
+      {label} {value}
+    </span>
+  )
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* 扫描工具卡 */}
+      <div className="rounded-2xl border border-border bg-card/85 p-4 shadow-md backdrop-blur-xl">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+              <Radar className="h-4 w-4 text-primary" />
+              GitHub 扫描工具
+            </h2>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              自动搜索 GitHub 上带宽松许可（MIT / Apache-2.0 / CC0 等）的开源桌宠 / 像素宠物素材，
+              下载原文件试转成标准皮肤包，试转通过即“扫描即上线”，可直接一键安装。
+              数据来自 GitHub Search API；未认证时有限流（可通过 GITHUB_TOKEN 提升）。
+            </p>
+          </div>
+          {running ? (
+            <button
+              type="button"
+              onClick={() => void p.cancelScan()}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-3.5 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/20"
+            >
+              <SquareX className="h-3.5 w-3.5" />
+              停止扫描
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void p.startScan()}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-blue-600 px-3.5 py-2 text-xs font-medium text-white shadow-md transition hover:bg-blue-500"
+            >
+              <Radar className="h-3.5 w-3.5" />
+              开始扫描
+            </button>
+          )}
+        </div>
+
+        {running && (
+          <div className="mt-4 space-y-2">
+            <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+              <span className="min-w-0 flex-1 truncate">{s.step || "准备中…"}</span>
+              <span className="shrink-0 font-mono">
+                {s.current}/{s.total} 仓库 · {progress}%
+              </span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-primary transition-all"
+                style={{ width: `${Math.max(2, progress)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          <Stat label="已见仓库" value={s.repos_seen} />
+          <Stat label="许可跳过" value={s.repos_lic_skip} />
+          <Stat label="候选" value={s.candidates} />
+          <Stat label="上线" value={s.built_ok} tone="border-emerald-500/30 bg-emerald-500/10 text-emerald-500" />
+          <Stat label="试转失败" value={s.built_fail} tone="border-destructive/30 bg-destructive/10 text-destructive" />
+          {s.atlas_skip > 0 && <Stat label="需人工" value={s.atlas_skip} />}
+        </div>
+
+        {s.status === "failed" && (
+          <p className="mt-3 flex items-start gap-1.5 break-words text-xs leading-5 text-destructive">
+            <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            {s.error}
+          </p>
+        )}
+        {s.status === "done" && (
+          <p className="mt-3 text-xs text-emerald-600">
+            扫描完成（{s.finished_at}）：新发现的素材已上线到下方列表，可一键安装，也可先看详情。
+          </p>
+        )}
+        {s.status === "cancelled" && <p className="mt-3 text-xs text-muted-foreground">扫描已取消，已试转通过的素材依然保留上线。</p>}
+      </div>
+
+      {/* 发现列表 */}
+      <section>
+        <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+          <Sparkles className="h-4 w-4 text-primary" />
+          发现素材
+          {items && items.length > 0 && (
+            <span className="font-mono text-[11px] font-normal text-muted-foreground">{items.length} 款</span>
+          )}
+        </h3>
+        {items === null ? (
+          <div className="flex items-center gap-2 rounded-2xl border border-border bg-card/80 px-4 py-6 text-sm text-muted-foreground shadow-md backdrop-blur-xl">
+            <Loader2 className="h-4 w-4 animate-spin text-primary" />正在加载发现列表…
+          </div>
+        ) : items.length === 0 ? (
+          <div className="rounded-2xl border border-border bg-card/80 px-4 py-8 text-center text-sm text-muted-foreground shadow-md backdrop-blur-xl">
+            还没有扫描发现的素材。点击上方「开始扫描」，扫描器会在 GitHub 上搜罗带宽松许可的开源桌宠素材并自动试转上线。
+          </div>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {items.map((it) => (
+              <DiscoveryCard key={it.id} it={it} p={p} />
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
+/** 发现候选卡片：来源仓库/许可/素材类型 → 一键安装 / 移除 */
+function DiscoveryCard({ it, p }: { it: PetDiscoveryItem; p: PetMarket }) {
+  const d = it.discovery ?? {}
+  const busy = p.tasks.some((t) => t.skin_id === it.id && PET_BUSY.has(t.status))
+  const installedItem = (p.installed ?? []).find((i) => i.id === it.id)
+  const applied = p.applied?.id === it.id
+  const color =
+    d.kind === "pixel"
+      ? "bg-emerald-500/10 text-emerald-400"
+      : d.kind === "atlas"
+        ? "bg-violet-500/10 text-violet-400"
+        : "bg-amber-500/10 text-amber-400"
+  const kindLabel = d.kind === "pixel" ? "像素 JSON" : d.kind === "gif" ? "GIF 动画" : d.kind ?? "素材"
+
+  return (
+    <article className="flex flex-col gap-3 rounded-2xl border border-border bg-card/85 p-4 shadow-md backdrop-blur-xl transition hover:shadow-lg">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {skinBadge(it.category ?? "其他", "bg-primary/10 text-primary")}
+        {it.license && skinBadge(it.license, "bg-amber-500/10 text-amber-400")}
+        <span className={cn("rounded-full px-2 py-0.5 font-mono text-[10px]", color)}>{kindLabel}</span>
+        {installedItem && skinBadge("已安装", "bg-emerald-500/15 text-emerald-400")}
+        {applied && skinBadge("使用中", "bg-emerald-500/90 text-emerald-50")}
+      </div>
+
+      <h4 className="truncate text-base font-semibold text-card-foreground" title={it.name}>{it.name}</h4>
+      {it.description && <p className="line-clamp-2 min-h-[2.5rem] text-xs leading-5 text-muted-foreground">{it.description}</p>}
+
+      <div className="flex flex-col gap-1 text-[11px] leading-4 text-muted-foreground/80">
+        {d.repo && (
+          <p className="truncate" title={d.repo}>
+            来源：{d.repo}
+            {(d.stars ?? 0) > 0 && (
+              <span className="ml-1.5 inline-flex items-center gap-0.5 text-amber-400">
+                <Star className="h-3 w-3 fill-current" />
+                {d.stars}
+              </span>
+            )}
+          </p>
+        )}
+        {d.path && <p className="truncate" title={`${d.path}（${d.count ?? 1} 个文件）`}>文件：{d.path}</p>}
+      </div>
+
+      <div className="mt-auto flex items-center gap-2 border-t border-border pt-3">
+        {busy ? (
+          <span className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-border bg-background/60 px-3 py-1.5 text-xs font-medium text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />安装中…
+          </span>
+        ) : installedItem ? (
+          <span className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-500">
+            <CheckCircle2 className="h-3.5 w-3.5" />已安装
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void p.startInstall(it.id)}
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white shadow-md transition hover:bg-blue-500"
+          >
+            <CloudDownload className="h-3.5 w-3.5" />
+            一键安装
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => void p.openDetail(it.id)}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-primary/40 hover:text-foreground"
+        >
+          详情
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (!window.confirm(`从发现列表移除「${it.name}」吗？（已安装不受影响）`)) return
+            void p.removeDiscovery(it.id)
+          }}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-destructive/40 hover:text-destructive"
+          aria-label={`移除 ${it.name}`}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </article>
   )
 }

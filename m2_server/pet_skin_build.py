@@ -129,11 +129,17 @@ def _gif_to_strip(src: Path, out: Path) -> None:
     """gif 动画 → 拆帧 + 横向 hstack → 单张 strip webp。
 
     用 ffprobe 探测帧数 N，动态构造 split=N → 每支路取首帧 → hstack=N。
+    单帧（N=1）直接缩放转出，避免 hstack=inputs=1 非法。
     """
     n = probe_frames(src)
     w, h = probe_size(src)
     w = max(2, w - (w % 2))   # hstack 需要偶数宽
     h = max(2, h - (h % 2))
+    if n <= 1:
+        cmd = [find_ffmpeg(), "-y", "-i", str(src), "-vf", f"scale={w}:{h}",
+               "-frames:v", "1", "-c:v", "libwebp", "-lossless", "0", "-q:v", "80", str(out)]
+        _run(cmd, timeout=900)
+        return
     split_out = "".join(f"[b{i}]" for i in range(n))
     pick = "".join(
         f"[b{i}]trim=end_frame=1,setpts=PTS-STARTPTS,scale={w}:{h}[f{i}];" for i in range(n))

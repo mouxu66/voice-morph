@@ -1501,3 +1501,62 @@ export async function petUninstall(skin_id: string): Promise<{ uninstalled: stri
     body: JSON.stringify({ skin_id }),
   });
 }
+
+// ---- GitHub 扫描器（发现 Tab） ----
+
+export type PetScanProgress = {
+  status: string;      // idle | running | done | failed | cancelled
+  phase: string;
+  step: string;
+  total: number;
+  current: number;
+  repos_seen: number;
+  repos_lic_skip: number;
+  repos_tree_skip: number;
+  candidates: number;
+  built_ok: number;
+  built_fail: number;
+  atlas_skip: number;
+  error: string;
+  finished_at: string;
+};
+export type PetDiscoveryItem = {
+  id: string;
+  name: string;
+  category?: string;
+  license?: string;
+  attribution?: string;
+  description?: string;
+  source_type?: string;
+  installed: boolean;
+  discovery: {
+    repo: string;
+    stars: number;
+    license: string;
+    kind: string;
+    path: string;
+    count: number;
+    scanned_at: string;
+  };
+};
+
+export async function petScanStart(): Promise<PetScanProgress> {
+  return jsonFetch("/pet-market/scan", { method: "POST" });
+}
+
+export async function petScanProgress(): Promise<PetScanProgress> {
+  return jsonFetch("/pet-market/scan/progress");
+}
+
+export async function petScanCancel(): Promise<PetScanProgress> {
+  return jsonFetch("/pet-market/scan/cancel", { method: "POST" });
+}
+
+export async function petDiscovery(): Promise<PetDiscoveryItem[]> {
+  const data = await jsonFetch<{ items: PetDiscoveryItem[] }>("/pet-market/discovery");
+  return data.items;
+}
+
+export async function petDiscoveryRemove(skin_id: string): Promise<{ removed: string }> {
+  return jsonFetch(`/pet-market/discovery/${encodeURIComponent(skin_id)}`, { method: "DELETE" });
+}

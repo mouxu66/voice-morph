@@ -60,6 +60,48 @@ PET_ALLOWED_HOSTS = {
 # 当前应用皮肤的持久化（userData 侧另存 pet.json.skin；这里做后端权威副本）
 _APPLIED_LOCK = threading.Lock()
 
+# ---- 外置清单（ext）：GitHub 扫描器「扫描即上线」的落盘清单 ----
+EXT_FILE = OUT / "pet-scan-ext.json"          # [{id,name,category,license,...discovery}, ...]
+_EXT_LOCK = threading.Lock()
+
+
+def get_ext_items() -> list[dict]:
+    """读外置清单（扫描器发现且试转通过的候选皮肤）；文件缺失/损坏返回 []。"""
+    try:
+        return json.loads(EXT_FILE.read_text("utf-8"))
+    except Exception:
+        return []
+
+
+def add_ext_item(item: dict) -> dict:
+    """写入/更新一条外置清单条目（按 id 去重，重复则覆盖）。
+
+    「扫描即上线」入口：扫描器试转通过后调用，市场 install/apply/search/detail
+    立即能看到该皮肤（find_manifest_item 会查到这里）。"""
+    skin_id = str(item.get("id") or "")
+    if not is_valid_skin_id(skin_id):
+        raise PetMarketError("外置皮肤 id 非法")
+    if any(m["id"] == skin_id for m in get_manifest()):
+        raise PetMarketError(f"皮肤「{skin_id}」已存在于内置清单，id 冲突")
+    with _EXT_LOCK:
+        items = get_ext_items()
+        items = [it for it in items if it.get("id") != skin_id]
+        items.append({**item, "id": skin_id})
+        EXT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        EXT_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), "utf-8")
+    return item
+
+
+def remove_ext_item(skin_id: str) -> bool:
+    """从外置清单移除条目；存在则返回 True。不物理删除皮肤目录。"""
+    with _EXT_LOCK:
+        items = get_ext_items()
+        rest = [it for it in items if it.get("id") != skin_id]
+        if len(rest) == len(items):
+            return False
+        EXT_FILE.write_text(json.dumps(rest, ensure_ascii=False, indent=2), "utf-8")
+    return True
+
 # ---- 多任务安装队列（≤MAX_CONCURRENT 并发下载/转换，其余排队，可取消） ----
 MAX_CONCURRENT_INSTALLS = 2            # 同时下载/转换数
 _TASK_LOCK = threading.Lock()
@@ -178,8 +220,12 @@ def get_manifest() -> list[dict]:
 
 
 def find_manifest_item(skin_id: str) -> dict | None:
+    """同时查内置清单与外置清单（扫描器「扫描即上线」的皮肤也能被安装/应用）。"""
     for item in get_manifest():
         if item["id"] == skin_id:
+            return item
+    for item in get_ext_items():
+        if item.get("id") == skin_id:
             return item
     return None
 
