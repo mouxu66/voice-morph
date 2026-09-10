@@ -223,8 +223,12 @@ def applied_skin() -> dict:
     try:
         d = skin_dir(sid)
     except PetMarketError:
+        # 应用态指向未安装皮肤（或默认 bundle 尚未物化）：回退默认并尝试物化
         sid = DEFAULT_SKIN
         save_applied(sid)
+        item = find_manifest_item(sid)
+        if item is not None and item.get("bundle"):
+            ensure_bundle(item)
         d = skin_dir(sid)
     skin = load_skin(d)
     return {"id": d.name, "frameW": int(skin["frameW"]), "frameH": int(skin["frameH"]),

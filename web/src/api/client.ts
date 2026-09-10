@@ -1374,3 +1374,86 @@ export async function cleanStorage(targets: string[]): Promise<StorageCleanResul
     body: JSON.stringify({ targets }),
   });
 }
+
+// ---- 桌面人偶市场（皮肤市场） ----
+
+export type PetSkinItem = {
+  id: string;
+  name: string;
+  category?: string;
+  license?: string;
+  attribution?: string;
+  description?: string;
+  source_type?: string;
+  bundle?: boolean;
+  size_hint_mb?: number;
+};
+
+export type PetInstalledItem = {
+  id: string;
+  name: string;
+  category?: string;
+  license?: string;
+  attribution?: string;
+  applied: boolean;
+  preview?: string;
+};
+
+export type PetSkinState = { sheet: string; frames: number; dur: number };
+export type PetAppliedSkin = {
+  id: string;
+  frameW: number;
+  frameH: number;
+  states: Record<string, PetSkinState>;
+};
+
+export type PetTask = {
+  skin_id: string;
+  status: string;   // idle | downloading | installing | done | failed
+  phase: string;
+  message: string;
+  percent: number;
+  error: string;
+};
+
+export async function petManifest(): Promise<PetSkinItem[]> {
+  const data = await jsonFetch<{ items: PetSkinItem[] }>("/pet-market/manifest");
+  return data.items;
+}
+
+export async function petInstalled(): Promise<PetInstalledItem[]> {
+  const data = await jsonFetch<{ items: PetInstalledItem[] }>("/pet-market/installed");
+  return data.items;
+}
+
+export async function petApplied(): Promise<PetAppliedSkin> {
+  return jsonFetch<PetAppliedSkin>("/pet-market/applied");
+}
+
+export async function petProgress(): Promise<PetTask> {
+  return jsonFetch<PetTask>("/pet-market/progress");
+}
+
+export async function petInstall(skin_id: string): Promise<PetTask> {
+  return jsonFetch("/pet-market/install", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skin_id }),
+  });
+}
+
+export async function petApply(skin_id: string): Promise<{ applied: string }> {
+  return jsonFetch("/pet-market/apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skin_id }),
+  });
+}
+
+export async function petUninstall(skin_id: string): Promise<{ uninstalled: string; reset_applied?: boolean }> {
+  return jsonFetch("/pet-market/uninstall", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skin_id }),
+  });
+}

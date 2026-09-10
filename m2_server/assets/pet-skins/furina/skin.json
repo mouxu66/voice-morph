@@ -1,0 +1,41 @@
+{
+  "id": "furina",
+  "name": "芙宁娜（水神）",
+  "category": "二次元",
+  "license": "MIT",
+  "attribution": "Ice-teapop/desktop-pet（原创 SVG, MIT）",
+  "frameW": 150,
+  "frameH": 150,
+  "states": {
+    "idle": {
+      "sheet": "idle.webp",
+      "frames": 37,
+      "dur": 3.0
+    },
+    "listen": {
+      "sheet": "listen.webp",
+      "frames": 37,
+      "dur": 3.0
+    },
+    "think": {
+      "sheet": "think.webp",
+      "frames": 37,
+      "dur": 3.0
+    },
+    "play": {
+      "sheet": "play.webp",
+      "frames": 22,
+      "dur": 1.8
+    },
+    "build": {
+      "sheet": "build.webp",
+      "frames": 16,
+      "dur": 1.4
+    },
+    "error": {
+      "sheet": "error.webp",
+      "frames": 37,
+      "dur": 3.0
+    }
+  }
+}

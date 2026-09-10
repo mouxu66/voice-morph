@@ -194,8 +194,8 @@ def pack_atlas_skin(atlas: Path, out_dir: Path, meta: dict) -> dict[str, dict]:
         sheet = f"{state}.webp"
         cut_atlas_row(Path(atlas), out_dir / sheet, row, fw, fh, cols)
         rows[state] = {"sheet": sheet, "frames": cols, "dur": durs.get(state, DEFAULT_DUR[state])}
-    meta.setdefault("frameW", fw)
-    meta.setdefault("frameH", fh)
+    meta["frameW"] = fw
+    meta["frameH"] = fh
     return rows
 
 
@@ -228,8 +228,10 @@ def pack_gif_skin(gifs: list[Path], out_dir: Path, meta: dict) -> dict[str, dict
         rows[state] = {"sheet": sheet, "frames": frames, "dur": durs.get(state, DEFAULT_DUR[state])}
     if sizes:
         max_fw = max(s[0] for s in sizes) // max((r.get("frames") or 1) for r in rows.values() if r.get("frames"))
-        meta.setdefault("frameW", fw or max_fw or 32)
-        meta.setdefault("frameH", fh or sizes[0][1])
+        if not fw:
+            meta["frameW"] = max_fw or 32
+        if not fh:
+            meta["frameH"] = sizes[0][1]
     else:
         meta.setdefault("frameW", 32)
         meta.setdefault("frameH", 32)
