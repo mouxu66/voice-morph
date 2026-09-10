@@ -420,6 +420,10 @@ def test_transient_retry_succeeds_on_second_attempt(rvc_tmp, market_dir, monkeyp
     calls = {"n": 0}
 
     def fake_run(cmd, **kw):
+        # _gpu_busy 会先走 rvc_live 的 powershell 进程枚举（同样经 subprocess.run），
+        # 不含 --output 的调用不是 RVC 推理：返回空结果，别计数。
+        if "--output" not in cmd:
+            return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})
         calls["n"] += 1
         out = cmd[cmd.index("--output") + 1]
         if calls["n"] == 1:
