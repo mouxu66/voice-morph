@@ -21,6 +21,23 @@ export interface DiagnoseInfo {
   items: DiagnoseItem[];
 }
 
+// 后端预热（/api/system/warmup）：TTS worker / RVC / 微信播放worker 常驻化进度。
+// steps 是「已完成」的步（后端边跑边追加），done=true 表示三步全部结束。
+export interface WarmupStep {
+  step: string;
+  seconds: number;
+  ok: boolean;
+  detail?: string;
+}
+
+export interface WarmupStatus {
+  running: boolean;
+  done: boolean;
+  steps: WarmupStep[];
+  total_s?: number;
+  error?: string;
+}
+
 // 发送链路自检（/api/audio/send_chain）；items 复用 DiagnoseItem 结构
 export interface SendChainInfo {
   ok: boolean;

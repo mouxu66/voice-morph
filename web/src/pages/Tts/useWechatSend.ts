@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react"
 import {
+  getWarmup,
   getWechatHistory,
   getWechatLastTts,
   wechatManualSend,
   wechatPlayToCable,
   wechatSendVoice,
+  type WarmupStatus,
   type WechatHistoryItem,
   type WechatLastTts,
   type WechatSendResult,
@@ -23,6 +25,33 @@ export function useWechatSend() {
   const [busy, setBusy] = useState<"" | "send" | "play" | "manual">("")
   const [errorMessage, setErrorMessage] = useState("")
   const [lastResult, setLastResult] = useState<WechatSendResult | null>(null)
+  const [warmup, setWarmup] = useState<WarmupStatus | null>(null)
+
+  // 轮询后端预热：起来后每 2s 查一次直到 done。预热未完成就发语音，请求会阻塞在
+  // 模型加载上（安全，但第一次会等几十秒）——这里把进度暴露给界面，别让用户以为卡死。
+  useEffect(() => {
+    if (!backendUp) {
+      setWarmup(null)
+      return
+    }
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tick = async () => {
+      try {
+        const w = await getWarmup()
+        if (!alive) return
+        setWarmup(w)
+        if (!w.done) timer = setTimeout(() => void tick(), 2000)
+      } catch {
+        if (alive) timer = setTimeout(() => void tick(), 3000)
+      }
+    }
+    void tick()
+    return () => {
+      alive = false
+      if (timer) clearTimeout(timer)
+    }
+  }, [backendUp])
 
   const refresh = useCallback(async () => {
     try {
@@ -69,6 +98,8 @@ export function useWechatSend() {
     busy,
     errorMessage,
     lastResult,
+    warmup,
+    warming: Boolean(warmup && !warmup.done),
     sendAuto,
     playToCable,
     manualSetup,

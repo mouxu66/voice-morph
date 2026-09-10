@@ -1,4 +1,16 @@
-import type { ClipItem, DiagnoseInfo, HealthInfo, SendChainInfo, VideoItem, VoiceInfo, VoiceQc } from "../types";
+import type {
+  ClipItem,
+  DiagnoseInfo,
+  HealthInfo,
+  SendChainInfo,
+  VideoItem,
+  VoiceInfo,
+  VoiceQc,
+  WarmupStatus,
+} from "../types";
+
+// 预热状态的结构定义在 types.ts，这里转出供页面直接 import（与本地定义的 Wechat* 类型并列）
+export type { WarmupStatus };
 
 // 后端统一挂在 /api 前缀下。
 // 开发模式：走 vite proxy（/api -> 8000），用相对地址；
@@ -42,6 +54,15 @@ export async function getHealth(): Promise<HealthInfo> {
 /** 环境体检：检查 ffmpeg / RVC 整合包 / 默认音色权重 / CUDA / TTS 模型 等本机依赖 */
 export async function diagnose(): Promise<DiagnoseInfo> {
   return jsonFetch<DiagnoseInfo>("/diagnose");
+}
+
+/**
+ * 后端预热进度（TTS worker / RVC / 微信播放worker 常驻化，合计约 50s）。
+ * 预热完成前发语音会卡在模型加载上（请求会等预热结束，不会失败），
+ * 前端拿它把「为什么第一次这么慢」讲清楚。
+ */
+export async function getWarmup(): Promise<WarmupStatus> {
+  return jsonFetch<WarmupStatus>("/system/warmup");
 }
 
 export async function listVoices(): Promise<VoiceInfo[]> {

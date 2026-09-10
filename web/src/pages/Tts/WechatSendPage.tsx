@@ -1,4 +1,5 @@
 import {
+  Check,
   CircleAlert,
   Clock,
   Hand,
@@ -91,6 +92,50 @@ export function WechatSendPage(p: ReturnType<typeof useWechatSend>) {
           <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
             <p className="font-mono text-xs uppercase tracking-widest text-primary">发送方式</p>
             <h3 className="mt-2 text-lg font-semibold text-card-foreground">三档路径，按需选择</h3>
+
+            {/* 预热进度：模型常驻化后才能快，讲清楚「第一次为什么慢」 */}
+            {p.warming && (
+              <div className="mt-4 rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-3.5">
+                <div className="flex items-start gap-2.5">
+                  <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-yellow-600" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-yellow-700">
+                      模型预热中 {p.warmup?.steps.length ?? 0}/3 · 首次发送需等待
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      正在把 TTS / RVC / 播放服务常驻到显存（合计约 50s）。预热完成后发送最快；
+                      现在点发送也会等预热结束自动继续，不会失败。
+                    </p>
+                    {!!p.warmup?.steps.length && (
+                      <ul className="mt-2 space-y-1">
+                        {p.warmup.steps.map((s, i) => (
+                          <li
+                            key={`${s.step}-${i}`}
+                            className="flex items-center gap-1.5 text-xs text-muted-foreground"
+                          >
+                            {s.ok ? (
+                              <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
+                            ) : (
+                              <CircleAlert className="h-3.5 w-3.5 shrink-0 text-destructive" />
+                            )}
+                            <span>{s.step}</span>
+                            <span className="font-mono">{s.seconds}s</span>
+                            <span>{s.ok ? "就绪" : "失败"}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            {!p.warming && p.warmup?.done && (
+              <p className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Check className="h-3.5 w-3.5 text-primary" />
+                模型已就绪
+                {p.warmup.total_s ? `（预热 ${Math.round(p.warmup.total_s)}s）` : ""}，现在发送最快。
+              </p>
+            )}
 
             <div className="mt-5 space-y-4">
               {/* ① 全自动 */}
