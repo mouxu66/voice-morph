@@ -52,6 +52,22 @@ def pet_installed():
     return {"items": pet_market.installed_skins()}
 
 
+@router.get("/pet-market/applied")
+def pet_applied():
+    """当前应用皮肤配置（渲染器换肤用）：{id, frameW, frameH, states}。"""
+    return pet_market.applied_skin()
+
+
+@router.get("/pet-market/sheet/{skin_id}/{name}")
+def pet_sheet(skin_id: str, name: str):
+    """皮肤 spritesheet 文件（name 限该皮肤 skin.json 状态表内的 sheet，防枚举/穿越）。"""
+    try:
+        p = pet_market.sheet_file(skin_id, name)
+    except pet_market.PetMarketError as exc:
+        raise _to_http(exc) from exc
+    return FileResponse(p, media_type="image/webp")
+
+
 @router.get("/pet-market/progress")
 def pet_progress():
     """安装进度（无任务时 status=idle）。"""

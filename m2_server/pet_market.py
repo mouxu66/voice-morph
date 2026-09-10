@@ -214,6 +214,33 @@ def skin_dir(skin_id: str) -> Path:
     return d
 
 
+def applied_skin() -> dict:
+    """当前应用皮肤配置（渲染器换肤用）：{id, frameW, frameH, states}。
+
+    states.{state} = {sheet, frames, dur}；应用态指向未安装皮肤时回退默认。
+    """
+    sid = load_applied()
+    try:
+        d = skin_dir(sid)
+    except PetMarketError:
+        sid = DEFAULT_SKIN
+        save_applied(sid)
+        d = skin_dir(sid)
+    skin = load_skin(d)
+    return {"id": d.name, "frameW": int(skin["frameW"]), "frameH": int(skin["frameH"]),
+            "states": skin.get("states") or {}}
+
+
+def sheet_file(skin_id: str, name: str) -> Path:
+    """皮肤 spritesheet 文件（name 必须出现在该皮肤 skin.json 状态表中）。"""
+    d = skin_dir(skin_id)
+    skin = load_skin(d)
+    allowed = {s["sheet"] for s in (skin.get("states") or {}).values() if s.get("sheet")}
+    if name not in allowed:
+        raise PetMarketError("皮肤资源不存在")
+    return d / name
+
+
 # ---------------- 下载（轻量，白名单直链） ----------------
 
 

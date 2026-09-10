@@ -165,9 +165,11 @@
   #panel #status.err { color: #b91c1c; }
 
   /* ---------------- 角色 ---------------- */
+  /* 尺寸由 JS 按皮肤 frameW/frameH 注入（--dw/--dh 显示尺寸，含整数倍放大），
+     默认回退 150×150（芙宁娜内置）。像素素材放大时 image-rendering: pixelated 保持锐利。 */
   #pet {
     position: relative;
-    width: 150px; height: 150px;
+    width: var(--dw, 150px); height: var(--dh, 150px);
     cursor: grab;                  /* 拖拽由 JS+IPC 手动实现（app-region 在透明穿透窗上不可靠） */
     display: flex; align-items: flex-end; justify-content: center;
     transform-origin: 50% 85%;
@@ -203,9 +205,9 @@
   }
   #pet #sprite { position: relative; z-index: 1; }
   /* 精灵图动画：<div> + WebP 背景 + steps() 关键帧（替代原 SVG 内 SMIL）。
-     帧横向拼接，每帧 150px；--n 帧数由 JS 按状态注入。 */
+     帧横向拼接，帧宽不定——--fw/--fh 由 JS 按皮肤注入，回退 150。 */
   #pet #sprite {
-    width: 150px; height: 150px;
+    width: var(--fw, 150px); height: var(--fh, 150px);
     -webkit-user-drag: none; pointer-events: auto;
     background-repeat: no-repeat;
     will-change: background-position;   /* 提示合成层，减少逐帧重绘掉帧 */
@@ -214,7 +216,7 @@
   }
   @keyframes pet-steps {
     from { background-position-x: 0; }
-    to   { background-position-x: calc(var(--n, 37) * 150px * -1); }
+    to   { background-position-x: calc(var(--n, 37) * var(--fw, 150px) * -1); }
   }
 
   /* 页面专属动作：挂在 #pet 外层，与精灵图自身的逐帧动画互不干扰 */
@@ -314,6 +316,65 @@ const SPRITE_ANIM = {
   build:  { frames: 16, dur: 1.4 },
   error:  { frames: 37, dur: 3.0 },
 };
+
+// ---------------- 动态皮肤 ----------------
+// skin.json（后端 /api/pet-market/applied）:
+//   { id, frameW, frameH, states: { state: { sheet, frames, dur } } }
+// 内置芙宁娜（id=furina）直接用本地 svg/*.webp，不依赖后端；其余皮肤 sheet
+// 走 http://127.0.0.1:8000/api/pet-market/sheet/<id>/<sheet>。
+const SKIN_SHEET_API = "http://127.0.0.1:8000/api/pet-market";
+let petSkin = { id: "", frameW: 150, frameH: 150, states: {} };   // 当前皮肤（空=内置）
+let skinScale = 1;   // 像素素材整数倍放大系数（保持锐利）
+
+/** 取某状态的皮肤配置；缺省回退福灵娜内置。 */
+function skinState(key) {
+  if (petSkin.states[key]) return petSkin.states[key];
+  if (key === "listen" && petSkin.states.idle) return petSkin.states.idle;   // 听→待机
+  if (key === "build" && petSkin.states.play) return petSkin.states.play;    // 干活→玩耍
+  return { sheet: "", frames: SPRITE_ANIM[key].frames, dur: SPRITE_ANIM[key].dur };
+}
+
+/** sheet 完整 URL：内置皮肤用本地 svg，远端皮肤用后端接口。 */
+function sheetUrl(key, st) {
+  if (!petSkin.id || petSkin.id === "furina") return SPRITES[key] || SPRITES.idle;
+  return `${SKIN_SHEET_API}/sheet/${encodeURIComponent(petSkin.id)}/${encodeURIComponent(st.sheet)}`;
+}
+
+/** 应用皮肤到 DOM：按 frameW/frameH 计算整数倍放大与显示尺寸。 */
+function applySkin() {
+  const fw = petSkin.frameW || 150, fh = petSkin.frameH || 150;
+  // 目标显示高度 ≈150px；比它小的像素素材按整数倍放大（32→160），大的保持原尺寸
+  skinScale = fh >= 150 ? 1 : Math.max(1, Math.ceil(150 / fh));
+  const dw = fw * skinScale, dh = fh * skinScale;
+  sprite.style.setProperty("--fw", dw + "px");
+  sprite.style.setProperty("--fh", dh + "px");
+  sprite.style.setProperty("--dw", dw + "px");
+  sprite.style.setProperty("--dh", dh + "px");
+  // 像素素材放大时锁锐利，矢量风格保持平滑
+  sprite.style.imageRendering = skinScale > 1 ? "pixelated" : "auto";
+}
+
+/** 拉取当前应用皮肤配置；失败/后端离线保持现有皮肤不动。 */
+async function loadSkin() {
+  let cfg = null;
+  try {
+    const r = await fetch(`${SKIN_SHEET_API}/applied`, { cache: "no-store" });
+    if (r.ok) cfg = await r.json();
+  } catch {}
+  if (!cfg || !cfg.id) return;
+  if (cfg.id === petSkin.id) return;   // 没换肤
+  petSkin = { id: cfg.id, frameW: cfg.frameW || 150, frameH: cfg.frameH || 150, states: cfg.states || {} };
+  applySkin();
+  // 预加载新皮肤各状态 sheet，避免首次切换白屏
+  for (const key of Object.keys(SPRITE_ANIM)) {
+    const st = skinState(key);
+    if (st.sheet && sheetUrl(key, st) !== (SPRITES[key] || "")) new Image().src = sheetUrl(key, st);
+  }
+  lastKey = null;   // 强制下一帧重画
+}
+
+// 内置空气皮肤初始化：150×150
+applySkin();
 const BUBBLE = {
   // 桌宠现在默认常驻，待机时只留角色安静待着，别把「待机中」一直糊在屏幕上
   idle:   { cls: "",          title: "待机",     text: "待机中", hidden: true },
@@ -350,11 +411,12 @@ for (const p of Object.values(SPRITES)) { new Image().src = p; }
 
 // ---------------- 通用渲染 ----------------
 function setSprite(key, motion) {
-  const anim = SPRITE_ANIM[key] || SPRITE_ANIM.idle;
-  sprite.style.backgroundImage = `url("${SPRITES[key] || SPRITES.idle}")`;
-  sprite.style.backgroundSize = (anim.frames * 150) + "px 150px";
-  sprite.style.setProperty("--n", String(anim.frames));
-  sprite.style.animation = `pet-steps ${anim.dur}s steps(${anim.frames}) infinite`;
+  const st = skinState(key);
+  const url = sheetUrl(key, st);
+  sprite.style.backgroundImage = `url("${url}")`;
+  sprite.style.backgroundSize = (st.frames * (petSkin.frameW || 150) * skinScale) + "px " + ((petSkin.frameH || 150) * skinScale) + "px";
+  sprite.style.setProperty("--n", String(st.frames));
+  sprite.style.animation = `pet-steps ${st.dur}s steps(${st.frames}) infinite`;
   setMotion(motion);
 }
 
@@ -807,6 +869,12 @@ setInterval(() => {
 
 void tick();
 setInterval(tick, 1000);
+// 皮肤轮询：应用新皮肤后 5s 内热切换（无需重启桌宠）。
+// MOCK 调试模式下不请求后端（保持离线自演）。
+if (!MOCK) {
+  loadSkin();
+  setInterval(loadSkin, 5000);
+}
 </script>
 </body>
 </html>
