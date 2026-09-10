@@ -42,8 +42,10 @@ from runtime import VOICEBANK
 # 静音判定阈值：正常语音 RMS 远大于此；数字静音/近静音均视为无声
 _MIN_RMS = 1e-3
 
-# 固定试听句：约 4～5 秒，清晰中性，覆盖多种音色（仅文档用途；源句已改用内置干净人声）
-PREVIEW_TEXT = "安装完成，这是一段自动生成的试听，请听听这个新音色的声音品质。"
+# 源句台词 —— 仅文档用途，改这个常量**不会**改变试听音频。
+# 试听是 RVC voice-to-voice：听到的内容由 assets/preview_source.wav 决定，与文本无关。
+# 要换台词就换源句音频：python tools/make_preview_source.py --text "新台词"
+PREVIEW_TEXT = "大家好，这是我的新声音，你觉得怎么样？"
 
 # 内置干净源句：魔搭官方模型（damo/speech_campplus_sv_zh-cn_16k-common）examples 里的
 # 中文示例语音，16k 单声道 ~5s，与任何市场音色无源关系 —— 试听只呈现目标音色本身
