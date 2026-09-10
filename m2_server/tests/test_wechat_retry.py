@@ -18,6 +18,8 @@ import wechat_voice as wv  # noqa: E402
 def isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "OUTPUTS_DIR", tmp_path)
     monkeypatch.setattr(wv, "HISTORY_FILE", tmp_path / "wechat_send_history.json")
+    # 禁止单测触碰真实微信：UIA 视为不可用（否则 _do_send 会真点微信）
+    monkeypatch.setattr(wv, "_uia_ready", lambda: False)
     yield tmp_path
 
 

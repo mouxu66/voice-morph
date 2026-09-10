@@ -75,6 +75,31 @@ AUTO_FALLBACK = os.environ.get("VM_WECHAT_AUTO_FALLBACK", "1") == "1"
 _send_lock = threading.Lock()
 _play_proc = None   # 正在向 CABLE 播放的子进程，供 /stop_play 中止
 
+# -------- UIA 结构化访问（方案 A，2026-09-10）--------
+# 微信 4.x 聊天区自绘，UIA 默认只有 Qt 空壳；热激活后能拿到带矩形的结构化控件。
+# 这里只把「检测录音浮层 / 定位浮层按钮 / 校验发送结果」交给 UIA，像素链路
+# （模板匹配 + 绿钮 HSV）完整保留为降级路径。禁用：VM_WECHAT_UIA=0。
+try:
+    import wechat_uia as _uia
+except Exception as _e:      # uiautomation 未安装 / 非 Windows → 纯像素链路
+    _uia = None
+    logger.info("[wechat] UIA 模块不可用，使用纯像素链路: %s", _e)
+
+
+def _uia_ready() -> bool:
+    """UIA 是否可用（热激活成功且控件树已物化）。任何失败都返回 False。"""
+    if _uia is None:
+        return False
+    try:
+        return _uia.uia_ready()
+    except Exception as e:
+        logger.debug("[wechat] UIA 探测失败: %s", e)
+        return False
+
+
+def _uia_center(box: tuple[int, int, int, int] | None) -> tuple[int, int] | None:
+    return (((box[0] + box[2]) // 2), ((box[1] + box[3]) // 2)) if box else None
+
 
 # ---------------- audio_config.ps1（复用 rvc_live 的调用方式） ----------------
 
@@ -595,16 +620,24 @@ def _snapshot_overlay_baseline(rect: tuple[int, int, int, int]) -> None:
 def _wait_record_overlay(rect: tuple[int, int, int, int], timeout: float = 6.0) -> bool:
     """轮询等待录音浮层出现。
 
-    2026-09-09 真机验证：mic DOWN 后浮层起/录音中，"↑绿钮"是唯一可靠的
-    状态指示（HSV (18,199,125) 微信绿，>50 像素即可确认）—— 灰度差分在
-    浮层 vs 输入条之间差异 < 0.2，常驻 mic/录音图标灰度相近，阈值无法区分。
-    浮层未起时输入条只有灰色 ↑"发送"按钮（非绿色），绿点搜索返回 None。
+    判据优先级（2026-09-10 方案 A）：
+      1. **UIA**：`mmui::ChatVoiceRecordView` 是否存在——结构化、不受渲染/配色影响
+      2. 像素兜底：绿钮 HSV（微信绿 (18,199,125)，>50 像素）——UIA 不可用时用
+    两条判据并行轮询，谁先命中算谁，任一可用即返回，互不阻塞。
     """
     deadline = time.time() + timeout
+    use_uia = _uia_ready()
     while time.time() < deadline:
+        if use_uia:
+            try:
+                if _uia.overlay_exists():
+                    return True
+            except Exception as e:
+                logger.debug("[wechat] UIA 浮层检测失败，本轮到像素: %s", e)
+                use_uia = False
         if _find_green_send(rect, retries=1):
             return True
-        time.sleep(0.3)
+        time.sleep(0.25)
     return False
 
 
@@ -628,6 +661,16 @@ def _trigger_record() -> None:
         _ensure_onscreen(hwnd)                 # 防止窗口底边超屏被任务栏遮挡
         rect = _window_rect(hwnd)
         _rect_ctx = rect
+        # 首选 UIA 点击（2026-09-10 方案 A）：UIA 走 COM 调用，不经系统输入队列，
+        # 天然不受 WS_EX_TRANSPARENT 点击穿透影响，也不用摘样式位、不依赖坐标。
+        if _uia_ready():
+            try:
+                if _uia.click_voice_button() and _wait_record_overlay(rect, timeout=5.0):
+                    _record_via = "uia"
+                    return
+            except Exception as e:
+                logger.debug("[wechat] UIA 点击语音按钮失败，回退像素链路: %s", e)
+        # 降级：摘 WS_EX_TRANSPARENT + SendInput 单击语音按钮
         point = _find_mic_icon(rect) or _mic_point(rect)
         # 摘样式（必做）+ SendInput 单击语音按钮
         render = _find_render_hwnd(hwnd)
@@ -696,9 +739,14 @@ def _finish_record() -> bool:
         if RECORD_METHOD == "mic":
             rect = _rect_ctx or _window_rect(_find_wechat_hwnd())
             time.sleep(TAIL_S)   # 尾音缓冲（等 wav 尾音真正录进去）
-            # 找浮层绿钮（微信绿 (18,199,125)）并真点击发送。样式位此刻仍摘除
-            # （_exstyle_restore 在 finally 才恢复），单击不会穿透到主窗口。
-            send_pt = _find_green_send(rect)
+            # 发送钮定位：UIA 结构化矩形优先，绿钮 HSV 兜底（2026-09-10 方案 A）。
+            send_pt = None
+            if _uia_ready():
+                try:
+                    send_pt = _uia_center(_uia.send_button_rect())
+                except Exception as e:
+                    logger.debug("[wechat] UIA 发送钮定位失败，回退绿钮: %s", e)
+            send_pt = send_pt or _find_green_send(rect)
             if send_pt:
                 _mouse_move_abs(*send_pt)
                 time.sleep(0.12)
@@ -727,8 +775,18 @@ def _finish_record() -> bool:
 
 
 def _cancel_point(rect: tuple[int, int, int, int]) -> tuple[int, int] | None:
-    """录音浮层 × 取消按钮位置（实测在话筒原位置左侧约 218px）。"""
-    l, t, r, b = rect
+    """录音浮层 × 取消按钮位置。
+
+    优先 UIA（`mmui::XButton '取消'`，实测 (891,1519,933,1561)）；拿不到再退回
+    老的硬编码偏移（话筒原位置左侧 218px，2026-09-09 曾算偏过 40px）。
+    """
+    if _uia_ready():
+        try:
+            pt = _uia_center(_uia.cancel_button_rect())
+            if pt:
+                return pt
+        except Exception as e:
+            logger.debug("[wechat] UIA 取消钮定位失败，回退偏移: %s", e)
     mx, my = _mic_point(rect)
     return (mx - 218, my)
 
@@ -951,6 +1009,32 @@ def _safe_restore() -> tuple[bool, str]:
             return False, f"restore 失败({e})；reset 兜底也失败({e2})"
 
 
+def _uia_verify_sent(before_msg: str | None, expect_s: float) -> list[str]:
+    """发送后读 UIA 里最新语音消息，校验真的发出去了 + 时长正常。
+
+    这是"ok≠真发出"那道坑的自动化防线（2026-09-10）：以前只能靠截图肉眼看气泡，
+    现在直接读 `mmui::ChatVoiceItemView` 的名称（形如 `语音15"秒`）。
+    """
+    msg = None
+    for _ in range(4):
+        try:
+            msg = _uia.latest_voice_message()
+        except Exception:
+            msg = None
+        if msg and msg != before_msg:
+            break
+        time.sleep(0.5)
+    if not msg:
+        return ["UIA 校验：读不到语音消息（跳过）"]
+    if msg == before_msg:
+        return [f"⚠ UIA 校验：最新语音仍是 {msg}，本次可能没发出去"]
+    secs = _uia.duration_from_message(msg)
+    out = [f"UIA 校验：最新语音 {msg}"]
+    if secs is not None and expect_s >= 3 and secs > max(expect_s * 3, expect_s + 20):
+        out.append(f"⚠ 时长异常（{secs:.0f}s 远大于预期 {expect_s:.1f}s），疑似 60s 截断复发")
+    return out
+
+
 def _do_send(req: SendVoiceReq):
     steps: list[str] = []
 
@@ -970,6 +1054,16 @@ def _do_send(req: SendVoiceReq):
     duration = _wav_duration(wav)
     steps.append(f"音频: {wav.name}（{duration:.1f}s）")
 
+    # UIA 预热（方案 A）：激活失败不影响主流程，后面各环节自动回退像素链路
+    uia_active = _uia_ready()
+    steps.append("UIA 结构化访问就绪" if uia_active else "UIA 不可用（走像素链路）")
+    before_msg = None
+    if uia_active:
+        try:
+            before_msg = _uia.latest_voice_message()
+        except Exception:
+            before_msg = None
+
     restored = False
     try:
         # 2) 默认麦克风 → CABLE Output（微信从这里录；apply 自动备份原设备）
@@ -978,8 +1072,11 @@ def _do_send(req: SendVoiceReq):
 
         # 3) 微信前台 → 按住话筒（鼠标）/快捷键（键盘）开始录制语音消息
         _trigger_record()
-        hold_name = "话筒图标" if RECORD_METHOD == "mic" else RECORD_KEY.upper()
-        steps.append(f"已按住{hold_name}开始录音")
+        if RECORD_METHOD == "mic":
+            steps.append("UIA 已点击语音按钮，开始录音" if _record_via == "uia"
+                         else "已点击话筒图标，开始录音")
+        else:
+            steps.append(f"已按住 {RECORD_KEY.upper()} 开始录音")
         time.sleep(LEAD_S + 0.25)   # 等录音真正开始，静音头由播放端再垫一层
 
         # 4) 把 wav 播进 CABLE Input
@@ -991,9 +1088,14 @@ def _do_send(req: SendVoiceReq):
         via = _record_via
         sent = _finish_record()
         if sent:
-            steps.append("已松开话筒，语音已发送" if via == "realclick"
-                         else "已点击浮层发送按钮，语音已发送")
+            steps.append({
+                "uia": "UIA 点击语音按钮录音 → 已点发送钮，语音已发送",
+                "realclick": "已点击语音按钮 → 已点发送钮，语音已发送",
+                "postmsg": "已点浮层发送按钮，语音已发送",
+            }.get(via, "语音已发送"))
             time.sleep(0.6)
+            if uia_active:
+                steps.extend(_uia_verify_sent(before_msg, duration))
         else:
             steps.append("未找到发送按钮，已取消录音（本次未发送）")
             restored, restore_err = _safe_restore()

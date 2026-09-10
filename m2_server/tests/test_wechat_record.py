@@ -11,6 +11,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import wechat_voice as wv
 
 
+@pytest.fixture(autouse=True)
+def _no_real_uia(monkeypatch):
+    """单测禁止触碰真实微信：UIA 一律先视为不可用（个别用例自己覆盖成可用）。
+
+    不加这道锁的话，`_trigger_record` 会真的通过 UIA 点击微信语音按钮、
+    真起一个录音浮层（挂到 60s 自动截断），污染真机会话。
+    """
+    monkeypatch.setattr(wv, "_uia_ready", lambda: False)
+
+
 # ---------------- RECORD_METHOD 配置 ----------------
 
 def test_record_method_default_mic(monkeypatch):
@@ -484,3 +494,229 @@ def test_overlay_falls_back_to_green_when_no_baseline(monkeypatch):
     monkeypatch.setattr(wv.time, "sleep", lambda s: None)
     assert wv._wait_record_overlay((0, 0, 1938, 1600), timeout=1.0) is True
     wv._overlay_baseline = None          # 还原，避免污染其他用例
+
+
+# ================= 方案 A：UIA 优先 + 像素降级（2026-09-10） =================
+#
+# 真机实测依据：微信 4.1.13.12 热激活后可读到
+#   mmui::XButton '发语音 ( 按住右 Alt )'  [1113,1525,1155,1567]
+#   mmui::ChatVoiceRecordView              [891,1513,1242,1573]
+#     ├─ mmui::XButton '取消'              [891,1519,933,1561]
+#     └─ XMouseEventView '发送语音'        [1194,1519,1236,1561]
+#   mmui::ChatVoiceItemView '语音15"秒'
+# 以下用 fake 覆盖「UIA 命中 / UIA 失败回退像素」两条分支。
+
+class FakeUia:
+    """最小 UIA 假实现：只提供 wechat_voice 用到的接口。"""
+
+    def __init__(self, ready=True, overlay=False, send_box=None, cancel_box=None,
+                 voice_click=True, msg=None, boom=False):
+        self.ready = ready
+        self.overlay = overlay
+        self.send_box = send_box
+        self.cancel_box = cancel_box
+        self.voice_click = voice_click
+        self.msg = msg
+        self.boom = boom
+
+    def _guard(self):
+        if self.boom:
+            raise RuntimeError("uia boom")
+
+    def uia_ready(self):
+        return self.ready
+
+    def overlay_exists(self):
+        self._guard()
+        return self.overlay
+
+    def overlay_rect(self):
+        return (891, 1513, 1242, 1573) if self.overlay else None
+
+    def click_voice_button(self):
+        self._guard()
+        return self.voice_click
+
+    def send_button_rect(self):
+        self._guard()
+        return self.send_box
+
+    def cancel_button_rect(self):
+        self._guard()
+        return self.cancel_box
+
+    def latest_voice_message(self):
+        self._guard()
+        return self.msg
+
+    @staticmethod
+    def duration_from_message(name):
+        import wechat_uia as real
+        return real.duration_from_message(name)
+
+
+def test_uia_overlay_detected_without_pixel_probe(monkeypatch):
+    """UIA 判定浮层成立时，不该再走像素截图。"""
+    monkeypatch.setattr(wv, "_uia", FakeUia(overlay=True))
+    monkeypatch.setattr(wv, "_uia_ready", lambda: True)
+    called = []
+    monkeypatch.setattr(wv, "_find_green_send",
+                        lambda rect, retries=1: called.append(1) or None)
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    assert wv._wait_record_overlay((0, 0, 1938, 1600), timeout=1.0) is True
+    assert called == []                     # 完全没碰像素链路
+
+
+def test_uia_overlay_absent_falls_back_to_green(monkeypatch):
+    """UIA 说没浮层，但绿钮在 → 仍判定浮层已起（双保险）。"""
+    monkeypatch.setattr(wv, "_uia", FakeUia(overlay=False))
+    monkeypatch.setattr(wv, "_uia_ready", lambda: True)
+    monkeypatch.setattr(wv, "_find_green_send", lambda rect, retries=1: (1844, 1531))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    assert wv._wait_record_overlay((0, 0, 1938, 1600), timeout=1.0) is True
+
+
+def test_uia_exception_degrades_to_pixel(monkeypatch):
+    """UIA 抛异常不能中断流程：本轮到像素判据，后续轮不再调 UIA。"""
+    uia = FakeUia(boom=True)
+    monkeypatch.setattr(wv, "_uia", uia)
+    monkeypatch.setattr(wv, "_uia_ready", lambda: True)
+    monkeypatch.setattr(wv, "_find_green_send", lambda rect, retries=1: (1844, 1531))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    assert wv._wait_record_overlay((0, 0, 1938, 1600), timeout=1.0) is True
+
+
+def test_uia_ready_false_when_module_missing(monkeypatch):
+    monkeypatch.setattr(wv, "_uia", None)
+    assert wv._uia_ready() is False
+
+
+def test_uia_ready_swallows_exceptions(monkeypatch):
+    monkeypatch.setattr(wv, "_uia", FakeUia(boom=True))
+    assert wv._uia_ready() is False         # uia_ready 内部抛错 → False，不冒泡
+
+
+def test_trigger_prefers_uia_click(monkeypatch):
+    """UIA 点击成功且浮层起来 → 走 uia 路径，不碰鼠标、不摘样式位。"""
+    mouse_calls, moves = [], []
+    monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
+    monkeypatch.setattr(wv, "_uia", FakeUia(overlay=True))
+    monkeypatch.setattr(wv, "_uia_ready", lambda: True)
+    monkeypatch.setattr(wv, "_foreground_wechat", lambda: 999)
+    monkeypatch.setattr(wv, "_ensure_onscreen", lambda hwnd: None)
+    monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (0, 0, 1600, 900))
+    monkeypatch.setattr(wv, "_mouse_left", lambda d: mouse_calls.append(d))
+    monkeypatch.setattr(wv, "_mouse_move_abs", lambda x, y: moves.append((x, y)))
+    monkeypatch.setattr(wv, "_wait_record_overlay", lambda rect, timeout=6.0: True)
+    wv._trigger_record()
+    assert wv._record_via == "uia"
+    assert mouse_calls == [] and moves == []
+
+
+def test_trigger_falls_back_to_pixel_when_uia_click_fails(monkeypatch):
+    """UIA 点击不生效 → 回退「摘样式 + SendInput 单击」，行为与旧版一致。"""
+    mouse_calls, moves = [], []
+    monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
+    monkeypatch.setattr(wv, "_uia", FakeUia(voice_click=False))
+    monkeypatch.setattr(wv, "_uia_ready", lambda: True)
+    monkeypatch.setattr(wv, "_foreground_wechat", lambda: 999)
+    monkeypatch.setattr(wv, "_ensure_onscreen", lambda hwnd: None)
+    monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (0, 0, 1600, 900))
+    monkeypatch.setattr(wv, "_find_mic_icon", lambda rect: None)
+    monkeypatch.setattr(wv, "_find_render_hwnd", lambda hwnd: 888)
+    monkeypatch.setattr(wv, "_exstyle_clear_transparent", lambda hwnd: 0x90120)
+    monkeypatch.setattr(wv, "_exstyle_restore_if_needed", lambda: None)
+    monkeypatch.setattr(wv, "_mouse_left", lambda d: mouse_calls.append(d))
+    monkeypatch.setattr(wv, "_mouse_move_abs", lambda x, y: moves.append((x, y)))
+    monkeypatch.setattr(wv, "_wait_record_overlay", lambda rect, timeout=6.0: True)
+    wv._trigger_record()
+    assert wv._record_via == "realclick"
+    assert mouse_calls == [True, False]     # 单击（DOWN+UP）
+    assert moves == [(1600 + wv.MIC_OFFSET_X, 900 + wv.MIC_OFFSET_Y)]
+
+
+def test_finish_prefers_uia_send_button(monkeypatch):
+    """发送钮用 UIA 矩形中心（1194,1519,1236,1561 → 1215,1540）。"""
+    mouse_calls, moves = [], []
+    monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
+    monkeypatch.setattr(wv, "_uia", FakeUia(send_box=(1194, 1519, 1236, 1561)))
+    monkeypatch.setattr(wv, "_uia_ready", lambda: True)
+    monkeypatch.setattr(wv, "_rect_ctx", (0, 0, 1600, 900))
+    monkeypatch.setattr(wv, "_find_green_send", lambda rect, retries=4: (9999, 9999))
+    monkeypatch.setattr(wv, "_mouse_left", lambda d: mouse_calls.append(d))
+    monkeypatch.setattr(wv, "_mouse_move_abs", lambda x, y: moves.append((x, y)))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    assert wv._finish_record() is True
+    assert moves[-1] == (1215, 1540)        # 用的 UIA 中心，不是绿钮 (9999,9999)
+    assert mouse_calls == [True, False]
+
+
+def test_finish_falls_back_to_green_when_uia_missing(monkeypatch):
+    mouse_calls, moves = [], []
+    monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
+    monkeypatch.setattr(wv, "_uia", FakeUia(send_box=None))
+    monkeypatch.setattr(wv, "_uia_ready", lambda: True)
+    monkeypatch.setattr(wv, "_rect_ctx", (0, 0, 1600, 900))
+    monkeypatch.setattr(wv, "_find_green_send", lambda rect, retries=4: (1844, 1531))
+    monkeypatch.setattr(wv, "_mouse_left", lambda d: mouse_calls.append(d))
+    monkeypatch.setattr(wv, "_mouse_move_abs", lambda x, y: moves.append((x, y)))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    assert wv._finish_record() is True
+    assert moves[-1] == (1844, 1531)
+    assert mouse_calls == [True, False]
+
+
+def test_cancel_point_prefers_uia(monkeypatch):
+    """取消钮用 UIA 实测矩形 (891,1519,933,1561) → 中心 (912,1540)。"""
+    monkeypatch.setattr(wv, "_uia", FakeUia(cancel_box=(891, 1519, 933, 1561)))
+    monkeypatch.setattr(wv, "_uia_ready", lambda: True)
+    assert wv._cancel_point((0, 0, 1600, 900)) == (912, 1540)
+
+
+def test_cancel_point_falls_back_to_offset(monkeypatch):
+    """UIA 不可用 → 退回老偏移（话筒左侧 218px）。"""
+    monkeypatch.setattr(wv, "_uia", FakeUia(cancel_box=None))
+    monkeypatch.setattr(wv, "_uia_ready", lambda: True)
+    mx, my = wv._mic_point((0, 0, 1600, 900))
+    assert wv._cancel_point((0, 0, 1600, 900)) == (mx - 218, my)
+
+
+# ---------------- 发送结果校验（替代"截图看气泡"） ----------------
+
+def test_uia_verify_sent_ok(monkeypatch):
+    monkeypatch.setattr(wv, "_uia", FakeUia(msg='语音10"秒'))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    out = wv._uia_verify_sent('语音6"秒', 10.3)
+    assert any("语音10" in s for s in out)
+    assert not any("⚠" in s for s in out)
+
+
+def test_uia_verify_sent_flags_unchanged(monkeypatch):
+    """最新语音没变 → 说明这次可能没发出去（以前只有截图肉眼看才发现）。"""
+    monkeypatch.setattr(wv, "_uia", FakeUia(msg='语音6"秒'))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    out = wv._uia_verify_sent('语音6"秒', 10.3)
+    assert any("可能没发出去" in s for s in out)
+
+
+def test_uia_verify_sent_flags_60s_truncation(monkeypatch):
+    """时长被 60s 截断要能自动预警。"""
+    monkeypatch.setattr(wv, "_uia", FakeUia(msg='语音60"秒'))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    out = wv._uia_verify_sent('语音6"秒', 10.3)
+    assert any("60s 截断" in s for s in out)
+
+
+def test_uia_verify_sent_read_failure(monkeypatch):
+    monkeypatch.setattr(wv, "_uia", FakeUia(msg=None))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    out = wv._uia_verify_sent(None, 10.3)
+    assert any("读不到" in s for s in out)
+
+
+def test_uia_verify_sent_short_audio_not_flagged(monkeypatch):
+    """短音频（<3s）不做时长预警——微信 1s 下限附近本就可能偏长。"""
+    monkeypatch.setattr(wv, "_uia", FakeUia(msg='语音5"秒'))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    out = wv._uia_verify_sent(None, 2.0)
+    assert not any("⚠" in s for s in out)
