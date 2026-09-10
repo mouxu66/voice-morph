@@ -69,6 +69,9 @@ MIC_OFFSET_Y = int(os.environ.get("VM_WECHAT_MIC_OFFSET_Y", "-63"))
 RECORD_KEY = os.environ.get("VM_WECHAT_RECORD_KEY", "alt")
 LEAD_S = float(os.environ.get("VM_WECHAT_LEAD_S", "0.35"))   # 按住后等待录音开始
 TAIL_S = float(os.environ.get("VM_WECHAT_TAIL_S", "0.3"))    # 播完后的尾巴静音（松开前）
+# 自动发送专用静音头：开播后先垫这段再出人声，用来盖住「点按钮→微信真正开始录」的延迟。
+# 太小会削掉开头第一个字，太大会在语音前留下空白。0.8s 是实测折中。
+PLAY_LEAD_S = float(os.environ.get("VM_WECHAT_PLAY_LEAD_S", "0.8"))
 # 自动按键流程失败时是否自动降级为「引导式手动发送」（播放到 CABLE + 用户自己按住说话）
 AUTO_FALLBACK = os.environ.get("VM_WECHAT_AUTO_FALLBACK", "1") == "1"
 
@@ -155,9 +158,51 @@ if data.ndim > 1:
     data = data.mean(axis=1)
 lead = np.zeros(int(sr * float(sys.argv[3])), dtype="float32")
 tail = np.zeros(int(sr * float(sys.argv[4])), dtype="float32")
+# 关键：开播瞬间打一行 PLAYING 并 flush。
+# 子进程 import numpy/sounddevice/soundfile 要 2~3s，若主进程在点击录音后才同步等播放，
+# 这段启动开销会被微信完整录进语音（实测 2.7s 音频 → 7" 消息）。主进程改为读到这行
+# 再点录音，让静音头去覆盖微信录音的启动延迟，而不是被录成空白。
+print("PLAYING", flush=True)
 sd.play(np.concatenate([lead, data, tail]), sr, device=idx)
 sd.wait()
+print("DONE", flush=True)
 '''
+
+
+def _start_play(wav: Path) -> subprocess.Popen:
+    """后台启动播放子进程（不阻塞），返回 proc。真正开播时 stdout 打一行 PLAYING。"""
+    if not RVC_VENV_PY.exists():
+        raise RuntimeError(f"找不到 RVC venv 解释器: {RVC_VENV_PY}（sounddevice 在该环境）")
+    return subprocess.Popen(
+        [str(RVC_VENV_PY), "-c", _PLAY_SCRIPT, str(wav), OUTPUT_DEVICE_KEYWORD,
+         str(PLAY_LEAD_S), str(TAIL_S)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
+        creationflags=_NO_WINDOW,   # 播放期间不得弹出控制台遮挡微信
+    )
+
+
+def _wait_play_start(proc: subprocess.Popen, timeout: float = 40.0) -> bool:
+    """阻塞等到子进程真正开始播放（stdout 出 PLAYING）。超时/崩溃返回 False。
+
+    子进程起不来时 stdout 会关闭，readline() 立即返回空串，不会卡死。
+    """
+    try:
+        line = proc.stdout.readline() if proc.stdout else ""
+        return "PLAYING" in (line or "")
+    except Exception:
+        return False
+
+
+def _wait_play_done(proc: subprocess.Popen, duration_s: float) -> None:
+    """等播放子进程自然结束；异常兜底杀进程。"""
+    try:
+        proc.wait(timeout=duration_s + 30)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        raise RuntimeError("播放到 CABLE Input 超时")
 
 
 def _play_to_cable(wav: Path, duration_s: float) -> None:
@@ -1009,29 +1054,46 @@ def _safe_restore() -> tuple[bool, str]:
             return False, f"restore 失败({e})；reset 兜底也失败({e2})"
 
 
-def _uia_verify_sent(before_msg: str | None, expect_s: float) -> list[str]:
+def _uia_verify_sent(before_msg: str | None, expect_s: float,
+                     before_count: int = -1) -> list[str]:
     """发送后读 UIA 里最新语音消息，校验真的发出去了 + 时长正常。
 
     这是"ok≠真发出"那道坑的自动化防线（2026-09-10）：以前只能靠截图肉眼看气泡，
     现在直接读 `mmui::ChatVoiceItemView` 的名称（形如 `语音15"秒`）。
+
+    判据用**消息条数**而不是文本（2026-09-10 修）：微信只暴露形如 `语音15"秒` 的名称，
+    连续两条时长相同的语音文本完全一样，纯字符串对比会把"发送成功"误报成"没发出去"。
     """
     msg = None
-    for _ in range(4):
+    count = -1
+    for _ in range(6):
         try:
             msg = _uia.latest_voice_message()
+            count = len(_uia.voice_messages() or [])
         except Exception:
-            msg = None
-        if msg and msg != before_msg:
+            msg, count = None, -1
+        # 条数变多 = 确定新增了一条；文本不同 = 也确定（兜底）
+        if msg and ((before_count >= 0 and count > before_count) or msg != before_msg):
             break
         time.sleep(0.5)
     if not msg:
         return ["UIA 校验：读不到语音消息（跳过）"]
-    if msg == before_msg:
-        return [f"⚠ UIA 校验：最新语音仍是 {msg}，本次可能没发出去"]
+
+    added = before_count >= 0 and count > before_count
+    if not added and msg == before_msg:
+        return [f"⚠ UIA 校验：最新语音仍是 {msg}（条数 {before_count}→{count}，本次可能没发出去）"]
+
     secs = _uia.duration_from_message(msg)
-    out = [f"UIA 校验：最新语音 {msg}"]
+    # 注意：UIA 只暴露聊天可视区里的消息（虚拟列表），条数经常恒定不变，
+    # 所以"条数没涨"不等于没发出去，别把它当失败判据。
+    note = (f"条数 {before_count}→{count}，确认新增" if added
+            else f"条数 {before_count}→{count}，UIA 仅暴露可视区故不增属正常")
+    out = [f"UIA 校验：最新语音 {msg}（{note}）"]
     if secs is not None and expect_s >= 3 and secs > max(expect_s * 3, expect_s + 20):
         out.append(f"⚠ 时长异常（{secs:.0f}s 远大于预期 {expect_s:.1f}s），疑似 60s 截断复发")
+    elif secs is not None and expect_s >= 3 and secs > expect_s + 4:
+        # 静音头尾吞掉太多：提示而不是判失败
+        out.append(f"提示：录得比音频长 {secs - expect_s:.1f}s（首尾静音），可下调 LEAD_S/TAIL_S")
     return out
 
 
@@ -1058,33 +1120,44 @@ def _do_send(req: SendVoiceReq):
     uia_active = _uia_ready()
     steps.append("UIA 结构化访问就绪" if uia_active else "UIA 不可用（走像素链路）")
     before_msg = None
+    before_count = -1
     if uia_active:
         try:
             before_msg = _uia.latest_voice_message()
+            before_count = len(_uia.voice_messages() or [])
         except Exception:
-            before_msg = None
+            before_msg, before_count = None, -1
 
     restored = False
+    proc = None          # 后台播放进程（异常路径要能 kill）
     try:
         # 2) 默认麦克风 → CABLE Output（微信从这里录；apply 自动备份原设备）
         _run_audio("apply")
         steps.append("麦克风已切到 CABLE Output")
 
-        # 3) 微信前台 → 按住话筒（鼠标）/快捷键（键盘）开始录制语音消息
+        # 3) 先把播放子进程拉起来（后台）。它 import 重库要 2~3s，这段绝不能落在录音区间里，
+        #    否则语音开头会多出 2~3s 空白（实测 2.7s 音频被录成 7"）。
+        proc = _start_play(wav)
+        if _wait_play_start(proc):
+            steps.append(f"播放已开始（含 {PLAY_LEAD_S}s 静音头，覆盖录音启动延迟）")
+        else:
+            steps.append("⚠ 未等到播放开始信号，仍按原计划录音（开头可能被削）")
+
+        # 4) 微信前台 → 点语音按钮开始录制（此刻静音头正在播，正好盖住微信启动延迟）
         _trigger_record()
         if RECORD_METHOD == "mic":
             steps.append("UIA 已点击语音按钮，开始录音" if _record_via == "uia"
                          else "已点击话筒图标，开始录音")
         else:
             steps.append(f"已按住 {RECORD_KEY.upper()} 开始录音")
-        time.sleep(LEAD_S + 0.25)   # 等录音真正开始，静音头由播放端再垫一层
 
-        # 4) 把 wav 播进 CABLE Input
-        _play_to_cable(wav, duration)
+        # 5) 等 wav 真正播完（播完 = 子进程退出）
+        _wait_play_done(proc, duration)
         steps.append(f"已播放 {duration:.1f}s 到微信录音")
 
         # 5) 结束录音：realclick=松开即发送；postmsg=点浮层 ↑ 发送按钮（找不到则自动取消）
-        time.sleep(TAIL_S)
+        #    播放脚本尾部已自带 TAIL_S 静音，这里只留极小缓冲给声卡驱动（再多就是白录空白）
+        time.sleep(0.15)
         via = _record_via
         sent = _finish_record()
         if sent:
@@ -1095,7 +1168,7 @@ def _do_send(req: SendVoiceReq):
             }.get(via, "语音已发送"))
             time.sleep(0.6)
             if uia_active:
-                steps.extend(_uia_verify_sent(before_msg, duration))
+                steps.extend(_uia_verify_sent(before_msg, duration, before_count))
         else:
             steps.append("未找到发送按钮，已取消录音（本次未发送）")
             restored, restore_err = _safe_restore()
@@ -1104,7 +1177,13 @@ def _do_send(req: SendVoiceReq):
                     "steps": steps, "restored": restored, "restore_error": restore_err,
                     "_history": _append_history(wav, duration, "cancelled")}
     except Exception as exc:
-        # 失败也要：①松开录音键/鼠标（防止按住不放卡死）②还原声卡（reset 兜底）
+        # 失败也要：⓪掐掉后台播放（否则会一直往 CABLE 灌声音）
+        #            ①松开录音键/鼠标（防止按住不放卡死）②还原声卡（reset 兜底）
+        try:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+        except Exception:
+            pass
         try:
             _finish_record()
         except Exception:

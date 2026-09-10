@@ -510,7 +510,7 @@ class FakeUia:
     """最小 UIA 假实现：只提供 wechat_voice 用到的接口。"""
 
     def __init__(self, ready=True, overlay=False, send_box=None, cancel_box=None,
-                 voice_click=True, msg=None, boom=False):
+                 voice_click=True, msg=None, boom=False, msgs=None):
         self.ready = ready
         self.overlay = overlay
         self.send_box = send_box
@@ -518,6 +518,7 @@ class FakeUia:
         self.voice_click = voice_click
         self.msg = msg
         self.boom = boom
+        self.msgs = msgs
 
     def _guard(self):
         if self.boom:
@@ -548,6 +549,12 @@ class FakeUia:
     def latest_voice_message(self):
         self._guard()
         return self.msg
+
+    def voice_messages(self):
+        self._guard()
+        if self.msgs is not None:
+            return list(self.msgs)
+        return [self.msg] if self.msg else []
 
     @staticmethod
     def duration_from_message(name):
@@ -693,10 +700,21 @@ def test_uia_verify_sent_ok(monkeypatch):
 
 def test_uia_verify_sent_flags_unchanged(monkeypatch):
     """最新语音没变 → 说明这次可能没发出去（以前只有截图肉眼看才发现）。"""
-    monkeypatch.setattr(wv, "_uia", FakeUia(msg='语音6"秒'))
+    monkeypatch.setattr(wv, "_uia", FakeUia(msg='语音6"秒', msgs=['语音6"秒']))
     monkeypatch.setattr(wv.time, "sleep", lambda s: None)
-    out = wv._uia_verify_sent('语音6"秒', 10.3)
+    out = wv._uia_verify_sent('语音6"秒', 10.3, before_count=1)
     assert any("可能没发出去" in s for s in out)
+
+
+def test_uia_verify_sent_same_text_but_count_grew(monkeypatch):
+    """真机踩过的坑：连续两条时长相同的语音，UIA 文本完全一样（都是 `语音15"秒`），
+    纯字符串对比会把"发送成功"误报成"没发出去"。必须用条数兜底。"""
+    monkeypatch.setattr(wv, "_uia", FakeUia(msg='语音15"秒',
+                                            msgs=['语音27"秒', '语音15"秒', '语音15"秒']))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    out = wv._uia_verify_sent('语音15"秒', 10.8, before_count=2)
+    assert not any("可能没发出去" in s for s in out)
+    assert any("语音15" in s for s in out)
 
 
 def test_uia_verify_sent_flags_60s_truncation(monkeypatch):

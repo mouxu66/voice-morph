@@ -68,13 +68,27 @@ def test_safe_restore_both_fail(monkeypatch):
 
 # ---------------- _do_send 成功 / 降级 / 失败 ----------------
 
+class _FakeProc:
+    """假播放子进程：绝不能让单测真的去启动 RVC venv 播音频。"""
+
+    def poll(self):
+        return 0
+
+    def kill(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
 def test_do_send_success_outcome_ok(tmp_path, monkeypatch):
     _make_wav(tmp_path)
     monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
     monkeypatch.setattr(wv, "_foreground_wechat", lambda: None)
     monkeypatch.setattr(wv, "_trigger_record", lambda: None)
     monkeypatch.setattr(wv, "_finish_record", lambda: True)   # 点击发送成功
-    monkeypatch.setattr(wv, "_play_to_cable", lambda w, d: None)
+    monkeypatch.setattr(wv, "_start_play", lambda w: _FakeProc())
+    monkeypatch.setattr(wv, "_wait_play_start", lambda p, t=40.0: True)
+    monkeypatch.setattr(wv, "_wait_play_done", lambda p, d: None)
     monkeypatch.setattr(wv, "_wav_duration", lambda p: 1.0)
     monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))
     from wechat_voice import SendVoiceReq
@@ -91,7 +105,9 @@ def test_do_send_failure_auto_fallback(tmp_path, monkeypatch):
     # 新结构：前台化+定位+按下都并入 _trigger_record，失败注入点改为它
     monkeypatch.setattr(wv, "_trigger_record", lambda: (_ for _ in ()).throw(RuntimeError("微信窗口找不到")))
     monkeypatch.setattr(wv, "_finish_record", lambda: None)
-    monkeypatch.setattr(wv, "_play_to_cable", lambda w, d: None)
+    monkeypatch.setattr(wv, "_start_play", lambda w: _FakeProc())
+    monkeypatch.setattr(wv, "_wait_play_start", lambda p, t=40.0: True)
+    monkeypatch.setattr(wv, "_wait_play_done", lambda p, d: None)
     monkeypatch.setattr(wv, "_wav_duration", lambda p: 1.0)
     monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))
     monkeypatch.setattr(wv, "_key", lambda *a, **k: None)
