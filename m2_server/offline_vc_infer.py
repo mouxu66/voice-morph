@@ -141,6 +141,13 @@ def main():
     p.add_argument("--index-rate", type=float, default=0.5)
     args = p.parse_args()
 
+    # 必须先 setup_env()：infer 模块在 RVC 根下，而 load_vc() 内部才做 chdir +
+    # sys.path.insert。放在它之前 import 会直接 ModuleNotFoundError（2026-09-10 修）。
+    # setup_env 会 chdir，故先把相对路径钉成绝对路径。
+    args.input = os.path.abspath(args.input)
+    args.output = os.path.abspath(args.output)
+    setup_env()
+
     from infer.audio import load_audio
 
     engine = load_vc(args.pth, args.index)
