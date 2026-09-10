@@ -1,10 +1,11 @@
-"""人偶皮肤市场核心测试：清单 / 应用状态 / sheet 白名单 / 安装编排 / 卸载。
+"""人偶皮肤市场核心测试：清单 / 应用状态 / sheet 白名单 / 安装队列 / 搜索详情 / 卸载。
 
 - 内置 bundle（furina）物化：从 assets/pet-skins 拷到 tmp 输出目录
 - 远端皮肤安装：monkeypatch _download_to 直写文件（不碰真实网络），
   验证 gif 源 zip → 转换 → 物化 → preview 全链路
+- 多任务安装队列：同 id 重复入队 409；不同 id 排队并先后完成；可取消排队/进行中任务
 - applied/sheet 安全：非法 id / 非白名单 sheet 均拒绝
-- 单任务互斥：安装进行中重复 install 报 409 语义错误
+- 搜索/详情：本地模糊搜索命中；详情含帧尺寸/状态表/许可全文
 
 用例隔离：patch pet_market.PET_SKINS_DIR / STATE_FILE 到 tmp。
 """
@@ -118,28 +119,25 @@ def _fake_gif_zip(tmp_path) -> str:
 
 
 def test_install_remote_gif_skin(iso, tmp_path, monkeypatch):
-    """pixel-cat（gif-multi + zip 源）安装：下载 → 解压 → 转换 → 校验 → preview。"""
+    """pixel-cat（gif-multi + zip 源）安装：入队 → 下载 → 解压 → 转换 → 校验 → preview。"""
     zip_path = _fake_gif_zip(tmp_path)
 
     def fake_download(url: str, dst, box):
         import shutil
-        shutil.copyfile(url_loc(url), dst)
+        shutil.copyfile(zip_path, dst)
         box["bytes"] = dst.stat().st_size
-
-    def url_loc(url: str):
-        # 把白名单 URL 映到本地 zip（_download_to 被替换，不校验域名）
-        return zip_path
 
     monkeypatch.setattr(iso, "_download_to", fake_download)
     monkeypatch.setattr(iso, "_make_preview", lambda d: None)   # 跳过 ffmpeg 预览
 
     st = iso.install("pixel-cat")
-    assert st["status"] in ("downloading", "done")
+    assert st["status"] in ("queued", "downloading", "done")
     deadline = time.time() + 60
     while time.time() < deadline and iso.is_busy():
         time.sleep(0.05)
-    st = iso.progress()
-    assert st["status"] == "done", st
+    items = iso.progress()["items"]
+    done = next(t for t in items if t["skin_id"] == "pixel-cat")
+    assert done["status"] == "done", done
     d = iso.skin_dir("pixel-cat")
     skin = json.loads((d / "skin.json").read_text("utf-8"))
     assert skin["frameW"] > 0 and skin["frameH"] > 0
@@ -151,8 +149,8 @@ def test_install_remote_gif_skin(iso, tmp_path, monkeypatch):
     assert iso.load_applied() == "pixel-cat"
 
 
-def test_install_busy_rejects_second(iso, tmp_path, monkeypatch):
-    """安装进行中时重复 install 抛忙错误（409 语义）。"""
+def test_install_same_id_rejects(iso, tmp_path, monkeypatch):
+    """同一皮肤已在队列/进行中时重复 install 抛「已在任务中」（409 语义）。"""
 
     def _slow_download(url, dst, box):
         time.sleep(2.0)
@@ -160,15 +158,141 @@ def test_install_busy_rejects_second(iso, tmp_path, monkeypatch):
 
     monkeypatch.setattr(iso, "_download_to", _slow_download)
     monkeypatch.setattr(iso, "_make_preview", lambda d: None)
-    st = iso.install("pixel-cat")
-    assert st["status"] == "downloading"
+    iso.install("pixel-cat")
+    with pytest.raises(PetMarketError, match="任务中"):
+        iso.install("pixel-cat")
+    deadline = time.time() + 10
+    while time.time() < deadline and iso.is_busy():
+        time.sleep(0.05)
+
+
+def test_install_queue_two_then_both_done(iso, tmp_path, monkeypatch):
+    """两个不同皮肤先后入队：第一个下载时第二个排队，第一个完成后第二个自动接续，最终都完成。"""
+    zip_path = _fake_gif_zip(tmp_path)
+    pix = {
+        "size": [4, 4],
+        "palette": {"0": [255, 255, 255, 255], "1": [0, 0, 0, 255]},
+        "frames": [
+            {"name": "idle0", "pixels": [[0, 1, 1, 0], [1, 0, 0, 1], [1, 0, 0, 1], [0, 1, 1, 0]]},
+            {"name": "idle1", "pixels": [[1, 0, 0, 1], [0, 1, 1, 0], [0, 1, 1, 0], [1, 0, 0, 1]]},
+        ],
+    }
+
+    def _fake(url, dst, box):
+        import shutil
+        if ".zip" in url:
+            shutil.copyfile(zip_path, dst)
+        else:
+            dst.write_text(json.dumps(pix), "utf-8")
+        box["bytes"] = dst.stat().st_size
+
+    monkeypatch.setattr(iso, "_download_to", _fake)
+    monkeypatch.setattr(iso, "_make_preview", lambda d: None)
+    iso.MAX_CONCURRENT_INSTALLS = 1            # 单槽 → 第二个必然排队
     try:
-        with pytest.raises(PetMarketError, match="进行中"):
-            iso.install("mika")
-    finally:
-        deadline = time.time() + 10
+        iso.install("pixel-cat")
+        iso.install("pixel-capybara")
+        time.sleep(0.2)                        # 等 worker 进入下载/转换态
+        items = {t["skin_id"]: t["status"] for t in iso.progress()["items"]}
+        assert items["pixel-cat"] in ("downloading", "installing"), items
+        assert items["pixel-capybara"] == "queued", items    # 第二个在排队
+        deadline = time.time() + 60
         while time.time() < deadline and iso.is_busy():
             time.sleep(0.05)
+        items = {t["skin_id"]: t["status"] for t in iso.progress()["items"]}
+        assert items["pixel-cat"] == "done", items           # 先完成的在做
+        assert items["pixel-capybara"] == "done", items      # 排队的自动接续
+        assert (iso.PET_SKINS_DIR / "pixel-capybara" / "skin.json").exists()
+    finally:
+        iso.MAX_CONCURRENT_INSTALLS = 2
+
+
+def test_cancel_queued_task(iso, tmp_path, monkeypatch):
+    """排队中的任务可取消：出队并标记 cancelled，不触发 worker。"""
+
+    def _slow_download(url, dst, box):
+        time.sleep(3.0)
+        dst.write_bytes(b"x")
+
+    monkeypatch.setattr(iso, "_download_to", _slow_download)
+    monkeypatch.setattr(iso, "_make_preview", lambda d: None)
+    # 占满两个并发槽，让第三个任务真正排队
+    iso.MAX_CONCURRENT_INSTALLS = 1
+    try:
+        iso.install("pixel-cat")
+        time.sleep(0.1)                       # 确保 worker 已进入下载
+        iso.install("mika")                   # 占用唯一并发槽 → 排队
+        r = iso.cancel("mika")
+        assert r["status"] == "cancelled"
+        items = iso.progress()["items"]
+        mika = next(t for t in items if t["skin_id"] == "mika")
+        assert mika["status"] == "cancelled", mika
+    finally:
+        iso.MAX_CONCURRENT_INSTALLS = 2
+        deadline = time.time() + 15
+        while time.time() < deadline and iso.is_busy():
+            time.sleep(0.05)
+
+
+def test_cancel_active_task(iso, tmp_path, monkeypatch):
+    """进行中的任务可取消：下载循环看到 cancel 标记 → 状态 cancelled。"""
+
+    def _interruptible_download(url, dst, box):
+        # 手动模拟下载循环检查 cancel 标记
+        for _ in range(100):
+            if box.get("cancel"):
+                raise iso.PetMarketError("已取消")
+            time.sleep(0.01)
+        dst.write_bytes(b"x")
+
+    monkeypatch.setattr(iso, "_download_to", _interruptible_download)
+    monkeypatch.setattr(iso, "_make_preview", lambda d: None)
+    iso.install("pixel-cat")
+    time.sleep(0.05)
+    iso.cancel("pixel-cat")
+    deadline = time.time() + 15
+    while time.time() < deadline and iso.is_busy():
+        time.sleep(0.05)
+    items = iso.progress()["items"]
+    t = next(x for x in items if x["skin_id"] == "pixel-cat")
+    assert t["status"] == "cancelled", t
+
+
+def test_cancel_no_task_rejects(iso):
+    with pytest.raises(PetMarketError, match="无此安装任务"):
+        iso.cancel("nobody")
+
+
+# ---- 搜索与详情 ----
+
+def test_search_filters_manifest(iso):
+    """按名称/描述/分类/作者/许可模糊命中；分类过滤生效；带 installed/applied 标记。"""
+    iso.apply("furina")
+    hits = iso.search("像素")
+    assert hits and all("像素" in (h.get("name") or "") or "像素" in (h.get("category") or "")
+                        for h in hits)
+    by_lic = iso.search("MIT")
+    assert all("MIT" in (h.get("license") or "").upper() for h in by_lic)
+    cats = iso.search("", "像素萌宠")
+    assert cats and all((h.get("category") or "") == "像素萌宠" for h in cats)
+    furina = next(h for h in iso.search("水神"))
+    assert furina["installed"] is True and furina["applied"] is True
+    assert iso.search("zzz-no-match") == []
+
+
+def test_detail_returns_license_and_states(iso):
+    """已安装 bundle 详情：帧尺寸/状态表/许可全文齐全；未安装皮肤 states 为空。"""
+    d = iso.detail("furina")
+    assert d["installed"] is True
+    assert d["frameW"] == 150 and d["frameH"] == 150
+    assert "idle" in d["states"] and "error" in d["states"]
+    assert "MIT" in d["license_text"] and d["source_urls"] == []
+    d2 = iso.detail("gel-slime")          # 未安装远端皮肤
+    assert d2["installed"] is False
+    assert d2["states"] == {} and d2["license_text"] == ""
+    assert d2["source_urls"]              # 有源链接
+    with pytest.raises(PetMarketError, match="无此皮肤"):
+        iso.detail("no-such")
 
 
 def test_uninstall_remote_removes_dir(iso, tmp_path, monkeypatch):
@@ -230,3 +354,39 @@ def test_api_bundle_apply_roundtrip(iso_api):
     assert r2.headers["content-type"].startswith("image/webp")
     r3 = c.get("/api/pet-market/sheet/furina/LICENSE")
     assert r3.status_code == 400        # 非状态 sheet → 业务错误映射 400
+
+
+def test_api_search_detail_cancel(iso_api, monkeypatch):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+    import server
+    c = TestClient(server.app)
+    r = c.get("/api/pet-market/search", params={"q": "像素", "cat": "像素萌宠"})
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert items and all((i.get("category") or "") == "像素萌宠" for i in items)
+    r2 = c.post("/api/pet-market/apply", json={"skin_id": "furina"})
+    assert r2.status_code == 200
+    d = c.get("/api/pet-market/detail/furina").json()
+    assert d["installed"] is True and "idle" in d["states"] and d["license_text"]
+    assert c.get("/api/pet-market/detail/no-such").status_code == 404
+    # 队列：非法/不存在 id → 400/404；取消不存在任务 → 404
+    assert c.post("/api/pet-market/install", json={"skin_id": "../evil"}).status_code == 400
+    assert c.post("/api/pet-market/install", json={"skin_id": "no-such"}).status_code == 404
+    assert c.post("/api/pet-market/cancel", json={"skin_id": "no-such"}).status_code == 404
+    # 并发撞车：慢下载期间同 id 重复 install → 409；随后可取消
+    def _slow(url, dst, box):
+        time.sleep(1.0)
+        dst.write_bytes(b"x")
+    monkeypatch.setattr(pet_market, "_download_to", _slow)
+    monkeypatch.setattr(pet_market, "_make_preview", lambda d: None)
+    assert c.post("/api/pet-market/install", json={"skin_id": "mika"}).status_code == 200
+    assert c.post("/api/pet-market/install", json={"skin_id": "mika"}).status_code == 409
+    assert c.post("/api/pet-market/cancel", json={"skin_id": "mika"}).status_code == 200
+    deadline = time.time() + 15
+    while time.time() < deadline and pet_market.is_busy():
+        time.sleep(0.05)
+    # progress 形状：{items, active, queued}
+    pr = c.get("/api/pet-market/progress").json()
+    assert isinstance(pr.get("items"), list)
+    assert "active" in pr and "queued" in pr

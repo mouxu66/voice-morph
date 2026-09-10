@@ -1407,18 +1407,54 @@ export type PetAppliedSkin = {
   states: Record<string, PetSkinState>;
 };
 
-export type PetTask = {
+export type PetTaskItem = {
   skin_id: string;
-  status: string;   // idle | downloading | installing | done | failed
+  status: string;   // queued | downloading | installing | done | failed | cancelled | idle
   phase: string;
   message: string;
   percent: number;
   error: string;
 };
+export type PetProgress = {
+  items: PetTaskItem[];
+  active: number;   // 进行中（下载/转换）任务数
+  queued: number;   // 排队任务数
+};
+export type PetSkinDetail = {
+  item: {
+    id: string;
+    name: string;
+    category?: string;
+    license?: string;
+    attribution?: string;
+    description?: string;
+    source_type?: string;
+    bundle?: boolean;
+  };
+  source_urls: string[];
+  installed: boolean;
+  applied: boolean;
+  frameW: number;
+  frameH: number;
+  states: Record<string, PetSkinState>;
+  license_text: string;
+};
+export type PetSearchItem = PetSkinItem & { installed: boolean; applied: boolean };
 
 export async function petManifest(): Promise<PetSkinItem[]> {
   const data = await jsonFetch<{ items: PetSkinItem[] }>("/pet-market/manifest");
   return data.items;
+}
+
+export async function petSearch(q: string, cat: string): Promise<PetSearchItem[]> {
+  const data = await jsonFetch<{ items: PetSearchItem[] }>(
+    `/pet-market/search?q=${encodeURIComponent(q)}&cat=${encodeURIComponent(cat)}`,
+  );
+  return data.items;
+}
+
+export async function petDetail(skin_id: string): Promise<PetSkinDetail> {
+  return jsonFetch<PetSkinDetail>(`/pet-market/detail/${encodeURIComponent(skin_id)}`);
 }
 
 export async function petInstalled(): Promise<PetInstalledItem[]> {
@@ -1430,12 +1466,20 @@ export async function petApplied(): Promise<PetAppliedSkin> {
   return jsonFetch<PetAppliedSkin>("/pet-market/applied");
 }
 
-export async function petProgress(): Promise<PetTask> {
-  return jsonFetch<PetTask>("/pet-market/progress");
+export async function petProgress(): Promise<PetProgress> {
+  return jsonFetch<PetProgress>("/pet-market/progress");
 }
 
-export async function petInstall(skin_id: string): Promise<PetTask> {
+export async function petInstall(skin_id: string): Promise<PetTaskItem> {
   return jsonFetch("/pet-market/install", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ skin_id }),
+  });
+}
+
+export async function petCancel(skin_id: string): Promise<PetTaskItem> {
+  return jsonFetch("/pet-market/cancel", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ skin_id }),

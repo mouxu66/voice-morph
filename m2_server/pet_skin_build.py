@@ -15,6 +15,9 @@
                  skin.json，零转换（主要用于内置 bundle）。
   - gif-multi    若干 gif 动画（OpenGameArt 猫等），把每个 gif 拆帧横向 hstack 成
                  strip → webp。meta["gif_map"] 指定 {state: gif 文件名}。
+  - pixel-json   程序化像素宠物 JSON（CanFlyhang/Desktop-Pixel-Pet 格式：size +
+                 palette{key:[r,g,b,a]} + frames[{name,pixels: 行×列 palette key}]）。
+                 用 numpy 查调色板渲染 RGBA 帧，ffmpeg rawvideo 管道合成 webp strip。
 
 webp 编码复用 common.find_ffmpeg()（完整 build 才有 libwebp muxer）。
 本模块不依赖 API/网络（下载在 pet_market.py），可被 CLI 与单测直接调用。
@@ -163,6 +166,8 @@ def build_skin(source_type: str, sources, out_dir: Path, meta: dict) -> Path:
         rows = pack_atlas_skin(sources[0], out_dir, meta)
     elif source_type == "gif-multi":
         rows = pack_gif_skin(list(sources), out_dir, meta)
+    elif source_type == "pixel-json":
+        rows = pack_pixjson_skin(sources[0], out_dir, meta)
     else:
         raise SkinBuildError(f"未知 source_type: {source_type!r}")
 
@@ -254,6 +259,86 @@ def pack_existing_skin(state_files: dict, out_dir: Path, meta: dict) -> dict[str
         shutil.copyfile(src, out_dir / sheet)
         w, _h = probe_size(src)
         rows[state] = {"sheet": sheet, "frames": max(1, w // fw), "dur": durs.get(state, DEFAULT_DUR[state])}
+    return rows
+
+
+def _pixjson_load(path: Path) -> dict:
+    """读像素 JSON（size + palette{key:[r,g,b,a]} + frames[{name,pixels}]）。"""
+    data = json.loads(Path(path).read_text("utf-8"))
+    size = list(map(int, data.get("size") or [32, 32]))
+    if len(size) < 2:
+        raise SkinBuildError(f"像素 JSON 缺 size: {path.name}")
+    frames = data.get("frames") or []
+    if not frames:
+        raise SkinBuildError(f"像素 JSON 无帧: {path.name}")
+    return {"size": size, "palette": data.get("palette") or {}, "frames": frames}
+
+
+def _pixjson_frame_rgba(frame: dict, size: list[int], palette: dict):
+    """一行「palette key 网格」→ (h, w, 4) uint8 RGBA（未知 key 透明）。"""
+    import numpy as np
+    w, h = int(size[0]), int(size[1])
+    arr = np.zeros((h, w, 4), dtype=np.uint8)
+    rows = frame.get("pixels") or []
+    for y, row in enumerate(rows[:h]):
+        for x, key in enumerate(row[:w]):
+            c = palette.get(str(key))
+            if not c:
+                continue
+            r, g, b, a = [int(v) for v in c]
+            arr[y, x] = (r & 255, g & 255, b & 255, a & 255)
+    return arr
+
+
+def _pixjson_to_strip(frames, indices: list[int], size: list[int]) -> bytes:
+    """若干 RGBA 帧横向 hstack → strip 原始字节（宽 = 帧宽 × 帧数）。"""
+    import numpy as np
+    chosen = [frames[i] for i in indices]
+    strip = np.hstack(chosen) if len(chosen) > 1 else chosen[0]
+    return strip.tobytes()
+
+
+def pack_pixjson_skin(src: Path, out_dir: Path, meta: dict) -> dict[str, dict]:
+    """像素 JSON → 皮肤包：numpy 渲染 RGBA → ffmpeg rawvideo 管道 → webp strip。
+
+    JSON 只有一组 idle 帧（通常 2 帧呼吸动画）。映射：
+      idle/listen/think → 全部帧（循环呼吸）；listen/think 渲染层回退 idle
+      play             → 首帧（干活小动一下）；build 渲染层回退 play
+      error            → 尾帧（停顿）
+    生成 idle.webp（全帧）+ play.webp（首帧）+ error.webp（尾帧），其余状态
+    在 skin.json 省略，渲染层按 STATE_FALLBACK 回退。
+    """
+    data = _pixjson_load(src)
+    size = data["size"]
+    fw, fh = size
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frames = [_pixjson_frame_rgba(f, size, data["palette"]) for f in data["frames"]]
+    durs = {k: float(v) for k, v in (meta.get("durations") or DEFAULT_DUR).items()}
+    n = len(frames)
+    one, rest = [0], list(range(max(1, n - 1), n))   # play 用首帧，error 用尾帧
+
+    def _encode(indices: list[int], fname: str) -> int:
+        raw = _pixjson_to_strip(frames, indices, size)
+        w = fw * len(indices)
+        cmd = [find_ffmpeg(), "-y", "-f", "rawvideo", "-pix_fmt", "rgba",
+               "-s", f"{w}x{fh}", "-i", "-", "-frames:v", "1",
+               "-c:v", "libwebp", "-lossless", "0", "-q:v", "80", str(out_dir / fname)]
+        p = subprocess.run(cmd, input=raw, capture_output=True, timeout=600)
+        if p.returncode != 0:
+            raise SkinBuildError(f"pixel-json webp 编码失败 {fname}: {(p.stderr or '')[-300:]}")
+        return len(indices)
+
+    rows: dict[str, dict] = {}
+    idle_frames = _encode(list(range(n)), "idle.webp")
+    rows["idle"] = {"sheet": "idle.webp", "frames": idle_frames, "dur": durs.get("idle", DEFAULT_DUR["idle"])}
+    rows["think"] = {"sheet": "idle.webp", "frames": idle_frames, "dur": durs.get("think", DEFAULT_DUR["think"])}
+    play_frames = _encode(one, "play.webp")
+    rows["play"] = {"sheet": "play.webp", "frames": play_frames, "dur": durs.get("play", DEFAULT_DUR["play"])}
+    err_frames = _encode(rest if rest else [0], "error.webp")
+    rows["error"] = {"sheet": "error.webp", "frames": err_frames, "dur": durs.get("error", DEFAULT_DUR["error"])}
+    # listen → idle、build → play：skin.json 省略，渲染层回退
+    meta["frameW"] = fw
+    meta["frameH"] = fh
     return rows
 
 

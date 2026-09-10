@@ -59,16 +59,47 @@ PET_ALLOWED_HOSTS = {
 
 # 当前应用皮肤的持久化（userData 侧另存 pet.json.skin；这里做后端权威副本）
 _APPLIED_LOCK = threading.Lock()
-_ACTIVE_LOCK = threading.Lock()
-_ACTIVE = {"skin_id": "", "status": "idle", "phase": "", "message": "", "percent": 0,
-           "error": ""}
+
+# ---- 多任务安装队列（≤MAX_CONCURRENT 并发下载/转换，其余排队，可取消） ----
+MAX_CONCURRENT_INSTALLS = 2            # 同时下载/转换数
+_TASK_LOCK = threading.Lock()
+_TASKS: dict[str, dict] = {}           # skin_id -> 任务状态（含 cancel 标记）
+_ALL_IDS: list[str] = []               # 创建顺序（旧→新，托盘展示顺序）
+_QUEUE: list[str] = []                 # 排队中的 skin_id（FIFO）
+_RUNNING = 0                           # 当前实际运行的 worker 数
+
+_ACTIVE_STATUSES = {"downloading", "installing"}
+_NON_TERMINAL = {"queued", "downloading", "installing"}
+
+EMPTY_TASK = {"skin_id": "", "status": "idle", "phase": "", "message": "", "percent": 0,
+              "error": "", "cancel": False}
 
 
 class PetMarketError(Exception):
     """市场业务错误（API 捕获后映射 404/409/400）。"""
 
 
-# ---------------- manifest（第一期，素材均许可干净可分发） ----------------
+# ---------------- manifest（素材均许可干净可分发） ----------------
+# pixel-* 系列：CanFlyhang/Desktop-Pixel-Pet（MIT）程序化像素宠物 JSON，
+# 经 pixel-json 适配器（pet_skin_build.py）转换成皮肤包。
+_PIX_URL = ("https://raw.githubusercontent.com/CanFlyhang/Desktop-Pixel-Pet/main/assets/pets/{}")
+
+
+def _pixel_item(sid: str, name: str, desc: str, src: str) -> dict:
+    return {
+        "id": sid,
+        "name": name,
+        "category": "像素萌宠",
+        "license": "MIT",
+        "attribution": "CanFlyhang/Desktop-Pixel-Pet (MIT)",
+        "description": desc,
+        "source_type": "pixel-json",
+        "bundle": False,
+        "source_urls": [_PIX_URL.format(src)],
+        "meta": {"frameW": 0, "frameH": 0},   # 转换时按 JSON size 回填
+    }
+
+
 def get_manifest() -> list[dict]:
     return [
         {
@@ -134,6 +165,15 @@ def get_manifest() -> list[dict]:
                 "frameW": 0, "frameH": 0,   # 下载后按实际帧数推算
             },
         },
+        _pixel_item("pixel-capybara", "卡皮巴拉", "CC 像素卡皮巴拉（水豚），二次元以外的治愈系像素宠物，轻微呼吸动画。",
+                    "pixel_capybara.json"),
+        _pixel_item("pixel-bubble-slime", "泡泡史莱姆", "半透明泡泡质感史莱姆宠，像素呼吸动画。", "pixel_bubble_slime.json"),
+        _pixel_item("pixel-matcha-bear", "抹茶小熊", "抹茶配色小熊，绿色治愈系像素宠物。", "pixel_matcha_bear.json"),
+        _pixel_item("pixel-ice-penguin", "小企鹅", "蓝白配色小企鹅，南极治愈系像素宠物。", "pixel_ice_penguin.json"),
+        _pixel_item("pixel-energetic-duck", "元气小鸭", "鹅黄色元气小鸭，活泼的像素宠物。", "pixel_energetic_duck.json"),
+        _pixel_item("pixel-cyber-cat", "赛博猫", "霓虹赛博风格像素猫，工业感配色。", "pixel_cyber_cat.json"),
+        _pixel_item("pixel-lucky-koi", "幸运锦鲤", "红白锦鲤像素宠物，寓意好运。", "pixel_lucky_koi.json"),
+        _pixel_item("pixel-neon-fox", "霓虹狐", "紫色霓虹系小狐狸，夜间氛围像素宠物。", "pixel_neon_fox.json"),
     ]
 
 
@@ -332,30 +372,68 @@ def _make_preview(skin_dir: Path) -> None:
         pass
 
 
-# ---------------- 安装编排 ----------------
+# ---------------- 安装编排（多任务队列） ----------------
+
+
+def _set_task(skin_id: str, **kw) -> None:
+    """线程安全更新某皮肤的任务状态（不存在则忽略）。"""
+    with _TASK_LOCK:
+        t = _TASKS.get(skin_id)
+        if t is not None:
+            t.update(kw)
 
 
 def progress() -> dict:
-    with _ACTIVE_LOCK:
-        return dict(_ACTIVE)
+    """所有安装任务 + 队列概览（前端托盘轮询）。
+
+    返回 {"items": [...], "active": n, "queued": n}；items 按 进行中→排队→终结 排序，
+    同档内按创建顺序。
+    """
+    with _TASK_LOCK:
+        prio = {"downloading": 0, "installing": 0, "queued": 1, "done": 2,
+                "cancelled": 2, "failed": 2}
+        items = []
+        for k in _ALL_IDS:
+            t = _TASKS.get(k)
+            if t is not None:
+                d = dict(t)
+                d.pop("cancel", None)
+                items.append(d)
+        items.sort(key=lambda t: prio.get(t.get("status", "idle"), 9))
+        return {
+            "items": items,
+            "active": sum(1 for t in items if t["status"] in _ACTIVE_STATUSES),
+            "queued": sum(1 for t in items if t["status"] == "queued"),
+        }
 
 
 def is_busy() -> bool:
-    with _ACTIVE_LOCK:
-        return _ACTIVE["status"] in ("downloading", "installing")
+    """是否有任何任务在下载/转换中（卸载等互斥用）。"""
+    with _TASK_LOCK:
+        return any(t["status"] in _ACTIVE_STATUSES for t in _TASKS.values())
 
 
-def _set_active(**kw) -> None:
-    with _ACTIVE_LOCK:
-        _ACTIVE.update(kw)
+def _kick() -> None:
+    """从队列弹出任务启动 worker，直到并发上限；被取消/已终结的排队项跳过。"""
+    global _RUNNING
+    with _TASK_LOCK:
+        while _RUNNING < MAX_CONCURRENT_INSTALLS and _QUEUE:
+            sid = _QUEUE.pop(0)
+            t = _TASKS.get(sid)
+            if t is None or t.get("cancel") or t["status"] != "queued":
+                continue
+            _RUNNING += 1
+            threading.Thread(target=_install_worker, args=(sid,), daemon=True).start()
 
 
 def _install_worker(skin_id: str) -> None:
+    global _RUNNING
+    task = _TASKS.get(skin_id) or EMPTY_TASK
     try:
         item = find_manifest_item(skin_id)
         if item is None:
             raise PetMarketError("清单中无此皮肤")
-        _set_active(status="downloading", phase="下载素材", message=f"正在下载 {item['name']}",
+        task.update(status="downloading", phase="下载素材", message=f"正在下载 {item['name']}",
                     percent=5, error="")
         tmp = PET_SKINS_DIR / f".tmp-{skin_id}"
         if tmp.exists():
@@ -364,22 +442,23 @@ def _install_worker(skin_id: str) -> None:
         src_dir.mkdir(parents=True, exist_ok=True)
 
         if item.get("bundle"):
-            _set_active(status="installing", phase="物化内置皮肤", message="正在准备内置皮肤",
+            task.update(status="installing", phase="物化内置皮肤", message="正在准备内置皮肤",
                         percent=60, error="")
             ensure_bundle(item)
         else:
             urls = item.get("source_urls") or []
             if not urls:
                 raise PetMarketError("该皮肤缺少下载源")
-            box: dict = {}
             saved: list[Path] = []
             for i, url in enumerate(urls):
+                if task.get("cancel"):
+                    raise PetMarketError("已取消")
                 name = Path(urllib.parse.urlparse(url).path).name or f"src{i}"
                 dst = src_dir / name
-                _set_active(percent=5 + i * 30 // max(1, len(urls)))
-                _download_to(url, dst, box)
+                task.update(percent=5 + i * 30 // max(1, len(urls)))
+                _download_to(url, dst, task)   # box=task：取消标记实时生效
                 saved.append(dst)
-            _set_active(status="installing", phase="生成皮肤包", message="转换动画为皮肤包",
+            task.update(status="installing", phase="生成皮肤包", message="转换动画为皮肤包",
                         percent=75, error="")
 
             meta = dict(item.get("meta") or {})
@@ -406,33 +485,134 @@ def _install_worker(skin_id: str) -> None:
             if warns:
                 shutil.rmtree(dst_skin, ignore_errors=True)
                 raise PetMarketError("皮肤包校验失败: " + "; ".join(warns))
+            if task.get("cancel"):
+                shutil.rmtree(dst_skin, ignore_errors=True)
+                raise PetMarketError("已取消")
             _make_preview(dst_skin)
 
-        _set_active(status="done", phase="完成", message="", percent=100, error="")
+        task.update(status="done", phase="完成", message="", percent=100, error="")
     except PetMarketError as exc:
-        _set_active(status="failed", phase="失败", message="", percent=0, error=str(exc))
+        if task.get("cancel"):
+            task.update(status="cancelled", phase="已取消", message="", percent=0, error="")
+        else:
+            task.update(status="failed", phase="失败", message="", percent=0, error=str(exc))
     except Exception as exc:  # noqa: BLE001 - 兜底，避免安装线程崩溃
-        _set_active(status="failed", phase="失败", message="", percent=0,
+        task.update(status="failed", phase="失败", message="", percent=0,
                     error=f"安装异常: {exc}")
     finally:
-        _set_active(status="done" if _ACTIVE["status"] == "done" else _ACTIVE["status"])
         tmp = PET_SKINS_DIR / f".tmp-{skin_id}"
         shutil.rmtree(tmp, ignore_errors=True)
+        with _TASK_LOCK:
+            _RUNNING -= 1
+        _kick()
 
 
 def install(skin_id: str) -> dict:
-    """启动安装（下载源→转换→物化）。同 id 进行中/忙碌时 409。"""
+    """加入安装队列并立即调度（≤MAX_CONCURRENT 并发，其余排队）。
+    同 id 已在队列/进行中时 409。返回该任务当前状态（通常 queued）。"""
     if not is_valid_skin_id(skin_id):
         raise PetMarketError("皮肤 id 非法")
     if find_manifest_item(skin_id) is None:
         raise PetMarketError("清单中无此皮肤")
-    if is_busy():
-        raise PetMarketError("已有皮肤任务在进行中")
-    _set_active(status="downloading", phase="排队", message="", percent=0, error="",
-                skin_id=skin_id)
-    t = threading.Thread(target=_install_worker, args=(skin_id,), daemon=True)
-    t.start()
-    return progress()
+    with _TASK_LOCK:
+        cur = _TASKS.get(skin_id)
+        if cur and cur["status"] in _NON_TERMINAL:
+            raise PetMarketError(f"「{skin_id}」已在任务中（排队或进行中）")
+        task = {"skin_id": skin_id, "status": "queued", "phase": "排队", "message": "",
+                "percent": 0, "error": "", "cancel": False}
+        _TASKS[skin_id] = task
+        _ALL_IDS.append(skin_id)
+        _QUEUE.append(skin_id)
+    _kick()
+    with _TASK_LOCK:
+        return dict(_TASKS[skin_id])
+
+
+def cancel(skin_id: str) -> dict:
+    """取消排队或进行中的安装任务。
+    排队 → 直接出队标记取消；进行中 → 置 cancel 标记，worker 在下载/转换间隙停下。"""
+    with _TASK_LOCK:
+        task = _TASKS.get(skin_id)
+        if task is None:
+            raise PetMarketError("无此安装任务")
+        if task["status"] in ("done", "cancelled", "failed"):
+            raise PetMarketError("任务已结束，无法取消")
+        if task["status"] == "queued":
+            task.update(status="cancelled", phase="已取消", message="", percent=0, error="")
+            try:
+                _QUEUE.remove(skin_id)
+            except ValueError:
+                pass
+            return dict(task)
+        # downloading/installing
+        task["cancel"] = True
+        task.update(phase="取消中", message="正在取消…")
+        return dict(task)
+
+
+# ---------------- 搜索与详情 ----------------
+
+
+def search(query: str = "", category: str = "") -> list[dict]:
+    """本地模糊搜索：名称/描述/分类/作者/许可/ID 命中即出，附带 installed/applied 标记。"""
+    q = (query or "").strip().lower()
+    cat = (category or "").strip()
+    installed_ids = {i["id"] for i in installed_skins()}
+    applied = load_applied()
+    out = []
+    for m in get_manifest():
+        if cat and (m.get("category") or "其他") != cat:
+            continue
+        if q:
+            hay = " ".join(
+                str(m.get(k) or "") for k in
+                ("id", "name", "description", "category", "attribution", "license")
+            ).lower()
+            if q not in hay:
+                continue
+        out.append({**m, "installed": m["id"] in installed_ids, "applied": m["id"] == applied})
+    return out
+
+
+def detail(skin_id: str) -> dict:
+    """皮肤详情：清单信息 + 源链接 + 已装状态 + 帧尺寸 + 状态动画表 + 许可全文。
+
+    bundle 皮肤未物化时先物化再读；未安装的远端皮肤 states 为空、license_text 为空。
+    """
+    item = find_manifest_item(skin_id)
+    if item is None:
+        raise PetMarketError("清单中无此皮肤")
+    d: Path | None = None
+    try:
+        d = skin_dir(skin_id)
+    except PetMarketError:
+        if item.get("bundle"):
+            try:
+                d = ensure_bundle(item)
+            except PetMarketError:
+                d = None
+    states: dict = {}
+    frameW = frameH = 0
+    license_text = ""
+    if d is not None:
+        skin = load_skin(d)
+        states = skin.get("states") or {}
+        frameW = int(skin.get("frameW") or 0)
+        frameH = int(skin.get("frameH") or 0)
+        lic = d / "LICENSE"
+        if lic.exists():
+            license_text = lic.read_text("utf-8", errors="replace")[:8000]
+    return {
+        "item": {k: item.get(k) for k in
+                 ("id", "name", "category", "license", "attribution", "description",
+                  "source_type", "bundle")},
+        "source_urls": item.get("source_urls") or [],
+        "installed": d is not None,
+        "applied": load_applied() == skin_id,
+        "frameW": frameW, "frameH": frameH,
+        "states": states,
+        "license_text": license_text,
+    }
 
 
 def apply(skin_id: str) -> dict:
