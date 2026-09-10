@@ -162,7 +162,7 @@ def test_trigger_and_finish_alt_path(monkeypatch):
 
 
 def test_trigger_and_finish_mic_path(monkeypatch):
-    """mic 路径：SendInput 按住话筒 → _finish_record 拖到绿钮松手发送。"""
+    """mic 路径：SendInput 单击语音按钮 → _finish_record 点绿钮 ↑ 发送。"""
     kb_calls, mouse_calls, moves = [], [], []
     monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
     monkeypatch.setattr(wv, "_send_input_kb", lambda *a: kb_calls.append(a))
@@ -180,17 +180,17 @@ def test_trigger_and_finish_mic_path(monkeypatch):
     assert wv._record_via == "realclick"
     assert wv._exstyle_restore == (888, 0x90120)
     assert kb_calls == []
-    assert mouse_calls == [True]
+    assert mouse_calls == [True, False]   # 单击 = DOWN + UP
     assert moves == [(1600 + wv.MIC_OFFSET_X, 900 + wv.MIC_OFFSET_Y)]
     monkeypatch.setattr(wv, "_find_green_send", lambda rect, retries=4: (1800, 1530))
     monkeypatch.setattr(wv, "_cancel_point", lambda rect: None)
     assert wv._finish_record() is True
     assert moves[-1:] == [(1800, 1530)]   # 先移到绿钮
-    assert mouse_calls == [True, False]   # 再松手发送
+    assert mouse_calls == [True, False, True, False]   # 再点绿钮发送
 
 
 def test_trigger_mic_realclick_releases_on_overlay_timeout(monkeypatch):
-    """SendInput 真按话筒后浮层始终不出现 → 自动松开并抛错，避免一直按住。"""
+    """SendInput 单击语音按钮后浮层始终不出现 → 抛错走降级，避免挂起录音。"""
     mouse_calls = []
     monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
     monkeypatch.setattr(wv, "_postmsg_mouse", lambda *a, **k: None)  # 已废弃
@@ -206,12 +206,12 @@ def test_trigger_mic_realclick_releases_on_overlay_timeout(monkeypatch):
     monkeypatch.setattr(wv, "_exstyle_restore_if_needed", lambda: None)
     with pytest.raises(RuntimeError, match="录音未能启动"):
         wv._trigger_record()
-    assert mouse_calls == [True, False]          # 按住 + 超时后松开
+    assert mouse_calls == [True, False, False]   # 单击 + 超时兜底再松开
     assert wv._record_via is None
 
 
 def test_trigger_and_finish_mic_drag_to_green(monkeypatch):
-    """mic 路径：SendInput 按住话筒 → _finish_record 拖到绿钮 → 松手发送。"""
+    """mic 路径：单击语音按钮起浮层 → _finish_record 点绿钮 ↑ 发送。"""
     mouse_calls, moves = [], []
     monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
     monkeypatch.setattr(wv, "_postmsg_mouse", lambda *a, **k: None)
@@ -228,14 +228,14 @@ def test_trigger_and_finish_mic_drag_to_green(monkeypatch):
 
     wv._trigger_record()
     assert wv._record_via == "realclick"
-    assert mouse_calls == [True]          # 只按不松
+    assert mouse_calls == [True, False]   # 单击 = DOWN + UP
     assert moves == [(1443, 837)]
 
     monkeypatch.setattr(wv, "_find_green_send", lambda rect, retries=4: (1800, 1530))
     monkeypatch.setattr(wv, "_cancel_point", lambda rect: None)  # 确保不发取消
     assert wv._finish_record() is True
     assert moves[-1:] == [(1800, 1530)]   # 先移到绿钮
-    assert mouse_calls == [True, False]   # 然后松手
+    assert mouse_calls == [True, False, True, False]   # 然后点绿钮发送
 
 
 def test_trigger_mic_prefers_template_match(monkeypatch):
