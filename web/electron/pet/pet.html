@@ -768,10 +768,8 @@ document.addEventListener("mouseup", (e) => {
   window.pet && window.pet.dragEnd();   // 主进程侧保存位置
   // 拖拽结束时光标可能已出窗（elementFromPoint 为 null）→ 恢复全穿透
   window.pet && window.pet.setIgnoreMouse(!overInteractive(e));
-  // 单击角色（没拖动）＝ 把最近一次合成的语音发进微信
-  if (!movedFar && e.button === 0 && window.pet && window.pet.sendLast) {
-    window.pet.sendLast();
-  }
+  // 单击角色（没拖动）：不再自动发送语音（太容易误触）。
+  // 想发最近合成 → 右键桌宠「发送微信语音（用最近合成）」，或悬停用面板。
 });
 document.documentElement.addEventListener("mouseleave", () => {
   if (!dragging) window.pet && window.pet.setIgnoreMouse(true);
@@ -783,7 +781,7 @@ window.pet && window.pet.setIgnoreMouse(true);   // 初始全穿透，悬停角�
 // 长时间没人理（2.5 分钟+）还会随机打瞌睡（zZZ…）。
 // 只在真正空闲（无级联/实时变声、无导览、状态为 idle）时触发，点气泡可跳过。
 const IDLE_SKITS = [
-  { lines: ["戳一下我，语音就飞进微信～"], action: "idle", motion: "wiggle" },
+  { lines: ["想发语音？右键我或悬停用面板～"], action: "idle", motion: "wiggle" },
   { lines: ["悬停我可以打字发语音哦"], action: "idle", motion: "wave" },
   { lines: ["看好了——", "转身！"], action: "idle", motion: "flip" },
   { lines: ["Q弹Q弹的～"], action: "idle", motion: "bounce" },

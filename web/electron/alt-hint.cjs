@@ -2,14 +2,48 @@
 // 桌宠气泡太小，用户切到微信窗口后看不见、也不知道什么时候该按 Alt。
 // 这里用独立的置顶透明窗口，横跨屏幕顶部居中显示大号引导 + 倒计时 + 进度条，
 // 全程浮在微信之上、鼠标点击穿透，不挡任何操作。
-const { BrowserWindow, screen } = require("electron");
+const { BrowserWindow, screen, globalShortcut } = require("electron");
 const path = require("path");
+const { backendPost } = require("./backend.cjs");
 
 const PET_DIR = path.join(__dirname, "pet");
 let altHintWin = null;
 let altHintReady = false;
 let altHintTimer = null;
 let altHintPending = null;   // 窗口未加载完时缓存最后一条，did-finish-load 后补发
+
+// 全局「退出录制」热键：仅在录音引导横幅显示期间注册 Esc，
+// 用户误触发语音后按 Esc 即可中止播放 + 隐藏横幅（见 abortRecording）。
+let cancelArmed = false;
+
+function armCancelKey() {
+  if (cancelArmed) return;
+  try {
+    if (globalShortcut.register("Escape", abortRecording)) cancelArmed = true;
+  } catch {}
+}
+
+function disarmCancelKey() {
+  if (!cancelArmed) return;
+  try { globalShortcut.unregister("Escape"); } catch {}
+  cancelArmed = false;
+}
+
+/** 用户按 Esc：中止当前微信语音录制引导（停止播放 + 隐藏横幅 + 提示已取消）。 */
+function abortRecording() {
+  disarmCancelKey();
+  hideAltHint();
+  // 通知后端停止向 CABLE 播放（无进行中的播放时后端会安全返回）
+  try { backendPost("/api/wechat/stop_play", {}, () => {}, 5000); } catch {}
+  // 桌宠气泡提示已取消（pet.cjs 循环 require，运行时取缓存模块）
+  try {
+    require("./pet.cjs").showPetGuide({
+      title: "已取消",
+      lines: ["已停止发送，声卡会自动还原"],
+      action: "idle", motion: "nod", duration: 5000,
+    });
+  } catch {}
+}
 
 function ensureAltHintWindow() {
   if (altHintWin && !altHintWin.isDestroyed()) return;
@@ -59,6 +93,7 @@ function showAltHint(payload) {
 }
 
 function hideAltHint() {
+  disarmCancelKey();
   if (altHintTimer) { clearInterval(altHintTimer); altHintTimer = null; }
   if (altHintWin && !altHintWin.isDestroyed()) altHintWin.hide();
 }
@@ -70,6 +105,7 @@ function hideAltHint() {
  * @param {Function} onFinish         播放结束回调（收到响应时调用，先于 release 展示）
  */
 function runAltHintCountdown(knownDurationS, leadS, onFinish) {
+  armCancelKey();   // 录音引导期间允许 Esc 退出
   if (altHintTimer) { clearInterval(altHintTimer); altHintTimer = null; }
   const APPLY_EST_S = 1.2;            // 后端切声卡估算耗时
   const prepMs = Math.max(600, APPLY_EST_S * 1000);
@@ -111,6 +147,7 @@ function runAltHintCountdown(knownDurationS, leadS, onFinish) {
  * @param {number} totalS 引导总秒数
  */
 function runManualPressGuide(totalS = 15) {
+  armCancelKey();   // 手动录音引导期间允许 Esc 退出
   showAltHint({ stage: "press", sub: "现在按住 <b>Alt</b>，对着麦克风说话，说完松开即发送", remainS: totalS, progress: 0 });
   let t = totalS;
   if (altHintTimer) { clearInterval(altHintTimer); altHintTimer = null; }
