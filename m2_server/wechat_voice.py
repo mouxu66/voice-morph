@@ -882,6 +882,56 @@ class SendVoiceReq(BaseModel):
     wav: str | None = None   # outputs/ 下的文件名；缺省=最近一次 TTS 合成产物
 
 
+class SendTextReq(BaseModel):
+    text: str
+    voice_id: str = ""        # TTS 参考音色（决定语气/韵律，"怎么说"）
+    rvc_voice: str = ""       # RVC 音色（决定"谁在说"）；留空=不换声，音色会明显不像
+    pitch: int = 0
+    index_rate: float = 0.5
+
+
+@router.post("/send_text")
+def send_text(req: SendTextReq):
+    """一键：文字 → TTS → RVC 换声 → 全自动发成微信语音消息。
+
+    桌宠「合成并发送」走的就是这个接口。链路里 **RVC 是音色的唯一来源**——
+    TTS 零样本克隆复现不了袋鼠音色（2026-08-31 用户 A/B 亲耳判定），
+    所以 rvc_voice 留空会得到一条"普通播音腔"，不是 bug。
+    """
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="text 不能为空")
+    if not _send_lock.acquire(blocking=False):
+        raise HTTPException(409, "已有一次微信语音发送在进行中，请等它结束")
+    try:
+        from tts_api import synth_wav
+        wav, duration_s, _vid = synth_wav(req.text, req.voice_id)
+        steps = [f"合成: {wav.name}（{duration_s:.1f}s，voice={_vid or '默认'}）"]
+        # 没显式给 rvc_voice 时，按 voicebank id → RVC 实验名的约定推一个
+        # （kangaroo → kangaroo_v2）。推不到就照发，并在 steps 里说清楚音色会不像。
+        rvc_voice = req.rvc_voice
+        if not rvc_voice:
+            from rvc_convert import resolve_rvc_voice
+            rvc_voice = resolve_rvc_voice(_vid or req.voice_id) or ""
+        if rvc_voice:
+            from rvc_convert import rvc_convert as _rvc
+            wav = _rvc(wav, rvc_voice, req.pitch, req.index_rate)
+            steps.append(f"RVC 换声 → {rvc_voice}")
+        else:
+            steps.append("⚠ 没找到对应 RVC 音色，未换声（会是普通播音腔）")
+        res = _do_send(SendVoiceReq(wav=wav.name))
+        # _do_send 成功时返回 dict，失败可能返回 JSONResponse
+        if isinstance(res, dict):
+            res["steps"] = steps + list(res.get("steps", []))
+            res["wav"] = wav.name
+        return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"一键发送失败: {e}")
+    finally:
+        _send_lock.release()
+
+
 @router.post("/send_voice")
 def send_voice(req: SendVoiceReq):
     """把一段合成语音以「微信语音消息」的形式录进当前打开的微信聊天窗口。

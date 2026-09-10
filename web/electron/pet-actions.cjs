@@ -206,26 +206,33 @@ function sendWechatTextFromPet(text, voiceId) {
     lines: [`合成中：「${text.slice(0, 12)}${text.length > 12 ? "…" : ""}」`],
     action: "think", motion: "work", duration: 6000,
   });
-  // 合成也要一两秒~几十秒，先亮横幅告知流程，避免用户干等
+  // 全自动：TTS → RVC 换声 → 自动点微信语音按钮录制并发送，全程不需要人按 Alt。
+  // （旧的 /api/tts + play_to_cable 是半自动，还要用户自己按住 Alt 录，已改掉）
   showAltHint({
     stage: "prep",
-    sub: "正在合成语音，请稍候… 完成后屏幕顶部会引导你按 <b>Alt</b>",
+    sub: "合成 + 换声中，约 1~2 分钟… 完成后自动发到微信，<b>别动键鼠</b>",
     remainS: null, progress: -1,
   });
-  backendPost("/api/tts", { text, text_language: "zh", voice_id: voiceId || "" }, (data, code) => {
-    if (!data.ok || !data.url) {
+  backendPost("/api/wechat/send_text",
+    { text, voice_id: voiceId || "", rvc_voice: "", pitch: 0, index_rate: 0.5 },
+    (data, code) => {
+      const err = data.error || data.detail || `HTTP ${code}`;
+      if (!data.ok) {
+        hideAltHint();
+        petGuideFail(err);
+        return;
+      }
       hideAltHint();
-      petGuideFail((data.detail && String(data.detail).replace(/^.*detail="?/i, "")) || `TTS HTTP ${code}`);
-      return;
-    }
-    const wav = String(data.url).split("/").pop();
-    showPetGuide({
-      title: "微信语音",
-      lines: [`合成好了（${data.duration_s || "?"}秒），录进微信…`, "马上切到微信，听提示按 Alt"],
-      action: "think", motion: "work", duration: 8000,
-    });
-    sendWechatWav(wav, Number(data.duration_s) || null);
-  });
+      const outcome = data.outcome || "ok";
+      showPetGuide({
+        title: outcome === "ok" ? "已发送到微信 ✓" : "发送未成功",
+        lines: [
+          `音频 ${data.duration_s || "?"}s（${data.wav || ""}）`,
+          outcome === "ok" ? "去微信看最新那条语音" : `结果：${outcome}`,
+        ].concat((data.steps || []).slice(-3)),
+        action: outcome === "ok" ? "play" : "error", motion: "work", duration: 9000,
+      });
+    }, 180000);   // TTS + RVC + 录音可能两分钟，超时给足
 }
 
 /** 桌宠快捷面板：实时变声开关（运行中→停止；否则启动，模型用当前实验）。 */
