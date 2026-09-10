@@ -26,6 +26,10 @@ def isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(wv, "HISTORY_FILE", tmp_path / "wechat_send_history.json")
     # 绝不能让单测真去点微信 / 真跑 RVC / 真加载 TTS
     monkeypatch.setattr(wv, "_uia_ready", lambda: False)
+    # 切卡预热（_PendingApply）在 _do_send 之前的后台线程就跑 _run_audio，
+    # 而本机 audio_config.ps1 真实存在 → 不打桩就会真起 PowerShell 动声卡。
+    # 这里默认打桩，需要记录调用的测试自行覆盖。
+    monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
     yield tmp_path
 
 
@@ -45,8 +49,12 @@ def _fake_send(tmp_path, monkeypatch, ret=None):
         out.write_bytes(b"RIFF")
         return out
 
-    def _do(req):
+    def _do(req, pre_apply=None):
         calls["send"] = req.wav
+        # 模拟真 _do_send 的契约：领了 pre_apply 就必须消费（消费后 send_text 不再 abandon）
+        if pre_apply is not None:
+            pre_apply.result()
+            calls["pre_apply_consumed"] = True
         return {"ok": True, "outcome": "ok", "steps": ["已发送"], "restored": True}
 
     monkeypatch.setattr(tts_api, "synth_wav", _synth)
@@ -91,13 +99,17 @@ def test_resolve_rvc_voice_none_when_missing(monkeypatch):
 # ---------------- /api/wechat/send_text ----------------
 
 def test_send_text_full_chain(tmp_path, monkeypatch):
-    """文字 → 合成 → RVC 换声 → 发送，steps 里要说清楚换了哪个音色。"""
+    """文字 → 合成 → RVC 换声 → 发送，steps 里要说清楚换了哪个音色。
+
+    顺带锁死切卡预热契约：_do_send 拿到的 pre_apply 必须被消费。
+    """
     calls = _fake_send(tmp_path, monkeypatch)
     res = wv.send_text(wv.SendTextReq(text="你好", voice_id="kangaroo"))
     assert res["ok"] is True
     assert calls["synth"][0] == "你好"
     assert calls["rvc"][1] == "kangaroo_v2"           # 自动推出 RVC 实验名
     assert calls["send"] == "tts_fake_kangaroo_v2.wav"  # 发的是**换声后**的文件
+    assert calls.get("pre_apply_consumed") is True     # 切卡任务被 _do_send 消费
     assert any("RVC 换声" in s for s in res["steps"])
 
 
@@ -135,3 +147,147 @@ def test_send_text_route_registered():
     client = TestClient(server.app)
     resp = client.post("/api/wechat/send_text", json={"text": "  "})
     assert resp.status_code == 400      # 路由在，被参数校验拦下（404 才是没注册）
+
+
+# ---------------- 切卡与 TTS 并行（_PendingApply，2026-09-10 延迟优化） ----------------
+
+class _FakeProc:
+    """假播放子进程（同 test_wechat_retry）：绝不能让单测真的启动 RVC venv 播音频。"""
+
+    def poll(self):
+        return 0
+
+    def kill(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _make_wav_like_retry(tmp_path, name="tts_x.wav"):
+    """真 wav 字节（_wav_duration 被打桩时不读内容，但 _do_send 仍要求文件存在）。"""
+    import io
+    import numpy as np
+    import soundfile as sf
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(1600, dtype=np.float32), 16000, format="WAV")
+    p = tmp_path / name
+    p.write_bytes(buf.getvalue())
+    return p
+
+
+def test_pending_apply_result_returns_run_audio_result(monkeypatch):
+    """result() 返回后台 _run_audio('apply') 的结果，且只调一次。"""
+    calls = []
+    monkeypatch.setattr(wv, "_run_audio", lambda a: calls.append(a) or {"ok": True, "action": a})
+    t = wv._PendingApply()
+    res = t.result()
+    assert res == {"ok": True, "action": "apply"}
+    assert calls == ["apply"]
+
+
+def test_pending_apply_propagates_error(monkeypatch):
+    """后台 apply 失败 → result() 原样抛出，交给 _do_send 的异常路径。"""
+    monkeypatch.setattr(wv, "_run_audio", lambda a: (_ for _ in ()).throw(RuntimeError("apply boom")))
+    t = wv._PendingApply()
+    with pytest.raises(RuntimeError, match="apply boom"):
+        t.result()
+
+
+def test_pending_apply_abandon_restores_after_success(monkeypatch):
+    """abandon()（未消费早退）：必须还原声卡，绝不把默认麦留在 CABLE 上。"""
+    calls = []
+    monkeypatch.setattr(wv, "_run_audio", lambda a: calls.append(a) or {"ok": True})
+    t = wv._PendingApply()
+    t.abandon()
+    assert calls == ["apply", "restore"]
+
+
+def test_pending_apply_abandon_restores_after_failure(monkeypatch):
+    """apply 本身失败后 abandon：restore 可能同样失败，不能让异常冒出 abandon。"""
+    calls = []
+    def fake(a):
+        calls.append(a)
+        raise RuntimeError("no device")
+    monkeypatch.setattr(wv, "_run_audio", fake)
+    t = wv._PendingApply()
+    t.abandon()          # 不应抛
+    assert calls == ["apply", "restore", "reset"]   # restore 失败 → _safe_restore 用 reset 兑底
+
+
+def test_pending_apply_abandon_noop_after_consume(monkeypatch):
+    """result() 消费后 abandon 是空操作：还原已由 _do_send 自己的路径负责。"""
+    calls = []
+    monkeypatch.setattr(wv, "_run_audio", lambda a: calls.append(a) or {"ok": True})
+    t = wv._PendingApply()
+    t.result()
+    t.abandon()
+    assert calls == ["apply"]
+
+
+def test_do_send_uses_pre_apply_instead_of_second_sync_apply(tmp_path, monkeypatch):
+    """传了 pre_apply：_do_send 只等尾差，绝不能再同步跑第二次 apply（否则白省）。"""
+    _make_wav_like_retry(tmp_path)
+    calls = []
+    def fake_run(a):
+        calls.append(a)
+        return {"ok": True}
+    monkeypatch.setattr(wv, "_run_audio", fake_run)
+
+    class FakeTask:
+        def __init__(self):
+            self.consumed = False
+        def result(self):
+            self.consumed = True
+            return {"ok": True}
+        def abandon(self):
+            pass
+    task = FakeTask()
+    monkeypatch.setattr(wv, "_PendingApply", FakeTask)
+    monkeypatch.setattr(wv, "_foreground_wechat", lambda: None)
+    monkeypatch.setattr(wv, "_trigger_record", lambda: None)
+    monkeypatch.setattr(wv, "_finish_record", lambda: True)
+    monkeypatch.setattr(wv, "_start_play", lambda w: _FakeProc())
+    monkeypatch.setattr(wv, "_wait_play_start", lambda p, t=40.0: True)
+    monkeypatch.setattr(wv, "_wait_play_done", lambda p, d: None)
+    monkeypatch.setattr(wv, "_wav_duration", lambda p: 1.0)
+    monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))
+    res = wv._do_send(wv.SendVoiceReq(wav="tts_x.wav"), pre_apply=task)
+    assert res["outcome"] == "ok"
+    assert task.consumed is True
+    assert calls == []                   # 同步 apply 一次都没跑
+    assert any("并行" in s for s in res["steps"])
+
+
+def test_do_send_without_pre_apply_keeps_sync_apply(tmp_path, monkeypatch):
+    """不传 pre_apply（/send_voice、tools 直连）：保持原地同步切卡，行为不变。"""
+    _make_wav_like_retry(tmp_path)
+    calls = []
+    monkeypatch.setattr(wv, "_run_audio", lambda a: calls.append(a) or {"ok": True})
+    monkeypatch.setattr(wv, "_foreground_wechat", lambda: None)
+    monkeypatch.setattr(wv, "_trigger_record", lambda: None)
+    monkeypatch.setattr(wv, "_finish_record", lambda: True)
+    monkeypatch.setattr(wv, "_start_play", lambda w: _FakeProc())
+    monkeypatch.setattr(wv, "_wait_play_start", lambda p, t=40.0: True)
+    monkeypatch.setattr(wv, "_wait_play_done", lambda p, d: None)
+    monkeypatch.setattr(wv, "_wav_duration", lambda p: 1.0)
+    monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))
+    res = wv._do_send(wv.SendVoiceReq(wav="tts_x.wav"))
+    assert res["outcome"] == "ok"
+    assert calls == ["apply"]            # 原地同步 apply，和优化前一致
+
+
+def test_send_text_starts_pending_apply_and_frees_it_on_tts_failure(tmp_path, monkeypatch):
+    """send_text 一拿锁就起预热任务；TTS 失败走 abandon 兜底还原声卡。"""
+    calls = []
+    def fake_run(a):
+        calls.append(a)
+        return {"ok": True}
+    monkeypatch.setattr(wv, "_run_audio", fake_run)
+    monkeypatch.setattr(tts_api, "synth_wav", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("tts boom")))
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        wv.send_text(wv.SendTextReq(text="你好"))
+    assert e.value.status_code == 500
+    assert "tts boom" in e.value.detail
+    assert calls == ["apply", "restore"]   # 预热被 abandon()：切了卡又还原，无残留

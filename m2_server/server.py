@@ -172,6 +172,14 @@ app.include_router(capture_router)
 app.include_router(ab_router)
 app.include_router(ab_chain_router)
 app.include_router(audio_router)
+
+# 预热 TTS worker + RVC 常驻模型：消除首条几十秒的模型加载
+# （实测 TTS 冷 41.8s→2.9s、RVC 24.7s→0.3s，端到端 ~77s→~13s）
+try:
+    from warmup import start_background
+    start_background()
+except Exception:
+    pass
 app.include_router(media_router)
 app.include_router(rvc_dataset_router)
 

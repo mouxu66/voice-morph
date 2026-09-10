@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
-"""离线变声推理 CLI（由 m2_server/offline_vc.py 用 D:\\RVC\\.venv 的 python 子进程调用）。
+"""离线变声推理（由 m2_server/offline_vc.py 用 D:\\RVC\\.venv 的 python 跑）。
 
 两条链路共用本模块的加载/转换实现：
-  - 离线：CLI main()，一次加载转一个文件
-  - 级联实时：cascade_stream 常驻进程 import load_vc/convert_audio，
-    模型只加载一次，逐句 TTS 输出即时转换（逐句起子进程会慢 3~5s）
+  - 一次性 CLI：main()，一次加载转一个文件（**每条都重新加载模型，实测 ~20s**）
+  - 常驻 worker：serve()，stdin/stdout 讲 JSON 行协议，模型按 (pth,index) 缓存，
+    第二次起只剩推理（目标 <2s）。这是「点一下就发」延迟的主战场。
+  - 级联实时：cascade_stream 直接 import load_vc/convert_audio
 
 走 RVC 文件级推理链路 infer/vc（Pipeline 自动按静音切块拼接，支持任意长度音频）；
 不用 rtrvc.RVC——那是实时块式设计，cache_pitch 固定 1024 帧，整段超 10s 会溢出报错。
+
 用法：
     python offline_vc_infer.py --pth <模型.pth> --index <added_*.index> \
         --input <16k以下任意wav> --output <48k wav> [--pitch 0] [--index-rate 0.5]
+    python offline_vc_infer.py --serve            # 常驻 worker，见 serve() 文档
 """
 import argparse
 import os
@@ -188,5 +191,94 @@ def postprocess_audio(y, out_sr):
     return y.astype(np.float32)
 
 
+def serve() -> int:
+    """常驻 worker：stdin 收一行 JSON 任务，stdout 回一行 JSON 结果。
+
+    ⚠️ 为什么要有这个模式（2026-09-10 实测）：一次性 CLI 每条音频都要重新
+    `load_vc()`，5s 音频换声实测 **20~25s**，几乎全是模型加载；常驻后同一音色
+    第二次起只剩推理，目标是压到 2s 以内。这是「点桌偶→发出语音」端到端延迟
+    的最大单项。
+
+    协议（全部 JSON，ensure_ascii=True 输出，避开 Windows 控制台编码问题）：
+      先打 {"ready":true,"pid":N}
+      任务行 {"id":1,"cmd":"convert"|"warmup"|"ping","pth":..,"index":..,
+              "input":..,"output":..,"pitch":0,"index_rate":0.5}
+      结果行 {"id":1,"ok":true,"duration":4.7,"sr":48000,
+              "load_s":18.2,"convert_s":0.9}        失败时 {"ok":false,"error":..}
+    模型按 (pth, index) 缓存。stdin 关闭（父进程退出）即正常退出。
+    """
+    import json
+    import time
+
+    for stream in (sys.stdin, sys.stdout):
+        try:
+            stream.reconfigure(encoding="utf-8", newline="\n")
+        except Exception:
+            pass
+    setup_env()  # 必须先于任何 infer.* 导入（chdir + sys.path）
+
+    cache: dict[tuple[str, str], RvcEngine] = {}
+
+    def emit(obj: dict) -> None:
+        sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.flush()
+
+    def _engine(pth: str, index: str) -> tuple[RvcEngine, float]:
+        key = (pth, index)
+        if key in cache:
+            return cache[key], 0.0
+        t0 = time.time()
+        cache[key] = load_vc(pth, index)
+        return cache[key], time.time() - t0
+
+    emit({"ready": True, "pid": os.getpid()})
+    try:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            tid = None
+            try:
+                task = json.loads(line)
+                tid = task.get("id")
+                cmd = task.get("cmd", "convert")
+                if cmd == "ping":
+                    emit({"id": tid, "ok": True})
+                    continue
+                engine, load_s = _engine(task.get("pth", ""), task.get("index", ""))
+                if cmd == "warmup":
+                    emit({"id": tid, "ok": True, "load_s": round(load_s, 2)})
+                    continue
+                from infer.audio import load_audio
+
+                # setup_env 会 chdir，调用方传来的相对路径必须提前钉死
+                src = os.path.abspath(task["input"])
+                dst = os.path.abspath(task["output"])
+                audio_in = load_audio(src, 16000)
+                t1 = time.time()
+                y = convert_audio(engine, audio_in, int(task.get("pitch", 0)),
+                                  float(task.get("index_rate", 0.5)))
+                conv_s = time.time() - t1
+                import soundfile as sf
+
+                sf.write(dst, y, engine.tgt_sr)
+                emit({"id": tid, "ok": True, "output": dst,
+                      "duration": round(len(y) / engine.tgt_sr, 2), "sr": engine.tgt_sr,
+                      "load_s": round(load_s, 2), "convert_s": round(conv_s, 2)})
+            except Exception as e:  # 单个任务失败不得拖垮 worker
+                emit({"id": tid, "ok": False, "error": str(e)[:400]})
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # 显存要还给系统：worker 可能长期占着 GPU 却无人调用
+        try:
+            cache.clear()
+        except Exception:
+            pass
+    return 0
+
+
 if __name__ == "__main__":
+    if "--serve" in sys.argv:
+        sys.exit(serve())
     main()

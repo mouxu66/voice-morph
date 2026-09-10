@@ -138,6 +138,16 @@ def system_storage():
     return {"disks": storage.disk_usage(), "items": storage.scan()}
 
 
+@router.get("/system/warmup")
+def system_warmup():
+    """模型预热状态：TTS worker 与 RVC 常驻模型是否已就绪。
+
+    前端可据此提示"首次合成较慢"/"已就绪"。未就绪不影响使用，只是第一下慢。
+    """
+    from warmup import status
+    return status()
+
+
 @router.post("/system/storage/clean")
 def system_storage_clean(req: StorageCleanRequest):
     """清理指定目标：只删文件，受保护项跳过并返回原因；单文件失败不中断。"""

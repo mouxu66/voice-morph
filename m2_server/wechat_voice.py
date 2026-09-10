@@ -135,6 +135,55 @@ def _run_audio(action: str) -> dict:
     return data
 
 
+class _PendingApply:
+    """「切默认麦 → CABLE」后台预热任务（2026-09-10 端到端延迟优化）。
+
+    实测 audio_config.ps1 apply 要 ~3s，串行排在 TTS(≈6s)/RVC 之后纯属白等。
+    send_text 拿到发送锁后立刻起这个后台线程，让切卡与 TTS 合成并行；
+    _do_send 真正要用麦克风前只 .result() 等一个尾差（apply < TTS 时实测 ≈0s），
+    端到端省 ~3s。
+    """
+
+    def __init__(self) -> None:
+        self._done = threading.Event()
+        self._result: dict | None = None
+        self._error: BaseException | None = None
+        self._consumed = False
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="wechat-audio-apply")
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            self._result = _run_audio("apply")
+        except BaseException as e:   # 原样转交 result()，交给 _do_send 的异常路径处理
+            self._error = e
+        finally:
+            self._done.set()
+
+    def result(self) -> dict:
+        """阻塞到 apply 结束；成功返回结果 dict，失败原样抛出（_do_send 内调用一次）。"""
+        self._consumed = True
+        self._done.wait(timeout=130)          # _run_audio 自身 timeout=120
+        if self._error is not None:
+            raise self._error
+        if self._result is None:
+            raise RuntimeError("audio_config apply 未返回结果（后台任务超时？）")
+        return self._result
+
+    def abandon(self) -> None:
+        """消费前的任务作废（TTS 失败 / 早退路径）：等线程收尾并还原声卡，
+        绝不把系统默认麦留在 CABLE 上。已消费（_do_send 接手）时是安全的空操作。"""
+        if self._consumed:
+            return        # _do_send 已消费：还原由其异常/早退路径负责，别重复 restore
+        self._consumed = True
+        self._done.wait(timeout=130)
+        try:
+            _safe_restore()
+        except Exception:
+            pass
+
+
 # ---------------- 播放 wav → CABLE Input（RVC venv 子进程，唯一有 sounddevice） ----------------
 
 _PLAY_SCRIPT = r'''
@@ -897,15 +946,23 @@ def send_text(req: SendTextReq):
     桌宠「合成并发送」走的就是这个接口。链路里 **RVC 是音色的唯一来源**——
     TTS 零样本克隆复现不了袋鼠音色（2026-08-31 用户 A/B 亲耳判定），
     所以 rvc_voice 留空会得到一条"普通播音腔"，不是 bug。
+
+    延迟优化（2026-09-10）：切默认麦→CABLE（~3s）已提前到与 TTS 合成（~6s）
+    并行（_PendingApply），_do_send 用麦克风前只等尾差，端到端省 ~3s。
     """
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
     if not _send_lock.acquire(blocking=False):
         raise HTTPException(409, "已有一次微信语音发送在进行中，请等它结束")
+    apply_task: _PendingApply | None = None
     try:
+        _t0 = time.time()
+        # 切卡 ~3s 别串行等在 TTS 后面：立刻起后台预热与合成并行（见 _PendingApply）。
+        # 合成/组装任何一步失败，下面的 except 会 abandon() 兜底还原声卡。
+        apply_task = _PendingApply()
         from tts_api import synth_wav
         wav, duration_s, _vid = synth_wav(req.text, req.voice_id)
-        steps = [f"合成: {wav.name}（{duration_s:.1f}s，voice={_vid or '默认'}）"]
+        steps = [f"合成: {wav.name}（{duration_s:.1f}s，voice={_vid or '默认'}，用时 {time.time()-_t0:.1f}s）"]
         # 没显式给 rvc_voice 时，按 voicebank id → RVC 实验名的约定推一个
         # （kangaroo → kangaroo_v2）。推不到就照发，并在 steps 里说清楚音色会不像。
         rvc_voice = req.rvc_voice
@@ -914,19 +971,30 @@ def send_text(req: SendTextReq):
             rvc_voice = resolve_rvc_voice(_vid or req.voice_id) or ""
         if rvc_voice:
             from rvc_convert import rvc_convert as _rvc
+            _t1 = time.time()
             wav = _rvc(wav, rvc_voice, req.pitch, req.index_rate)
-            steps.append(f"RVC 换声 → {rvc_voice}")
+            steps.append(f"RVC 换声 → {rvc_voice}（用时 {time.time()-_t1:.1f}s）")
         else:
             steps.append("⚠ 没找到对应 RVC 音色，未换声（会是普通播音腔）")
-        res = _do_send(SendVoiceReq(wav=wav.name))
+        _t2 = time.time()
+        res = _do_send(SendVoiceReq(wav=wav.name), pre_apply=apply_task)
+        steps.append(f"微信录制发送（用时 {time.time()-_t2:.1f}s）")
         # _do_send 成功时返回 dict，失败可能返回 JSONResponse
         if isinstance(res, dict):
             res["steps"] = steps + list(res.get("steps", []))
             res["wav"] = wav.name
+        else:
+            # 早退路径（404 等）没走到 pre_apply 消费点，必须收尾还原声卡
+            if apply_task is not None:
+                apply_task.abandon()
         return res
     except HTTPException:
+        if apply_task is not None:
+            apply_task.abandon()
         raise
     except Exception as e:
+        if apply_task is not None:
+            apply_task.abandon()
         raise HTTPException(status_code=500, detail=f"一键发送失败: {e}")
     finally:
         _send_lock.release()
@@ -1147,7 +1215,12 @@ def _uia_verify_sent(before_msg: str | None, expect_s: float,
     return out
 
 
-def _do_send(req: SendVoiceReq):
+def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
+    """执行一次微信语音自动发送。pre_apply：send_text 预热的切卡任务（与 TTS 并行）。
+
+    传了 pre_apply 就只 .result() 等它收尾（不再同步跑第二次 apply）；
+    不传（直连 /send_voice、tools/*）保持原地同步切卡，行为不变。
+    """
     steps: list[str] = []
 
     # 1) 定位 wav：指定名 → outputs 下精确匹配；否则最近的 tts_*.wav
@@ -1180,30 +1253,39 @@ def _do_send(req: SendVoiceReq):
 
     restored = False
     proc = None          # 后台播放进程（异常路径要能 kill）
+    _tw = time.time()
     try:
-        # 2) 默认麦克风 → CABLE Output（微信从这里录；apply 自动备份原设备）
-        _run_audio("apply")
-        steps.append("麦克风已切到 CABLE Output")
+        # 2) 默认麦克风 → CABLE Output（微信从这里录；apply 自动备份原设备）。
+        #    send_text 已把切卡提前到与 TTS 并行（pre_apply），这里只等尾差（实测 ≈0s）；
+        #    没有预热任务时保持原地同步切卡。
+        _ta = time.time()
+        if pre_apply is not None:
+            pre_apply.result()
+            steps.append(f"[{time.time()-_tw:.1f}s] 麦克风已切到 CABLE Output"
+                         f"（切卡已与 TTS 并行，此处仅等 {time.time()-_ta:.1f}s）")
+        else:
+            _run_audio("apply")
+            steps.append(f"[{time.time()-_tw:.1f}s] 麦克风已切到 CABLE Output")
 
         # 3) 先把播放子进程拉起来（后台）。它 import 重库要 2~3s，这段绝不能落在录音区间里，
         #    否则语音开头会多出 2~3s 空白（实测 2.7s 音频被录成 7"）。
         proc = _start_play(wav)
         if _wait_play_start(proc):
-            steps.append(f"播放已开始（含 {PLAY_LEAD_S}s 静音头，覆盖录音启动延迟）")
+            steps.append(f"[{time.time()-_tw:.1f}s] 播放已开始（含 {PLAY_LEAD_S}s 静音头，覆盖录音启动延迟）")
         else:
             steps.append("⚠ 未等到播放开始信号，仍按原计划录音（开头可能被削）")
 
         # 4) 微信前台 → 点语音按钮开始录制（此刻静音头正在播，正好盖住微信启动延迟）
         _trigger_record()
         if RECORD_METHOD == "mic":
-            steps.append("UIA 已点击语音按钮，开始录音" if _record_via == "uia"
-                         else "已点击话筒图标，开始录音")
+            steps.append(f"[{time.time()-_tw:.1f}s] " + ("UIA 已点击语音按钮，开始录音" if _record_via == "uia"
+                         else "已点击话筒图标，开始录音"))
         else:
-            steps.append(f"已按住 {RECORD_KEY.upper()} 开始录音")
+            steps.append(f"[{time.time()-_tw:.1f}s] 已按住 {RECORD_KEY.upper()} 开始录音")
 
         # 5) 等 wav 真正播完（播完 = 子进程退出）
         _wait_play_done(proc, duration)
-        steps.append(f"已播放 {duration:.1f}s 到微信录音")
+        steps.append(f"[{time.time()-_tw:.1f}s] 已播放 {duration:.1f}s 到微信录音")
 
         # 5) 结束录音：realclick=松开即发送；postmsg=点浮层 ↑ 发送按钮（找不到则自动取消）
         #    播放脚本尾部已自带 TAIL_S 静音，这里只留极小缓冲给声卡驱动（再多就是白录空白）
@@ -1211,7 +1293,7 @@ def _do_send(req: SendVoiceReq):
         via = _record_via
         sent = _finish_record()
         if sent:
-            steps.append({
+            steps.append(f"[{time.time()-_tw:.1f}s] " + {
                 "uia": "UIA 点击语音按钮录音 → 已点发送钮，语音已发送",
                 "realclick": "已点击语音按钮 → 已点发送钮，语音已发送",
                 "postmsg": "已点浮层发送按钮，语音已发送",
