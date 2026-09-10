@@ -180,7 +180,7 @@ export function usePetMarket() {
     status: "idle", phase: "", step: "", total: 0, current: 0,
     repos_seen: 0, repos_lic_skip: 0, repos_tree_skip: 0,
     candidates: 0, built_ok: 0, built_fail: 0, atlas_skip: 0,
-    error: "", finished_at: "",
+    error: "", finished_at: "", fails: [],
   }))
   const [discovery, setDiscovery] = useState<PetDiscoveryItem[] | null>(null)
   const scanBusy = useRef(false)

@@ -45,6 +45,8 @@ _SCAN: dict = {
     "candidates": 0, "built_ok": 0, "built_fail": 0, "atlas_skip": 0,
     "error": "", "cancel": False,
     "finished_at": "",
+    # 试转失败原因日志（前端「试转失败」计数可展开看原因）；上限防止大扫描撑爆状态
+    "fails": [],            # [{repo, path, reason}, ...]
 }
 
 GITHUB_API = "https://api.github.com"
@@ -53,6 +55,7 @@ READ_TIMEOUT = 30
 MAX_REPOS = 15            # 单次最多探测仓库数（未认证 core 限流 60/h 预算内）
 MAX_TREE_ENTRIES = 1500   # 单仓库树条目上限，防大库拖死扫描
 MAX_WORK_FILES = 40       # 单仓库最多候选文件数
+FAIL_LOG_MAX = 30         # 失败原因最多记录条数
 _UA = {"User-Agent": "TraePetMarket/1.0 (discovery)"}
 
 _LIC_ALLOWED = {
@@ -107,7 +110,7 @@ def _reset(**kw) -> None:
         _SCAN.update({"status": "idle", "phase": "", "step": "", "total": 0, "current": 0,
                       "repos_seen": 0, "repos_lic_skip": 0, "repos_tree_skip": 0,
                       "candidates": 0, "built_ok": 0, "built_fail": 0, "atlas_skip": 0,
-                      "error": "", "cancel": False, "finished_at": ""})
+                      "error": "", "cancel": False, "finished_at": "", "fails": []})
         _SCAN.update(kw)
 
 
@@ -116,10 +119,20 @@ def _update(**kw) -> None:
         _SCAN.update(kw)
 
 
+def _log_fail(repo_full: str, path: str, exc: Exception) -> None:
+    """记录一条试转失败原因（吞异常可以，吞原因不行）。"""
+    with _SCAN_LOCK:
+        if len(_SCAN["fails"]) < FAIL_LOG_MAX:
+            _SCAN["fails"].append(
+                {"repo": repo_full, "path": path, "reason": str(exc)[:300]})
+        _SCAN["built_fail"] += 1
+
+
 def progress_scan() -> dict:
     """扫描进度快照（前端发现 Tab 轮询）。"""
     with _SCAN_LOCK:
         d = dict(_SCAN)
+        d["fails"] = [dict(f) for f in _SCAN.get("fails") or []]
         d.pop("cancel", None)
         d.pop("bytes", None)     # 下载器写入的临时字段
         return d
@@ -246,6 +259,56 @@ def _raw_url(repo: dict, path: str) -> str:
     return f"https://raw.githubusercontent.com/{repo['full_name']}/{branch}/{encoded}"
 
 
+def _gh_download(repo: dict, path: str, dst: Path, box: dict) -> None:
+    """经 api.github.com contents API 下载原文件（Accept: raw 流式落盘）。
+
+    为什么不直接下 raw 直链：大陆网络下 raw.githubusercontent.com 常年 DNS 污染
+    （2026-09-10 本机实测：api.github.com 通、raw 域名 getaddrinfo 直接失败，
+    扫描 4 候选全挂在下载）。contents API 与搜索/取树同域名，可达性与扫描前几步
+    一致；未认证同样吃 core 60/h 配额，与取树共享预算。
+    """
+    headers = dict(_UA)
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"token {token}"
+    headers["Accept"] = "application/vnd.github.raw"
+    url = f"{GITHUB_API}/repos/{repo['full_name']}/contents/{urllib.parse.quote(path)}"
+    try:
+        r = requests.get(url, headers=headers, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                         stream=True)
+    except requests.RequestException as exc:
+        raise ScanError(f"contents API 请求失败: {exc}") from exc
+    if r.status_code >= 400:
+        raise ScanError(f"contents API 错误 {r.status_code}: {path}")
+    try:
+        total = int(r.headers.get("Content-Length") or 0)
+        if total > MAX_SOURCE_BYTES:
+            raise ScanError(f"源文件超过上限 {MAX_SOURCE_BYTES} 字节")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        received = 0
+        with dst.open("wb") as f:
+            for chunk in r.iter_content(256 * 1024):
+                if box.get("cancel"):
+                    raise ScanError("已取消")
+                if not chunk:
+                    continue
+                f.write(chunk)
+                received += len(chunk)
+                if received > MAX_SOURCE_BYTES:
+                    raise ScanError(f"源文件超过上限 {MAX_SOURCE_BYTES} 字节")
+        box["bytes"] = received
+    finally:
+        r.close()
+
+
+def _fetch_source(repo: dict, path: str, dst: Path, box: dict) -> None:
+    """下载候选源文件：contents API 优先，失败回退 raw 直链（复用白名单下载器）。"""
+    try:
+        _gh_download(repo, path, dst, box)
+    except Exception:
+        _download_to(_raw_url(repo, path), dst, box)
+
+
 def _gif_map_from_names(paths: list[str]) -> dict[str, str]:
     """按文件名关键字分状态；无 idle 命中取第一个。"""
     idle, play = "", ""
@@ -276,9 +339,8 @@ def _try_build(kind: str, repo: dict, cand: dict, tmp: Path) -> dict:
         srcs: list[Path] = []
         fnames: list[str] = []
         for p in paths:
-            url = _raw_url(repo, p)
-            fname = _pic_fname(url)
-            _download_to(url, src_dir / fname, _box())
+            fname = _pic_fname(_raw_url(repo, p))
+            _fetch_source(repo, p, src_dir / fname, _box())
             srcs.append(src_dir / fname)
             fnames.append(fname)
         gif_map = _gif_map_from_names(fnames)
@@ -296,9 +358,8 @@ def _try_build(kind: str, repo: dict, cand: dict, tmp: Path) -> dict:
         source_type = "gif-multi"
         build_skin("gif-multi", srcs, tmp / "skin", meta)
     elif kind == "pixel":
-        url = _raw_url(repo, cand["path"])
-        fname = _pic_fname(url)
-        _download_to(url, src_dir / fname, _box())
+        fname = _pic_fname(_raw_url(repo, cand["path"]))
+        _fetch_source(repo, cand["path"], src_dir / fname, _box())
         data = json.loads(src_dir.joinpath(fname).read_text("utf-8"))
         size = data.get("size")
         frames = data.get("frames")
@@ -383,7 +444,7 @@ def _scan_task() -> None:
                     add_ext_item(entry)
                     _update(built_ok=_SCAN["built_ok"] + 1)
                 except Exception as exc:  # noqa: BLE001 - 单个候选失败不阻断扫描
-                    _update(built_fail=_SCAN["built_fail"] + 1)
+                    _log_fail(repo["full_name"], f"{len(gifs)} 个 gif 合并", exc)
                 finally:
                     if td.exists():
                         shutil.rmtree(td, ignore_errors=True)
@@ -399,7 +460,7 @@ def _scan_task() -> None:
                     add_ext_item(entry)
                     _update(built_ok=_SCAN["built_ok"] + 1)
                 except Exception as exc:  # noqa: BLE001 - 单个候选失败不中断扫描
-                    _update(built_fail=_SCAN["built_fail"] + 1)
+                    _log_fail(repo["full_name"], p["path"], exc)
                 finally:
                     if td.exists():
                         shutil.rmtree(td, ignore_errors=True)

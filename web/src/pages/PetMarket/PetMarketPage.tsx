@@ -801,6 +801,22 @@ function DiscoveryTab({ p }: { p: PetMarket }) {
             {s.error}
           </p>
         )}
+        {!!s.fails?.length && (
+          <div className="mt-3 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2">
+            <p className="text-[11px] font-medium text-destructive">试转失败原因（{s.fails.length} 条）</p>
+            <ul className="mt-1 space-y-0.5">
+              {s.fails.map((f, i) => (
+                <li key={i} className="break-all text-[11px] leading-4 text-muted-foreground">
+                  <span className="font-mono text-destructive/80">{f.repo}</span>
+                  {" · "}
+                  {f.path || "—"}
+                  {" — "}
+                  {f.reason}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {s.status === "done" && (
           <p className="mt-3 text-xs text-emerald-600">
             扫描完成（{s.finished_at}）：新发现的素材已上线到下方列表，可一键安装，也可先看详情。

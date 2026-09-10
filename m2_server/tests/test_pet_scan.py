@@ -4,7 +4,7 @@
   - 「扫描即上线」：试转通过的候选写入 ext 清单，find_manifest_item 可见 → 可直接安装
   - 把关：无宽松许可、树太大、试转失败、atlas（需人工 meta）都不上线
 用例隔离：monkeypatch pet_market.PET_SKINS_DIR/STATE_FILE/EXT_FILE 到 tmp，
-并 patch pet_scan 的 _gh_get（假 GitHub API）与 _download_to（假下载）。
+并 patch pet_scan 的 _gh_get（假 GitHub API）与 _fetch_source（假源文件下载）。
 """
 import json
 import threading
@@ -67,6 +67,20 @@ def _fake_dl_from(tmp_path: Path, sources: dict) -> object:
     def fake(url: str, dst, box):
         import shutil
         name = Path(urllib.parse.unquote(urllib.parse.urlparse(url).path)).name
+        src = sources.get(name)
+        if src is None:
+            raise pet_market.PetMarketError(f"测试缺源文件: {name}")
+        shutil.copyfile(src, dst)
+        box["bytes"] = dst.stat().st_size
+    return fake
+
+
+def _fake_fetch_from(tmp_path: Path, sources: dict) -> object:
+    """造 fake 源文件下载（pet_scan._fetch_source 签名）：按 path 文件名复制素材。"""
+    import shutil
+
+    def fake(repo: dict, path: str, dst, box):
+        name = Path(path).name
         src = sources.get(name)
         if src is None:
             raise pet_market.PetMarketError(f"测试缺源文件: {name}")
@@ -147,7 +161,8 @@ def test_scan_pixel_json_goes_live(iso, tmp_path, monkeypatch):
 
     monkeypatch.setattr(pet_scan, "_gh_get", fake_gh)
     fake_dl = _fake_dl_from(tmp_path, {"pixel_capybara.json": pix})
-    monkeypatch.setattr(pet_scan, "_download_to", fake_dl)
+    monkeypatch.setattr(pet_scan, "_fetch_source",
+                        _fake_fetch_from(tmp_path, {"pixel_capybara.json": pix}))
     # install 走的是 pet_market._download_to（安装 worker 在 pet_market 线程里）
     monkeypatch.setattr(pet_market, "_download_to", fake_dl)
     monkeypatch.setattr(pet_market, "_make_preview", lambda d: None)
@@ -201,8 +216,8 @@ def test_scan_gif_merges_states(iso, tmp_path, monkeypatch):
         raise AssertionError(path)
 
     monkeypatch.setattr(pet_scan, "_gh_get", fake_gh)
-    monkeypatch.setattr(pet_scan, "_download_to",
-                        _fake_dl_from(tmp_path, {"idle.gif": idle, "walking.gif": walk}))
+    monkeypatch.setattr(pet_scan, "_fetch_source",
+                        _fake_fetch_from(tmp_path, {"idle.gif": idle, "walking.gif": walk}))
     pet_scan.start_scan()
     st = _wait_status(lambda s: s["status"] in ("done", "failed"))
     assert st["status"] == "done", st
@@ -229,7 +244,7 @@ def test_scan_skips_unlicensed_repo(iso, tmp_path, monkeypatch):
 
 
 def test_scan_failed_trial_not_published(iso, tmp_path, monkeypatch):
-    """试转失败的候选（源文件缺）不计入 ext 清单，built_fail +1。"""
+    """试转失败的候选（源文件缺）不计入 ext 清单，built_fail +1 且记下原因。"""
     _mk_pixel_json(tmp_path)
     def fake_gh(path, params=None):
         if path.startswith("/search/repositories"):
@@ -240,15 +255,40 @@ def test_scan_failed_trial_not_published(iso, tmp_path, monkeypatch):
             return {"tree": [{"type": "blob", "path": "pixel.json", "size": 512}]}
         raise AssertionError(path)
     # 下载直接抛错（源不存在）
-    def boom(url, dst, box):
+    def boom(repo, path, dst, box):
         raise pet_market.PetMarketError("404 源不存在")
     monkeypatch.setattr(pet_scan, "_gh_get", fake_gh)
-    monkeypatch.setattr(pet_scan, "_download_to", boom)
+    monkeypatch.setattr(pet_scan, "_fetch_source", boom)
     pet_scan.start_scan()
     st = _wait_status(lambda s: s["status"] in ("done", "failed"))
     assert st["status"] == "done", st
     assert st["built_fail"] == 1 and st["built_ok"] == 0
     assert pet_market.get_ext_items() == []
+    # 失败原因要透传到前端（不再吞进计数里）
+    assert st["fails"] and st["fails"][0]["repo"] == "o/bad"
+    assert st["fails"][0]["path"] == "pixel.json"
+    assert "404" in st["fails"][0]["reason"]
+
+
+def test_fetch_source_falls_back_to_raw(iso, tmp_path, monkeypatch):
+    """contents API 失败 → 回退 raw 直链（白名单下载器），URL 空格编码正确。"""
+    dst = tmp_path / "out.gif"
+
+    def bad_gh(repo, path, d, box):
+        raise ScanError("contents API 错误 404: x.gif")
+
+    calls: dict = {}
+
+    def fake_raw(url, d, box):
+        calls["url"] = url
+        d.write_bytes(b"raw-bytes")
+
+    monkeypatch.setattr(pet_scan, "_gh_download", bad_gh)
+    monkeypatch.setattr(pet_scan, "_download_to", fake_raw)
+    repo = {"full_name": "o/x", "default_branch": "main"}
+    pet_scan._fetch_source(repo, "a b/p.gif", dst, {})
+    assert calls["url"] == "https://raw.githubusercontent.com/o/x/main/a%20b/p.gif"
+    assert dst.read_bytes() == b"raw-bytes"
 
 
 def test_scan_cancel(iso, tmp_path, monkeypatch):
@@ -264,13 +304,13 @@ def test_scan_cancel(iso, tmp_path, monkeypatch):
         raise AssertionError(path)
     monkeypatch.setattr(pet_scan, "_gh_get", fake_gh)
 
-    def slow_dl(url, dst, box):
+    def slow_dl(repo, path, dst, box):
         for _ in range(200):
             if box.get("cancel"):
                 raise pet_market.PetMarketError("已取消")
             time.sleep(0.01)
         dst.write_bytes(b"x")
-    monkeypatch.setattr(pet_scan, "_download_to", slow_dl)
+    monkeypatch.setattr(pet_scan, "_fetch_source", slow_dl)
     pet_scan.start_scan()
     time.sleep(0.1)                          # 等 worker 进入下载循环
     pet_scan.cancel_scan()

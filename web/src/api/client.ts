@@ -1519,6 +1519,7 @@ export type PetScanProgress = {
   atlas_skip: number;
   error: string;
   finished_at: string;
+  fails: Array<{ repo: string; path: string; reason: string }>;  // 试转失败原因日志
 };
 export type PetDiscoveryItem = {
   id: string;
