@@ -1,0 +1,17 @@
+# 行尾策略（只钉 .githooks/，不动其它文件：全仓加 text=auto 会触发一次
+# 大规模重新规范化，而 Python/TS 源码走 CRLF 不影响运行）。
+#
+# 背景：本仓库 core.autocrlf=true（Windows 开发机），文本文件会被检出成 CRLF。
+# shell 钩子本该是 LF——CRLF 的脚本在 /bin/sh 下可能报
+# "bad interpreter: /bin/sh^M"。
+#
+# 实测（2026-09-11，git 2.x + Git for Windows）：写了 eol=lf 之后本机与
+# `git clone` 出来的副本**仍然是 CRLF**（blob 里就是 CRLF，autocrlf 没有让位）。
+# 但 Git for Windows 的 sh 能正常执行它——pre-commit 在克隆副本里实跑过，
+# 解析与传参都正确。
+#
+# 所以这里不做「假装已经修好」的声明，真正的兜底在脚本自己身上：
+# 两个钩子的最后一行都以注释结尾，行尾残留的 \r 会落进注释里而不是变成
+# 参数的一部分。Linux/WSL 上若仍遇到 bad interpreter，用
+# `sed -i 's/\r$//' .githooks/*` 就地转换即可。
+.githooks/* text eol=lf
