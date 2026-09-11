@@ -305,6 +305,35 @@ def test_uninstall_remote_removes_dir(iso, tmp_path, monkeypatch):
     assert iso.load_applied() == iso.DEFAULT_SKIN
 
 
+def test_busy_counts_queued_task(iso, tmp_path, monkeypatch):
+    """刚入队（worker 还没进入 downloading）也算忙。
+
+    回归：is_busy() 曾只看 _ACTIVE_STATUSES（不含 queued），导致
+    ① 卸载在排队任务未跑完时被放行；② 测试轮询 `while is_busy()`
+    会在安装开始前就退出 → 误判「安装未完成」。
+    """
+    def _slow_download(url, dst, box):
+        time.sleep(1.5)
+        dst.write_bytes(b"x")
+
+    monkeypatch.setattr(iso, "_download_to", _slow_download)
+    monkeypatch.setattr(iso, "_make_preview", lambda d: None)
+    iso.MAX_CONCURRENT_INSTALLS = 1
+    try:
+        iso.install("pixel-cat")        # 占满唯一并发槽
+        iso.install("mika")             # 排队中
+        st = {t["skin_id"]: t["status"] for t in iso.progress()["items"]}
+        assert st["mika"] == "queued", st
+        assert iso.is_busy() is True, "排队中的任务也必须算忙"
+        with pytest.raises(PetMarketError, match="任务"):
+            iso.uninstall("mika")       # 排队未落地 → 拒绝卸载
+    finally:
+        iso.MAX_CONCURRENT_INSTALLS = 2
+        deadline = time.time() + 15
+        while time.time() < deadline and iso.is_busy():
+            time.sleep(0.05)
+
+
 # ---- API 壳（路由存在性 + 错误映射 404/409/400） ----
 
 @pytest.fixture()

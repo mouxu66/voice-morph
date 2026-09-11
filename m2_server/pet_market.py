@@ -454,9 +454,15 @@ def progress() -> dict:
 
 
 def is_busy() -> bool:
-    """是否有任何任务在下载/转换中（卸载等互斥用）。"""
+    """是否有任何任务未终结（排队/下载/转换中）——卸载等互斥用。
+
+    必须含 `queued`：只要任务已入队就还没落地。只看 `_ACTIVE_STATUSES`
+    会漏掉"刚 enqueue、worker 还没把状态改成 downloading"的窗口——
+    实测该窗口内 uninstall 会被放行（与后续 worker 落盘抢同一目录），
+    且轮询方会在安装真正开始前就以为"空闲"。
+    """
     with _TASK_LOCK:
-        return any(t["status"] in _ACTIVE_STATUSES for t in _TASKS.values())
+        return any(t["status"] in _NON_TERMINAL for t in _TASKS.values())
 
 
 def _kick() -> None:
