@@ -200,8 +200,11 @@ if _web_dist is not None:
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def _spa(full_path: str):
+        web_root = _web_dist.resolve()
         cand = (_web_dist / full_path).resolve()
-        if full_path and cand.is_file() and str(cand).startswith(str(_web_dist.resolve())):
+        # is_relative_to 而非字符串 startswith：后者会放行同前缀的兄弟目录
+        # （如 web_dist_backup），与 media_api.py 的穿越防护保持一致
+        if full_path and cand.is_file() and cand.is_relative_to(web_root):
             return FileResponse(cand)
         return FileResponse(_web_dist / "index.html")
 
