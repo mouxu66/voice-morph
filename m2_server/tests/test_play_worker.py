@@ -200,7 +200,7 @@ def test_persist_verify_appends_to_last_history(monkeypatch, tmp_path):
     hist_file.write_text(json.dumps([{"ts": 1, "outcome": "ok"}]), "utf-8")
     monkeypatch.setattr(wv, "HISTORY_FILE", hist_file)
     wv._persist_verify(['UIA 校验：最新语音 语音5"秒'])
-    hist = json.loads(hist_file.read_text())
+    hist = json.loads(hist_file.read_text("utf-8"))  # 显式编码：GBK 中文 Windows 下默认编码会解码失败
     assert "verify" in hist[-1]
     assert "语音5" in hist[-1]["verify"][0]
 
