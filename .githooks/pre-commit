@@ -1,0 +1,41 @@
+#!/bin/sh
+# pre-commit：提交前快速门禁（预算 <5s，超了人就该绕过了）
+#
+# 做两件事：
+#   1. 拦密钥入库——AGENTS.md 安全红线第一条（.env / 凭据 / 私钥）
+#   2. tools/check.py --fast —— ruff + 最快的一批单元测试
+#
+# 全量测试 + 前端类型检查在 pre-push 与 CI 跑（那两处不怕慢）。
+#
+# 启用：python tools/install_hooks.py
+
+set -e
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+# ---------- 1. 密钥红线（只看暂存区） ----------
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+if [ -n "$staged" ]; then
+    secrets=$(printf '%s\n' "$staged" | grep -Ei '(^|/)(\.env($|\.)|credentials\.json|id_rsa|id_ed25519)$|\.(pem|key|p12|pfx)$' | grep -v '^\.env\.example$' || true)
+    if [ -n "$secrets" ]; then
+        printf '\n[pre-commit] 拒绝提交疑似密钥文件：\n%s\n' "$secrets" >&2
+        printf '若确认无害，请从暂存区移除后重试（AGENTS.md 安全红线）。\n\n' >&2
+        exit 1
+    fi
+fi
+
+# ---------- 2. 快速自检 ----------
+# 优先用项目自带 venv（版本与 requirements-dev.txt 一致），找不到就退回 PATH 上的 python
+if [ -x ".venv/Scripts/python.exe" ]; then
+    PY=".venv/Scripts/python.exe"
+elif [ -x ".venv/bin/python" ]; then
+    PY=".venv/bin/python"
+elif command -v python >/dev/null 2>&1; then
+    PY="python"
+else
+    echo "[pre-commit] 未找到 Python，跳过自检（请先按 README「环境搭建」准备 .venv）" >&2
+    exit 0
+fi
+
+exec "$PY" tools/check.py --fast

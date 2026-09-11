@@ -1,0 +1,28 @@
+#!/bin/sh
+# pre-push：推送前全量门禁（ruff + pytest 全量 + 前端类型检查，约 90s）
+#
+# 为什么放在 push 而不是 commit：pre-commit 必须快（<5s），否则人会用
+# --no-verify 绕过；而「全绿」这件事按铁律 2 必须在交付前确认，
+# push 正是"要给别人看"的那一刻。
+#
+# pre-commit 的 hooks 已在 tools/check.py 里统一封装，这里直接跑同一条命令。
+#
+# 启用：python tools/install_hooks.py
+
+set -e
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+if [ -x ".venv/Scripts/python.exe" ]; then
+    PY=".venv/Scripts/python.exe"
+elif [ -x ".venv/bin/python" ]; then
+    PY=".venv/bin/python"
+elif command -v python >/dev/null 2>&1; then
+    PY="python"
+else
+    echo "[pre-push] 未找到 Python，跳过自检" >&2
+    exit 0
+fi
+
+exec "$PY" tools/check.py
