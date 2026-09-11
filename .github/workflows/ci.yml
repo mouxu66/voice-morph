@@ -1,0 +1,61 @@
+name: CI
+
+# 触发：推 master / 任何 PR / 手动。
+# 目的只有一件事——让铁律 1/2（改动即提交、补测且全绿）从"靠人记得跑"
+# 变成"机器挡住"。之前没有 CI，2026-09-11 的审查撞上两次"文档写着全绿、
+# 实际已过期"（GBK 编码失败的用例 + 随机挂的队列用例）。
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支连续 push 时取消旧的那次，省 runner 时间
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 后端：Windows runner 不是随手选的——wechat_voice / loopback_capture 顶层
+  # 依赖 sounddevice / pyaudiowpatch（Windows WASAPI 内录），Linux 上装不起来。
+  backend:
+    name: 后端（ruff + pytest）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      # 瘦环境：装 requirements-dev.txt 而不是 requirements.txt
+      # （后者含 torch/demucs，>2GB，测试用不上；理由见该文件注释）
+      - name: 安装测试依赖
+        run: python -m pip install --upgrade pip -r requirements-dev.txt
+
+      # 与本地、与 git 钩子跑的是**同一条命令**，避免"本地过、CI 挂"
+      - name: 一键自检（ruff + pytest，跳过前端）
+        run: python tools/check.py --no-web
+
+  # 前端：类型检查（tsc -b 不产出 dist），Linux runner 足够
+  web:
+    name: 前端（tsc -b）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 安装依赖
+        working-directory: web
+        run: npm ci
+
+      - name: 类型检查
+        working-directory: web
+        run: npx tsc -b --pretty false
