@@ -11,6 +11,8 @@ import config as cfg
 import logging
 import subprocess
 
+logger = logging.getLogger(__name__)
+
 
 def find_pth(exp: str, log_dir: Path) -> Path | None:
     """找到该实验可用的 RVC 最终权重：优先 <exp>.pth，否则回退 G_<...>.pth。
