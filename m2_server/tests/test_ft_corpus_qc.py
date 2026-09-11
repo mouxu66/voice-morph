@@ -138,7 +138,7 @@ def _fake_report(ft: Path, grades: dict):
 
 
 def test_prune_moves_files_and_rewrites_jsonl(ft, monkeypatch):
-    rows = _make_corpus(ft, good=9, bad=3)                   # 保留 9 条 ≥ 8，不应告警
+    _make_corpus(ft, good=9, bad=3)                   # 保留 9 条 ≥ 8，不应告警
     grades = {f"seg_{i:03d}": "B" for i in range(9)}
     grades.update({f"seg_bad_{i:03d}": "D" for i in range(3)})
     monkeypatch.setattr(ftq, "build_report", lambda *a, **k: _fake_report(ft, grades))
@@ -165,7 +165,7 @@ def test_prune_moves_files_and_rewrites_jsonl(ft, monkeypatch):
 
 
 def test_prune_keeps_c_when_asked(ft, monkeypatch):
-    rows = _make_corpus(ft, good=6, bad=4)
+    _make_corpus(ft, good=6, bad=4)
     grades = {f"seg_{i:03d}": ("C" if i < 2 else "B") for i in range(6)}
     grades.update({f"seg_bad_{i:03d}": "D" for i in range(4)})
     monkeypatch.setattr(ftq, "build_report", lambda *a, **k: _fake_report(ft, grades))

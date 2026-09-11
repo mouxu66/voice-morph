@@ -1,5 +1,4 @@
 """history.py 变声任务持久化单测（用 monkeypatch 隔离 outputs 目录）。"""
-import json
 import sys
 from pathlib import Path
 

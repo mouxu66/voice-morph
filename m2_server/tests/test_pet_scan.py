@@ -7,7 +7,6 @@
 并 patch pet_scan 的 _gh_get（假 GitHub API）与 _fetch_source（假源文件下载）。
 """
 import json
-import threading
 import time
 import urllib.parse
 import subprocess

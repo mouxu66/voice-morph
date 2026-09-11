@@ -122,7 +122,7 @@ def test_start_play_falls_back_when_worker_unavailable(monkeypatch):
     called = {}
     monkeypatch.setattr(wv, "_start_play_oneshot",
                         lambda w: called.setdefault("oneshot", w) or _FakePopen(['PLAYING\n', 'DONE\n']))
-    h = wv._start_play(Path("z.wav"))
+    wv._start_play(Path("z.wav"))
     assert called.get("oneshot") == Path("z.wav")
 
 

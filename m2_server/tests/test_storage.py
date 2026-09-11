@@ -94,7 +94,7 @@ def test_clean_rejects_protected(dirs):
 
 def test_clean_outputs_wav_also_drops_dead_history(dirs):
     wav = _put(dirs / "outputs", "tts_x.wav", 500)
-    monkey_id = history.register("tts", "a", wav.name, "/x", 1.0)
+    history.register("tts", "a", wav.name, "/x", 1.0)
     assert history.query()["total"] == 1
     res = storage.clean(["outputs_wav"])
     assert res["removed_files"] == 1

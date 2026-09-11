@@ -9,7 +9,6 @@
 用法：
     python m2_server/make_test_audio.py
 """
-import sys
 import wave
 from pathlib import Path
 

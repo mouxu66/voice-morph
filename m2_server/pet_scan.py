@@ -31,7 +31,7 @@ from pathlib import Path
 import requests
 
 from pet_market import MAX_SOURCE_BYTES, _download_to, add_ext_item, get_ext_items, remove_ext_item
-from pet_skin_build import SkinBuildError, build_skin, validate_skin_files
+from pet_skin_build import build_skin, validate_skin_files
 from runtime import OUT
 
 # ---- 扫描运行状态（同一时间仅一个扫描线程） ----

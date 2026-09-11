@@ -20,7 +20,7 @@ import market_images
 from runtime import API_PREFIX
 from market_download import get_manager, MarketError
 from market_install import get_installer, InstallError
-from market_manifest import get_manifest, find_manifest_item
+from market_manifest import get_manifest
 import market_preview
 from market_search import search, repo_files_hf, repo_files_ms
 from market_search import hf_resolve, ms_resolve

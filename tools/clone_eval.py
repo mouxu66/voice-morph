@@ -26,7 +26,6 @@ import argparse
 import csv
 import json
 import math
-import os
 import subprocess
 import sys
 import tempfile

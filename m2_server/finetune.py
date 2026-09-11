@@ -31,7 +31,6 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
 
 import config as cfg
 import ft_corpus_qc as ftq
@@ -557,7 +556,7 @@ def ft_publish(voice_id: str, display_name: str = ""):
             shutil.copy2(f, t)
     anchor = st.get("anchor")
     if anchor:
-        shutil.copy2(d_dir := _vdir(voice_id) / "clips" / anchor, vd / "reference.wav")
+        shutil.copy2(_vdir(voice_id) / "clips" / anchor, vd / "reference.wav")
     meta = {"display_name": display_name or f"{voice_id}（微调）",
             "kind": "finetuned", "speaker": voice_id,
             "model_dir": str(vd / "ft_model").replace("\\", "/"),

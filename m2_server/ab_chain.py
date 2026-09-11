@@ -54,9 +54,18 @@ def _nats_scorer():
                 tools = cfg.ROOT / "tools"
                 if str(tools) not in sys.path:
                     sys.path.insert(0, str(tools))
-                from natscore_local import load_local
+                # 先查权重再 import：natscore_local 会拉起 torch，权重缺失时
+                # 若先 import 就会抛裸 ModuleNotFoundError，与「给可读原因」相悳
+                # （CI 瘦环境无 torch，test_nats_scorer_missing_ckpt_raises 曾因此红）
                 if not NATSCORE_CKPT.exists():
                     raise RuntimeError(f"NatScore 权重缺失：{NATSCORE_CKPT}")
+                try:
+                    from natscore_local import load_local
+                except ImportError as exc:      # 多为缺 torch
+                    raise RuntimeError(
+                        f"NatScore 依赖缺失（需 torch 等）：{exc}；"
+                        f"完整依赖见 requirements.txt"
+                    ) from exc
                 _NATS = load_local(str(NATSCORE_CKPT))
     return _NATS
 

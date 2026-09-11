@@ -379,7 +379,7 @@ def main():
     ver_dir = Path(dll_path).parent.name
     print(f"  版本目录名={ver_dir}")
 
-    print(f"\n[2] 扫描 Qt accessibility gate（只读 dll 文件）")
+    print("\n[2] 扫描 Qt accessibility gate（只读 dll 文件）")
     rva, cands = scan_gate_rva(Path(dll_path))
     if rva is None:
         print("  ✗ 未找到候选 RVA —— 此微信版本不支持热激活（社区库也依赖版本匹配）")

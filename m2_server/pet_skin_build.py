@@ -260,7 +260,6 @@ def pack_gif_skin(gifs: list[Path], out_dir: Path, meta: dict) -> dict[str, dict
 def pack_existing_skin(state_files: dict, out_dir: Path, meta: dict) -> dict[str, dict]:
     """现有 per-state 文件（如芙宁娜 svg/*.webp）→ 复制 + 记录帧数。"""
     fw = int(meta.get("frameW") or 150)
-    fh = int(meta.get("frameH") or 150)
     durs = {k: float(v) for k, v in (meta.get("durations") or DEFAULT_DUR).items()}
     rows: dict[str, dict] = {}
     for state in SKIN_STATE_KEYS:

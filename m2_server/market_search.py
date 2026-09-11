@@ -94,7 +94,6 @@ def _hf_title(m: dict) -> str:
     for k in ("cardData", "tags"):
         pass
     pretty = (m.get("cardData") or {}).get("language") or ""
-    tag_hint = next((t for t in (m.get("tags") or []) if t.lower() in ("rvc", "voice")), "")
     return pretty or (m.get("author", "") + "/" + m.get("name", "")) or m.get("id", "")
 
 

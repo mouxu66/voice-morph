@@ -19,6 +19,10 @@ import argparse
 import os
 import sys
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:            # 仅为下方字符串注解提供类型名，运行时零开销
+    import numpy as np
 
 
 def setup_env() -> str:

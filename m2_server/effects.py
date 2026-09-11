@@ -102,7 +102,6 @@ def fx_echo(x: np.ndarray, sr: int, p: dict) -> np.ndarray:
     feedback = _f(p, "feedback", 0.35, 0.0, 0.9)
     wet = _f(p, "wet", 0.4, 0.0, 1.0)
     n = int(sr * delay_s)
-    y = x.astype(np.float64).copy()
     buf = np.zeros(len(x) + n * 12, dtype=np.float64)
     buf[: len(x)] = x
     tap = n

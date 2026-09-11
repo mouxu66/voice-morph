@@ -13,7 +13,6 @@
 import subprocess
 import threading
 import time
-import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile

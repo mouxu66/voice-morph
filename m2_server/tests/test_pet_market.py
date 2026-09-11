@@ -10,7 +10,6 @@
 用例隔离：patch pet_market.PET_SKINS_DIR / STATE_FILE 到 tmp。
 """
 import json
-import threading
 import time
 import zipfile
 

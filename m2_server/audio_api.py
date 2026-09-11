@@ -22,7 +22,6 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
-import config as cfg
 from runtime import API_PREFIX, ROOT
 
 router = APIRouter(prefix=API_PREFIX)

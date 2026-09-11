@@ -11,7 +11,6 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
-from pydantic import BaseModel
 
 import config as cfg
 from common import MAX_UPLOAD_BYTES, is_valid_voice_id, selected_voice
@@ -177,9 +176,9 @@ async def create_voicebank(voice_id: str, request: Request):
     if not clips and auto:
         try:
             import clip_qc
-            clips, picked_s = clip_qc.recommend(target_s)
+            clips = clip_qc.recommend(target_s)[0]   # 只要片段名，推荐总时长此处不用
         except Exception:  # noqa: BLE001
-            clips, picked_s = [], 0.0
+            clips = []
         if not clips:
             raise HTTPException(400, _voicebank_guidance())
     if not clips:

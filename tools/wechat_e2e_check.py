@@ -98,7 +98,7 @@ def phase_a() -> dict:
 
     check("A3 渲染层扩展样式位（社区根因）", exstyle)
 
-    rect0 = check("A4 窗口 rect", lambda: wv._window_rect(hwnd))
+    check("A4 窗口 rect", lambda: wv._window_rect(hwnd))
 
     def onscreen():
         """真正要保证的是「话筒点可见」，不是整个窗口在屏内
@@ -176,8 +176,12 @@ def phase_b(ctx: dict) -> None:
     t0 = time.time()
     try:
         res = wv._do_send(wv.SendVoiceReq(wav=Path(wavs[0]).name))
-    except Exception as exc:
-        check("B1 _do_send 完整流程", lambda: (_ for _ in ()).throw(exc))
+    except Exception as e:
+        # 先落到普通变量再进 lambda：`except ... as exc` 的异常变量在 handler
+        # 退出时会被删除，直接塞进 lambda 属于「现在能用、换个写法就炸」的陷阱
+        # （ruff 对 handler 内 lambda 的引用会直接报 F821）
+        err = e
+        check("B1 _do_send 完整流程", lambda: (_ for _ in ()).throw(err))
         traceback.print_exc()
         return
     dur = round(time.time() - t0, 1)

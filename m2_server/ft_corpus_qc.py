@@ -200,7 +200,6 @@ def _reason_key(reason: str) -> str:
 
 def _advice(grades: dict, ok_count: int, total_s: float, rejected: int) -> list[str]:
     out = []
-    bad = grades.get("D", 0) + grades.get("C", 0)
     if grades.get("D", 0):
         out.append(f"{grades['D']} 条切片不合格（D 级），建议先「一键剔除」再训练"
                    f"——脏样本是克隆失败/鬼叫的主要来源")

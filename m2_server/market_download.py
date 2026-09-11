@@ -247,9 +247,7 @@ class DownloadManager:
                 }
                 if name not in self._order:
                     self._order.append(name)
-                idle_done = True
             else:
-                idle_done = False
                 resume = part.exists() and prev.get("filename") == filename
                 self._tasks[name] = {
                     "name": name,
@@ -315,6 +313,7 @@ class DownloadManager:
             part = self.download_dir / (filename + PART_SUFFIX)
             dest = self.download_dir / filename
             cancel_evt = self._events.get(name)
+            err_url = url          # 最终失败时用于指明是主源还是镜像挂了
             try:
                 if expected_size and expected_size > MAX_BYTES:
                     raise MarketError(f"文件超过上限 {MAX_BYTES} 字节")
@@ -326,8 +325,6 @@ class DownloadManager:
                         for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
                             box["h"].update(chunk)
 
-                err_url = url
-                mirror_attempted = False
                 for attempt, try_url in enumerate([url, mirror_url]):
                     if try_url is None:
                         continue
@@ -337,7 +334,6 @@ class DownloadManager:
                         break
                     except Exception as exc:  # noqa: BLE001 —— 网络/校验错误统一走回退
                         if attempt == 0 and mirror_url and not (cancel_evt and cancel_evt.is_set()):
-                            mirror_attempted = True
                             # 只标记当前尝试源（attempt_url），不覆盖主源 url——
                             # 覆盖会污染 state，失败后排查看到的"主源"其实是镜像
                             self._set_task(name, force=True, attempt_url=mirror_url,
@@ -381,8 +377,10 @@ class DownloadManager:
                 self._persist(force=True)
             except Exception as exc:  # noqa: BLE001 —— 全部失败进 failed
                 part.unlink(missing_ok=True)
+                # 带上失败的来源主机：排查「主源挂了还是镜像也挂了」时不必猜
+                host = urllib.parse.urlparse(err_url or url).hostname or ""
                 self._set_task(name, force=True, status="failed",
-                               error=f"{exc.__class__.__name__}: {exc}")
+                               error=f"{exc.__class__.__name__}: {exc}" + (f"（来源 {host}）" if host else ""))
             finally:
                 if cancel_evt:
                     cancel_evt.clear()

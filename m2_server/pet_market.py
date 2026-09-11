@@ -26,7 +26,6 @@ from pathlib import Path
 import requests
 
 from pet_skin_build import (
-    SKIN_STATE_KEYS,
     SkinBuildError,
     build_skin,
     is_valid_skin_id,

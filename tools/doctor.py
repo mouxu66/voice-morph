@@ -203,7 +203,7 @@ def run_checks() -> list[Check]:
     # ---------- 8. 后端是否在运行 ----------
     c = Check("backend_running", f"后端服务（端口 {BACKEND_PORT}）", required=False)
     c.ok = _port_in_use(BACKEND_PORT)
-    c.detail = "正在运行" if c.ok else f"未运行（启动：python m2_server\\server.py）"
+    c.detail = "正在运行" if c.ok else "未运行（启动：python m2_server\\server.py）"
     if not c.ok:
         c.fix = f'cd "{ROOT / "m2_server"}" && "{py}" server.py'
     results.append(c)

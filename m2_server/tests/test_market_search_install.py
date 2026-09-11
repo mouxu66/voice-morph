@@ -14,7 +14,6 @@ import pytest
 from market_download import ALLOWED_HOSTS, DownloadManager, MarketError
 from market_install import InstallError, InstallManager
 from market_manifest import get_manifest
-import market_search
 import market_search as ms
 import config
 
@@ -303,7 +302,6 @@ def test_readme_cache_key_isolation(monkeypatch, readme_cache):
 
 
 def test_search_ms_path_resolution(monkeypatch):
-    seen = {}
 
     def fake(url, **params):
         if "/api/v1/models/" in url and "/repo" not in url:

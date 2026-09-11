@@ -158,3 +158,21 @@ def test_nats_scorer_missing_ckpt_raises(client, monkeypatch):
     monkeypatch.setattr(ac, "NATSCORE_CKPT", __import__("pathlib").Path("no") / "such_ckpt.pt")
     with pytest.raises(RuntimeError, match="NatScore 权重缺失"):
         ac._nats_scorer()
+
+
+def test_nats_scorer_missing_dependency_reports_readable_error(client, monkeypatch, tmp_path):
+    """权重在、但依赖（torch）装不上时也要给可读原因。
+
+    回归：原实现先 `from natscore_local import load_local` 再查权重，
+    依赖缺失时抛裸 ModuleNotFoundError，绕过了本文件声称的「可读原因」约定。
+    用 sys.modules 里塞 None 模拟 import 失败（无需真的卸载 torch）。
+    """
+    import sys
+
+    ckpt = tmp_path / "final.pt"
+    ckpt.write_bytes(b"stub")
+    monkeypatch.setattr(ac, "NATSCORE_CKPT", ckpt)
+    monkeypatch.setattr(ac, "_NATS", None)
+    monkeypatch.setitem(sys.modules, "natscore_local", None)   # import → ImportError
+    with pytest.raises(RuntimeError, match="NatScore 依赖缺失"):
+        ac._nats_scorer()

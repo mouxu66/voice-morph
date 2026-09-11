@@ -595,7 +595,6 @@ def _exstyle_clear_transparent(hwnd: int) -> int | None:
     **穿透**到主窗口而到不了渲染层——这就是"模拟点击话筒没反应"的机理。
     摘掉该位后点击能被渲染窗口接收，用完必须恢复（保证画面正常合成）。
     """
-    import ctypes
     u = _user32()
     GWL_EXSTYLE, WS_EX_TRANSPARENT = -20, 0x20
     old = u.GetWindowLongW(hwnd, GWL_EXSTYLE)

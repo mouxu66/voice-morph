@@ -66,8 +66,7 @@ def check_file(args):
     if not ref.exists():
         sys.exit(f"参考音频不存在: {ref}")
 
-    print(f"[1/4] 文件模式全链路（VAD→ASR→TTS，跑在 RVC venv）…")
-    t0 = time.time()
+    print("[1/4] 文件模式全链路（VAD→ASR→TTS，跑在 RVC venv）…")
     r = subprocess.run(
         [str(RVC_PY), str(STREAM_PY), "--file", str(src),
          "--ref-audio", str(ref)],
@@ -82,7 +81,7 @@ def check_file(args):
     if not out.exists():
         sys.exit("没有产出 outputs/cascade_file_out.wav")
 
-    print(f"[2/4] RTF 检查（处理快于播放才算流式可行，阈值 >1.0）…")
+    print("[2/4] RTF 检查（处理快于播放才算流式可行，阈值 >1.0）…")
     rtf = None
     for line in r.stdout.splitlines():
         if "整体 RTF" in line:
@@ -90,7 +89,7 @@ def check_file(args):
     ok_rtf = rtf is not None and rtf > 1.0
     print(f"  整体 RTF = {rtf}x  ->  {'PASS' if ok_rtf else 'FAIL'}")
 
-    print(f"[3/4] 内容正确性（ASR 回听合成音频，与链路输入文本对比）…")
+    print("[3/4] 内容正确性（ASR 回听合成音频，与链路输入文本对比）…")
     tr_out = _post_json(WORKER + "/transcribe",
                         {"path": str(out), "vad_filter": False}, timeout=300)
     tr_in = _post_json(WORKER + "/transcribe",
@@ -103,7 +102,7 @@ def check_file(args):
     ok_text = overlap >= 0.6  # whisper 逐次转写有噪声，字符重合度作近似判据
     print(f"  字符重合度 {overlap:.2f}  ->  {'PASS' if ok_text else 'FAIL'}")
 
-    print(f"[4/4] 音色正确性（声纹相似度，阈值 ≥0.95；原版基线 0.983）…")
+    print("[4/4] 音色正确性（声纹相似度，阈值 ≥0.95；原版基线 0.983）…")
     import numpy as np
     e1, e2 = _emb(str(out)), _emb(str(ref))
     if not e1 or not e2:

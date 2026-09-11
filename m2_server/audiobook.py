@@ -11,11 +11,9 @@
     - 同一时刻只允许一个任务（GPU 单路），重复提交返回 409。
     - 每句的独立 wav 保留在 outputs/ 供逐句试听，最终拼接为单一成品 wav。
 """
-import json
 import re
 import threading
 import time
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
