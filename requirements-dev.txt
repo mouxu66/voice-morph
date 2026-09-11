@@ -1,0 +1,33 @@
+# 开发 / CI / git 钩子依赖（**瘦环境**：故意不含 GPU 推理栈）
+#
+# 为什么不是 `-r requirements.txt`：那会拉 torch / torchaudio / demucs（>2GB、
+# CI 上要 5~8 分钟），而本项目的测试全部用 monkeypatch 隔离了模型、微信真机与
+# ffmpeg，跑测试并不需要它们。2026-09-11 实测：屏蔽 torch/demucs/librosa 后
+# 全量仍是 473 passed（仅 3 例按设计 skip）。
+#
+# ⚠️ 两个刻意不装的包，别"顺手补上"：
+#   - torch      ：test_server.py 里唯一依赖它的用例用 importorskip 自行跳过；
+#                  装了就多 2GB 下载，不装反而更快。
+#   - librosa    ：test_effects.py 的 2 个用例专门验证"librosa 缺失时效果器
+#                  直通"这条降级路径，装了反而会把它们 skip 掉。
+# 若哪天有人给测试路径加了重依赖，CI 会在收集期大声失败——把缺的包补到这里，
+# 并顺手确认它是不是真的必须。
+pytest>=8
+httpx                  # fastapi.testclient 的传输层
+ruff>=0.6              # tools/check.py 的静态扫描（F/E9 规则）
+
+numpy
+scipy                  # test_effects 的 EQ/滤波用例
+soundfile
+pydub
+python-dotenv
+
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+requests
+
+# 以下两项是**顶层导入**（不是懒加载），缺了连 import 都过不去
+sounddevice            # wechat_voice / play_worker
+pyaudiowpatch          # loopback_capture（Windows WASAPI 内录）
