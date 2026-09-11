@@ -755,14 +755,14 @@ function doSendText() {
   if (!window.pet) return;
   // 有试听产物就直接发它（试听→发送两步走），否则一步到位「合成并发送」
   if (lastPreview && window.pet.sendWav) {
-    setStatus(`发送中… 屏幕顶部会弹出提示，按提示按住 Alt`, "ok");
+    setStatus(`发送中… 自动发到微信，全程别动键鼠`, "ok");
     window.pet.sendWav(lastPreview.wav);
     lastPreview = null;
   } else {
     if (!text) return;
     const voiceId = voiceSel.value || "";
     if (voiceId) localStorage.setItem(VOICE_KEY, voiceId);   // 记住上次选的音色
-    setStatus("合成中… 完成后屏幕顶部会提示你按 Alt", "ok");
+    setStatus("合成中… 完成后自动发到微信，全程别动键鼠", "ok");
     if (window.pet.sendText) { window.pet.sendText(text, voiceId); sayEl.value = ""; }
   }
   sendBtn.disabled = true;
