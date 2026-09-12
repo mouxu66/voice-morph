@@ -160,4 +160,25 @@ function section(name) {
   done();
 }
 
+// ---- 9. 包外资源注入：VM_* 全部指向 D:\变声（模型/数据留包外） ----
+{
+  const done = section("包外资源: externalResourceEnv 注入 VM_* 指向 D:\\变声");
+  const env = backend.externalResourceEnv();
+  const realSrc = path.join("D:\\变声", "m2_server", "server.py");
+  if (fs.existsSync(realSrc)) {
+    // 本机（开发/打包同时在 D:\变声 上跑）：模型目录注入必须命中包外根源
+    const ttsModels = path.join("D:\\变声", "tts_models");
+    if (fs.existsSync(ttsModels)) {
+      assert.strictEqual(env.VM_TTS_MODELS_DIR, ttsModels, "VM_TTS_MODELS_DIR 应指向 D:\\变声\\tts_models");
+    }
+    assert.ok(!("VM_TTS_MODELS_DIR" in env) || env.VM_TTS_MODELS_DIR.startsWith("D:\\变声"));
+    assert.ok(!("VM_TTS_VENV_PY" in env) || env.VM_TTS_VENV_PY.startsWith("D:\\变声"));
+    assert.ok(!("VM_PROJECT_ROOT" in env) || env.VM_PROJECT_ROOT === "D:\\变声");
+  } else {
+    // 分发机（无 D:\变声）：不得注入空的假路径
+    assert.deepStrictEqual(env, {}, "无 D:\\变声 时不应注入任何 VM_ 路径变量");
+  }
+  done();
+}
+
 process.stdout.write("\n[smoke] 全部通过 ✓（生产路径已门控到安装包内资源）\n");

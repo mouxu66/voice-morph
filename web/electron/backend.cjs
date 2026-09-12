@@ -244,6 +244,30 @@ function resolveDataRoot(root) {
   return app.getPath("userData");
 }
 
+/**
+ * 包外资源注入（安装版核心）：后端代码随包走（resources/backend），但模型权重 / 专用
+ * 解释器 / TTS 模型目录都在源码根 D:\变声（4.9G，打包不带）。这里把 VM_* 逐个指过去，
+ * 让包内后端仍能读到包外模型。分发机没有 D:\变声 就不注入，config.py 回落默认值 →
+ * 缺模型的子能力（TTS 等）明确报错，而不是静默错乱。
+ * 与 config.py 的 VM_ 变量一一对应（VM_QWEN_MODEL_DIR/VM_QWEN_TOKENIZER_DIR 跟随
+ * VM_TTS_MODELS_DIR 默认推导，无需单独注入；VM_RVC_ROOT 默认 D:/RVC 机器级固定）。
+ */
+function externalResourceEnv() {
+  if (!fs.existsSync(path.join(LEGACY_ROOT, "m2_server", "server.py"))) return {};
+  const env = {};
+  if (fs.existsSync(path.join(LEGACY_ROOT, "tts_models"))) {
+    env.VM_TTS_MODELS_DIR = path.join(LEGACY_ROOT, "tts_models");
+  }
+  if (fs.existsSync(path.join(LEGACY_ROOT, "tts_trial", "venv312", "Scripts", "python.exe"))) {
+    env.VM_TTS_VENV_PY = path.join(LEGACY_ROOT, "tts_trial", "venv312", "Scripts", "python.exe");
+  }
+  if (fs.existsSync(path.join(LEGACY_ROOT, "tts_trial", "venv312"))) {
+    // qwen3_tts：venv312 解释器 + worker 脚本 + tts_models 解析根都从该根推导
+    env.VM_PROJECT_ROOT = LEGACY_ROOT;
+  }
+  return env;
+}
+
 async function startBackend(root) {
   // python 解释器：优先安装目录自带 .venv（开发态），安装版回退到项目目录 D:\变声\.venv（依赖齐全），
   // 都没有才用系统 python（依赖可能缺失，仅兜底）
@@ -296,10 +320,8 @@ async function startBackend(root) {
       PYTHONIOENCODING: "utf-8",
       VM_MEDIA_DIR: path.join(dataRoot, "media"),
       VM_OUTPUTS_DIR: path.join(dataRoot, "outputs"),
-      // TTS worker 的 venv312 只存在于项目目录（安装包不含），存在则注入给 qwen3_tts.py
-      ...(fs.existsSync(path.join(LEGACY_ROOT, "tts_trial", "venv312"))
-        ? { VM_PROJECT_ROOT: LEGACY_ROOT }
-        : {}),
+      // 模型/解释器/tts_models 全在包外（D:\变声），逐个用 VM_* 注入给包内后端与 TTS worker
+      ...externalResourceEnv(),
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
@@ -450,6 +472,7 @@ module.exports = {
   getProjectRoot,
   resolveProjectRoot,
   frontendHtmlCandidates,
+  externalResourceEnv,
   backendHealthy,
   waitForBackend,
   portInUse,

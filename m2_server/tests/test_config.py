@@ -38,3 +38,20 @@ def test_env_override(monkeypatch):
         assert cfg.CORS_ORIGINS == ["http://localhost:5173", "https://a.test"]
     finally:
         importlib.reload(cfg)  # 还原模块级缓存，避免影响其他测试
+
+
+def test_env_override_packaged_external_resources(monkeypatch):
+    """安装版语义：后端代码在包内（resources/backend），模型/解释器在包外，
+    靠 VM_TTS_MODELS_DIR / VM_TTS_VENV_PY 指过去 —— 覆盖必须生效，
+    且 QWEN 模型目录跟随 TTS_MODELS_DIR 推导。"""
+    monkeypatch.setenv("VM_TTS_MODELS_DIR", "D:/变声/tts_models")
+    monkeypatch.setenv("VM_TTS_VENV_PY", "D:/变声/tts_trial/venv312/Scripts/python.exe")
+    import config as cfg
+    importlib.reload(cfg)
+    try:
+        assert str(cfg.TTS_MODELS_DIR).replace("\\", "/").lower() == "d:/变声/tts_models"
+        assert str(cfg.QWEN_MODEL_DIR) == str(cfg.TTS_MODELS_DIR / "qwen3-tts-1.7b-base")
+        assert str(cfg.QWEN_TOKENIZER_DIR) == str(cfg.TTS_MODELS_DIR / "qwen3-tts-tokenizer-12hz")
+        assert str(cfg.TTS_VENV_PY).replace("\\", "/").lower() == "d:/变声/tts_trial/venv312/scripts/python.exe"
+    finally:
+        importlib.reload(cfg)
