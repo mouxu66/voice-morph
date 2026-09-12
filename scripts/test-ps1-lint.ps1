@@ -14,6 +14,8 @@ $targets = @(
   "test-update-e2e.ps1",
   "test-vmrun-args.ps1",
   "test-install-probe.ps1",
+  "test-ps1-lint.ps1",
+  "release.ps1",
   "check-update-source.ps1",
   "build-and-publish.ps1",
   "vm-test.config.example.ps1"
@@ -25,6 +27,30 @@ function Report([bool]$ok, [string]$label, [string]$detail) {
   if (-not $ok) { $script:allOk = $false }
   $results.Add(("[{0}] {1} -- {2}" -f $(if ($ok) { "PASS" } else { "FAIL" }), $label, $detail))
 }
+
+# --- 0. 自检：合并行正则的正反例（防止规则本身退化） ---
+# 注意：下列样例本身是「会被本规则命中的文本」，扫描自身时需白名单（见下 LINT-SELF 标记）。
+$selfCases = @(
+  # LINT-SELF: sample
+  @{ ln = 'Invoke-GuestCommand -Script $p -NoWait | Out-Null  $tmp = Join-Path $a $b'; merged = $true;  why = "真合并行" },
+  @{ ln = 'if (-not (Test-Path $x)) { New-Item -ItemType Directory -Force -Path $x | Out-Null }'; merged = $false; why = "if 块内管道，合法" },
+  @{ ln = 'try { Invoke-GuestCommand -Script $probe -TimeoutSec 15 | Out-Null } catch { }'; merged = $false; why = "单行 try/catch，合法" },
+  @{ ln = 'Start-Process -FilePath $s -ArgumentList "/S" | Out-Null'; merged = $false; why = "行尾管道，合法" },
+  @{ ln = 'New-Item -ItemType Directory -Force -Path $d | Out-Null'; merged = $false; why = "行尾管道，合法" },
+  # LINT-SELF: sample
+  @{ ln = 'Invoke-Vmrun -gu $u copyFileFromHostToGuest $a $b $c | Out-Null'; merged = $false; why = "行尾管道，合法" }
+)
+function Test-MergedLine([string]$ln) {
+  if ($ln -notmatch '\|\s*Out-Null\s+[^\}\|\)\;]') { return $false }
+  if ($ln -match '\|\s*Out-Null\s*\|\s*Out-Null') { return $false }
+  return $true
+}
+$regexIssues = @()
+foreach ($c in $selfCases) {
+  $got = Test-MergedLine $c.ln
+  if ($got -ne $c.merged) { $regexIssues += ("want=" + $c.merged + " got=" + $got + " [" + $c.why + "]") }
+}
+Report ($regexIssues.Count -eq 0) "merged-line regex self-check" $(if ($regexIssues.Count) { $regexIssues -join "; " } else { ("cases=" + $selfCases.Count) })
 
 foreach ($t in $targets) {
   $p = Join-Path $scriptDir $t
@@ -47,13 +73,13 @@ foreach ($t in $targets) {
   # --- 2. 合并行 ---
   # 症状：`| Out-Null` 之后同一行还跟着另一条**独立语句**（Edit 吞掉换行的典型后果）。
   # 白名单：`try { ... | Out-Null } catch { }` 这类单行 try 块是合法写法，不算合并行。
+  # 行级白名单：上一行含 `# LINT-SELF: sample` 时整行跳过（本 lint 自身的正反例样例）。
   $lines = [System.IO.File]::ReadAllLines($p)
   $merged = @()
   for ($i = 0; $i -lt $lines.Count; $i++) {
     $ln = $lines[$i]
-    if ($ln -notmatch '\|\s*Out-Null\s+\S') { continue }
-    if ($ln -match 'try\s*\{.*\}\s*catch') { continue }   # 单行 try/catch 白名单
-    if ($ln -match '\|\s*Out-Null\s*\|\s*Out-Null') { continue }
+    if ($i -gt 0 -and $lines[$i - 1] -match '#\s*LINT-SELF:\s*sample') { continue }
+    if (-not (Test-MergedLine $ln)) { continue }
     $merged += ("L" + ($i + 1))
   }
   Report ($merged.Count -eq 0) "$t no merged lines after Out-Null" $(if ($merged.Count) { $merged -join "," } else { "clean" })
