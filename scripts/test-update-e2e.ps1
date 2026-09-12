@@ -232,16 +232,23 @@ try {
 
   # 0) VM 状态机 + 就绪
   Ensure-VmReady
+  Write-Host "等待 guest 就绪（VMware Tools + 自动登录）..."
   if (-not (Wait-GuestReady)) {
+    Write-Host "诊断：vmrun list 输出如下（确认 VM 是否在运行实例列表）"
+    Invoke-Vmrun list 2>$null | ForEach-Object { Write-Host "  $_" }
+    Write-Host "诊断：该 vmx 的快照列表"
+    Invoke-Vmrun listSnapshots $VmxPath 2>$null | ForEach-Object { Write-Host "  $_" }
     Write-Error "VM 未能就绪（VMware Tools / 自动登录 可能未配置）。"
     exit 1
   }
   Add-Result $true "VM 回滚至干净快照并启动"
 
   # 0.5) 可选：导入自签根证书（必须在回滚之后，否则会被快照恢复抹掉）
+  Write-Host "检查自签证书导入（ImportCert=$ImportCert）..."
   Import-GuestCert | Out-Null
 
   # 1) 拷入 0.2.1 并静默安装（轮询 + 诊断 dump + 路径兜底）
+  Write-Host "拷入旧版安装包并静默安装：$OldInstaller"
   #    坑：electron-builder 的 NSIS /S 是 stub 行为，Start-Process -Wait 等到的是 stub 退出，
   #    真正的安装进程仍在写注册表 → 立即查注册表会拿到空值。故改为「不依赖 -Wait + 轮询」。
   Copy-ToGuest (Resolve-Path $OldInstaller).Path "$GuestWork\installer.exe"
@@ -350,7 +357,8 @@ $diag | ConvertTo-Json -Depth 5 | Set-Content C:\vm_e2e\install-diag.json
 
 [pscustomobject]@{ exe = $exe; source = $source } | ConvertTo-Json | Set-Content C:\vm_e2e\install-result.json
 '@
-  Invoke-GuestCommand -Script $installScript -TimeoutSec 150 | Out-Null  $tmp = Join-Path $WorkDir "install-result.json"
+  Invoke-GuestCommand -Script $installScript -TimeoutSec 150 | Out-Null
+  $tmp = Join-Path $WorkDir "install-result.json"
   Copy-FromGuest "$GuestWork\install-result.json" $tmp
   $installInfo = Get-Content $tmp -Raw | ConvertFrom-Json
   Remove-Item $tmp -Force
