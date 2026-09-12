@@ -49,12 +49,58 @@ export type UpdateCheck = {
 export type UpdateDownload = { ok: boolean; file?: string; cached?: boolean; reason?: string };
 export type UpdateProgress = { pct: number; received?: number; total?: number; done?: boolean };
 
+// ---- 模型配置 / 首启引导 ----
+/** 配置项的种类：与主进程 setup-ipc.cjs 的 PICK_SPECS 键一致 */
+export type SetupKind = "tts_models" | "tts_venv" | "rvc_root";
+
+/** 检测结果里的一项 */
+export type SetupItem = {
+  key: SetupKind;
+  label: string;
+  ok: boolean;
+  /** 当前生效路径（可能为空 = 完全没配） */
+  path: string;
+  /** 路径来源：config（用户配置）/ env（环境变量）/ derived（自动推导）/ none */
+  source: "config" | "env" | "derived" | "none";
+  reason: string;
+};
+
+export type SetupStatus = {
+  config: {
+    version: number;
+    ttsModelsDir: string;
+    ttsVenvPy: string;
+    rvcRoot: string;
+    setupSeen: boolean;
+  };
+  configPath: string;
+  items: SetupItem[];
+  ttsOk: boolean;
+  rvcOk: boolean;
+  allOk: boolean;
+  /** 缺失项 key 列表，如 ["tts_models", "tts_venv"] */
+  missing: SetupKind[];
+  setupSeen: boolean;
+};
+
+/** 目录选择结果；ok=false 表示用户强行选了校验不过的路径 */
+export type SetupPickResult = { canceled: boolean; path?: string; ok?: boolean; reason?: string };
+
 interface ElectronBridge {
   startBackend?: () => Promise<StartResult>;
   stopBackend?: () => Promise<{ ok: boolean }>;
+  restartBackend?: () => Promise<{ running: boolean; reason?: string; reusedExternal?: boolean }>;
   backendStatus?: () => Promise<{ running: boolean; port: number }>;
   showBackendLog?: () => Promise<{ ok: boolean }>;
   petGuide?: (payload: PetGuidePayload) => void;
+  // ---- 模型配置 / 首启引导 ----
+  setupStatus?: () => Promise<SetupStatus>;
+  setupPickDir?: (kind: SetupKind) => Promise<SetupPickResult>;
+  setupSave?: (patch: Partial<SetupStatus["config"]>) => Promise<{ ok: boolean } & SetupStatus>;
+  setupDismiss?: () => Promise<{ ok: boolean } & SetupStatus>;
+  setupRunWizard?: () => Promise<{ changed: boolean } & SetupStatus>;
+  setupReset?: () => Promise<{ ok: boolean } & SetupStatus>;
+  setupShowConfig?: () => Promise<{ ok: boolean; path: string }>;
   // ---- 自动更新 ----
   appVersion?: () => Promise<string>;
   updateCheck?: () => Promise<UpdateCheck>;
@@ -78,6 +124,16 @@ export async function startBackend(): Promise<StartResult | null> {
 
 export async function stopBackend(): Promise<void> {
   if (electron?.stopBackend) await electron.stopBackend();
+}
+
+/** 重启后端（改完模型配置后用）。非桌面端返回 null —— 调用方降级为提示手动重启。 */
+export async function restartBackend(): Promise<{ running: boolean; reason?: string } | null> {
+  if (!electron?.restartBackend) return null;
+  try {
+    return await electron.restartBackend();
+  } catch {
+    return null;
+  }
 }
 
 export async function showBackendLog(): Promise<void> {
@@ -139,4 +195,61 @@ export function onUpdateProgress(cb: (p: UpdateProgress) => void): () => void {
 export function onUpdateAvailable(cb: (r: UpdateCheck) => void): () => void {
   if (!electron?.onUpdateAvailable) return () => {};
   return electron.onUpdateAvailable(cb);
+}
+
+// ---------------- 模型配置 / 首启引导 ----------------
+// 非桌面端（网页 / Vite / 局域网）没有这套桥：getSetupStatus 返回 null，
+// UI 自动降级为「显示配置说明 + 复制环境变量命令」。
+
+/** 是否能在这个环境里读写模型配置（即跑在桌面壳里） */
+export const hasSetup = Boolean(electron?.setupStatus);
+
+/** 只读状态；非桌面端返回 null */
+export async function getSetupStatus(): Promise<SetupStatus | null> {
+  if (!electron?.setupStatus) return null;
+  try {
+    return await electron.setupStatus();
+  } catch {
+    return null;
+  }
+}
+
+/** 弹目录选择器；非桌面端返回 null（调用方降级为手填路径） */
+export async function pickSetupDir(kind: SetupKind): Promise<SetupPickResult | null> {
+  if (!electron?.setupPickDir) return null;
+  try {
+    return await electron.setupPickDir(kind);
+  } catch {
+    return null;
+  }
+}
+
+/** 保存配置，返回最新状态（失败返回 null） */
+export async function saveSetup(patch: Partial<SetupStatus["config"]>): Promise<SetupStatus | null> {
+  if (!electron?.setupSave) return null;
+  try {
+    return await electron.setupSave(patch);
+  } catch {
+    return null;
+  }
+}
+
+/** 稍后配置：不再自动弹引导 */
+export async function dismissSetup(): Promise<void> {
+  if (!electron?.setupDismiss) return;
+  try {
+    await electron.setupDismiss();
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 在资源管理器中定位 config.json */
+export async function showSetupConfig(): Promise<void> {
+  if (!electron?.setupShowConfig) return;
+  try {
+    await electron.setupShowConfig();
+  } catch {
+    /* 忽略 */
+  }
 }

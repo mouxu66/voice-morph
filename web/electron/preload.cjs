@@ -12,10 +12,28 @@ function on(channel, cb) {
 contextBridge.exposeInMainWorld("electron", {
   startBackend: () => ipcRenderer.invoke("backend:start"),
   stopBackend: () => ipcRenderer.invoke("backend:stop"),
+  /** 重启后端（改完模型配置后用；内部处理端口释放等待） */
+  restartBackend: () => ipcRenderer.invoke("backend:restart"),
   backendStatus: () => ipcRenderer.invoke("backend:status"),
   showBackendLog: () => ipcRenderer.invoke("backend:show-log"),
   // 页面导览：切页时把该页的介绍与动作推给桌宠窗口（fire-and-forget）
   petGuide: (payload) => ipcRenderer.send("pet:guide", payload),
+
+  // ---- 模型配置 / 首启引导 ----
+  /** 只读状态：{ config, configPath, items, ttsOk, rvcOk, allOk, missing, setupSeen } */
+  setupStatus: () => ipcRenderer.invoke("setup:status"),
+  /** 弹目录选择器（tts_models / tts_venv / rvc_root），返回 { canceled, path, ok, reason } */
+  setupPickDir: (kind) => ipcRenderer.invoke("setup:pick-dir", kind),
+  /** 保存配置（部分字段亦可），返回保存后的最新状态 */
+  setupSave: (patch) => ipcRenderer.invoke("setup:save", patch),
+  /** 稍后配置：不再自动弹引导 */
+  setupDismiss: () => ipcRenderer.invoke("setup:dismiss"),
+  /** 重新走一遍配置向导（设置面板入口） */
+  setupRunWizard: () => ipcRenderer.invoke("setup:run-wizard"),
+  /** 清空路径配置 */
+  setupReset: () => ipcRenderer.invoke("setup:reset"),
+  /** 在资源管理器中定位 config.json */
+  setupShowConfig: () => ipcRenderer.invoke("setup:show-config"),
 
   // ---- 应用自动更新 ----
   appVersion: () => ipcRenderer.invoke("app:version"),

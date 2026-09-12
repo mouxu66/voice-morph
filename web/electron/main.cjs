@@ -10,7 +10,11 @@ const fs = require("fs");
 const backend = require("./backend.cjs");
 const pet = require("./pet.cjs");
 const petActions = require("./pet-actions.cjs");
+const setup = require("./setup-ipc.cjs");
 const { registerUpdateIpc, scheduleStartupUpdateCheck } = require("./update-ipc.cjs");
+
+// 主窗口引用（setup IPC 弹目录选择器时需要 parent window，保证对话框置顶居中）
+let mainWindow = null;
 
 async function createWindow(root) {
   const win = new BrowserWindow({
@@ -34,6 +38,7 @@ async function createWindow(root) {
 
   // 主窗口关闭即退出（桌宠不独立驻留）：销毁桌宠让 window-all-closed 生效
   win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
     pet.destroyPet();
   });
 
@@ -76,8 +81,28 @@ app.whenReady().then(async () => {
     pet.createPetWindow(petActions);
     return;
   }
+  setup.registerSetupIpc(() => mainWindow);
+
+  // 首次启动引导：只在「安装版 + 用户没处理过 + 确实缺模型」时弹一次。
+  // 放在 startBackend 之前 —— 用户选完目录后紧接着的 spawn 就能带上新的 VM_*，
+  // 不必先起一个注定缺模型的后端再重启。用户点「稍后配置」也照样往下走，不阻塞启动。
+  let setupChanged = false;
+  if (app.isPackaged) {
+    try {
+      setupChanged = await setup.runFirstRunGuide(null);
+    } catch (e) {
+      console.error("[setup] 首启引导异常（忽略，继续启动）:", e && e.message);
+    }
+  } else {
+    // 开发态也把当前检测结果打进日志，便于对着设置面板排查
+    const st = setup.currentStatus();
+    console.log(`[setup] 模型检测：TTS=${st.ttsOk ? "ok" : "缺失"} RVC=${st.rvcOk ? "ok" : "缺失"}`
+      + ` 缺失项=[${st.missing.join(",")}] 配置=${st.configPath}`);
+  }
+
   const startInfo = await backend.startBackend(root);
   const win = await createWindow(root);
+  mainWindow = win;
   pet.createPetWindow(petActions);
   backend.registerBackendIpc();
   registerCascadeHotkey();
@@ -86,6 +111,10 @@ app.whenReady().then(async () => {
   scheduleStartupUpdateCheck(win);
   // 后端探测放在窗口之后异步进行，不阻塞界面出现；探不到才弹提示
   void backend.reportBackendTrouble(startInfo || {});
+  if (setupChanged) {
+    console.log("[setup] 首启引导已写入模型配置；重启后端使 VM_* 生效");
+    void backend.restartBackend(root);
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) void createWindow(root);
