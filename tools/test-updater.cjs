@@ -156,6 +156,16 @@ const updater = require("../web/electron/updater.cjs");
     assert.strictEqual(r.ok, false);
     assert.match(r.reason, /sha256/);
   });
+  t("downloadUpdate: 相对 url 基于清单地址解析", async () => {
+    resetUserData();
+    served.exeBytes = crypto.randomBytes(64 * 1024);
+    // manifest.url 只给相对文件名；base 来自 VM_UPDATE_URL（= BASE/latest.json）
+    await withUrl(async () => {
+      const r = await updater.downloadUpdate(makeManifest({ url: "setup.exe" }), () => {});
+      assert.strictEqual(r.ok, true, r.reason);
+      assert.ok(fs.existsSync(r.file));
+    });
+  });
   t("downloadUpdate: 正常下载 + 进度回调 + 缓存复用", async () => {
     resetUserData();
     served.exeBytes = crypto.randomBytes(512 * 1024);
@@ -206,6 +216,31 @@ const updater = require("../web/electron/updater.cjs");
     } finally {
       if (prev === undefined) delete process.env.VM_UPDATE_TEST_AUTO;
       else process.env.VM_UPDATE_TEST_AUTO = prev;
+    }
+  });
+
+  // ---------- updateCheckResultPath ----------
+  t("updateCheckResultPath: 未设 env 时回退 userData", () => {
+    const prev = process.env.VM_UPDATE_TEST_RESULT;
+    try {
+      delete process.env.VM_UPDATE_TEST_RESULT;
+      assert.strictEqual(
+        updater.updateCheckResultPath(),
+        path.join(userDataDir, "update-check-result.json"),
+      );
+    } finally {
+      if (prev === undefined) delete process.env.VM_UPDATE_TEST_RESULT;
+      else process.env.VM_UPDATE_TEST_RESULT = prev;
+    }
+  });
+  t("updateCheckResultPath: 设 VM_UPDATE_TEST_RESULT 时优先返回该路径", () => {
+    const prev = process.env.VM_UPDATE_TEST_RESULT;
+    try {
+      process.env.VM_UPDATE_TEST_RESULT = "C:\\vm_e2e\\update-check-result.json";
+      assert.strictEqual(updater.updateCheckResultPath(), "C:\\vm_e2e\\update-check-result.json");
+    } finally {
+      if (prev === undefined) delete process.env.VM_UPDATE_TEST_RESULT;
+      else process.env.VM_UPDATE_TEST_RESULT = prev;
     }
   });
 

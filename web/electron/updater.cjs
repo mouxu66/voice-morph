@@ -38,6 +38,18 @@ function skipFile() {
   return path.join(app.getPath("userData"), "update-skip.json");
 }
 
+/**
+ * 更新检查结果落盘路径。
+ * 默认写到 userData/update-check-result.json（供测试断言「收到更新提示」）。
+ * 测试钩子 VM_UPDATE_TEST_AUTO 场景下，允许用 VM_UPDATE_TEST_RESULT 环境变量
+ * 覆盖到一个脚本可控的路径（如 C:\vm_e2e），避免测试去猜 userData 真实位置。
+ * 设了该变量时不需要 electron app 实例，便于纯 Node 单测。
+ */
+function updateCheckResultPath() {
+  if (process.env.VM_UPDATE_TEST_RESULT) return String(process.env.VM_UPDATE_TEST_RESULT);
+  return path.join(app.getPath("userData"), "update-check-result.json");
+}
+
 /** 当前版本（取自 package.json 的 version 字段） */
 function currentVersion() {
   return app.getVersion();
@@ -241,7 +253,10 @@ function downloadUpdate(manifest, onProgress) {
     }
     let target;
     try {
-      target = new URL(url);
+      // 相对 url 基于清单地址（VM_UPDATE_URL）解析；绝对 url 忽略 base。
+      // 没配 VM_UPDATE_URL 时不传 base，避免 `new URL(absolute, "")` 抛错。
+      const base = manifestUrl();
+      target = base ? new URL(url, base) : new URL(url);
     } catch {
       resolve({ ok: false, file: "", reason: `无效下载地址：${url}` });
       return;
@@ -366,4 +381,5 @@ module.exports = {
   skipVersion,
   downloadedFile,
   updateDir,
+  updateCheckResultPath,
 };

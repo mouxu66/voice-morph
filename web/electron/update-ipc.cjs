@@ -72,7 +72,7 @@ function scheduleStartupUpdateCheck(win) {
           const result = { ...r, file: dl.file, auto: true, at: new Date().toISOString() };
           try {
             fs.writeFileSync(
-              path.join(app.getPath("userData"), "update-check-result.json"),
+              updater.updateCheckResultPath(),
               JSON.stringify(result, null, 2),
               "utf-8",
             );

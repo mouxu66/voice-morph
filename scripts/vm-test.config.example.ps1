@@ -1,24 +1,26 @@
-# vm-test.config.ps1 —— 复制本文件为 vm-test.config.ps1 后填写。
+﻿# vm-test.config.ps1 —— 复制本文件为 vm-test.config.ps1 后填写。
 # 由 scripts/test-update-e2e.ps1 通过 `. $PSScriptRoot\vm-test.config.ps1` 加载。
 # 本文件只作模板，已在 .gitignore 忽略 vm-test.config.ps1（不入库）。
 
 # ---- 虚拟机 ----
 $Hypervisor   = "vmware"      # vmware | virtualbox
-$VmxPath      = "C:\VM\Win10-Test\Win10-Test.vmx"  # vmware 需 vmx 路径；virtualbox 用 $VMName
-$VMName       = "Win10-Test"  # virtualbox 用
+# vmware 需 vmx 路径；务必与 `vmrun list` 显示的运行实例一致（迁移过虚拟机的，旧默认位置那份常是过期副本）。
+# 例：D:\Virtual Machines\Windows 10 x64\Windows 10 x64.vmx
+$VmxPath      = "D:\Virtual Machines\Windows 10 x64\Windows 10 x64.vmx"
+$VMName       = "Windows 10 x64"  # virtualbox 用
 $SnapshotName = "clean-no-app" # 干净快照：无 app、已装 VMware Tools、已开自动登录
-$GuestUser    = "tester"
-$GuestPass    = "P@ssw0rd"
+$GuestUser    = "jjjj"
+$GuestPass    = "填你虚拟机的密码"
 
 # ---- 网络 / 更新源 ----
 # 主机更新源用 python -m http.server：$UpdatePort 监听 web/release2
 $HostIP   = ""                # 留空=自动探测（VMware NAT 取 VMnet8 网关；否则取首个非回环 IPv4）
 $UpdatePort = 9000
 
-# ---- 版本 / 安装包（命名遵循 electron-builder：变声工坊 Setup x.x.x.exe，在 web/release2/）----
+# ---- 版本 / 安装包（命名遵循 electron-builder artifactName：VoiceMorph-Setup-x.x.x.exe，在 web/release2/）----
 $OldVersion = "0.2.1"         # 初始安装版本
 $NewVersion = "0.2.2"         # 期望更新到的版本
-$InstallerPrefix = "变声工坊 Setup"   # 文件名前缀（脚本拼成 "$Prefix $Ver.exe"）
+$InstallerPrefix = "VoiceMorph-Setup-"   # 文件名前缀（脚本拼成 "$Prefix$Ver.exe"，无空格）
 
 # ---- 证书 ----
 $ImportCert = $false          # 是否在 VM 内导入自签根证书（消除 SmartScreen）。false=接受「仍要运行」
