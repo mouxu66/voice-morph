@@ -207,9 +207,13 @@ try {
 }
 
 # ---------------- 主机侧 http.server（端口预检 + 退出清理，报错1 根因）----------------
-$OldInstaller = "web/release2/$InstallerPrefix$OldVersion.exe"
+# 所有主机侧路径一律以「本脚本所在目录的父目录（= 仓库根）」为基准，
+# 不依赖当前工作目录——否则从 web/release2 等子目录启动会把相对路径拼错。
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$Release2Dir = Join-Path $RepoRoot "web\release2"
+$OldInstaller = Join-Path $Release2Dir "$InstallerPrefix$OldVersion.exe"
 if (-not (Test-Path $OldInstaller)) {
-  Write-Error "找不到旧版本安装包：$OldInstaller（先确保 release2 下存在该文件，命名遵循 artifactName）。"
+  Write-Error "找不到旧版本安装包：$OldInstaller`n（先确保 $Release2Dir 下存在该文件，命名遵循 artifactName）"
   exit 1
 }
 
@@ -226,8 +230,10 @@ try {
     Start-Sleep -Seconds 1
   }
 
-  Write-Host "启动主机更新源：python -m http.server $UpdatePort --directory web/release2"
-  $httpJob = Start-Process -NoNewWindow -PassThru -FilePath python -ArgumentList @("-m", "http.server", "$UpdatePort", "--directory", "web/release2")
+  Write-Host "启动主机更新源：python -m http.server $UpdatePort --directory $Release2Dir"
+  # 路径若含空格，Start-Process -ArgumentList 不会自动加引号（同 vmrun 坑），手动加
+  $dirArg = if ($Release2Dir -match '\s') { '"' + $Release2Dir + '"' } else { $Release2Dir }
+  $httpJob = Start-Process -NoNewWindow -PassThru -FilePath python -ArgumentList @("-m", "http.server", "$UpdatePort", "--directory", $dirArg)
   Start-Sleep -Seconds 2
 
   # 0) VM 状态机 + 就绪
