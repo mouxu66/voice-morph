@@ -384,6 +384,7 @@ function backendPost(pathname, payload, cb, timeoutMs = 120000) {
       });
     },
   );
+  req.on("timeout", () => { try { req.destroy(new Error("request timeout")); } catch {} });
   req.on("error", (err) => cb({}, 0, String(err)));
   req.write(body);
   req.end();

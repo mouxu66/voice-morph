@@ -201,6 +201,17 @@ function manualWechatFromPet() {
 /** 桌宠快捷面板：输入文字 → 先 TTS 合成（指定音色，空则用当前选中）→ 再录进微信。 */
 function sendWechatTextFromPet(text, voiceId) {
   if (!getPetWin() || !text) return;
+  // 发前探活：连不上后端立刻报错，别闷头转圈被误判成「卡死」
+  // （历史上桌宠曾写死连 8011、而 8000 才是健康后端，导致请求永远挂起、前端一直转圈）
+  http.get(
+    { host: "127.0.0.1", port: BACKEND_PORT, path: "/api/health", timeout: 3000 },
+    (res) => { res.resume(); doSendTextToWechat(text, voiceId); },
+  ).on("error", () => petGuideFail("后端没连上（8000 端口未启动？）"))
+   .on("timeout", function () { try { this.destroy(); } catch {} petGuideFail("后端没连上（8000 探活超时）"); });
+}
+
+/** 探活通过后真正发起「合成并发送」。 */
+function doSendTextToWechat(text, voiceId) {
   showPetGuide({
     title: "微信语音",
     lines: [`合成中：「${text.slice(0, 12)}${text.length > 12 ? "…" : ""}」`],

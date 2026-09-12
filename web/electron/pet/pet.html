@@ -750,9 +750,13 @@ function doPreview() {
   window.pet.previewText(text, voiceId);
 }
 
-function doSendText() {
+async function doSendText() {
   const text = sayEl.value.trim();
   if (!window.pet) return;
+  // 发前探活：连不上后端立即提示，不闷头转圈被误判成卡死
+  let alive = false;
+  try { const r = await fetch("http://127.0.0.1:8000/api/health", { cache: "no-store" }); alive = r.ok; } catch {}
+  if (!alive) { setStatus("后端未连接，请先启动变声后端（8000）", "err"); return; }
   // 有试听产物就直接发它（试听→发送两步走），否则一步到位「合成并发送」
   if (lastPreview && window.pet.sendWav) {
     setStatus(`发送中… 自动发到微信，全程别动键鼠`, "ok");
