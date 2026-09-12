@@ -4,6 +4,7 @@
 // 全程浮在微信之上、鼠标点击穿透，不挡任何操作。
 const { BrowserWindow, screen, globalShortcut } = require("electron");
 const path = require("path");
+const fs = require("fs");
 const backend = require("./backend.cjs");
 const { backendPost } = backend;
 

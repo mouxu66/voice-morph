@@ -4,18 +4,25 @@
 检查入口**：跑不跑、跑哪些、环境变量设没设，全靠人记得。2026-09-11 的代码审查
 就撞上两次「文档写着全绿、实际已过期」（GBK 编码失败的用例、随机挂的队列用例）。
 
-本脚本把三个检查串起来，顺序按「快 → 慢」，失败即停并返回非零：
+本脚本把五个检查串起来，顺序按「快 → 慢」，失败即停并返回非零：
 
-    1. ruff        —— 静态扫描，专抓真 bug 类规则（F/E9：未定义名、未用变量、
+    1. requires    —— 静态检查 electron/*.cjs 里「用了 Node 内建模块标识符但没 require」。
+                      2026-09-12 事故：alt-hint.cjs 拆文件时漏 require("fs")，打包后
+                      主进程 require 阶段即崩，用户装了打不开。零依赖、约 0.1s。
+    2. electron    —— 用 electron 桩 require 全部 electron/*.cjs，require 阶段崩即 FAIL。
+                      requires 的上位替代：还能抓 require 了不存在的路径、
+                      顶层求值期访问 undefined 等。约 0.15s。
+    3. ruff        —— 静态扫描，专抓真 bug 类规则（F/E9：未定义名、未用变量、
                       f-string 缺占位符、语法错误）。实测抓到过 rvc_common 的
                       未定义 logger（生产代码 NameError）。
-    2. pytest      —— m2_server 全量（默认）或快速子集（--fast）。
-    3. tsc -b      —— web 前端类型检查（不产出 dist）。
+    4. pytest      —— m2_server 全量（默认）或快速子集（--fast）。
+    5. tsc -b      —— web 前端类型检查（不产出 dist）。
 
 用法：
 
     python tools/check.py                 # 全量（= 交付前 / CI 跑的那条）
-    python tools/check.py --fast          # 提交前（pre-commit）：ruff + 快速子集
+    python tools/check.py --fast          # 提交前（pre-commit）：requires + electron
+                                          #                       + ruff + 快速子集
     python tools/check.py --no-web        # 没有 Node 环境时
     python tools/check.py --only pytest   # 只跑某一项（逗号分隔）
     python tools/check.py --list          # 只看会跑什么，不执行
@@ -142,10 +149,48 @@ def _check_web() -> tuple[bool, str]:
     return _run("tsc", cmd + ["tsc", "-b", "--pretty", "false"], web)
 
 
+def _check_requires() -> tuple[bool, str]:
+    """静态检查 electron/*.cjs 里「用了内建模块标识符但没 require」。
+
+    2026-09-12 事故：alt-hint.cjs 从 main.cjs 拆出时漏了 require("fs") 却用 fs.existsSync，
+    开发模式没暴露、打包后主进程 require 阶段即崩（ReferenceError: fs is not defined），
+    用户装了 0.2.1/0.2.2 打不开。这类 bug 编译器不报，只在启动路径上炸 —— 必须机器拦。
+
+    零依赖、只读 13 个文件、约 0.1s，所以进 --fast（pre-commit）名单是划算的。
+    """
+    script = ROOT / "tools" / "check-require.cjs"
+    if not script.exists():
+        return False, "未找到 tools/check-require.cjs"
+    node = shutil.which("node")
+    if node is None:
+        return False, "未找到 node（需要 Node.js）"
+    return _run("requires", [node, str(script)], ROOT)
+
+
+def _check_electron_load() -> tuple[bool, str]:
+    """用 electron 桩 require 全部 electron/*.cjs，require 阶段崩即 FAIL。
+
+    与 requires 互补：静态扫描只能抓「用了内建模块标识符却没 require」，抓不到
+      · require 了不存在的路径（文件名拼错）
+      · 顶层求值期访问 undefined
+      · 模块顶层副作用崩溃
+    桩加载是**直接验证**（真跑一遍 require），比静态扫描更硬。实测约 0.15s。
+    """
+    script = ROOT / "tools" / "test-electron-load.cjs"
+    if not script.exists():
+        return False, "未找到 tools/test-electron-load.cjs"
+    node = shutil.which("node")
+    if node is None:
+        return False, "未找到 node（需要 Node.js）"
+    return _run("electron-load", [node, str(script)], ROOT)
+
+
 STEPS = {
     "ruff": lambda fast: _check_ruff(),
     "pytest": lambda fast: _check_pytest(fast),
     "web": lambda fast: _check_web(),
+    "requires": lambda fast: _check_requires(),
+    "electron": lambda fast: _check_electron_load(),
 }
 
 
@@ -154,12 +199,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fast", action="store_true",
                     help="快速模式：ruff + 快速测试子集，跳过前端类型检查")
     ap.add_argument("--no-web", action="store_true", help="跳过前端 tsc 检查")
-    ap.add_argument("--only", default="", help="只跑指定项（逗号分隔：ruff,pytest,web）")
+    ap.add_argument("--only", default="",
+                    help="只跑指定项（逗号分隔：requires,electron,ruff,pytest,web）")
     ap.add_argument("--list", action="store_true", help="只列出将要执行的命令")
     args = ap.parse_args(argv)
     _console()
 
-    names = [n.strip() for n in args.only.split(",") if n.strip()] or ["ruff", "pytest", "web"]
+    # 顺序按「快 → 慢」：requires/electron/ruff 都是毫秒级静态或直接加载检查，
+    # 放前面先拦低级错误；pytest 居中；web（tsc）最慢，只在非 --fast 时跑。
+    # requires + electron 都进 fast：合计约 0.25s，专治「拆文件漏 require」
+    # 这类启动即崩、编译器又不报的 bug（2026-09-12 事故）。
+    names = [n.strip() for n in args.only.split(",") if n.strip()] or [
+        "requires", "electron", "ruff", "pytest", "web"
+    ]
     if args.fast:
         names = [n for n in names if n != "web"]
     if args.no_web:
