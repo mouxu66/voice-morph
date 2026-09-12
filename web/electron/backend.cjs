@@ -245,25 +245,63 @@ function resolveDataRoot(root) {
 
 /**
  * 包外资源注入（安装版核心）：后端代码随包走（resources/backend），但模型权重 / 专用
- * 解释器 / TTS 模型目录都在源码根 D:\变声（4.9G，打包不带）。这里把 VM_* 逐个指过去，
- * 让包内后端仍能读到包外模型。分发机没有 D:\变声 就不注入，config.py 回落默认值 →
- * 缺模型的子能力（TTS 等）明确报错，而不是静默错乱。
- * 与 config.py 的 VM_ 变量一一对应（VM_QWEN_MODEL_DIR/VM_QWEN_TOKENIZER_DIR 跟随
- * VM_TTS_MODELS_DIR 默认推导，无需单独注入；VM_RVC_ROOT 默认 D:/RVC 机器级固定）。
+ * 解释器 / TTS 模型目录都在包外（4.9G，打包不带）。这里把 VM_* 逐个指过去，让包内
+ * 后端仍能读到包外模型。
+ *
+ * 三级优先级（2026-09-12 首启引导新增第 ① 级）：
+ *   ① userData/config.json —— 用户在界面上显式选定的目录（最明确，干净机器靠它）
+ *   ② D:\变声 自动探测     —— 本机开发态历史行为，保持现状
+ *   ③ 都不满足             —— 不注入，config.py 回落默认值 → 缺模型的子能力明确报错
+ *
+ * 与 config.py 的 VM_ 变量对应关系：
+ *   - VM_QWEN_MODEL_DIR / VM_QWEN_TOKENIZER_DIR 跟随 VM_TTS_MODELS_DIR 推导，不单独注入
+ *   - VM_PROJECT_ROOT 仅在 venv312 推导出来时注入（qwen3_tts.py 用它拼 worker 脚本路径）
+ *   - VM_RVC_ROOT 第 ① 级可注入（干净机器没有 D:/RVC 时用户自行指定）；②级不注入，
+ *     因为 RVC 整合包位置因机而异，硬指 D:/RVC 等于没配。config.py 默认仍是 D:/RVC。
  */
 function externalResourceEnv() {
-  if (!fs.existsSync(path.join(LEGACY_ROOT, "m2_server", "server.py"))) return {};
   const env = {};
-  if (fs.existsSync(path.join(LEGACY_ROOT, "tts_models"))) {
-    env.VM_TTS_MODELS_DIR = path.join(LEGACY_ROOT, "tts_models");
+
+  // ---- ① 用户配置（config.json）优先 ----
+  let cfgResult = null;
+  try {
+    const appConfig = require("./app-config.cjs");
+    const modelSetup = require("./model-setup.cjs");
+    cfgResult = modelSetup.resolveConfig(appConfig.load());
+    // 只在通过结构校验时注入：配错路径不注入比注入坏路径好 —— 后端会回落默认值并
+    // 在 /diagnose 里明确报"未配置"，比"配了个假路径"更好排查。
+    if (cfgResult.ttsModelsDir && modelSetup.checkTtsModels(cfgResult.ttsModelsDir).ok) {
+      env.VM_TTS_MODELS_DIR = cfgResult.ttsModelsDir;
+    }
+    if (cfgResult.ttsVenvPy && modelSetup.checkTtsVenv(cfgResult.ttsVenvPy).ok) {
+      env.VM_TTS_VENV_PY = cfgResult.ttsVenvPy;
+    }
+    if (env.VM_TTS_VENV_PY && cfgResult.projectRoot) {
+      env.VM_PROJECT_ROOT = cfgResult.projectRoot;
+    }
+    if (cfgResult.rvcRoot && modelSetup.checkRvcRoot(cfgResult.rvcRoot).ok) {
+      env.VM_RVC_ROOT = cfgResult.rvcRoot;
+    }
+  } catch {
+    // 配置层任何异常都不得影响后端拉起（首启引导本身是"救火"链路）
   }
-  if (fs.existsSync(path.join(LEGACY_ROOT, "tts_trial", "venv312", "Scripts", "python.exe"))) {
-    env.VM_TTS_VENV_PY = path.join(LEGACY_ROOT, "tts_trial", "venv312", "Scripts", "python.exe");
+
+  // ---- ② D:\变声 自动探测（仅补 ① 未覆盖的项）----
+  const legacyReady = fs.existsSync(path.join(LEGACY_ROOT, "m2_server", "server.py"));
+  if (legacyReady) {
+    if (!env.VM_TTS_MODELS_DIR && fs.existsSync(path.join(LEGACY_ROOT, "tts_models"))) {
+      env.VM_TTS_MODELS_DIR = path.join(LEGACY_ROOT, "tts_models");
+    }
+    const legacyVenv = path.join(LEGACY_ROOT, "tts_trial", "venv312", "Scripts", "python.exe");
+    if (!env.VM_TTS_VENV_PY && fs.existsSync(legacyVenv)) {
+      env.VM_TTS_VENV_PY = legacyVenv;
+    }
+    if (!env.VM_PROJECT_ROOT && fs.existsSync(path.join(LEGACY_ROOT, "tts_trial", "venv312"))) {
+      // qwen3_tts：venv312 解释器 + worker 脚本 + tts_models 解析根都从该根推导
+      env.VM_PROJECT_ROOT = LEGACY_ROOT;
+    }
   }
-  if (fs.existsSync(path.join(LEGACY_ROOT, "tts_trial", "venv312"))) {
-    // qwen3_tts：venv312 解释器 + worker 脚本 + tts_models 解析根都从该根推导
-    env.VM_PROJECT_ROOT = LEGACY_ROOT;
-  }
+
   return env;
 }
 
@@ -383,6 +421,53 @@ function stopBackend() {
   try { fs.unlinkSync(PID_FILE); } catch {}
 }
 
+/**
+ * 重启后端：用户改完模型配置后必须重来一次，`VM_*` 才生效
+ * （环境变量只在 spawn 时读取，后端进程内无法热改）。
+ *
+ * 实现要点：
+ * - 先 stopBackend 并**等端口真正释放**，否则 startBackend 会走"端口被占"分支，
+ *   把上一个（配置陈旧的）进程当成外部进程复用 → 用户改完配置却毫无变化。
+ * - 等不到释放说明有非本应用拉起的后端在跑（用户手动起的）：此时如实报告
+ *   reusedExternal，让 UI 提示"请手动重启该进程"，而不是假装成功。
+ *
+ * @returns {Promise<{running: boolean, reason?: string, reusedExternal?: boolean}>}
+ */
+async function restartBackend(root) {
+  stopBackend();
+  let released = true;
+  for (let i = 0; i < 20; i++) {
+    if (!(await portInUse(BACKEND_PORT))) { released = true; break; }
+    released = false;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  if (!released) {
+    // 端口被别的东西占着（非本应用）：不能谎报成功
+    const pids = getBackendPidOnPort(BACKEND_PORT);
+    const ours = pids.filter((p) => isOurBackend(p));
+    if (ours.length) {
+      ours.forEach(killProcessTree);
+      await new Promise((r) => setTimeout(r, 1500));
+    } else {
+      return {
+        running: await backendHealthy(),
+        reusedExternal: true,
+        reason: "端口 8000 被其它进程占用，未能重启。请关闭占用该端口的程序后重试。",
+      };
+    }
+  }
+  const info = await startBackend(root);
+  if (info && info.attempted) {
+    const running = await waitForBackend(60000);
+    return { running, reason: running ? "" : (info.reason || "后端重启超时（60s）") };
+  }
+  return {
+    running: false,
+    reusedExternal: Boolean(info && info.reusedExternal),
+    reason: (info && info.reason) || "未能重启后端",
+  };
+}
+
 // ---------------- 渲染层控制后端（环境体检面板的「启动/停止」按钮） ----------------
 // 前端通过 preload 暴露的 window.electron 调用；非桌面端（网页/Vite/局域网）无此桥，
 // 前端会降级为「显示启动命令 + 复制」。
@@ -412,6 +497,12 @@ function registerBackendIpc() {
   ipcMain.handle("backend:stop", async () => {
     stopBackend();
     return { ok: true };
+  });
+
+  // 重启（改完模型配置后用）：内部等端口释放再拉起，避免 startBackend 误判"外部占用"
+  ipcMain.handle("backend:restart", async () => {
+    const r = await restartBackend(projectRoot);
+    return { ...r, python: null };
   });
 
   ipcMain.handle("backend:status", async () => ({
@@ -494,6 +585,7 @@ module.exports = {
   portInUse,
   startBackend,
   stopBackend,
+  restartBackend,
   registerBackendIpc,
   reportBackendTrouble,
   backendPost,
