@@ -14,7 +14,7 @@ AI 无法 GUI 操控虚拟机，脚本只走命令行（`vmrun` / `VBoxManage` /
 |---|---|
 | 虚拟机软件 | VMware Workstation/Player（默认）；VirtualBox 走 `-Hypervisor virtualbox` 分支（best-effort） |
 | 干净快照 | 已装 VMware Tools / Guest Additions、**已开自动登录**、无 app、无 `D:\变声`、无 `D:\RVC` |
-| 两个安装包 | `web/release2/` 里同时存在 `变声工坊 Setup 0.2.1.exe`（旧）与 `变声工坊 Setup 0.2.2.exe`（新）+ 对应 `latest.json` |
+| 两个安装包 | `web/release2/` 里同时存在 `VoiceMorph-Setup-0.2.1.exe`（旧）与 `VoiceMorph-Setup-0.2.2.exe`（新）+ 对应 `latest.json` |
 | 自签证书 | 可选。不导入则安装时弹 SmartScreen「仍要运行」，测试判 PASS 不卡这步 |
 | 主机 | PowerShell 7、Node/npm、`python`（起 `http.server`）、`vmrun` 在 PATH |
 
@@ -77,6 +77,7 @@ $store.Close()
   VM_UPDATE_URL = http://<主机IP>:9000/latest.json
   ```
 - 脚本在拉起 app 时自动注入该变量，无需手动设。
+- **`latest.json` 的 `url` 字段现在是相对文件名（`VoiceMorph-Setup-0.2.2.exe`，ASCII、无中文编码）**，由 `updater.cjs` 在下载时基于 `VM_UPDATE_URL`（即 latest.json 自身地址）解析为绝对地址。所以 latest.json 不绑定具体主机 IP，换机器/换端口无需改它。生成方式见第 8 步 Tip。
 
 ---
 
@@ -84,7 +85,7 @@ $store.Close()
 
 | 文件 | 运行位置 | 功能 |
 |---|---|---|
-| `scripts/test-update-e2e.ps1` | **主机** | 回滚快照 → 拷 0.2.1 静默安装 → 拉起 app（自动更新钩子）→ 轮询「下载+静默安装」→ 确认 0.2.2 生效 → 读日志断言不含 `D:\变声` → 截图/拷日志回主机 → PASS/FAIL 汇总 |
+| `scripts/test-update-e2e.ps1` | **主机** | 端口预检/清理 → 起主机更新源 → 回滚快照（断言 `clean-no-app` 存在）→ 拷 0.2.1 静默安装 → 拉起 app（自动更新钩子，结果写到 `C:\vm_e2e`）→ 轮询「下载+静默安装」→ 确认 0.2.2 生效 → 读 stdout/stderr/Chromium 三类日志断言「生产模式已加载 且 不含 `D:\变声`」→ 截图/拷日志回主机 → PASS/FAIL 汇总 |
 | `scripts/check-update-source.ps1` | **虚拟机内**（或读同一份配置） | 验证 VM 能访问主机更新源（HTTP 200 + 清单字段齐全） |
 | `scripts/build-and-publish.ps1` | **主机** | `npm run build` → `npm version patch` → `npm run electron:build`（自签签名）→ `make-update-manifest.cjs` → 打印待上传清单 |
 | `scripts/vm-test.config.example.ps1` | — | 配置模板，复制为 `vm-test.config.ps1` 后填写 |
@@ -100,9 +101,14 @@ $store.Close()
 powershell -ExecutionPolicy Bypass -File scripts/build-and-publish.ps1 `
   -BaseUrl https://example.com/voicemorph/download -NotesFile docs\whats-new\0.3.0.md
 
+# ①' 仅重新生成 latest.json（不改版本号、不重打包）时可直接跑：
+#    node web/electron/make-update-manifest.cjs --dir release2
+#    —— 产出相对 url（如 VoiceMorph-Setup-0.2.2.exe），host 无关。
+
 # ② 主机：复制配置模板并填写（VM 路径、账号、版本号、HostIP 等）
 copy scripts\vm-test.config.example.ps1 scripts\vm-test.config.ps1
 #   —— 用编辑器填 vm-test.config.ps1 ——
+#   重点：$VmxPath 必须指向 `vmrun list` 里实际运行的那个 vmx（见第 11 节）
 
 # ③ 虚拟机内（可选排错）：确认能访问主机更新源
 powershell -ExecutionPolicy Bypass -File scripts\check-update-source.ps1 -ConfigFile scripts\vm-test.config.ps1
@@ -115,10 +121,11 @@ powershell -ExecutionPolicy Bypass -File scripts\test-update-e2e.ps1
 
 ```
 [PASS] VM 回滚至干净快照并启动
-[PASS] 0.2.1 静默安装成功  C:\Users\tester\AppData\Local\Programs\voice-morph-desktop\voice-morph-desktop.exe
+[PASS] 0.2.1 静默安装成功  C:\Users\jjjj\AppData\Local\Programs\voice-morph-desktop\voice-morph-desktop.exe
+[PASS] 更新源可达（latest.json 合法） PASS:0.2.2
 [PASS] 更新检测→下载→静默安装→退出 已完成
 [PASS] 版本生效           磁盘 exe 版本=0.2.2，期望 0.2.2
-[PASS] 日志路径回归判据（不含 D:\变声） OK
+[PASS] 日志路径回归判据（生产模式+不含 D:\变声） OK
 [PASS] 截图已保存          D:\变声\scripts\screenshot.png
 [PASS] 日志与结果已拷回主机 D:\变声\scripts
 RESULT: PASS
@@ -128,8 +135,8 @@ RESULT: PASS
 
 ## 9. 结果判读
 
-- **版本生效**：安装目录 exe 的 `FileVersion` 应为 `$NewVersion`（0.2.2）；若仍是 0.2.1，说明自动安装未触发或 NSIS 静默重装落到了别的目录。
-- **日志回归判据**：`app.log` 里 `[frontend] 生产模式`、`[backend] 生产模式后端根` 两行**不得出现 `D:\变声`**。出现即 FAIL（说明安装版又回退去读源码根）。
+- **版本生效**：安装目录 exe 的 `FileVersion` 应为 `$NewVersion`（0.2.2）；若仍是 0.2.1，说明自动安装未触发，或 NSIS 静默重装时 electron 残留进程占用文件导致覆盖失败（脚本已在重读版本前 `taskkill` 残留，仍失败则手动确认 VM 内无该 exe 进程）。
+- **日志回归判据**：脚本抓三类日志——`app.stdout.log`（主进程 `console.log`）、`app.stderr.log`、`app.chromium.log`（Chromium `--enable-logging=file`），拼成一份后检查 `[frontend] 生产模式`、`[backend] 生产模式后端根` 两行**已出现**且**都不含 `D:\变声`**。只查「不含 D:\变声」而漏查「已加载生产模式」会假 PASS（空日志也过），脚本已同时断言两者。
 - 中间产物（日志、结果 JSON、截图）都落在 `scripts/`（`$WorkDir`）。
 
 ---
@@ -139,6 +146,27 @@ RESULT: PASS
 1. **localhost 不可用**：VM 内 `VM_UPDATE_URL` 必须填主机 IP（脚本已处理）。
 2. **venv 硬编码 `D:\变声`**：干净 VM 无此路径 → 包外模型/解释器不注入，核心功能报错。这正是回归守卫生效场景，测试只验「更新链 + 路径门控」，符合预期。
 3. **SmartScreen**：初始 0.2.1 拷贝可能带 MOTW，脚本已在 VM 内 `Unblock-File`；更新包由 app 经 http 写入 `userData/updates`，**不带 MOTW**，静默 `/S` 不会被拦。若初始安装卡在 SmartScreen 向导，开 `$ImportCert` 或在快照里导入根证书。
-4. **自动安装依赖一个测试钩子**：`VM_UPDATE_TEST_AUTO` 环境变量（默认关闭）。它让 app 在启动静默检查命中更新后**自动下载并静默安装**并写出 `userData/update-check-result.json`。这是 VM 无人值守跑通「下载→安装」的唯一干净做法，正式发布不带此变量、行为不变。
+4. **自动安装依赖一个测试钩子**：`VM_UPDATE_TEST_AUTO` 环境变量（默认关闭）。它让 app 在启动静默检查命中更新后**自动下载并静默安装**并写出结果文件。结果文件路径由 `VM_UPDATE_TEST_RESULT` 环境变量决定（测试时脚本注入为 `C:\vm_e2e\update-check-result.json`，与脚本读取路径对齐）；未设时回退到 `userData/update-check-result.json`。这是 VM 无人值守跑通「下载→安装」的唯一干净做法，正式发布不带此变量、行为不变。
 5. **截图非强断言**：VMware 无原生 CLI 截图，用 guest 侧 .NET `CopyFromScreen`；需交互桌面已解锁（自动登录）。失败不阻断 PASS/FAIL。
 6. **安装目录发现**：脚本查卸载注册表 `DisplayIcon` 反查 exe 路径；若你的 `productName` 改了导致 DisplayName 不匹配，需调整 `test-update-e2e.ps1` 里的匹配正则（`变声|voice-morph`）。
+
+---
+
+## 11. 配置与运行陷阱（务必先看）
+
+1. **`$VmxPath` 必须匹配 `vmrun list` 里实际运行的实例**。虚拟机若迁移过（默认位置 `C:\Users\...\Documents\Virtual Machines` 迁移到 `D:\Virtual Machines` 等），旧路径那份常是过期副本，对它操作会被当成另一个 VM、快照/运行态对不上。确认方法：
+   ```powershell
+   & "C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe" list
+   # 输出里 Total running VMs: 1 下面的那行就是真在跑的 vmx，把它填进 $VmxPath
+   ```
+   脚本启动时也会 `vmrun listSnapshots $VmxPath` 并断言 `clean-no-app` 在列表里，不在就直接报错退出，避免跑到错误副本。
+
+2. **端口 9000 被占用（`The file is already in use`）**：上一次异常退出的 `python -m http.server` 可能还占着端口。脚本在启动前会 `Get-NetTCPConnection -LocalPort 9000` 查占用，**自动 `Stop-Process` 杀掉占用进程并打日志**；若仍报占用，手动查：
+   ```powershell
+   Get-NetTCPConnection -LocalPort 9000 | Select-Object OwningProcess
+   # 再用任务管理器/ Stop-Process 结束对应 PID
+   ```
+
+3. **所有 `scripts/*.ps1` 必须是 UTF-8 带 BOM**。PowerShell 5.1 遇到无 BOM 的 UTF-8 中文会按系统代码页（GBK）解码，中文注释/字符串全乱码甚至语法错；PowerShell 7 虽能容错，但同一套脚本可能在两台机器表现不一致。**改名/重存任何 ps1 后务必确认首字节是 `EF BB BF`**（用 VS Code 右下角「UTF-8 with BOM」或 `python -c "open(f,'rb').read(3)"` 校验）。本仓库四个 ps1 已统一为 BOM。
+
+4. **安装包/URL 的中文编码坑（已规避）**：早期安装包名是「变声工坊 Setup 0.2.x.exe」，导致 `latest.json` 的 `url` 被 `encodeURIComponent` 成 `%E5%8F%98...`，依赖 Python `http.server` 在 Windows 上正确 `unquote` 中文路径才下得动，脆弱。现已把 `build.nsis.artifactName` 改为 `VoiceMorph-Setup-${version}.exe`（纯 ASCII），`latest.json` 的 `url` 用相对文件名（host 无关），彻底消除这一类风险。若以后要恢复中文名，务必先验证 VM 内 `updater.cjs` 能正常下载（见 `check-update-source.ps1` + 手动下载试一次）。
