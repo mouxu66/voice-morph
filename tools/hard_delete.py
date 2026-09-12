@@ -73,16 +73,26 @@ def hard_delete(path: str | Path, dry_run: bool = False) -> int:
 
 
 def main() -> int:
-    args = [a for a in sys.argv[1:] if a != "--dry-run"]
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
     dry = "--dry-run" in sys.argv[1:]
-    if not args:
+    if not args or "--help" in sys.argv[1:] or "-h" in sys.argv[1:]:
         print(__doc__)
+        return 0 if ({"--help", "-h"} & set(sys.argv[1:])) else 1
+    # 取第一个真实存在的路径所在盘符统计可用空间（args[0] 可能是不存在的路径，
+    # 直接 Path(...).anchor 对相对路径会得到空串 → disk_usage 抛 FileNotFoundError）
+    anchor = ""
+    for a in args:
+        anchor = Path(a).drive
+        if anchor:
+            break
+    if not anchor:
+        print(f"无法确定盘符（请用绝对路径，如 D:/变声/outputs/x.wav）：{args}", file=sys.stderr)
         return 1
-    before = shutil.disk_usage(str(Path(args[0]).anchor))[2]
+    before = shutil.disk_usage(anchor + os.sep)[2]
     total = 0
     for a in args:
         total += hard_delete(a, dry)
-    after = shutil.disk_usage(str(Path(args[0]).anchor))[2]
+    after = shutil.disk_usage(anchor + os.sep)[2]
     print(f"\n合计 {total / 1024 ** 3:.2f}G；磁盘可用 "
           f"{before / 1024 ** 3:.2f}G → {after / 1024 ** 3:.2f}G "
           f"(+{(after - before) / 1024 ** 3:.2f}G)")
