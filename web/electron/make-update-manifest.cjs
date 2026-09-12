@@ -39,8 +39,13 @@ if (!fs.existsSync(dir)) {
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8"));
 const version = arg("version", pkg.version);
 
-// 找 NSIS 安装包（排除 latest.json 与其它中间产物）
-const exe = fs.readdirSync(dir).find((f) => /\.exe$/i.test(f) && !/uninstall/i.test(f));
+// 找 NSIS 安装包（排除 latest.json 与其它中间产物）。
+// 坑：readdir 按文件名排序，0.2.0 < 0.2.1 会选中旧包——必须按 mtime 取最新
+const exes = fs.readdirSync(dir)
+  .filter((f) => /\.exe$/i.test(f) && !/uninstall/i.test(f))
+  .map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+  .sort((a, b) => b.t - a.t);
+const exe = exes.length ? exes[0].f : null;
 if (!exe) {
   console.error(`在 ${dir} 里没找到安装包 .exe`);
   process.exit(1);
