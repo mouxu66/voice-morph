@@ -404,12 +404,72 @@ try {
   Remove-Item $tmp -Force
   Add-Result ($srcLine -like "PASS:*") "更新源可达（latest.json 合法）" $srcLine
 
+  # 2.5) 清掉 NSIS 安装器残留（installer/elevate）再拉起 app。
+  #      /S 安装不 -Wait（NSIS stub 会提前返回），所以这里必须在拉起前显式等它退干净，
+  #      否则安装目录里的 exe 可能仍被锁 → app 起来即崩、Chromium 日志 0 字节。
+  #      实测证据见 .workbuddy/memory/auto-update.md 第九节（install-diag.json
+  #      procsStillRunning=["installer"]）。这是纯防御，不改链路逻辑。
+  $clearInstaller = @'
+$names = @('installer', 'elevate', 'Au_')
+$deadline = (Get-Date).AddSeconds(45)
+while ((Get-Date) -lt $deadline) {
+  $alive = @()
+  foreach ($n in $names) {
+    $alive += @(Get-Process -Name $n -ErrorAction SilentlyContinue |
+      Where-Object { -not $_.HasExited } | ForEach-Object { $_.ProcessName })
+  }
+  if ($alive.Count -eq 0) { break }
+  Start-Sleep -Seconds 2
+}
+# 还活着就强杀（elevate 是 UAC 提权代理，杀掉不影响已完成的安装）
+$killed = @()
+foreach ($n in $names) {
+  $ps = @(Get-Process -Name $n -ErrorAction SilentlyContinue)
+  if ($ps.Count -gt 0) {
+    $killed += $ps | ForEach-Object { $_.ProcessName }
+    $ps | Stop-Process -Force -ErrorAction SilentlyContinue
+  }
+}
+[pscustomobject]@{
+  killed = @($killed)
+  at     = (Get-Date).ToString('o')
+} | ConvertTo-Json -Depth 3 | Set-Content C:\vm_e2e\clear-installer.json
+'@
+  Invoke-GuestCommand -Script $clearInstaller -TimeoutSec 90 | Out-Null
+  $tmp = Join-Path $WorkDir "clear-installer.json"
+  try { Copy-FromGuest "$GuestWork\clear-installer.json" $tmp } catch { }
+  if (Test-Path $tmp) {
+    try {
+      $ci = Get-Content $tmp -Raw | ConvertFrom-Json
+      if (@($ci.killed).Count -gt 0) {
+        Write-Host "  已清理安装器残留：[$(($ci.killed) -join ',')]"
+      }
+    } catch { }
+    Remove-Item $tmp -Force
+  }
+
   # 3) 拉起 app（自动更新钩子 + 结果路径 + 日志重定向落盘）
+  #    注意：环境变量靠「guest 内 PowerShell 进程设 $env: + Start-Process 子进程继承」注入，
+  #    vmrun 本身没有传 env 的参数（这是唯一可行的注入方式）。
+  #    日志路径全部落在 C:\vm_e2e\，由 GuestLogPattern 采集。
   $launchScript = @'
 $exe = (Get-Content C:\vm_e2e\install-result.json | ConvertFrom-Json).exe
 $env:VM_UPDATE_URL = "http://__HOSTIP__:__PORT__/latest.json"
 $env:VM_UPDATE_TEST_AUTO = "1"
 $env:VM_UPDATE_TEST_RESULT = "C:\vm_e2e\update-check-result.json"
+# 记录即将用的启动命令与 env，供失败时定性（不改行为）
+[pscustomobject]@{
+  exe     = $exe
+  exeExists = (Test-Path $exe)
+  args    = @("--enable-logging=file", "--log-file=C:\vm_e2e\app.chromium.log")
+  env     = [pscustomobject]@{
+    VM_UPDATE_URL        = $env:VM_UPDATE_URL
+    VM_UPDATE_TEST_AUTO  = $env:VM_UPDATE_TEST_AUTO
+    VM_UPDATE_TEST_RESULT = $env:VM_UPDATE_TEST_RESULT
+  }
+  interactive = [Environment]::UserInteractive
+  sessionId   = (Get-Process -Id $PID).SessionId
+} | ConvertTo-Json -Depth 4 | Set-Content C:\vm_e2e\launch-params.json
 Start-Process -FilePath $exe -ArgumentList "--enable-logging=file","--log-file=C:\vm_e2e\app.chromium.log" `
   -RedirectStandardOutput "C:\vm_e2e\app.stdout.log" -RedirectStandardError "C:\vm_e2e\app.stderr.log"
 '@ -replace '__HOSTIP__', $ResolvedHostIp -replace '__PORT__', "$UpdatePort"
@@ -417,19 +477,57 @@ Start-Process -FilePath $exe -ArgumentList "--enable-logging=file","--log-file=C
   Start-Sleep -Seconds $AppStartWaitSec
 
   # 4) 轮询：更新检测/下载/静默安装是否完成（结果文件写出 + app 进程退出）
+  #    诊断增强（纯观测，不改判定逻辑）：
+  #      - 同时统计三个可能的进程名（安装后的 exe 名来自 productName「变声工坊」，
+  #        但也可能是 voice-morph-desktop / electron），避免只查一个名字而误判 running=0
+  #      - 每轮把进程快照 + stderr 累积写成 app-running-<n>.json 时间序列，
+  #        这样「app 从未启动」「起来又崩」「一直在跑」三种情况可区分
   $done = $false
   $deadline = (Get-Date).AddSeconds($InstallTimeoutSec)
+  $pollNo = 0
   while ((Get-Date) -lt $deadline) {
+    $pollNo += 1
     $poll = @'
 $exename = (Get-Content C:\vm_e2e\install-result.json | ConvertFrom-Json).exe
 $name = [System.IO.Path]::GetFileNameWithoutExtension($exename)
-$running = @(Get-Process -Name $name -ErrorAction SilentlyContinue).Count
-[pscustomobject]@{ running = $running } | ConvertTo-Json | Set-Content C:\vm_e2e\app-running.json
-'@
+# 三个候选进程名：主 exe 名 + 打包目录名 + 通用 electron
+$candNames = @($name, 'voice-morph-desktop', 'electron') | Select-Object -Unique
+$counts = [ordered]@{}
+foreach ($n in $candNames) {
+  $counts[$n] = @(Get-Process -Name $n -ErrorAction SilentlyContinue).Count
+}
+$running = $counts[$name]
+# stderr 内容（Electron 崩溃时这里会有退出原因）
+$stderr = ""
+if (Test-Path C:\vm_e2e\app.stderr.log) {
+  try { $stderr = (Get-Content C:\vm_e2e\app.stderr.log -Raw -ErrorAction SilentlyContinue) } catch { }
+  if ($null -eq $stderr) { $stderr = "" }
+}
+# 各类日志大小，判断 Chromium 是否真的初始化过
+$sizes = [ordered]@{}
+foreach ($f in @('app.chromium.log', 'app.stdout.log', 'app.stderr.log')) {
+  $p = "C:\vm_e2e\$f"
+  $sizes[$f] = if (Test-Path $p) { (Get-Item $p).Length } else { -1 }
+}
+$hasResult = Test-Path C:\vm_e2e\update-check-result.json
+$snap = [ordered]@{
+  n        = __N__
+  at       = (Get-Date).ToString('o')
+  exe      = $exename
+  counts   = $counts
+  running  = $running
+  hasResult = $hasResult
+  sizes    = $sizes
+  stderr   = $stderr
+}
+$snap | ConvertTo-Json -Depth 5 | Set-Content C:\vm_e2e\app-running.json
+$snap | ConvertTo-Json -Depth 5 | Set-Content ("C:\vm_e2e\app-running-" + __N__ + ".json")
+'@ -replace '__N__', "$pollNo"
     Invoke-GuestCommand -Script $poll -TimeoutSec 30 | Out-Null
     $tmp = Join-Path $WorkDir "app-running.json"
     Copy-FromGuest "$GuestWork\app-running.json" $tmp
-    $running = (Get-Content $tmp -Raw | ConvertFrom-Json).running
+    $snapObj = Get-Content $tmp -Raw | ConvertFrom-Json
+    $running = $snapObj.running
     Remove-Item $tmp -Force
     # 结果文件已写出（VM_UPDATE_TEST_RESULT 指向 C:\vm_e2e）= 检测到更新并触发自动安装
     $resTmp = Join-Path $WorkDir "update-check-result.json"
@@ -438,8 +536,32 @@ $running = @(Get-Process -Name $name -ErrorAction SilentlyContinue).Count
     if ($got -and $running -eq 0) { $done = $true; break }
     Start-Sleep -Seconds $PollIntervalSec
   }
+  # 超时时把最后一轮快照作为证据打出来（不只看「超时」三个字）
   if (-not $done) {
-    Add-Result $false "更新链路在超时内未完成（自动下载/静默安装/退出）"
+    $evi = ""
+    $lastTmp = Join-Path $WorkDir "app-running.json"
+    try { Copy-FromGuest "$GuestWork\app-running.json" $lastTmp } catch { }
+    if (Test-Path $lastTmp) {
+      try {
+        $s = Get-Content $lastTmp -Raw | ConvertFrom-Json
+        $sz = ($s.sizes.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)B" }) -join " "
+        $cnt = ($s.counts.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " "
+        $errTxt = if ($s.stderr) { ($s.stderr -replace "\r?\n", " | ") } else { "(空)" }
+        $evi = "轮询 $($s.n) 次；进程[$cnt]；日志[$sz]；结果文件=$($s.hasResult)；stderr=$errTxt"
+      } catch { }
+      Remove-Item $lastTmp -Force
+    }
+    # 附带 launch-params（会话/交互性）与 clear-installer 证据
+    $lpTmp = Join-Path $WorkDir "launch-params.json"
+    try { Copy-FromGuest "$GuestWork\launch-params.json" $lpTmp } catch { }
+    if (Test-Path $lpTmp) {
+      try {
+        $lp = Get-Content $lpTmp -Raw | ConvertFrom-Json
+        $evi += "；UserInteractive=$($lp.interactive) sessionId=$($lp.sessionId) exeExists=$($lp.exeExists)"
+      } catch { }
+      Remove-Item $lpTmp -Force
+    }
+    Add-Result $false "更新链路在超时内未完成（自动下载/静默安装/退出）" $evi
   } else {
     Add-Result $true "更新检测→下载→静默安装→退出 已完成"
   }
