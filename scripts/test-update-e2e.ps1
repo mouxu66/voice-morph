@@ -33,6 +33,10 @@ if (-not $VmxPath -or -not (Test-Path $VmxPath)) {
 
 $GuestWork = "C:\vm_e2e"
 $GuestLogPattern = @("$GuestWork\app.stdout.log", "$GuestWork\app.stderr.log", "$GuestWork\app.chromium.log")
+# 旧版 vm-test.config.ps1 没有这个变量：补默认值，避免静默走 schtasks 分支
+if (-not (Get-Variable -Name UseSchtasksFallback -Scope Script -ErrorAction SilentlyContinue)) {
+  $UseSchtasksFallback = $false
+}
 $Pass = $true
 $Summary = [System.Collections.Generic.List[string]]::new()
 
@@ -40,6 +44,18 @@ function Add-Result([bool]$ok, [string]$label, [string]$detail = "") {
   if (-not $ok) { $script:Pass = $false }
   $mark = if ($ok) { "PASS" } else { "FAIL" }
   $script:Summary.Add("[$mark] $label" + $(if ($detail) { " —— $detail" } else { "" }))
+}
+
+# 运行期诊断日志（追加写 $WorkDir\run-diag.log）。
+# 用途：Copy-FromGuest 这类「尽力而为」的拷贝原先用 catch{} 空吞异常，失败时零证据；
+# 现在统一落一条带时间戳的记录，事后可回溯「哪个 guest 文件没拷回来」。
+function Write-Diag([string]$Msg) {
+  try {
+    if (-not $WorkDir) { return }
+    if (-not (Test-Path $WorkDir)) { New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null }
+    $line = "[{0}] {1}" -f (Get-Date).ToString("HH:mm:ss"), $Msg
+    Add-Content -Path (Join-Path $WorkDir "run-diag.log") -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+  } catch { /* 诊断本身绝不能影响主流程 */ }
 }
 
 # ---------------- 工具定位 ----------------
@@ -86,13 +102,24 @@ Write-Host "主机更新源 IP：$ResolvedHostIp : $UpdatePort"
 
 # ---------------- Guest 命令（base64 编码，规避转义）----------------
 function Invoke-GuestCommand {
+  <#
+    -Interactive：走 vmrun 的 -interactive 标志，让 guest 程序进入**交互式会话**而非
+      Session 0 服务会话。只有拉起 GUI 程序（Electron）时才需要。
+      ⚠️ 参数位置是 vmrun 定义的：runProgramInGuest <vmx> [-noWait] [-activeWindow]
+      [-interactive] <程序> [参数] —— 标志必须在 **$VmxPath 之后**、程序路径之前。
+      写反（vmx 之前）vmrun 会报参数错误。
+      ⚠️ VirtualBox 分支无等价机制，该开关在 VBox 下不生效（本仓库主用 VMware）。
+  #>
   param(
     [Parameter(Mandatory)] [string]$Script,
     [int]$TimeoutSec = 300,
-    [switch]$NoWait
+    [switch]$NoWait,
+    [switch]$Interactive
   )
   $b64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
   if ($Hypervisor -eq "virtualbox") {
+    # VBoxManage guestcontrol 无 -interactive 等价物（交互式会话需 --session 或 guest 内方案），
+    # 故 $Interactive 在 VBox 下静默无效；本仓库主用 VMware。
     $args = @("-u", $GuestUser, "-p", $GuestPass, "guestcontrol", $VMName, "run",
               "--exe", "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
               "--", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $b64)
@@ -102,8 +129,11 @@ function Invoke-GuestCommand {
     & VBoxManage @args
     return $LASTEXITCODE
   }
-  $vmArgs = @("-gu", $GuestUser, "-gp", $GuestPass, "runProgramInGuest", $VmxPath,
-              "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+  # 标志必须插在 $VmxPath 之后、程序路径之前（见上方 vmrun 用法）
+  $flags = @()
+  if ($Interactive) { $flags += "-interactive" }
+  $vmArgs = @("-gu", $GuestUser, "-gp", $GuestPass, "runProgramInGuest", $VmxPath) + $flags +
+            @("C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
               "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $b64)
   if ($NoWait) {
     # Start-Process 把 -ArgumentList 数组拼成命令行字符串时不会自动给含空格参数加引号，
@@ -128,10 +158,31 @@ function Copy-ToGuest($HostFile, $GuestFile) {
   }
 }
 function Copy-FromGuest($GuestFile, $HostFile) {
-  if ($Hypervisor -eq "virtualbox") {
-    & VBoxManage -u $GuestUser -p $GuestPass guestcontrol $VMName copyfrom $GuestFile $HostFile
-  } else {
-    Invoke-Vmrun -gu $GuestUser -gp $GuestPass copyFileFromGuestToHost $VmxPath $GuestFile $HostFile | Out-Null
+  <#
+    从 guest 拷文件回主机。失败时：
+      1. 写一条 run-diag.log（原先各处 `try { Copy-FromGuest ... } catch { }` 会把失败全吞掉，
+         事后完全无法判断「哪个文件没拷回来」）；
+      2. 抛异常 —— 保留调用点原有的 try/catch 语义（该尽力而为的地方仍然吞，
+         但日志留了证据；裸调用的地方本来就会中断，行为不变）。
+  #>
+  $rc = 0
+  try {
+    if ($Hypervisor -eq "virtualbox") {
+      & VBoxManage -u $GuestUser -p $GuestPass guestcontrol $VMName copyfrom $GuestFile $HostFile | Out-Null
+      $rc = $LASTEXITCODE
+    } else {
+      # Invoke-Vmrun 返回 LASTEXITCODE，不再管道丢弃退出码
+      $rc = Invoke-Vmrun -gu $GuestUser -gp $GuestPass copyFileFromGuestToHost $VmxPath $GuestFile $HostFile
+    }
+  } catch {
+    $rc = -1
+    Write-Diag "Copy-FromGuest 异常：guest=$GuestFile host=$HostFile err=$($_.Exception.Message)"
+    throw
+  }
+  $exists = Test-Path $HostFile
+  if ($rc -ne 0 -or -not $exists) {
+    Write-Diag "Copy-FromGuest 失败：guest=$GuestFile host=$HostFile rc=$rc 目标存在=$exists"
+    throw "Copy-FromGuest 失败（rc=$rc，目标存在=$exists）：$GuestFile"
   }
 }
 
@@ -449,31 +500,65 @@ foreach ($n in $names) {
   }
 
   # 3) 拉起 app（自动更新钩子 + 结果路径 + 日志重定向落盘）
-  #    注意：环境变量靠「guest 内 PowerShell 进程设 $env: + Start-Process 子进程继承」注入，
+  #    环境变量靠「guest 内 PowerShell 进程设 $env: + Start-Process 子进程继承」注入，
   #    vmrun 本身没有传 env 的参数（这是唯一可行的注入方式）。
   #    日志路径全部落在 C:\vm_e2e\，由 GuestLogPattern 采集。
+  #
+  #    两种拉起方式（一次只改一个变量，默认走 vmrun -interactive）：
+  #      a) $UseSchtasksFallback = $false（默认）：vmrun runProgramInGuest -interactive <vmx> ...
+  #      b) $UseSchtasksFallback = $true ：guest 内 schtasks 建「交互式任务」再 run
+  #         用于「-interactive 仍拿不到交互桌面」时回退。
+  #    ⚠️ 两种方式的「判据」都不是 PowerShell 自身的 SessionId —— runProgramInGuest 起的
+  #       PowerShell 恒在 Session 0，即使它把 app 成功投到 Session 1，脚本看到的仍是 0。
+  #       真判据 = 启动后**回查 app 进程自己的 SessionId**（见轮询里的 appSessions）。
   $launchScript = @'
 $exe = (Get-Content C:\vm_e2e\install-result.json | ConvertFrom-Json).exe
 $env:VM_UPDATE_URL = "http://__HOSTIP__:__PORT__/latest.json"
 $env:VM_UPDATE_TEST_AUTO = "1"
 $env:VM_UPDATE_TEST_RESULT = "C:\vm_e2e\update-check-result.json"
+$appArgs = @("--enable-logging=file", "--log-file=C:\vm_e2e\app.chromium.log")
+$useSchtasks = [bool]::Parse("__USESCHTASKS__")
 # 记录即将用的启动命令与 env，供失败时定性（不改行为）
+$selfSid = (Get-Process -Id $PID).SessionId
 [pscustomobject]@{
   exe     = $exe
   exeExists = (Test-Path $exe)
-  args    = @("--enable-logging=file", "--log-file=C:\vm_e2e\app.chromium.log")
+  args    = $appArgs
   env     = [pscustomobject]@{
     VM_UPDATE_URL        = $env:VM_UPDATE_URL
     VM_UPDATE_TEST_AUTO  = $env:VM_UPDATE_TEST_AUTO
     VM_UPDATE_TEST_RESULT = $env:VM_UPDATE_TEST_RESULT
   }
+  launchMethod   = if ($useSchtasks) { "schtasks" } else { "vmrun-interactive" }
+  interactiveFlag = [bool]::Parse("__INTFLAG__")
+  sessionIdSource = "(Get-Process -Id `$PID).SessionId —— 指本 PowerShell 自身所在会话，非 app 所在会话"
+  sessionIdNote   = if ($selfSid -eq 0) { "本脚本在 Session 0（服务会话），不代表 app 也在 Session 0；真判据见 appSessions" } else { "本脚本在非 0 会话" }
   interactive = [Environment]::UserInteractive
-  sessionId   = (Get-Process -Id $PID).SessionId
+  sessionId   = $selfSid
+  userInteractiveNote = "注意：UserInteractive 在服务会话下也可能为 True，不能单独作判据"
 } | ConvertTo-Json -Depth 4 | Set-Content C:\vm_e2e\launch-params.json
-Start-Process -FilePath $exe -ArgumentList "--enable-logging=file","--log-file=C:\vm_e2e\app.chromium.log" `
-  -RedirectStandardOutput "C:\vm_e2e\app.stdout.log" -RedirectStandardError "C:\vm_e2e\app.stderr.log"
-'@ -replace '__HOSTIP__', $ResolvedHostIp -replace '__PORT__', "$UpdatePort"
-  Invoke-GuestCommand -Script $launchScript -NoWait | Out-Null
+
+if ($useSchtasks) {
+  # ---- 回退路径：schtasks 交互式任务 ----
+  # /it 要求该用户已登录且会话活跃（快照已配自动登录）；/ru 带 /it 必须给 /rp。
+  # /tr 里路径含空格与中文，整体加引号；参数一并拼进 /tr。
+  $tr = '"' + $exe + '" ' + (($appArgs | ForEach-Object { '"' + $_ + '"' }) -join ' ')
+  & schtasks /create /tn vm_e2e_app /tr $tr /ru "__GUESTUSER__" /rp "__GUESTPASS__" /it /f | Out-Null
+  & schtasks /run /tn vm_e2e_app | Out-Null
+} else {
+  Start-Process -FilePath $exe -ArgumentList $appArgs `
+    -RedirectStandardOutput "C:\vm_e2e\app.stdout.log" -RedirectStandardError "C:\vm_e2e\app.stderr.log"
+}
+'@ -replace '__HOSTIP__', $ResolvedHostIp -replace '__PORT__', "$UpdatePort" `
+   -replace '__INTFLAG__', $(if ($UseSchtasksFallback) { "False" } else { "True" }) `
+   -replace '__USESCHTASKS__', "$UseSchtasksFallback" `
+   -replace '__GUESTUSER__', $GuestUser -replace '__GUESTPASS__', $GuestPass
+  # -Interactive 只在非 schtasks 路径生效（schtasks 自带交互式；加了反而多余）
+  if ($UseSchtasksFallback) {
+    Invoke-GuestCommand -Script $launchScript -NoWait | Out-Null
+  } else {
+    Invoke-GuestCommand -Script $launchScript -NoWait -Interactive | Out-Null
+  }
   Start-Sleep -Seconds $AppStartWaitSec
 
   # 4) 轮询：更新检测/下载/静默安装是否完成（结果文件写出 + app 进程退出）
@@ -497,6 +582,29 @@ foreach ($n in $candNames) {
   $counts[$n] = @(Get-Process -Name $n -ErrorAction SilentlyContinue).Count
 }
 $running = $counts[$name]
+# ★ 真判据：回查 app 进程自己所在的 SessionId。
+#   不能用执行脚本的 PowerShell 的 SessionId —— runProgramInGuest 起的进程恒在 Session 0，
+#   即使它成功把 app 投到 Session 1，脚本自身看到的仍是 0，会得出错误结论。
+#   appSessions = app 相关进程实际所在会话集合：[] = 没起来；[1] = 在交互桌面（正确）；
+#   [0] = 确实落在服务会话（Electron 会静默挂起，建不了窗）。
+$appSessions = @()
+foreach ($n in $candNames) {
+  $appSessions += @(Get-Process -Name $n -ErrorAction SilentlyContinue |
+    ForEach-Object { $_.SessionId })
+}
+$appSessions = @($appSessions | Sort-Object -Unique)
+# 会话判读（便于人眼直接读结论，不用自己推理）
+$sessionVerdict = if ($appSessions.Count -eq 0) { "app 未运行" }
+  elseif ($appSessions -contains 0 -and $appSessions.Count -eq 1) { "仅在 Session 0（服务会话）→ Electron 建不了窗" }
+  elseif ($appSessions -contains 0) { "跨会话（含 0）→ 有异常残留" }
+  else { "在交互会话（Session $($appSessions -join ','))" }
+# 各进程的 会话/启动时间，进一步区分「真 app」与「僵尸/残留」
+$procDetail = @()
+foreach ($n in $candNames) {
+  foreach ($p in @(Get-Process -Name $n -ErrorAction SilentlyContinue)) {
+    $procDetail += ("{0}(sid={1})" -f $n, $p.SessionId)
+  }
+}
 # stderr 内容（Electron 崩溃时这里会有退出原因）
 $stderr = ""
 if (Test-Path C:\vm_e2e\app.stderr.log) {
@@ -516,6 +624,9 @@ $snap = [ordered]@{
   exe      = $exename
   counts   = $counts
   running  = $running
+  appSessions = $appSessions
+  sessionVerdict = $sessionVerdict
+  procDetail = $procDetail
   hasResult = $hasResult
   sizes    = $sizes
   stderr   = $stderr
@@ -547,7 +658,10 @@ $snap | ConvertTo-Json -Depth 5 | Set-Content ("C:\vm_e2e\app-running-" + __N__ 
         $sz = ($s.sizes.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)B" }) -join " "
         $cnt = ($s.counts.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " "
         $errTxt = if ($s.stderr) { ($s.stderr -replace "\r?\n", " | ") } else { "(空)" }
-        $evi = "轮询 $($s.n) 次；进程[$cnt]；日志[$sz]；结果文件=$($s.hasResult)；stderr=$errTxt"
+        # ★ appSessions 是最关键的一项（app 真实所在会话），放最前
+        $evi = "app会话[$($s.appSessions -join ',')]=$($s.sessionVerdict)；轮询 $($s.n) 次；" +
+               "进程[$cnt]；日志[$sz]；结果文件=$($s.hasResult)；stderr=$errTxt"
+        if ($s.procDetail) { $evi += "；明细[$($s.procDetail -join ' ')]" }
       } catch { }
       Remove-Item $lastTmp -Force
     }
@@ -557,7 +671,8 @@ $snap | ConvertTo-Json -Depth 5 | Set-Content ("C:\vm_e2e\app-running-" + __N__ 
     if (Test-Path $lpTmp) {
       try {
         $lp = Get-Content $lpTmp -Raw | ConvertFrom-Json
-        $evi += "；UserInteractive=$($lp.interactive) sessionId=$($lp.sessionId) exeExists=$($lp.exeExists)"
+        $evi += "；launchMethod=$($lp.launchMethod) interactiveFlag=$($lp.interactiveFlag)" +
+                " 自会话=$($lp.sessionId) exeExists=$($lp.exeExists)"
       } catch { }
       Remove-Item $lpTmp -Force
     }

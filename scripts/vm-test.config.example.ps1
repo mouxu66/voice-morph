@@ -35,5 +35,15 @@ $InstallTimeoutSec = 120      # 等待「下载+静默安装+退出」完成的�
 $PollIntervalSec   = 3
 $AppStartWaitSec   = 6        # 拉起后等几秒确认进程起来 / 日志开始写
 
+# ---- 拉起 app 的方式 ----
+# $false（默认）= vmrun runProgramInGuest -interactive
+#   让 Electron 进入**交互式会话**而非 Session 0 服务会话（GUI 程序必需）。
+# $true = guest 内 schtasks 建「交互式任务」再 run（回退方案）
+#   用于 -interactive 仍拿不到交互桌面时；依赖 guest 已登录且会话活跃（自动登录）。
+# 判据说明：无论哪种方式，都**不能**用执行脚本的 PowerShell 的 SessionId 判断 app 在哪——
+#   runProgramInGuest 起的 PowerShell 恒在 Session 0。真判据 = 回查 app 进程自己的 SessionId
+#   （脚本轮询阶段会记录在 app-running-<n>.json 的 appSessions 字段）。
+$UseSchtasksFallback = $false
+
 # ---- 路径 ----
 $WorkDir = $PSScriptRoot      # 主机侧中间产物（日志副本/截图/结果 JSON）落这里
