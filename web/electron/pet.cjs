@@ -10,9 +10,13 @@ const { app, BrowserWindow, Menu, ipcMain, screen } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
-const { BACKEND_PORT } = require("./backend.cjs");
+const backend = require("./backend.cjs");
+const { BACKEND_PORT } = backend;
 
-const PET_DIR = path.join(__dirname, "pet");
+// 本机（D:\变声 存在）优先加载源码 pet 目录，与 main 窗口一致（见 AGENTS.md「本机桌面端优先源码」）；
+// 打包分发机无该目录时回退 asar 内置副本。否则改了源码重开桌面端也不生效。
+const _projectPetDir = path.join(backend.resolveProjectRoot(), "web", "electron", "pet");
+const PET_DIR = fs.existsSync(path.join(_projectPetDir, "pet.html")) ? _projectPetDir : path.join(__dirname, "pet");
 const PET_PREF_FILE = path.join(app.getPath("userData"), "pet.json");
 const PET_PREF_VERSION = 3;   // v3：桌宠默认常驻（v1/v2 默认「仅变声时」，很多人从没见过它）
 // 桌宠「录当前声音→挖掘音色」的单次内录时长（菜单文案与动作模块共用）

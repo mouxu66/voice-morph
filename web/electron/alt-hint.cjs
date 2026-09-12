@@ -4,9 +4,12 @@
 // 全程浮在微信之上、鼠标点击穿透，不挡任何操作。
 const { BrowserWindow, screen, globalShortcut } = require("electron");
 const path = require("path");
-const { backendPost } = require("./backend.cjs");
+const backend = require("./backend.cjs");
+const { backendPost } = backend;
 
-const PET_DIR = path.join(__dirname, "pet");
+// 同 pet.cjs：本机优先源码 pet 目录，回退 asar 内置副本。
+const _projectPetDir = path.join(backend.resolveProjectRoot(), "web", "electron", "pet");
+const PET_DIR = fs.existsSync(path.join(_projectPetDir, "pet.html")) ? _projectPetDir : path.join(__dirname, "pet");
 let altHintWin = null;
 let altHintReady = false;
 let altHintTimer = null;
