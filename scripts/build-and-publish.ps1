@@ -1,4 +1,4 @@
-# build-and-publish.ps1 —— 主机端：构建前端 + 自签签名打包 + 生成更新清单 + 打印待上传清单。
+﻿# build-and-publish.ps1 —— 主机端：构建前端 + 自签签名打包 + 生成更新清单 + 打印待上传清单。
 #
 # 依赖：node/npm（web 目录）、CSC_KEY_PASSWORD 环境变量（自签证书密码，见 certs/）。
 # 运行：powershell -ExecutionPolicy Bypass -File scripts/build-and-publish.ps1 `
