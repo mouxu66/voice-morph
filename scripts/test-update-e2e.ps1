@@ -77,9 +77,17 @@ if ($Hypervisor -eq "vmware" -and -not $vmrun) {
 }
 
 # vmrun 统一走数组参数，规避路径含空格被截断（报错2 的根因）
+#
+# ⚠️ 返回值 = vmrun 的 stdout（`list` / `listSnapshots` 靠它解析），**不要改**。
+# ⚠️ 退出码单独走 $script:VmrunExitCode —— 因为 `copyFileFromGuestToHost` 成功时
+#    **不打 stdout**，如果靠返回值取退出码只会拿到空值（空 ≠ 失败）：
+#      旧写法 `$rc = Invoke-Vmrun copy...` → $rc 恒为空 → `$rc -ne 0` 恒真 → 每次误报失败。
+#    正确用法：先 `| Out-Null` 丢掉输出，**再**读 $script:VmrunExitCode。
 function Invoke-Vmrun {
   param([Parameter(ValueFromRemainingArguments = $true)] [string[]]$VmArgs)
   & $vmrun @VmArgs
+  # 命令不存在/未执行时 $LASTEXITCODE 为 $null，规整为 0（避免又落回「空值≠0」的坑）
+  $script:VmrunExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
 }
 
 # ---------------- 主机 IP 探测 ----------------
@@ -152,37 +160,52 @@ function Invoke-GuestCommand {
 
 function Copy-ToGuest($HostFile, $GuestFile) {
   if ($Hypervisor -eq "virtualbox") {
-    & VBoxManage -u $GuestUser -p $GuestPass guestcontrol $VMName copyto $HostFile $GuestFile
-  } else {
-    Invoke-Vmrun -gu $GuestUser -gp $GuestPass copyFileFromHostToGuest $VmxPath $HostFile $GuestFile | Out-Null
+    & VBoxManage -u $GuestUser -p $GuestPass guestcontrol $VMName copyto $HostFile $GuestFile | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      Write-Diag "Copy-ToGuest 失败：host=$HostFile guest=$GuestFile rc=$LASTEXITCODE"
+    }
+    return
+  }
+  # 先 Out-Null 丢输出，再读退出码（vmrun 该子命令成功时无 stdout，见 Invoke-Vmrun 注释）
+  Invoke-Vmrun -gu $GuestUser -gp $GuestPass copyFileFromHostToGuest $VmxPath $HostFile $GuestFile | Out-Null
+  if ($script:VmrunExitCode -ne 0) {
+    Write-Diag "Copy-ToGuest 失败：host=$HostFile guest=$GuestFile rc=$script:VmrunExitCode"
   }
 }
 function Copy-FromGuest($GuestFile, $HostFile) {
   <#
-    从 guest 拷文件回主机。失败时：
+    从 guest 拷文件回主机。
+
+    ★ 判据 = **目标文件是否真的出现在主机上**（Test-Path），不看退出码。
+      原因：`vmrun copyFileFromGuestToHost` **成功时也不打 stdout**，靠返回值取退出码
+      只会拿到空值；而「空 -ne 0」为真 → 会把成功误判成失败（2026-09-12 实测踩到：
+      run-diag.log 每轮报失败，但详情里「目标存在=True」，ready.txt 其实每次都拷成功）。
+      故 $rc 只作为**诊断信息**写进日志，绝不参与判定。
+
+    失败时：
       1. 写一条 run-diag.log（原先各处 `try { Copy-FromGuest ... } catch { }` 会把失败全吞掉，
          事后完全无法判断「哪个文件没拷回来」）；
       2. 抛异常 —— 保留调用点原有的 try/catch 语义（该尽力而为的地方仍然吞，
          但日志留了证据；裸调用的地方本来就会中断，行为不变）。
   #>
-  $rc = 0
+  $rc = $null
   try {
     if ($Hypervisor -eq "virtualbox") {
       & VBoxManage -u $GuestUser -p $GuestPass guestcontrol $VMName copyfrom $GuestFile $HostFile | Out-Null
       $rc = $LASTEXITCODE
     } else {
-      # Invoke-Vmrun 返回 LASTEXITCODE，不再管道丢弃退出码
-      $rc = Invoke-Vmrun -gu $GuestUser -gp $GuestPass copyFileFromGuestToHost $VmxPath $GuestFile $HostFile
+      Invoke-Vmrun -gu $GuestUser -gp $GuestPass copyFileFromGuestToHost $VmxPath $GuestFile $HostFile | Out-Null
+      $rc = $script:VmrunExitCode
     }
   } catch {
-    $rc = -1
+    $rc = "exception"
     Write-Diag "Copy-FromGuest 异常：guest=$GuestFile host=$HostFile err=$($_.Exception.Message)"
     throw
   }
-  $exists = Test-Path $HostFile
-  if ($rc -ne 0 -or -not $exists) {
-    Write-Diag "Copy-FromGuest 失败：guest=$GuestFile host=$HostFile rc=$rc 目标存在=$exists"
-    throw "Copy-FromGuest 失败（rc=$rc，目标存在=$exists）：$GuestFile"
+  # ★ 唯一判据：文件是否真的落到主机
+  if (-not (Test-Path $HostFile)) {
+    Write-Diag "Copy-FromGuest 失败：guest=$GuestFile host=$HostFile rc=$rc（目标文件不存在）"
+    throw "Copy-FromGuest 失败（目标文件不存在，rc=$rc）：$GuestFile"
   }
 }
 

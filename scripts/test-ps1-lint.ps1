@@ -14,6 +14,7 @@ $targets = @(
   "test-update-e2e.ps1",
   "test-vmrun-args.ps1",
   "test-vmrun-interactive.ps1",
+  "test-copy-fromguest.ps1",
   "test-install-probe.ps1",
   "test-ps1-lint.ps1",
   "release.ps1",
