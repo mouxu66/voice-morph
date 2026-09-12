@@ -171,4 +171,28 @@ function section(name) {
   done();
 }
 
-process.stdout.write("\n[smoke] 全部通过 ✓（生产路径已门控到安装包内资源）\n");
+// ---- 10. 开发模式双入口守卫：update:check IPC 也不触发网络 ----
+(async () => {
+  const done = section("开发: update:check IPC 返回 dev 关闭响应，不调用 updater");
+  isPackaged = false;
+  const updater = require("./updater.cjs");
+  const real = updater.checkForUpdates;
+  let calls = 0;
+  updater.checkForUpdates = async () => { calls++; return await real(); };
+  try {
+    const handlers = {};
+    electronStub.ipcMain.handle = (name, fn) => { handlers[name] = fn; };
+    const { registerUpdateIpc } = require("./update-ipc.cjs");
+    registerUpdateIpc();
+    const r = await handlers["update:check"]({});
+    assert.strictEqual(calls, 0, "dev 模式 update:check 不应调用 checkForUpdates（不得发起网络）");
+    assert.strictEqual(r.configured, false, "dev 模式应返回未配置更新源");
+    assert.strictEqual(r.hasUpdate, false);
+  } finally {
+    updater.checkForUpdates = real;
+    electronStub.ipcMain.handle = () => {};
+  }
+  done();
+})();
+
+process.stdout.write("\n[smoke] 全部通过 ✓（生产路径已门控，更新检查双入口 dev 守卫）\n");

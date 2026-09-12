@@ -8,6 +8,15 @@ function registerUpdateIpc() {
   ipcMain.handle("app:version", () => updater.currentVersion());
 
   ipcMain.handle("update:check", async () => {
+    // 开发（源码）模式不检查更新：与 scheduleStartupUpdateCheck 同一守卫，双入口统一。
+    // 否则 dev server 页面点“检查更新”会真的发网络请求（本机若配了 VM_UPDATE_URL）。
+    if (!app.isPackaged) {
+      return {
+        ok: true, configured: false, hasUpdate: false,
+        current: updater.currentVersion(), latest: null,
+        reason: "开发模式不检查更新",
+      };
+    }
     try {
       return await updater.checkForUpdates();
     } catch (e) {
