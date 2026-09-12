@@ -2,6 +2,8 @@
 // 更新源是静态清单 latest.json，地址由环境变量 VM_UPDATE_URL 指定；未配置则完全离线
 // （纯本地默认，不发任何网络请求）。详见 web/electron/UPDATE.md。
 const { app, ipcMain } = require("electron");
+const fs = require("fs");
+const path = require("path");
 const updater = require("./updater.cjs");
 
 function registerUpdateIpc() {
@@ -59,8 +61,27 @@ function scheduleStartupUpdateCheck(win) {
     try {
       const r = await updater.checkForUpdates();
       if (!r.ok || !r.hasUpdate) return;
-      if (!win || win.isDestroyed()) return;
-      win.webContents.send("update:available", r);
+      if (win && !win.isDestroyed()) win.webContents.send("update:available", r);
+      // 测试钩子 VM_UPDATE_TEST_AUTO（默认关闭）：无人值守 VM e2e 自动下载并静默安装，
+      // 把检查结果落到 userData/update-check-result.json 供测试断言「收到更新提示」。
+      // 正式发布不带此变量，下面整段不执行，行为不变。
+      if (process.env.VM_UPDATE_TEST_AUTO) {
+        try {
+          const dl = await updater.downloadUpdate(r.latest);
+          if (!dl.ok) return;
+          const result = { ...r, file: dl.file, auto: true, at: new Date().toISOString() };
+          try {
+            fs.writeFileSync(
+              path.join(app.getPath("userData"), "update-check-result.json"),
+              JSON.stringify(result, null, 2),
+              "utf-8",
+            );
+          } catch { /* 写不了也不影响安装 */ }
+          updater.installUpdate(dl.file);
+        } catch {
+          /* 静默 */
+        }
+      }
     } catch {
       /* 静默 */
     }

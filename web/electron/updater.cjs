@@ -321,6 +321,15 @@ function downloadUpdate(manifest, onProgress) {
 }
 
 /**
+ * 安装参数。默认无参（弹 NSIS 向导，由用户点「立即更新」）；
+ * 测试钩子 VM_UPDATE_TEST_AUTO 开启时传 /S 静默安装，让干净 VM 里无人值守
+ * e2e 能自动完成「下载→安装」整条链，不需要人去点 NSIS 向导。默认关闭。
+ */
+function installArgs() {
+  return process.env.VM_UPDATE_TEST_AUTO ? ["/S"] : [];
+}
+
+/**
  * 安装并退出：NSIS 安装包 detached 拉起（脱离本进程，退出后仍然存活），
  * 然后立即 quit 让安装程序能覆盖文件。
  */
@@ -328,7 +337,7 @@ function installUpdate(file) {
   const p = String(file || "");
   if (!p || !fs.existsSync(p)) return { ok: false, reason: "安装包不存在，请重新下载" };
   try {
-    spawn(p, [], { detached: true, stdio: "ignore" }).unref();
+    spawn(p, installArgs(), { detached: true, stdio: "ignore" }).unref();
   } catch (e) {
     return { ok: false, reason: `启动安装程序失败：${e.message}` };
   }
@@ -353,6 +362,7 @@ module.exports = {
   checkForUpdates,
   downloadUpdate,
   installUpdate,
+  installArgs,
   skipVersion,
   downloadedFile,
   updateDir,

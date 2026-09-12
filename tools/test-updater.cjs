@@ -196,6 +196,18 @@ const updater = require("../web/electron/updater.cjs");
     const r = updater.installUpdate(path.join(os.tmpdir(), "vm-missing-setup.exe"));
     assert.strictEqual(r.ok, false);
   });
+  t("installArgs: 默认无参；VM_UPDATE_TEST_AUTO 开启时带 /S", () => {
+    const prev = process.env.VM_UPDATE_TEST_AUTO;
+    try {
+      delete process.env.VM_UPDATE_TEST_AUTO;
+      assert.deepStrictEqual(updater.installArgs(), []);
+      process.env.VM_UPDATE_TEST_AUTO = "1";
+      assert.deepStrictEqual(updater.installArgs(), ["/S"]);
+    } finally {
+      if (prev === undefined) delete process.env.VM_UPDATE_TEST_AUTO;
+      else process.env.VM_UPDATE_TEST_AUTO = prev;
+    }
+  });
 
   // ---------- 收尾 ----------
   for (const { name, fn } of checks) {
