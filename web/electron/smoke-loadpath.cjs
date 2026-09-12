@@ -100,6 +100,8 @@ function section(name) {
   const cands = backend.frontendHtmlCandidates();
   assert.strictEqual(cands.length, 1, "生产模式必须是单候选，绝无 asar 兜底");
   assert.strictEqual(cands[0], path.join(res, "backend", "web_dist", "index.html"));
+  assert.ok(!cands[0].toLowerCase().includes("变声"),
+    "生产前端候选不得指向 D:\\变声 源码构建");
   const picked = cands.find((p) => fs.existsSync(p));
   assert.strictEqual(picked, path.join(res, "backend", "web_dist", "index.html"),
     "生产 find 应命中 extraResources web_dist（即便源码根 web/dist 存在）");
