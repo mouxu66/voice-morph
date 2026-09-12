@@ -92,3 +92,8 @@ certs/
 .asar_tmp/
 voice-morph-desktop/
 web/dist_old_bak*/
+
+# ===== VM 端到端测试私有配置（含账号/密码/IP，不入库）=====
+scripts/vm-test.config.ps1
+.freebuff/
+.trae/
