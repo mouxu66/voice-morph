@@ -83,6 +83,11 @@ tts_trial/ft_samples/
 # ===== 工作记录 =====
 .workbuddy/
 m2_server/data/
+
+# ===== 代码签名证书（含私钥，绝不入库）=====
+certs/
+*.pfx
+*.p12
 # ===== asar 打包工作区（可由 extract_asar.cjs 重建）=====
 .asar_tmp/
 voice-morph-desktop/

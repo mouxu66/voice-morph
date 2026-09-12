@@ -77,7 +77,8 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "electron/icon.ico"
+      "icon": "electron/icon.ico",
+      "certificateFile": "../certs/black-seraph.pfx"
     },
     "nsis": {
       "oneClick": false,
