@@ -13,8 +13,10 @@ const http = require("http");
 const backend = require("./backend.cjs");
 const { BACKEND_PORT } = backend;
 
-// 本机（D:\变声 存在）优先加载源码 pet 目录，与 main 窗口一致（见 AGENTS.md「本机桌面端优先源码」）；
-// 打包分发机无该目录时回退 asar 内置副本。否则改了源码重开桌面端也不生效。
+// 加载 pet 资源（2026-09-12 语义随生产加载路径修复而变）：
+//   开发（源码版）：可命中 D:\变声 源码 pet 目录，改源码重开即生效；
+//   生产（安装版）：resolveProjectRoot 已门控到 resources/backend（无 pet 目录）→ 自动回退 asar 内置副本，
+//                  该副本随版本更新一起进包，绝不读 D:\变声 旧源码。
 const _projectPetDir = path.join(backend.resolveProjectRoot(), "web", "electron", "pet");
 const PET_DIR = fs.existsSync(path.join(_projectPetDir, "pet.html")) ? _projectPetDir : path.join(__dirname, "pet");
 const PET_PREF_FILE = path.join(app.getPath("userData"), "pet.json");

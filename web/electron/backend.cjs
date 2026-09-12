@@ -21,24 +21,51 @@ function getProjectRoot() {
 }
 
 function resolveProjectRoot() {
-  // 优先从本文件位置推导项目根（开发时 __dirname=web/electron，上两级即项目根），
-  // 迁移后自动跟随，不再硬编码盘符。
-  // 打包安装后后端代码位于 resources/backend/m2_server（见 package.json 的 extraResources），
-  // 因此 resources/backend 也要作为候选根。
   const res = process.resourcesPath || "";
+  // 生产（安装版）：代码随包走，只认安装包内资源。
+  // 绝不回退到本机 D:\变声 源码根 —— 否则自动更新装完新安装包，应用仍读旧源码构建
+  // （前端读 d:\变声\web\dist、后端跑 d:\变声\m2_server），新版本永远不生效。
+  // 模型权重/素材（4.9G，打包不带）在包外，由启动时注入的 VM_* 环境变量指向（见 startBackend）。
+  if (app.isPackaged) {
+    const candidates = [
+      path.join(res, "backend"),                     // extraResources 落点（m2_server/tools/web_dist）
+      path.join(app.getPath("userData"), "project"), // 预留：未来热更新目录
+    ];
+    for (const c of candidates) {
+      if (c && fs.existsSync(path.join(c, "m2_server", "server.py"))) return c;
+    }
+    return path.join(res, "backend");
+  }
+  // 开发（源码版）：优先从本文件位置推导项目根（__dirname=web/electron，上两级即项目根），
+  // 其次本机历史根 D:\变声 —— 保持既有「本机直连源码」开发习惯。
   const candidates = [
     path.join(__dirname, "..", ".."),
-    // 本机开发根优先：模型权重（4.9G，打包不带）与新代码都在这，打包壳直接复用；
-    // 分发机上该目录不存在，自动落到 resources/backend（extraResources 的裸代码）。
     "D:\\变声",
     path.join(res, "backend"),
-    path.join(res, "app"),
     path.join(app.getPath("userData"), "project"),
   ];
   for (const c of candidates) {
     if (c && fs.existsSync(path.join(c, "m2_server", "server.py"))) return c;
   }
   return path.join(__dirname, "..", "..");
+}
+
+/**
+ * 主窗口前端 HTML 候选（按优先级返回，main.cjs 取第一个存在的）：
+ *   - 生产（安装版）：只读安装包内资源 —— extraResources 的 web_dist 副本优先，回退 asar 内置 dist。
+ *     绝不把 D:\变声\web\dist 放进候选：自动更新装完新包，这里读到的必须是新前端。
+ *   - 开发（源码版）：源码根 web/dist 优先，回退 asar 内置产物。
+ */
+function frontendHtmlCandidates() {
+  const distHtml = path.join(__dirname, "..", "dist", "index.html");
+  const projectDistHtml = path.join(projectRoot || "", "web", "dist", "index.html");
+  if (app.isPackaged) {
+    return [
+      path.join(process.resourcesPath || "", "backend", "web_dist", "index.html"),
+      distHtml,
+    ];
+  }
+  return [projectDistHtml, distHtml];
 }
 
 /** 探测后端 /api/health 是否可用 */
@@ -422,6 +449,7 @@ module.exports = {
   setProjectRoot,
   getProjectRoot,
   resolveProjectRoot,
+  frontendHtmlCandidates,
   backendHealthy,
   waitForBackend,
   portInUse,

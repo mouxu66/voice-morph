@@ -37,19 +37,21 @@ async function createWindow(root) {
     pet.destroyPet();
   });
 
-  const distHtml = path.join(__dirname, "..", "dist", "index.html");
-  const projectDistHtml = path.join(root, "web", "dist", "index.html");
-  // 默认永远加载生产构建（项目内最新 dist 优先，其次 asar 内置产物）。
-  // 仅当显式设置 ELECTRON_IS_DEV=1 且 5173 在跑时，才加载 Vite 开发服务器（调试用）。
-  // 这样可避免「遗留的 dev server 偷偷接管打包应用导致离线」的陷阱。
-  if (process.env.ELECTRON_IS_DEV === "1" && (await backend.portInUse(5173))) {
+  // 加载规则（2026-09-12 修坑：生产版绝不能读 D:\变声 源码构建）：
+  //   - 生产（安装版）：代码随包走，只读安装包内资源（backend.frontendHtmlCandidates 过滤）。
+  //     自动更新装完新包后，这里读到的一定是新前端。
+  //   - 开发（源码版）：仅当显式设置 ELECTRON_IS_DEV=1 且 5173 在跑时加载 Vite dev server；
+  //     否则源码根 web/dist 优先，回退 asar 内置产物。
+  //     这样可避免「遗留的 dev server 偷偷接管打包应用导致离线」的陷阱。
+  if (!app.isPackaged && process.env.ELECTRON_IS_DEV === "1" && (await backend.portInUse(5173))) {
     win.loadURL("http://localhost:5173");
-  } else if (fs.existsSync(projectDistHtml)) {
-    win.loadFile(projectDistHtml);
-  } else if (fs.existsSync(distHtml)) {
-    win.loadFile(distHtml);
   } else {
-    console.error("[frontend] 未找到构建产物 dist/index.html");
+    const html = backend.frontendHtmlCandidates().find((p) => fs.existsSync(p));
+    if (html) {
+      win.loadFile(html);
+    } else {
+      console.error("[frontend] 未找到构建产物 dist/index.html");
+    }
   }
   return win;
 }

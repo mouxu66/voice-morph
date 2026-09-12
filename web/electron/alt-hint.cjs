@@ -7,7 +7,7 @@ const path = require("path");
 const backend = require("./backend.cjs");
 const { backendPost } = backend;
 
-// 同 pet.cjs：本机优先源码 pet 目录，回退 asar 内置副本。
+// 加载 pet 资源，同 pet.cjs：生产（安装版）自动回退 asar 内置副本（随版本更新），不读 D:\变声 旧源码。
 const _projectPetDir = path.join(backend.resolveProjectRoot(), "web", "electron", "pet");
 const PET_DIR = fs.existsSync(path.join(_projectPetDir, "pet.html")) ? _projectPetDir : path.join(__dirname, "pet");
 let altHintWin = null;
