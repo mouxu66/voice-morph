@@ -1,6 +1,7 @@
 """微信语音消息发送（桌宠右键入口）。
 
 思路（全程不 Hook、不注入微信，只模拟人手操作）：
+    0. **重启微信**（必要时）——理由见下方「为什么必须重启微信」
     1. audio_config.ps1 apply  —— 系统默认麦克风切到 CABLE Output（自动备份原设备）
     2. 前台化微信聊天窗口，触发微信 4.1.9+ 的官方「发送语音消息」开始录音：
        - RECORD_METHOD=mic（默认）：鼠标移到聊天输入框右下角话筒图标，按住左键
@@ -13,8 +14,17 @@
     4. 松开鼠标左键 / Alt → 微信结束录音并自动发出（单条最长 60s）
     5. audio_config.ps1 restore —— 还原原声卡
 
-依赖：主环境零新增（ctypes + subprocess）；播放走 D:/RVC/.venv 的 sounddevice，
-与 cascade_stream/offline_vc 同一约定。
+为什么必须重启微信（2026-09-11 实测，证据链见 docs/犯错指南.md §2.15）：
+    微信在**进程启动时**就绑定好采集设备，之后改 Windows 默认麦克风对它不热生效。
+    症状极具误导性：往 CABLE Input 灌满幅信号（peak 0.763），微信却录到安静房间声，
+    发出去的语音听着是静音，而 CABLE 驱动本身完全无辜（三种 API × 六种采样率全通）。
+    所以「切卡」与「录音」之间必须夹一次微信重启，顺序是硬约束：
+        **杀微信 → 切卡 → 拉起微信 → 录音**
+    是否重启由 VM_WECHAT_RESTART 决定（auto 时按微信自己的遥测证据判断，
+    见 _need_wechat_restart）；重启要 10~30s，故与 TTS 合成并行（_PendingRecordingEnv）。
+
+依赖：主环境零新增（ctypes + subprocess，psutil 可选）；播放走 D:/RVC/.venv 的
+sounddevice，与 cascade_stream/offline_vc 同一约定。进程/窗口操作用 wechat_proc。
 
 重要更正（实测踩坑）：
     - 微信 4.1.7 的 Ctrl+Win 是「语音转文字」：说话实时转文字、不会自己停，
@@ -45,6 +55,7 @@ import config as cfg
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import wechat_proc as wproc      # 进程/窗口底层操作（重启微信链路）
 
 router = APIRouter(prefix="/api/wechat", tags=["wechat"])
 
@@ -74,6 +85,18 @@ TAIL_S = float(os.environ.get("VM_WECHAT_TAIL_S", "0.3"))    # 播完后的尾�
 PLAY_LEAD_S = float(os.environ.get("VM_WECHAT_PLAY_LEAD_S", "0.8"))
 # 自动按键流程失败时是否自动降级为「引导式手动发送」（播放到 CABLE + 用户自己按住说话）
 AUTO_FALLBACK = os.environ.get("VM_WECHAT_AUTO_FALLBACK", "1") == "1"
+
+# ---- 录音前的微信重启（2026-09-11）----
+# 微信绑定采集设备是在**进程启动时**，改默认麦克风对它不热生效 → 必须重启它才会
+# 重新枚举到 CABLE Output。取值（**调用时**读，便于测试 monkeypatch）：
+#   auto(默认) = 按微信自己的遥测证据判断，只在确实需要时才重启（省 10~30s）
+#   1          = 每次发送都重启（最稳，最慢）
+#   0          = 从不重启（旧行为；除非你确定微信已绑在 CABLE 上，否则会录到物理麦）
+RESTART_MODE_ENV = "VM_WECHAT_RESTART"
+# 等微信主窗口就绪的上限（含用户手动扫码登录的时间）
+RESTART_WAIT_S = float(os.environ.get("VM_WECHAT_RESTART_WAIT_S", "90"))
+# WM_CLOSE 给微信体面退出的宽限（微信默认"关闭=收进托盘"，别指望它，给短点）
+RESTART_KILL_GRACE_S = float(os.environ.get("VM_WECHAT_RESTART_KILL_GRACE_S", "2.5"))
 
 _send_lock = threading.Lock()
 _play_proc = None   # 正在向 CABLE 播放的子进程，供 /stop_play 中止
@@ -307,14 +330,16 @@ class _PendingApply:
         finally:
             self._done.set()
 
+    _TIMEOUT = 130.0     # 后台任务等待上限（_run_audio 自身 timeout=120）
+
     def result(self) -> dict:
-        """阻塞到 apply 结束；成功返回结果 dict，失败原样抛出（_do_send 内调用一次）。"""
+        """阻塞到后台准备结束；成功返回结果 dict，失败原样抛出（_do_send 内调用一次）。"""
         self._consumed = True
-        self._done.wait(timeout=130)          # _run_audio 自身 timeout=120
+        self._done.wait(timeout=self._TIMEOUT)
         if self._error is not None:
             raise self._error
         if self._result is None:
-            raise RuntimeError("audio_config apply 未返回结果（后台任务超时？）")
+            raise RuntimeError("录音环境准备未返回结果（后台任务超时？）")
         return self._result
 
     def abandon(self) -> None:
@@ -323,11 +348,141 @@ class _PendingApply:
         if self._consumed:
             return        # _do_send 已消费：还原由其异常/早退路径负责，别重复 restore
         self._consumed = True
-        self._done.wait(timeout=130)
+        self._done.wait(timeout=self._TIMEOUT)
+        try:
+            self._after_run()
+        except Exception:
+            pass
         try:
             _safe_restore()
         except Exception:
             pass
+
+    def _after_run(self) -> None:
+        """子类钩子：任务作废时的额外收尾（基类无事可做）。"""
+
+
+# ---------------- 录音环境准备：必要时重启微信 + 切卡 ----------------
+# 详见模块 docstring：微信在进程启动时绑定采集设备，改默认麦克风对它不热生效。
+
+
+def _restart_mode() -> str:
+    """当前的重启策略（**每次调用时**读环境变量，便于测试与运行时切换）。"""
+    return os.environ.get(RESTART_MODE_ENV, "auto").strip().lower()
+
+
+def _device_keyword() -> str:
+    """目标设备关键词。
+
+    OUTPUT_DEVICE_KEYWORD 是播放端叫法（"CABLE Input"），微信读到的是采集端叫法
+    （"CABLE Output (VB-Audio Virtual Cable)"）——两者只有首词相同，
+    故取首词（"CABLE"）做包含判断，别拿整串去比。
+    """
+    kw = OUTPUT_DEVICE_KEYWORD.strip()
+    return kw.split()[0].lower() if kw else ""
+
+
+def _need_wechat_restart() -> tuple[bool, str]:
+    """判断这次发送前要不要重启微信。返回 (是否重启, 人话原因)。
+
+    auto 模式的判据是**微信自己的遥测**（它最近一次录音实际用了哪个输入设备），
+    而不是"猜"。读不到证据时保守选择重启：漏重启的代价是"静音语音发出去"，
+    误重启的代价只是多等十几秒。
+    """
+    mode = _restart_mode()
+    if mode == "0":
+        return False, f"{RESTART_MODE_ENV}=0 已关闭重启"
+    if mode == "1":
+        return True, f"{RESTART_MODE_ENV}=1 强制每次重启"
+    if not wproc.list_wechat_processes():
+        return True, "微信当前没在运行（需要拉起来）"
+    dev = wproc.input_device_probe().get("device")
+    kw = _device_keyword()
+    if not dev:
+        return True, "读不到微信上次录音用的输入设备，保守起见重启一次"
+    if kw and kw in dev.lower():
+        return False, f"微信上次录音已用「{dev}」，无需重启"
+    return True, f"微信上次录音用的是「{dev}」（不是 {OUTPUT_DEVICE_KEYWORD}），需重启让它重新枚举"
+
+
+def _relaunch_quietly(exe) -> None:
+    """兜底拉起微信（失败只记日志，不往上冒——调用方往往正在处理别的异常）。"""
+    try:
+        wproc.start_wechat(exe)
+    except Exception as e:
+        logger.warning("[wechat] 兜底拉起微信失败: %s", e)
+
+
+def _prepare_recording_env() -> dict:
+    """录音前的环境准备：需要时重启微信，再把默认麦克风切到 CABLE Output。
+
+    顺序是硬约束：**杀微信 → 切卡 → 拉起微信**（反了就是白切）。
+    返回 dict（``kind="recording_env"``）供 _do_send 拼 steps；失败抛 RuntimeError，
+    且绝不把用户的微信留在死状态。
+    """
+    need, why = _need_wechat_restart()
+    info = {"kind": "recording_env", "restart": False, "reason": why, "exe": "",
+            "killed": [], "new_pid": None, "hwnd": None, "waited_s": 0.0}
+    if not need:
+        _run_audio("apply")
+        info["summary"] = f"麦克风已切到 CABLE Output（未重启微信：{why}）"
+        return info
+
+    exe = wproc.resolve_wechat_exe()
+    if exe is None:
+        raise RuntimeError(
+            "需要重启微信才能让它重新枚举录音设备，但找不到微信主程序；"
+            "请设环境变量 VM_WECHAT_EXE 指向 Weixin.exe")
+    info["exe"] = str(exe)
+    info["killed"] = wproc.kill_wechat(grace_s=RESTART_KILL_GRACE_S).get("pids", [])
+    try:
+        # 微信不在场时切卡，它启动时才会绑到 CABLE Output
+        _run_audio("apply")
+        info["new_pid"] = wproc.start_wechat(exe)
+        ready = wproc.wait_wechat_ready(timeout_s=RESTART_WAIT_S)
+    except BaseException:
+        if not wproc.list_wechat_processes():      # 别把用户的微信丢在死状态
+            _relaunch_quietly(exe)
+        raise
+    info.update(restart=True, hwnd=ready["hwnd"], waited_s=ready["waited_s"])
+    kill_note = f"杀掉旧进程 {info['killed']}" if info["killed"] else "微信原本未运行"
+    info["summary"] = (f"已重启微信（{kill_note} → 新 PID {info['new_pid']}，"
+                       f"{ready['waited_s']:.1f}s 窗口就绪）并切麦克风到 CABLE Output"
+                       f"；原因：{why}")
+    return info
+
+
+class _PendingRecordingEnv(_PendingApply):
+    """把「重启微信 + 切卡」提前到与 TTS 合成并行（2026-09-11）。
+
+    重启是这条链路最大的延迟来源（杀 ~2.5s + 切卡 ~3s + 拉起并等窗口 10~30s），
+    串行排在 TTS(≈6s)/RVC 之后纯属白等；send_text 拿到发送锁就起本任务，
+    _do_send 真正要用麦克风前才 .result() 等尾差。
+    """
+
+    _TIMEOUT = 240.0     # 覆盖 杀 + 切卡 + 拉起 + 等窗口(90s) 的最坏情况
+
+    def _run(self) -> None:
+        try:
+            self._result = _prepare_recording_env()
+        except BaseException as e:   # 原样转交 result()，交给 _do_send 的异常路径处理
+            self._error = e
+        finally:
+            self._done.set()
+
+    def _after_run(self) -> None:
+        """作废兜底：确保微信还活着（绝不因一次失败发送把用户的微信用没了）。
+
+        注意 `VM_WECHAT_RESTART=0` 时必须完全不动作——那种模式下微信是死是活
+        本来就不归这条链路管，别去替用户开微信。
+        """
+        if _restart_mode() == "0":
+            return
+        if wproc.list_wechat_processes():
+            return
+        exe = wproc.resolve_wechat_exe()
+        if exe:
+            _relaunch_quietly(exe)
 
 
 # ---------------- 播放 wav → CABLE Input（RVC venv 子进程，唯一有 sounddevice） ----------------
@@ -783,46 +938,12 @@ def _ensure_onscreen(hwnd: int) -> None:
 
 
 def _find_wechat_hwnd() -> int:
-    """枚举顶层可见窗口，按进程名找微信主窗口（Weixin.exe=4.x / WeChat.exe=3.x）。
+    """找微信主窗口句柄（面积最大的那个）。
 
-    多个命中时取面积最大的（聊天主窗口；托盘气泡/小弹窗都很小）。
+    实现在 `wechat_proc.find_wechat_hwnd`——重启链路要按窗口面积判断"是否还在
+    登录页"，那套枚举逻辑只能有一份，故这里只做转发。
     """
-    import ctypes
-    from ctypes import wintypes
-
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    hits: list[tuple[int, int]] = []   # (hwnd, area)
-
-    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-
-    def cb(hwnd, _lparam):
-        if not user32.IsWindowVisible(hwnd):
-            return True
-        pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        h = kernel32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if h:
-            buf = ctypes.create_unicode_buffer(512)
-            size = wintypes.DWORD(len(buf))
-            if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
-                name = Path(buf.value).name.lower()
-                if name in ("weixin.exe", "wechat.exe", "wechatapp.exe"):
-                    r = wintypes.RECT()
-                    area = 0
-                    if user32.GetWindowRect(hwnd, ctypes.byref(r)):
-                        area = max(0, r.right - r.left) * max(0, r.bottom - r.top)
-                    hits.append((hwnd, area))
-            kernel32.CloseHandle(h)
-        return True
-
-    user32.EnumWindows(WNDENUMPROC(cb), 0)
-    if not hits:
-        raise RuntimeError("没找到微信窗口（请确认微信已登录并打开了聊天）")
-    hits.sort(key=lambda t: t[1], reverse=True)
-    if hits[0][1] <= 0:
-        raise RuntimeError("找到微信进程但窗口尺寸异常，请把微信聊天窗口打开后重试")
-    return hits[0][0]
+    return wproc.find_wechat_hwnd()
 
 
 def _foreground_wechat() -> int:
@@ -1124,17 +1245,20 @@ def send_text(req: SendTextReq):
 
     延迟优化（2026-09-10）：切默认麦→CABLE（~3s）已提前到与 TTS 合成（~6s）
     并行（_PendingApply），_do_send 用麦克风前只等尾差，端到端省 ~3s。
+    2026-09-11：若判断需要重启微信（见 _need_wechat_restart），重启 + 切卡整体
+    也在这段并行里做（_PendingRecordingEnv），不额外拖慢端到端。
     """
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
     if not _send_lock.acquire(blocking=False):
         raise HTTPException(409, "已有一次微信语音发送在进行中，请等它结束")
-    apply_task: _PendingApply | None = None
+    apply_task: _PendingRecordingEnv | None = None
     try:
         _t0 = time.time()
-        # 切卡 ~3s 别串行等在 TTS 后面：立刻起后台预热与合成并行（见 _PendingApply）。
+        # 切卡（必要时还含重启微信）最长几十秒，别串行等在 TTS 后面：
+        # 立刻起后台任务与合成并行（见 _PendingRecordingEnv）。
         # 合成/组装任何一步失败，下面的 except 会 abandon() 兜底还原声卡。
-        apply_task = _PendingApply()
+        apply_task = _PendingRecordingEnv()
         from tts_api import synth_wav
         wav, duration_s, _vid = synth_wav(req.text, req.voice_id)
         steps = [f"合成: {wav.name}（{duration_s:.1f}s，voice={_vid or '默认'}，用时 {time.time()-_t0:.1f}s）"]
@@ -1188,6 +1312,35 @@ def send_voice(req: SendVoiceReq):
         return _do_send(req)
     finally:
         _send_lock.release()
+
+
+@router.get("/precheck")
+def precheck():
+    """发送前自检（**只读**，不动声卡、不碰微信）：这次发送会不会重启微信、为什么。
+
+    排查「发出去的语音是静音」先打这个，比真发一条快得多，也不会打断对方。
+    """
+    need, why = _need_wechat_restart()
+    probe = wproc.input_device_probe()
+    procs = wproc.list_wechat_processes()
+    exe = wproc.resolve_wechat_exe()
+    wins = wproc.enum_wechat_windows()
+    return {
+        "ok": True,
+        "restart_mode": _restart_mode(),
+        "restart_needed": need,
+        "reason": why,
+        "wechat_running": bool(procs),
+        "wechat_pids": [p["pid"] for p in procs],
+        "wechat_exe": str(exe) if exe else None,
+        "main_window_area": (wins[0]["area"] if wins else 0),
+        "min_chat_area": wproc.MIN_CHAT_AREA,
+        "last_input_device": probe.get("device"),
+        "device_source": probe.get("file"),
+        "target_keyword": _device_keyword(),
+        "hint": ("微信会先被重启，再切麦克风到 CABLE Output"
+                 if need else "不会重启微信，直接切麦克风到 CABLE Output"),
+    }
 
 
 @router.post("/manual_send")
@@ -1430,17 +1583,22 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
     proc = None          # 后台播放进程（异常路径要能 kill）
     _tw = time.time()
     try:
-        # 2) 默认麦克风 → CABLE Output（微信从这里录；apply 自动备份原设备）。
-        #    send_text 已把切卡提前到与 TTS 并行（pre_apply），这里只等尾差（实测 ≈0s）；
-        #    没有预热任务时保持原地同步切卡。
+        # 2) 录音环境准备：必要时重启微信（关键，见模块 docstring），
+        #    然后把默认麦克风切到 CABLE Output（微信从这里录；apply 自动备份原设备）。
+        #    send_text 已把这一步提前到与 TTS 并行（pre_apply），这里只等尾差；
+        #    没有预热任务时原地同步完成。
         _ta = time.time()
         if pre_apply is not None:
-            pre_apply.result()
-            steps.append(f"[{time.time()-_tw:.1f}s] 麦克风已切到 CABLE Output"
-                         f"（切卡已与 TTS 并行，此处仅等 {time.time()-_ta:.1f}s）")
+            env = pre_apply.result()
+            if isinstance(env, dict) and env.get("kind") == "recording_env":
+                steps.append(f"[{time.time()-_tw:.1f}s] {env['summary']}"
+                             f"（准备已与 TTS 并行，此处仅等 {time.time()-_ta:.1f}s）")
+            else:      # 兼容旧契约（测试里的假任务 / 老调用方）
+                steps.append(f"[{time.time()-_tw:.1f}s] 麦克风已切到 CABLE Output"
+                             f"（切卡已与 TTS 并行，此处仅等 {time.time()-_ta:.1f}s）")
         else:
-            _run_audio("apply")
-            steps.append(f"[{time.time()-_tw:.1f}s] 麦克风已切到 CABLE Output")
+            env = _prepare_recording_env()
+            steps.append(f"[{time.time()-_tw:.1f}s] {env.get('summary', '麦克风已切到 CABLE Output')}")
 
         # 3) 起播放（常驻 worker 复用 / 一次性子进程）。冷导入若发生，与下面的 UI 准备并行。
         _t_play = time.time()

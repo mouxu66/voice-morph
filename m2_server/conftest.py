@@ -8,6 +8,11 @@ from pathlib import Path
 # 子进程。warmup.ENABLED 在导入时读 VM_WARMUP，故必须在 import server 之前置 0。
 os.environ.setdefault("VM_WARMUP", "0")
 
+# 测试环境禁止真重启微信：wechat_voice._prepare_recording_env 在 auto 模式下
+# 会杀进程 + 拉起 Weixin.exe（真机副作用、还可能把用户的微信弄掉线）。
+# 强制置 0；需要覆盖的用例自己 monkeypatch.setenv。
+os.environ["VM_WECHAT_RESTART"] = "0"
+
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
