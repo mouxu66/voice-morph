@@ -1,7 +1,7 @@
 // 应用自动更新 IPC + 启动静默检查 —— 从 main.cjs 拆出，行为保持一致。
 // 更新源是静态清单 latest.json，地址由环境变量 VM_UPDATE_URL 指定；未配置则完全离线
 // （纯本地默认，不发任何网络请求）。详见 web/electron/UPDATE.md。
-const { ipcMain } = require("electron");
+const { app, ipcMain } = require("electron");
 const updater = require("./updater.cjs");
 
 function registerUpdateIpc() {
@@ -42,6 +42,9 @@ function registerUpdateIpc() {
  * 失败一律静默 —— 更新检查绝不能打扰正常使用。
  */
 function scheduleStartupUpdateCheck(win) {
+  // 开发（源码）模式一律不检查更新，避免 dev server / 开发机被更新弹窗打扰；
+  // 只有打包安装版（app.isPackaged）才启用启动静默检查。
+  if (!app.isPackaged) return;
   const delayMs = 12000;
   setTimeout(async () => {
     try {

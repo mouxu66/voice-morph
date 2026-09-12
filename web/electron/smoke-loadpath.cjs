@@ -126,4 +126,38 @@ function section(name) {
   done();
 }
 
+// ---- 7. 开发模式启动不检查更新 ----
+{
+  const done = section("开发: scheduleStartupUpdateCheck 不调度");
+  isPackaged = false;
+  const origST = global.setTimeout;
+  let scheduled = false;
+  global.setTimeout = () => { scheduled = true; return 0; };
+  try {
+    const { scheduleStartupUpdateCheck } = require("./update-ipc.cjs");
+    scheduleStartupUpdateCheck({ isDestroyed: () => false });
+  } finally {
+    global.setTimeout = origST;
+  }
+  assert.strictEqual(scheduled, false, "开发模式不应调度启动更新检查");
+  done();
+}
+
+// ---- 8. 生产模式启动调度静默检查 ----
+{
+  const done = section("生产: scheduleStartupUpdateCheck 调度 12s 定时器");
+  isPackaged = true;
+  const origST = global.setTimeout;
+  let scheduled = false;
+  global.setTimeout = () => { scheduled = true; return 0; };
+  try {
+    const { scheduleStartupUpdateCheck } = require("./update-ipc.cjs");
+    scheduleStartupUpdateCheck({ isDestroyed: () => false });
+  } finally {
+    global.setTimeout = origST;
+  }
+  assert.strictEqual(scheduled, true, "生产模式必须调度启动更新检查");
+  done();
+}
+
 process.stdout.write("\n[smoke] 全部通过 ✓（生产路径已门控到安装包内资源）\n");
