@@ -267,6 +267,32 @@ function externalResourceEnv() {
   return env;
 }
 
+/**
+ * 后端 spawn 环境变量（纯函数，便于测试；startBackend 将其直接传给 spawn.env）：
+ * - 继承用户环境 envBase（默认 process.env），且**绝不覆盖用户已设的 VM_***
+ *   —— config.py 的 _path 只认环境变量，用户显式设的值必须赢。
+ * - VM_MEDIA_DIR / VM_OUTPUTS_DIR 兜底到 dataRoot 推导（开发态 root 自带 media → root；
+ *   否则 D:\变声 有 media → D:\变声；最后 userData）。
+ * - 包外模型/解释器（externalResourceEnv）仅在 D:\变声 存在时注入，缺失则留给
+ *   config.py 默认值，缺模型的子能力明确报错而非静默错乱。
+ */
+function buildBackendEnv(root, dataRoot, envBase = null) {
+  const base = envBase || process.env;
+  const env = { ...base };
+  env.PYTHONPATH = [root, base.PYTHONPATH].filter(Boolean).join(path.delimiter);
+  env.PYTHONIOENCODING = "utf-8";
+  const injected = {
+    // 经导出对象调用（而非闭包直绑）：测试可替换 externalResourceEnv 模拟“无 D:\变声”场景
+    ...(module.exports.externalResourceEnv || externalResourceEnv)(),
+    VM_MEDIA_DIR: path.join(dataRoot, "media"),
+    VM_OUTPUTS_DIR: path.join(dataRoot, "outputs"),
+  };
+  for (const [k, v] of Object.entries(injected)) {
+    if (v && !(k in env)) env[k] = v; // 用户已设 → 用户赢
+  }
+  return env;
+}
+
 async function startBackend(root) {
   // python 解释器：优先安装目录自带 .venv（开发态），安装版回退到项目目录 D:\变声\.venv（依赖齐全），
   // 都没有才用系统 python（依赖可能缺失，仅兜底）
@@ -310,18 +336,7 @@ async function startBackend(root) {
   const dataRoot = resolveDataRoot(root);
   backendProc = spawn(python, [serverPy], {
     cwd: path.join(root, "m2_server"),
-    env: {
-      ...process.env,
-      PYTHONPATH: [
-        root,
-        process.env.PYTHONPATH,
-      ].filter(Boolean).join(path.delimiter),
-      PYTHONIOENCODING: "utf-8",
-      VM_MEDIA_DIR: path.join(dataRoot, "media"),
-      VM_OUTPUTS_DIR: path.join(dataRoot, "outputs"),
-      // 模型/解释器/tts_models 全在包外（D:\变声），逐个用 VM_* 注入给包内后端与 TTS worker
-      ...externalResourceEnv(),
-    },
+    env: buildBackendEnv(root, dataRoot),
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -472,6 +487,8 @@ module.exports = {
   resolveProjectRoot,
   frontendHtmlCandidates,
   externalResourceEnv,
+  buildBackendEnv,
+  resolveDataRoot,
   backendHealthy,
   waitForBackend,
   portInUse,

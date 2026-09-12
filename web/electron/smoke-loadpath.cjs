@@ -195,4 +195,61 @@ function section(name) {
   done();
 })();
 
+// ---- 11. test-vm-env：spawn 环境 VM_ 注入规则 ----
+{
+  const done = section("环境: 不覆盖用户预设 / 未设兜底 / 无 D:\\变声 不注入");
+  const root = "C:\\pkg\\backend";
+  const dataRoot = "C:\\data\\vm";
+
+  // A. 用户已设 → 用户赢（媒体/输出/TTS/RVC 全保留），PYTHONPATH/PYTHONIOENCODING 仍注入
+  const userEnv = {
+    VM_MEDIA_DIR: "C:\\user\\media",
+    VM_OUTPUTS_DIR: "C:\\user\\out",
+    VM_TTS_MODELS_DIR: "C:\\user\\tts",
+    VM_RVC_ROOT: "E:\\RVC",
+    EXISTING: "keep-me",
+  };
+  const envA = backend.buildBackendEnv(root, dataRoot, userEnv);
+  assert.strictEqual(envA.VM_MEDIA_DIR, "C:\\user\\media", "用户 VM_MEDIA_DIR 不得被覆盖");
+  assert.strictEqual(envA.VM_OUTPUTS_DIR, "C:\\user\\out");
+  assert.strictEqual(envA.VM_TTS_MODELS_DIR, "C:\\user\\tts");
+  assert.strictEqual(envA.VM_RVC_ROOT, "E:\\RVC", "VM_RVC_ROOT 仅用户可设，Electron 不注入");
+  assert.strictEqual(envA.EXISTING, "keep-me");
+  assert.strictEqual(envA.PYTHONIOENCODING, "utf-8");
+  assert.ok(envA.PYTHONPATH.includes(root), "PYTHONPATH 应含后端根");
+
+  // B. 未设 → VM_MEDIA_DIR/VM_OUTPUTS_DIR 兜底 dataRoot；Qwen 跟随推导不注入
+  const envB = backend.buildBackendEnv(root, dataRoot, {});
+  assert.strictEqual(envB.VM_MEDIA_DIR, path.join(dataRoot, "media"));
+  assert.strictEqual(envB.VM_OUTPUTS_DIR, path.join(dataRoot, "outputs"));
+  assert.ok(!("VM_QWEN_MODEL_DIR" in envB), "VM_QWEN_MODEL_DIR 跟随 TTS_MODELS_DIR 推导");
+
+  // C. 模拟 D:\变声 不存在（externalResourceEnv 空）→ 不注入任何模型变量
+  const realExt = backend.externalResourceEnv;
+  backend.externalResourceEnv = () => ({});
+  try {
+    const envC = backend.buildBackendEnv(root, dataRoot, {});
+    assert.ok(!("VM_TTS_MODELS_DIR" in envC), "无 D:\\变声 不得注入 VM_TTS_MODELS_DIR");
+    assert.ok(!("VM_TTS_VENV_PY" in envC), "无 D:\\变声 不得注入 VM_TTS_VENV_PY");
+    assert.ok(!("VM_PROJECT_ROOT" in envC), "无 D:\\变声 不得注入 VM_PROJECT_ROOT");
+  } finally {
+    backend.externalResourceEnv = realExt;
+  }
+
+  // D. 本机 D:\变声 存在 → 模型变量注入（与第 9 步同条件）
+  if (fs.existsSync(path.join("D:\\变声", "m2_server", "server.py"))) {
+    const envD = backend.buildBackendEnv(root, dataRoot, {});
+    if (fs.existsSync(path.join("D:\\变声", "tts_models"))) {
+      assert.strictEqual(envD.VM_TTS_MODELS_DIR, path.join("D:\\变声", "tts_models"));
+    }
+    if (fs.existsSync(path.join("D:\\变声", "tts_trial", "venv312", "Scripts", "python.exe"))) {
+      assert.strictEqual(envD.VM_TTS_VENV_PY, path.join("D:\\变声", "tts_trial", "venv312", "Scripts", "python.exe"));
+    }
+    if (fs.existsSync(path.join("D:\\变声", "tts_trial", "venv312"))) {
+      assert.strictEqual(envD.VM_PROJECT_ROOT, "D:\\变声");
+    }
+  }
+  done();
+}
+
 process.stdout.write("\n[smoke] 全部通过 ✓（生产路径已门控，更新检查双入口 dev 守卫）\n");
