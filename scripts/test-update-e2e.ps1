@@ -106,11 +106,18 @@ function Invoke-GuestCommand {
               "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
               "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $b64)
   if ($NoWait) {
-    Start-Process -NoNewWindow -FilePath $vmrun -ArgumentList $vmArgs | Out-Null
+    # Start-Process 把 -ArgumentList 数组拼成命令行字符串时不会自动给含空格参数加引号，
+    # 必须手动加双引号（见 .workbuddy/memory/auto-update.md 第九节坑）。
+    # 注意：Wait 分支用 & @vmArgs（不加引号），两套机制不同，不可统一——
+    # 若 Wait 分支也加引号，vmrun 会把引号当成参数的一部分。
+    $quotedArgs = $vmArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
+    Start-Process -NoNewWindow -FilePath $vmrun -ArgumentList $quotedArgs | Out-Null
     return $null
   }
-  $p = Start-Process -NoNewWindow -PassThru -Wait -FilePath $vmrun -ArgumentList $vmArgs
-  return $p.ExitCode
+  # Wait 分支：调用符 + 数组展开（splatting），OS 直接收数组，无需引号；
+  # 若加引号 vmrun 会把引号当成参数的一部分。
+  & $vmrun @vmArgs
+  return $LASTEXITCODE
 }
 
 function Copy-ToGuest($HostFile, $GuestFile) {
