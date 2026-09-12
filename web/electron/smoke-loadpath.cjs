@@ -93,26 +93,16 @@ function section(name) {
   done();
 }
 
-// ---- 4. 生产: frontendHtmlCandidates 第一个命中 extraResources web_dist ----
+// ---- 4. 生产: frontendHtmlCandidates 只有一个候选 = resources/backend/web_dist ----
 {
-  const done = section("生产: 前端候选首个是 resources/backend/web_dist");
+  const done = section("生产: 前端候选唯一且是 resources/backend/web_dist");
   const res = process.resourcesPath;
   const cands = backend.frontendHtmlCandidates();
+  assert.strictEqual(cands.length, 1, "生产模式必须是单候选，绝无 asar 兜底");
   assert.strictEqual(cands[0], path.join(res, "backend", "web_dist", "index.html"));
-  // 注：第二候选（asar 内置 dist）在真实打包后路径在 app.asar 内，不会穿透到磁盘源码根；
-  // 纯 Node 测试环境下 __dirname 是源码路径，故不做字符串比对（见第 5 步仅验尾缀）。
   const picked = cands.find((p) => fs.existsSync(p));
   assert.strictEqual(picked, path.join(res, "backend", "web_dist", "index.html"),
     "生产 find 应命中 extraResources web_dist（即便源码根 web/dist 存在）");
-  done();
-}
-
-// ---- 5. 生产: resources 里没有 web_dist 时回退 asar 内置（第二候选）语义 = 安装包内，不会穿透到源码 ----
-{
-  const done = section("生产: 候选第二项是 asar 内置 dist");
-  const res = process.resourcesPath;
-  const second = backend.frontendHtmlCandidates()[1];
-  assert.ok(second.endsWith(path.join("dist", "index.html")));
   done();
 }
 

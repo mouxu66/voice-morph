@@ -22,38 +22,38 @@ function getProjectRoot() {
 
 function resolveProjectRoot() {
   const res = process.resourcesPath || "";
-  // 生产（安装版）：代码随包走，只认安装包内资源。
-  // 绝不回退到本机 D:\变声 源码根 —— 否则自动更新装完新安装包，应用仍读旧源码构建
-  // （前端读 d:\变声\web\dist、后端跑 d:\变声\m2_server），新版本永远不生效。
-  // 模型权重/素材（4.9G，打包不带）在包外，由启动时注入的 VM_* 环境变量指向（见 startBackend）。
+  // 生产（安装版）：代码随包走，只认安装包内 resources/backend，绝不回退到本机 D:\变声 源码根，
+  // 也绝不探测 userData 下的"未来热更新目录" —— 否则自动更新装完新安装包，应用仍读旧源码构建
+  // （前端 d:\变声\web\dist、后端 d:\变声\m2_server），新版本永远不生效。
+  // 模型权重/素材（4.9G，打包不带）在包外，由 startBackend 注入的 VM_* 环境变量指向（见 externalResourceEnv）。
   if (app.isPackaged) {
-    const candidates = [
-      path.join(res, "backend"),                     // extraResources 落点（m2_server/tools/web_dist）
-      path.join(app.getPath("userData"), "project"), // 预留：未来热更新目录
-    ];
-    for (const c of candidates) {
-      if (c && fs.existsSync(path.join(c, "m2_server", "server.py"))) return c;
-    }
-    return path.join(res, "backend");
+    const prodRoot = path.join(res, "backend");
+    console.log(`[backend] 生产模式后端根：${prodRoot}（resourcesPath=${res}）`);
+    return prodRoot;
   }
   // 开发（源码版）：优先从本文件位置推导项目根（__dirname=web/electron，上两级即项目根），
-  // 其次本机历史根 D:\变声 —— 保持既有「本机直连源码」开发习惯。
+  // 其次本机历史根 D:\变声、再 resources 内副本 —— 保持既有「本机直连源码」开发习惯。
   const candidates = [
     path.join(__dirname, "..", ".."),
     "D:\\变声",
     path.join(res, "backend"),
-    path.join(app.getPath("userData"), "project"),
   ];
   for (const c of candidates) {
-    if (c && fs.existsSync(path.join(c, "m2_server", "server.py"))) return c;
+    if (c && fs.existsSync(path.join(c, "m2_server", "server.py"))) {
+      console.log(`[backend] 开发模式后端根：${c}`);
+      return c;
+    }
   }
-  return path.join(__dirname, "..", "..");
+  const fallback = path.join(__dirname, "..", "..");
+  console.log(`[backend] 开发模式后端根（兜底）：${fallback}`);
+  return fallback;
 }
 
 /**
- * 主窗口前端 HTML 候选（按优先级返回，main.cjs 取第一个存在的）：
- *   - 生产（安装版）：只读安装包内资源 —— extraResources 的 web_dist 副本优先，回退 asar 内置 dist。
- *     绝不把 D:\变声\web\dist 放进候选：自动更新装完新包，这里读到的必须是新前端。
+ * 主窗口前端 HTML 候选（main.cjs 取第一个存在的）：
+ *   - 生产（安装版）：单候选，只认 extraResources 的 resources/backend/web_dist 副本。
+ *     绝不含 D:\变声\web\dist，也没有 asar 兜底 —— 自动更新装完新包，这里读到的必须是新前端；
+ *     缺文件时靠 main.cjs 的生产路径日志直接暴露"安装不完整"。
  *   - 开发（源码版）：源码根 web/dist 优先，回退 asar 内置产物。
  */
 function frontendHtmlCandidates() {
@@ -62,7 +62,6 @@ function frontendHtmlCandidates() {
   if (app.isPackaged) {
     return [
       path.join(process.resourcesPath || "", "backend", "web_dist", "index.html"),
-      distHtml,
     ];
   }
   return [projectDistHtml, distHtml];

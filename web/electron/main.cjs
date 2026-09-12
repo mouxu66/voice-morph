@@ -38,19 +38,31 @@ async function createWindow(root) {
   });
 
   // 加载规则（2026-09-12 修坑：生产版绝不能读 D:\变声 源码构建）：
-  //   - 生产（安装版）：代码随包走，只读安装包内资源（backend.frontendHtmlCandidates 过滤）。
-  //     自动更新装完新包后，这里读到的一定是新前端。
+  //   - 生产（安装版）：只加载安装包内 extraResources 的 web_dist 单候选，无 asar 回退。
+  //     自动更新装完新包后，这里读到的一定是新前端；实际路径打印到日志，便于排查。
   //   - 开发（源码版）：仅当显式设置 ELECTRON_IS_DEV=1 且 5173 在跑时加载 Vite dev server；
   //     否则源码根 web/dist 优先，回退 asar 内置产物。
   //     这样可避免「遗留的 dev server 偷偷接管打包应用导致离线」的陷阱。
-  if (!app.isPackaged && process.env.ELECTRON_IS_DEV === "1" && (await backend.portInUse(5173))) {
-    win.loadURL("http://localhost:5173");
+  if (!app.isPackaged) {
+    if (process.env.ELECTRON_IS_DEV === "1" && (await backend.portInUse(5173))) {
+      console.log("[frontend] 开发模式：加载 Vite dev server http://localhost:5173");
+      win.loadURL("http://localhost:5173");
+    } else {
+      const html = backend.frontendHtmlCandidates().find((p) => fs.existsSync(p));
+      console.log(`[frontend] 开发模式：加载 ${html || "未找到构建产物 index.html"}`);
+      if (html) {
+        win.loadFile(html);
+      } else {
+        console.error("[frontend] 未找到构建产物 dist/index.html");
+      }
+    }
   } else {
     const html = backend.frontendHtmlCandidates().find((p) => fs.existsSync(p));
+    console.log(`[frontend] 生产模式：加载 ${html}（resourcesPath=${process.resourcesPath}）`);
     if (html) {
       win.loadFile(html);
     } else {
-      console.error("[frontend] 未找到构建产物 dist/index.html");
+      console.error("[frontend] 生产模式未找到安装包内前端 web_dist/index.html（安装包不完整？）");
     }
   }
   return win;
