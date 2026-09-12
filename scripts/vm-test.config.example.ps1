@@ -23,8 +23,12 @@ $NewVersion = "0.2.2"         # 期望更新到的版本
 $InstallerPrefix = "VoiceMorph-Setup-"   # 文件名前缀（脚本拼成 "$Prefix$Ver.exe"，无空格）
 
 # ---- 证书 ----
-$ImportCert = $false          # 是否在 VM 内导入自签根证书（消除 SmartScreen）。false=接受「仍要运行」
-$CertPfxPath = "..\certs\black-seraph.pfx"  # 相对脚本目录；仅 $ImportCert=$true 时用
+# $ImportCert=$true 时，脚本会在「回滚快照之后、安装之前」把 $CertPfxPath 导入
+# guest 的受信任根（LocalMachine\Root），消除自签证书的「未知发布者」提示。
+# 注意：不能靠快照预导入——回滚会抹掉。导入需管理员权限，请确认 guest 账号可提权。
+$ImportCert   = $false        # 是否在 VM 内导入自签根证书。false=接受「仍要运行」提示
+$CertPfxPath  = "..\certs\black-seraph.pfx"  # 相对脚本目录；仅 $ImportCert=$true 时用
+$CertPassword = "填你的 pfx 密码"             # 仅 $ImportCert=$true 时用
 
 # ---- 超时 / 轮询 ----
 $InstallTimeoutSec = 120      # 等待「下载+静默安装+退出」完成的总超时

@@ -172,6 +172,40 @@ New-Item -ItemType Directory -Force -Path "C:\vm_e2e" | Out-Null
   return $ready
 }
 
+# ---------------- 自签证书导入（可选，$ImportCert）----------------
+# 必须在「回滚快照之后」执行：快照恢复会抹掉证书，所以不能靠快照预导入。
+function Import-GuestCert {
+  if (-not $ImportCert) { return $true }
+  $pfx = $CertPfxPath
+  if (-not [System.IO.Path]::IsPathRooted($pfx)) {
+    $pfx = Join-Path $PSScriptRoot $pfx
+  }
+  if (-not (Test-Path $pfx)) {
+    Add-Result $false "证书导入失败" "找不到 $pfx（检查 `$CertPfxPath）"
+    return $false
+  }
+  Write-Host "导入自签根证书到 guest 受信任根..."
+  Copy-ToGuest (Resolve-Path $pfx).Path "$GuestWork\cert.pfx"
+  # PFX 密码通过 base64 传入，避免在命令行明文出现
+  $b64Pass = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($CertPassword))
+  $certScript = @"
+`$pw = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$b64Pass'))
+try {
+  `$ok = Import-PfxCertificate -FilePath 'C:\vm_e2e\cert.pfx' -CertStoreLocation 'Cert:\LocalMachine\Root' -Password (ConvertTo-SecureString -String `$pw -AsPlainText -Force) -ErrorAction Stop
+  "OK" | Out-File -Encoding ascii C:\vm_e2e\cert-result.txt
+} catch {
+  "FAIL:`$_" | Out-File -Encoding ascii C:\vm_e2e\cert-result.txt
+}
+"@
+  Invoke-GuestCommand -Script $certScript -TimeoutSec 60 | Out-Null
+  $tmp = Join-Path $WorkDir "cert-result.txt"
+  try { Copy-FromGuest "$GuestWork\cert-result.txt" $tmp } catch { }
+  $line = if (Test-Path $tmp) { (Get-Content $tmp -Raw).Trim() } else { "FAIL:no-output" }
+  Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+  Add-Result ($line -like "OK*") "自签证书已导入 guest 受信任根" $line
+  return ($line -like "OK*")
+}
+
 # ---------------- 主机侧 http.server（端口预检 + 退出清理，报错1 根因）----------------
 $OldInstaller = "web/release2/$InstallerPrefix$OldVersion.exe"
 if (-not (Test-Path $OldInstaller)) {
@@ -204,32 +238,140 @@ try {
   }
   Add-Result $true "VM 回滚至干净快照并启动"
 
-  # 1) 拷入 0.2.1 并静默安装
+  # 0.5) 可选：导入自签根证书（必须在回滚之后，否则会被快照恢复抹掉）
+  Import-GuestCert | Out-Null
+
+  # 1) 拷入 0.2.1 并静默安装（轮询 + 诊断 dump + 路径兜底）
+  #    坑：electron-builder 的 NSIS /S 是 stub 行为，Start-Process -Wait 等到的是 stub 退出，
+  #    真正的安装进程仍在写注册表 → 立即查注册表会拿到空值。故改为「不依赖 -Wait + 轮询」。
   Copy-ToGuest (Resolve-Path $OldInstaller).Path "$GuestWork\installer.exe"
   $installScript = @'
+$ErrorActionPreference = "Continue"
 $setup = "C:\vm_e2e\installer.exe"
+$exe = ""
+$source = ""
+$cmdline = "$setup /S"
+
+# --- 安装前快照：安装包 MOTW 证据 ---
+$motw = "none"
+try {
+  $zi = Get-Item -Path "$setup`:Zone.Identifier" -Stream Zone.Identifier -ErrorAction SilentlyContinue
+  if ($zi) { $motw = "present" }
+} catch { }
+
 Unblock-File $setup -ErrorAction SilentlyContinue
-Start-Process -FilePath $setup -ArgumentList '/S' -Wait
-$icon = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+
+# 记录安装前的 Uninstall 项，便于差分判断「本次新增了哪条」
+$regRoots = @(
+  "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
   "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
-  "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" -ErrorAction SilentlyContinue |
-  Get-ItemProperty -ErrorAction SilentlyContinue |
-  Where-Object { $_.DisplayName -match '变声|voice-morph|voicemorph' } |
-  Select-Object -ExpandProperty DisplayIcon -First 1
-$exe = ($icon -split ',')[0].Trim('"')
-if (-not $exe -or -not (Test-Path $exe)) { $exe = "" }
-[pscustomobject]@{ exe = $exe } | ConvertTo-Json | Set-Content C:\vm_e2e\install-result.json
+  "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+)
+function Get-MatchItems {
+  $out = @()
+  foreach ($r in $regRoots) {
+    $items = Get-ChildItem $r -ErrorAction SilentlyContinue |
+      Get-ItemProperty -ErrorAction SilentlyContinue |
+      Where-Object { $_.DisplayName -match '变声|voice-morph|voicemorph' }
+    foreach ($i in $items) {
+      $out += [pscustomobject]@{
+        Name        = [string]$i.PSChildName
+        DisplayName = [string]$i.DisplayName
+        DisplayIcon = [string]$i.DisplayIcon
+      }
+    }
+  }
+  return $out
+}
+$before = @(Get-MatchItems)
+$beforeNames = @($before | ForEach-Object { $_.Name })
+
+# --- 启动 /S 安装（不 -Wait，避免 NSIS stub 提前返回造成的假完成） ---
+Start-Process -FilePath $setup -ArgumentList '/S' | Out-Null
+
+# --- 轮询最多 60s：注册表出现「新增项且 DisplayIcon 指向真实文件」---
+$deadline = (Get-Date).AddSeconds(60)
+$after = @()
+while ((Get-Date) -lt $deadline) {
+  Start-Sleep -Seconds 2
+  $after = @(Get-MatchItems)
+  foreach ($i in $after) {
+    $p = ($i.DisplayIcon -split ',')[0].Trim('"')
+    if ($p -and (Test-Path $p)) { $exe = $p; $source = "registry"; break }
+  }
+  if ($exe) { break }
+}
+
+# --- 兜底：注册表没写全时，扫常见安装位置 ---
+if (-not $exe) {
+  $cands = @()
+  $la = $env:LOCALAPPDATA
+  $pf = $env:ProgramFiles
+  $pf86 = ${env:ProgramFiles(x86)}
+  foreach ($root in @("$la\Programs", "$pf", "$pf86")) {
+    if (-not $root -or -not (Test-Path $root)) { continue }
+    $cands += Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match 'voice-morph|voicemorph|变声' }
+  }
+  foreach ($d in $cands) {
+    $hit = Get-ChildItem $d.FullName -Recurse -Filter *.exe -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -notmatch 'uninstall|elevate|crashpad' } |
+      Select-Object -First 1
+    if ($hit) { $exe = $hit.FullName; $source = "scan"; break }
+  }
+}
+
+# --- 诊断 dump：无论成败都写，供下一轮定性（SmartScreen / 时序 / 路径）---
+$diag = [ordered]@{}
+$diag.cmdline       = $cmdline
+$diag.motw          = $motw
+$diag.exe           = $exe
+$diag.source        = $source
+$diag.uninstallAll  = @($after)
+$diag.uninstallNew  = @($after | Where-Object { $beforeNames -notcontains $_.Name })
+$procs = @()
+foreach ($pn in @('installer', '变声工坊', 'voice-morph-desktop', 'elevate')) {
+  $procs += @(Get-Process -Name $pn -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessName })
+}
+$diag.procsStillRunning = @($procs)
+$la = $env:LOCALAPPDATA
+$diag.localProgramsDirs = @()
+if (Test-Path "$la\Programs") {
+  $diag.localProgramsDirs = @(Get-ChildItem "$la\Programs" -Directory -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty Name)
+}
+$diag.tempNsisLogs = @()
+try {
+  $diag.tempNsisLogs = @(Get-ChildItem $env:TEMP -Filter "*.log" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match 'nsis|setup|install|installer' } |
+    Select-Object -First 10 -ExpandProperty Name)
+} catch { }
+$diag | ConvertTo-Json -Depth 5 | Set-Content C:\vm_e2e\install-diag.json
+
+[pscustomobject]@{ exe = $exe; source = $source } | ConvertTo-Json | Set-Content C:\vm_e2e\install-result.json
 '@
-  Invoke-GuestCommand -Script $installScript -TimeoutSec 120 | Out-Null
-  $tmp = Join-Path $WorkDir "install-result.json"
+  Invoke-GuestCommand -Script $installScript -TimeoutSec 150 | Out-Null  $tmp = Join-Path $WorkDir "install-result.json"
   Copy-FromGuest "$GuestWork\install-result.json" $tmp
   $installInfo = Get-Content $tmp -Raw | ConvertFrom-Json
   Remove-Item $tmp -Force
-  if (-not $installInfo.exe -or -not $installInfo.exe.EndsWith('.exe')) {
-    Write-Error "静默安装后未能定位 exe 路径（安装可能弹了 SmartScreen 向导）。若如此请开启 `$ImportCert 或在快照里导入自签根证书。"
+
+  # 诊断文件一并拷回（即使后续 FAIL 也留证据）
+  $diagTmp = Join-Path $WorkDir "install-diag.json"
+  try { Copy-FromGuest "$GuestWork\install-diag.json" $diagTmp } catch { }
+
+  if (-not $installInfo.exe -or -not ($installInfo.exe -like '*.exe')) {
+    $hint = ""
+    if (Test-Path $diagTmp) {
+      try {
+        $d = Get-Content $diagTmp -Raw | ConvertFrom-Json
+        $hint = "诊断：source=$($d.source) motw=$($d.motw) 残留进程=[$($d.procsStillRunning -join ',')] " +
+                "LOCALAPPDATA\Programs=[$($d.localProgramsDirs -join ',')] 见 $diagTmp"
+      } catch { }
+    }
+    Write-Error "静默安装后未能定位 exe 路径。$hint"
     exit 1
   }
-  Add-Result $true "0.2.1 静默安装成功" $installInfo.exe
+  Add-Result $true "0.2.1 静默安装成功" "$($installInfo.exe)（来源：$($installInfo.source)）"
 
   # 2) 预检更新源可达（在 VM 内访问主机 latest.json）
   $srcCheck = @'
