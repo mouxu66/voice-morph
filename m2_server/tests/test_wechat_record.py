@@ -380,9 +380,28 @@ def test_ncc_match_tiny_image_returns_none():
 
 # ---------------- 绿色发送按钮定位 ----------------
 
+def _fake_user32_screen(monkeypatch, size=(1938, 1609)):
+    """最小 user32 桩：只回答屏幕尺寸（GetSystemMetrics(0)=宽, (1)=高）。
+
+    `_find_green_send` 会把取域 clamp 到屏幕内（左边 = min(r, sw) - 560），
+    所以屏幕尺寸会直接进结果。2026-09-13 CI 事故：下面的用例原来没桩它，
+    断言里 `1378 + 480` 其实编码的是**开发机**屏幕（≥1938×1609）；CI runner 是
+    1024×768 → box[0] 变成 464 → 拿到 953，红。桩掉之后与机器无关。
+    """
+
+    class FakeUser32:
+        def GetSystemMetrics(self, index):
+            return size[0] if index == 0 else size[1]
+
+    fake = FakeUser32()
+    monkeypatch.setattr(wv, "_user32", lambda: fake)
+    return fake
+
+
 def test_find_green_send_hit(monkeypatch):
     """浮层有微信绿 (18,199,125) 按钮时返回其质心屏幕坐标。"""
     from PIL import Image
+    _fake_user32_screen(monkeypatch)                 # 屏幕尺寸必须固定，否则与机器绑定
     scene = np.full((140, 560, 3), 247, dtype=np.uint8)
     scene[100:120, 480:500] = (18, 199, 125)       # 绿钮
     grabs = [Image.fromarray(scene)]
@@ -398,6 +417,7 @@ def test_find_green_send_hit(monkeypatch):
 def test_find_green_send_miss(monkeypatch):
     """纯灰浮层 → None（调用方点 × 取消）。"""
     from PIL import Image
+    _fake_user32_screen(monkeypatch)
     scene = np.full((140, 560, 3), 247, dtype=np.uint8)
     monkeypatch.setattr("PIL.ImageGrab.grab", lambda **k: Image.fromarray(scene))
     monkeypatch.setattr(wv.time, "sleep", lambda s: None)

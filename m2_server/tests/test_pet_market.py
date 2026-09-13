@@ -100,13 +100,16 @@ def test_uninstall_bundle_only_resets(iso, tmp_path):
 
 # ---- 远端皮肤安装编排（monkeypatch 下载层） ----
 
-def _fake_gif_zip(tmp_path) -> str:
-    """造一个含单帧 gif 的 zip 源码包（模拟 OpenGameArt 猫素材 zip）。"""
+def _fake_gif_zip(ffmpeg: str, tmp_path) -> str:
+    """造一个含单帧 gif 的 zip 源码包（模拟 OpenGameArt 猫素材 zip）。
+
+    `ffmpeg` 由 conftest 的 `ffmpeg_bin` 夹具传入：本机没装 ffmpeg → skip，
+    CI 上没装 → fail（2026-09-13 这三条就是 WinError 2，见 conftest.py 顶部）。
+    """
     import subprocess
-    from common import find_ffmpeg
     gif = tmp_path / "anim.gif"
     r = subprocess.run(
-        [find_ffmpeg(), "-y", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=2",
+        [ffmpeg, "-y", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=2",
          "-t", "1", "-loop", "0", str(gif)],
         capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stderr[-300:]
@@ -117,9 +120,9 @@ def _fake_gif_zip(tmp_path) -> str:
     return str(zp)
 
 
-def test_install_remote_gif_skin(iso, tmp_path, monkeypatch):
+def test_install_remote_gif_skin(iso, tmp_path, monkeypatch, ffmpeg_bin):
     """pixel-cat（gif-multi + zip 源）安装：入队 → 下载 → 解压 → 转换 → 校验 → preview。"""
-    zip_path = _fake_gif_zip(tmp_path)
+    zip_path = _fake_gif_zip(ffmpeg_bin, tmp_path)
 
     def fake_download(url: str, dst, box):
         import shutil
@@ -165,9 +168,9 @@ def test_install_same_id_rejects(iso, tmp_path, monkeypatch):
         time.sleep(0.05)
 
 
-def test_install_queue_two_then_both_done(iso, tmp_path, monkeypatch):
+def test_install_queue_two_then_both_done(iso, tmp_path, monkeypatch, ffmpeg_bin):
     """两个不同皮肤先后入队：第一个下载时第二个排队，第一个完成后第二个自动接续，最终都完成。"""
-    zip_path = _fake_gif_zip(tmp_path)
+    zip_path = _fake_gif_zip(ffmpeg_bin, tmp_path)
     pix = {
         "size": [4, 4],
         "palette": {"0": [255, 255, 255, 255], "1": [0, 0, 0, 255]},
@@ -294,9 +297,9 @@ def test_detail_returns_license_and_states(iso):
         iso.detail("no-such")
 
 
-def test_uninstall_remote_removes_dir(iso, tmp_path, monkeypatch):
+def test_uninstall_remote_removes_dir(iso, tmp_path, monkeypatch, ffmpeg_bin):
     """远端皮肤卸载物理删除目录；应用态复位默认。"""
-    test_install_remote_gif_skin(iso, tmp_path, monkeypatch)  # 复用安装流程
+    test_install_remote_gif_skin(iso, tmp_path, monkeypatch, ffmpeg_bin)  # 复用安装流程
     assert (iso.PET_SKINS_DIR / "pixel-cat" / "skin.json").exists()
     r = iso.uninstall("pixel-cat")
     assert r["uninstalled"] == "pixel-cat"

@@ -1,7 +1,11 @@
 # 让 pytest 能直接 import m2_server 内的模块（config / rvc_live / server）
 import os
+import shutil
 import sys
 from pathlib import Path
+from typing import NoReturn
+
+import pytest
 
 # 测试环境禁止启动时预热：server.py 在导入期就会 start_background() 预热
 # TTS worker + 常驻 RVC 模型（加载 1.7B 模型占 GPU），测试里绝不能真起这个
@@ -16,3 +20,81 @@ os.environ["VM_WECHAT_RESTART"] = "0"
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+# ==================== 本机资源探测（"本机绿 ≠ CI 绿"的第二根轴）====================
+# 为什么需要（2026-09-13 CI 首次运行）：
+#     CI 首跑红了 9 failed + 4 errors，**没有一条是代码缺陷**，全部是
+#     "开发机有、runner 没有"的外部资源：
+#       · ffmpeg            → pet_skin_build / pet_market / pet_scan 共 9 条
+#       · D:\RVC\.venv      → rvc_worker 的 2 条回退用例
+#       · kangaroo 微调产物  → seedvc 的 1 条
+#       · 屏幕分辨率 1938×1609 → wechat_record 的绿钮定位 1 条
+#     报错形态还特别难认：subprocess 抛 `[WinError 2]`、`RvcError: 找不到 RVC 运行环境`，
+#     看起来像生产代码坏了，其实是环境。
+#
+#     `tools/check.py --ci-fidelity` 当时只复刻了 **Python 依赖集** 这一根轴
+#     （Pillow/comtypes 那次事故的产物），对"资源缺失"这根轴完全看不见。
+#
+# 本段就是第二根轴的机器对策：资源探测集中到一处，缺资源时
+#     · 本机  → skip，并用人话说明怎么装（而不是抛 WinError 2）
+#     · CI 上 → **fail**。刻意的：CI 缺一个已声明的资源说明 workflow 的环境准备
+#               步骤坏了，不能让 skip 把它掩盖成绿色。
+#
+# `VM_BARE_RUNNER=1` 把所有本机资源一律判为"不存在"，让本机也能复现裸 runner
+# 的判定（`tools/check.py --ci-fidelity` 会设它）。这才是"改完测试先自问一句
+# CI 上有没有这东西"的机器版本。
+
+
+def _on_ci() -> bool:
+    """是否跑在 CI 上（GitHub Actions 会设 CI=true）。"""
+    return os.environ.get("CI", "").strip().lower() in ("1", "true", "yes")
+
+
+def bare_runner() -> bool:
+    """是否按「裸 runner」判定：所有本机资源一律视为不存在。
+
+    由 `VM_BARE_RUNNER=1` 打开；`tools/check.py --ci-fidelity` 会设。
+    """
+    return os.environ.get("VM_BARE_RUNNER", "").strip() not in ("", "0")
+
+
+def missing_local(what: str, how: str) -> NoReturn:
+    """缺本机资源：本机 skip（附安装提示），CI 上 fail（环境坏了不能装绿）。"""
+    msg = f"缺少本机资源 {what}（{how}）"
+    if _on_ci():
+        pytest.fail(msg + " —— CI 上出现说明环境准备步骤没生效，不许用 skip 掩盖")
+    pytest.skip(msg)
+
+
+def ffmpeg_path() -> str:
+    """ffmpeg 可执行路径。缺则 skip（CI 上 fail），绝不返回裸字符串。
+
+    为什么不能直接用 `common.find_ffmpeg()`：它找不到时会回落到字面量 `"ffmpeg"`
+    （生产代码需要这个行为，好让 PATH 上的 ffmpeg 兜底）。但测试里这个回落会把
+    "没有 ffmpeg"变成 subprocess 的 `[WinError 2] The system cannot find the file
+    specified` —— 2026-09-13 CI 上那 9 条就是这样，看不出真因。所以这里必须再确认
+    一次它真能跑起来。
+    """
+    if not bare_runner():
+        from common import find_ffmpeg
+        exe = find_ffmpeg()
+        if Path(exe).exists() or shutil.which(exe):
+            return exe
+    missing_local("ffmpeg", "winget install Gyan.FFmpeg，或设 FFMPEG_PATH 指向完整版")
+
+
+@pytest.fixture(scope="session")
+def ffmpeg_bin() -> str:
+    """ffmpeg 可执行路径（session 级）。需要真 ffmpeg 的用例依赖它即可自动跳过。"""
+    return ffmpeg_path()
+
+
+@pytest.fixture(scope="session")
+def on_bare_runner() -> bool:
+    """是否处于「裸 runner」模拟模式（见 `bare_runner()`）。
+
+    给"只在本机才有意义"的用例用：它们在本机跑、在 CI 跳过，
+    模拟模式下也要跟着跳过，否则 --ci-fidelity 的跳过集跟 CI 对不上。
+    """
+    return bare_runner()

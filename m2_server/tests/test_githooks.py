@@ -35,7 +35,16 @@ HOOKS_DIR = ROOT / ".githooks"
 
 
 def _run(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, env=env)
+    """跑一条命令并捕获输出。
+
+    **必须显式钉 encoding="utf-8"**：`text=True` 会用 `locale.getpreferredencoding()`
+    解码，而钩子与 git 都输出中文（如 `[pre-push] 首次 push…`）。开发机是 cp936，
+    恰好能解；2026-09-13 CI runner 是 en-US → cp1252 → 子进程读取线程抛
+    `UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f`（表现为
+    PytestUnhandledThreadExceptionWarning，输出还可能被截断）。显式钉死才与机器无关。
+    """
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", env=env)
 
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:

@@ -36,11 +36,16 @@ def _reset_scan(iso):
     pet_scan._reset()
 
 
-def _mk_gif(tmp_path: Path, name: str, frames: int = 4) -> Path:
-    """用 ffmpeg 生成一个真实小 gif（测试替换下载源用）；默认多帧走 hstack 路径。"""
+def _mk_gif(ffmpeg: str, tmp_path: Path, name: str, frames: int = 4) -> Path:
+    """用 ffmpeg 生成一个真实小 gif（测试替换下载源用）；默认多帧走 hstack 路径。
+
+    `ffmpeg` 由 conftest 的 `ffmpeg_bin` 夹具传入（原来硬编码字面量 `"ffmpeg"`，
+    2026-09-13 CI 上直接 WinError 2）。夹具同时统一了"优先用 winget 完整 build"
+    这个生产侧约定（见 common.find_ffmpeg）。
+    """
     out = tmp_path / name
     r = subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi", "-i", f"testsrc2=size=32x32:rate={max(2, frames)}",
+        [ffmpeg, "-y", "-f", "lavfi", "-i", f"testsrc2=size=32x32:rate={max(2, frames)}",
          "-t", "1", "-loop", "0", str(out)],
         capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stderr[-300:]
@@ -142,8 +147,13 @@ def test_find_repos_dedup_and_branch(iso, monkeypatch):
 
 # ---- 端到端扫描（假 API + 假下载，真 ffmpeg 试转） ----
 
-def test_scan_pixel_json_goes_live(iso, tmp_path, monkeypatch):
-    """像素 JSON 素材：扫描 → 试转通过 → 上线 ext 清单 → 可直接安装。"""
+def test_scan_pixel_json_goes_live(iso, tmp_path, monkeypatch, ffmpeg_bin):
+    """像素 JSON 素材：扫描 → 试转通过 → 上线 ext 清单 → 可直接安装。
+
+    这里 `ffmpeg_bin` 只是守卫：扫描器的"试转"（pixel JSON → webp strip）走真 ffmpeg，
+    没有它候选会被静默判为 built_fail，表现为 `len(items) == 0` 这种**看不出真因**的红
+    （2026-09-13 CI 实测）。
+    """
     pix = _mk_pixel_json(tmp_path)
 
     def fake_gh(path, params=None):
@@ -195,10 +205,10 @@ def test_scan_pixel_json_goes_live(iso, tmp_path, monkeypatch):
     assert disc and disc[0]["installed"] is True
 
 
-def test_scan_gif_merges_states(iso, tmp_path, monkeypatch):
+def test_scan_gif_merges_states(iso, tmp_path, monkeypatch, ffmpeg_bin):
     """同一仓库多个 gif：合并成一个皮肤，idle/play 按文件名关键字分状态。"""
-    idle = _mk_gif(tmp_path, "idle.gif")
-    walk = _mk_gif(tmp_path, "walking.gif")
+    idle = _mk_gif(ffmpeg_bin, tmp_path, "idle.gif")
+    walk = _mk_gif(ffmpeg_bin, tmp_path, "walking.gif")
     gif_map = pet_scan._gif_map_from_names(["idle.gif", "walking.gif"])
     assert gif_map["idle"] == "idle.gif" and gif_map["play"] == "walking.gif"
 

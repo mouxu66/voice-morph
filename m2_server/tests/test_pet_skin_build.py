@@ -6,14 +6,15 @@
 - skin.json 读写、缺省状态回退（listen→idle / build→play）、字段白名单
 - 非法 id 拒绝、缺 sheet 告警
 
-依赖本机 ffmpeg（common.find_ffmpeg），无真实网络。
+依赖 ffmpeg（走 conftest 的 `ffmpeg_bin` 夹具：本机没装 → skip，CI 上没装 → fail），
+无真实网络。2026-09-13 CI 首跑时这里 4 条 ERROR 就是 ffmpeg 缺失（WinError 2），
+见 conftest.py 顶部「本机资源探测」。
 """
 import json
 import subprocess
 
 import pytest
 
-from common import find_ffmpeg
 from pet_skin_build import (
     SkinBuildError,
     build_skin,
@@ -26,8 +27,9 @@ from pet_skin_build import (
 
 
 @pytest.fixture(scope="module")
-def ffmpeg():
-    return find_ffmpeg()
+def ffmpeg(ffmpeg_bin):
+    """本模块沿用短名 `ffmpeg`：路径由 conftest 的 `ffmpeg_bin` 提供（含 skip 语义）。"""
+    return ffmpeg_bin
 
 
 def _run(ffmpeg, args):
@@ -73,8 +75,12 @@ def test_atlas_8x9_slices_rows(atlas_png, tmp_path):
     assert "MIT" in lic and "poke" in lic
 
 
-def test_atlas_rowmap_explicit(gif_file):
-    """row_map 缺省键回退 DEFAULT_ROW_MAP（build→2 / think→4 / error→3）。"""
+def test_atlas_rowmap_explicit():
+    """row_map 缺省键回退 DEFAULT_ROW_MAP（build→2 / think→4 / error→3）。
+
+    原来挂了个没用到的 `gif_file` 参数（只为了建个 gif），结果这条纯常量断言
+    在没有 ffmpeg 的机器上也会跟着跳过 —— 白丢覆盖。2026-09-13 去掉。
+    """
     from pet_skin_build import DEFAULT_ROW_MAP
     assert DEFAULT_ROW_MAP["build"] == 2
     assert DEFAULT_ROW_MAP["error"] == 3

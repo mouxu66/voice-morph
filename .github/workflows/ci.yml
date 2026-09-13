@@ -44,6 +44,18 @@ jobs:
       - name: 安装测试依赖
         run: python -m pip install --upgrade pip -r requirements-dev.txt
 
+      # ffmpeg：提轨 / 宠物皮肤 atlas·gif 转换 / 预览生成的运行时依赖，
+      # 另有一批测试用它现场造素材（test_pet_skin_build / pet_market / pet_scan）。
+      # windows runner **不自带** —— 2026-09-13 首跑红的 13 条里有 9 条
+      # （5 failed + 4 errors）就是它缺席，报的是 subprocess 的 `[WinError 2]`，
+      # 看着像生产代码坏了，实际是环境。装它是为了让 CI 更接近真实用户环境，
+      # 而不是把那 9 条用例 skip 掉换个绿色（那等于整条 pet 链路在 CI 上没人管）。
+      - name: 安装 ffmpeg
+        shell: bash
+        run: |
+          choco install ffmpeg -y --no-progress
+          ffmpeg -version | head -1
+
       # 与本地、与 git 钩子跑的是**同一条命令**，避免"本地过、CI 挂"
       - name: 一键自检（ruff + pytest，跳过前端）
         run: python tools/check.py --no-web

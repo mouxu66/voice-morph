@@ -9,6 +9,8 @@ run_conversion 原默认 0.7，前端不传参时（post_seedvc 等场景）会�
 import inspect
 from pathlib import Path
 
+import pytest
+
 import seed_vc
 
 
@@ -35,11 +37,47 @@ def test_run_conversion_cfm_ckpt_optional():
     assert "cfm_checkpoint_path" in inspect.signature(seed_vc._seedvc_worker).parameters
 
 
-def test_ft_ckpt_kangaroo_resolves():
-    """kangaroo 音色必须命中 73 条自录切片微调的 CFM 检查点（不存在则测试环境不完整）。"""
+def test_ft_ckpt_resolves_latest_checkpoint(tmp_path, monkeypatch):
+    """微调目录里有多个 CFM_*.pth 时取最新那个（排序末位）—— 与机器无关的逻辑锁定。
+
+    2026-09-13 CI 事故：原来这条直接断言"本机存在 kangaroo 微调产物"，干净 runner
+    上必然红。但"产物在不在"是**本机环境**问题，不是 `_ft_ckpt` 的逻辑；两者必须拆开。
+    """
+    run_dir = tmp_path / "kangaroo"
+    run_dir.mkdir()
+    for n in ("CFM_s2_1000.pth", "CFM_s2_4000.pth", "CFM_s2_2500.pth"):
+        (run_dir / n).write_bytes(b"x")
+    monkeypatch.setitem(seed_vc.SEEDVC_FT_RUNS, "kangaroo", run_dir)
+
     ck = seed_vc._ft_ckpt("kangaroo")
-    assert ck is not None and isinstance(ck, Path), "kangaroo 微调产物缺失：需先跑 seed_vc_repo/train_v2.py"
-    assert ck.name.startswith("CFM_") and ck.exists()
+    assert isinstance(ck, Path) and ck.name == "CFM_s2_4000.pth"
+    assert ck.exists()
+
+
+def test_ft_ckpt_dir_without_cfm_returns_none(tmp_path, monkeypatch):
+    """微调目录在、但没有 CFM_*.pth（训练没跑完）→ 静默回落零样本，不抛错。
+
+    这条补的是 `_ft_ckpt` 里 `ckpts[-1] if ckpts else None` 的 else 分支 ——
+    原来没有任何用例覆盖"目录存在但检查点不全"这个真实会遇到的中间态。
+    """
+    run_dir = tmp_path / "half_trained"
+    run_dir.mkdir()
+    (run_dir / "G_1000.pth").write_bytes(b"x")      # 只有 G/D，CFM 还没落盘
+    monkeypatch.setitem(seed_vc.SEEDVC_FT_RUNS, "half_trained", run_dir)
+    assert seed_vc._ft_ckpt("half_trained") is None
+
+
+def test_ft_ckpt_kangaroo_local_artifact_present(on_bare_runner):
+    """本机（开发机）必须已训练出 kangaroo 微调产物 —— 缺失说明本地环境不完整。
+
+    CI / 未训练的机器上跳过：这是**本机自检**，不是代码契约。`on_bare_runner` 让
+    `tools/check.py --ci-fidelity` 也跳过它，跳过集与 CI 对齐（见 conftest.py 顶部）。
+    """
+    run_dir = seed_vc.SEEDVC_FT_RUNS.get("kangaroo")
+    if on_bare_runner or not (run_dir and run_dir.is_dir()):
+        pytest.skip("本机未训练 kangaroo 微调产物（需先跑 seed_vc_repo/train_v2.py）")
+    ck = seed_vc._ft_ckpt("kangaroo")
+    assert ck is not None and ck.name.startswith("CFM_") and ck.exists()
 
 
 def test_ft_ckpt_unknown_silent():

@@ -3,6 +3,9 @@
 背景（2026-09-10 实测）：一次性 CLI 每条换声 20~25s（几乎全是模型加载），
 常驻 worker 第二次起 0.3s。这些用例锁住协议与回退行为，**不得真起 RVC worker**
 （会占 GPU 显存且慢），全部用假 Popen 走 JSON 行协议。
+
+2026-09-13：`_fake_rvc_env` 让本文件与"本机是否装了 D:\\RVC"完全解耦
+（此前两条回退用例在干净 CI runner 上因环境守卫直接红）。
 """
 from __future__ import annotations
 
@@ -72,6 +75,28 @@ def _no_real_worker(monkeypatch):
     monkeypatch.setattr(rc, "_worker", None)
     yield
     monkeypatch.setattr(rc, "_worker", None)
+
+
+@pytest.fixture(autouse=True)
+def _fake_rvc_env(tmp_path, monkeypatch):
+    """假装 RVC 运行环境（D:\\RVC\\.venv\\Scripts\\python.exe）存在。
+
+    `rvc_convert()` 开头有一道人话守卫：
+
+        if not RVC_VENV_PY.exists():
+            raise RvcError(f"找不到 RVC 运行环境: {RVC_VENV_PY}")
+
+    本文件所有用例都把 `subprocess` 换成了假实现，那个解释器**永远不会被执行**，
+    所以只要让 `.exists()` 为真就够了 —— 用例随即与"本机有没有装 RVC"解耦。
+
+    2026-09-13 CI 事故：干净 runner 上没有 D:\\RVC，两条"回退到一次性子进程"
+    的用例直接在这道守卫上红了（报的是 RvcError，看着像生产代码坏了）。
+    这类守卫该由生产代码保留（用户真缺 RVC 时要给人话），测试侧桩掉即可。
+    """
+    py = tmp_path / "rvc_venv_python.exe"
+    py.write_bytes(b"")
+    monkeypatch.setattr(rc, "RVC_VENV_PY", py)
+    return py
 
 
 # ---------------- worker 握手与协议 ----------------
