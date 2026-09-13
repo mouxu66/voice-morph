@@ -26,6 +26,7 @@
 共享运行状态（流水线进度/挖掘状态/内录状态/路径常量）在 runtime.py。
 """
 import re
+import secrets
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -67,6 +68,16 @@ app = FastAPI(title="变声 · M2 转换服务", version="0.1.0")
 #   子进程都不带 token，启用鉴权不能破坏本机任何链路
 # - 局域网请求需通过以下任一方式：X-API-Key 头 / Authorization: Bearer / api_key 查询参数
 #   （移动端原生音频播放器请求 URL 时带不了自定义 header，所以必须支持查询参数）
+def _token_eq(given: str, expected: str) -> bool:
+    """常量时间比较。
+
+    不能用 `==`：字符串比较一旦在某字节不等就返回，局域网内可被按前缀逐字节爆破
+    （2026-09-13 安全审查）。比 bytes 而非 str —— compare_digest 对含非 ASCII 的 str
+    会直接抛 TypeError，而我们不想因为用户设了个中文 token 就让鉴权 500。
+    """
+    return secrets.compare_digest(given.encode("utf-8"), expected.encode("utf-8"))
+
+
 if cfg.API_TOKEN:
     from fastapi.responses import JSONResponse
     from starlette.middleware.base import BaseHTTPMiddleware
@@ -80,9 +91,9 @@ if cfg.API_TOKEN:
                 return await call_next(request)
             token = cfg.API_TOKEN
             ok = (
-                request.headers.get("X-API-Key", "") == token
-                or request.headers.get("Authorization", "") == f"Bearer {token}"
-                or request.query_params.get("api_key", "") == token
+                _token_eq(request.headers.get("X-API-Key", ""), token)
+                or _token_eq(request.headers.get("Authorization", ""), f"Bearer {token}")
+                or _token_eq(request.query_params.get("api_key", ""), token)
             )
             if not ok:
                 return JSONResponse(status_code=401, content={"detail": "unauthorized（需 X-API-Key 头或 api_key 参数）"})
