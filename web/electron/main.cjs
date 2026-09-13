@@ -30,9 +30,12 @@ async function createWindow(root) {
       nodeIntegration: false,
       // 主窗口 preload：渲染层借此真正拉起/停止本地后端（见 preload.cjs）
       preload: path.join(__dirname, "preload.cjs"),
-      // 本地应用加载本地后端：file:// 页面需要访问 http://127.0.0.1，关闭 webSecurity 避免 fetch 被拦
-      webSecurity: false,
-      allowRunningInsecureContent: true,
+      // 2026-09-13 恢复默认：此前这里是 webSecurity:false + allowRunningInsecureContent:true，
+      // 理由是「file:// 页面 fetch http://127.0.0.1 会被拦」。该结论已过时——后端
+      // server.py 的 LOCAL_ORIGIN_RE 明确放行 `null` / `file://` 来源并回显 ACAO
+      // （实测见 m2_server/tests/test_cors_file_origin.py），fetch 走标准 CORS 即可通过。
+      // 关掉 webSecurity 等于让渲染层失去同源策略，任何 XSS 都能直读本地接口，
+      // 对一个要开源的桌面应用是明确的负债，故不再需要。
     },
   });
 
