@@ -30,10 +30,18 @@ fi
 # 但 --ci-fidelity 要 3 分钟，每次 push 都跑会把人逼去用 --no-verify 绕过；
 # 所以只在这类"真会改变 CI 环境或覆盖率"的改动上跑。
 upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
+# rev-parse 解析不出上游时，会**把 `@{u}` 原样打到 stdout** 再报错；配合 2>/dev/null
+# 就变成"看起来解析成功"的假象，后面 `git diff "$upstream"..HEAD` 必炸，set -e 直接
+# 中止推送。2026-09-13 推 tag 时踩到：filter-repo 移过 remote，配置里 branch.master.merge
+# 还在但 refs/remotes/origin/master 不存在（git branch -vv 显示 `[origin/master: gone]`），
+# 于是 `@{u}` 解析失败。凡是带 `{` 的取值一律视为"没解析出来"。
+case "$upstream" in
+    ""|*'{'*) upstream="" ;;
+esac
 need_cifid=""
 if [ -z "$upstream" ]; then
     # 首次 push 本来就是"去让 CI 跑一次"的那一刻，直接复刻最划算
-    need_cifid="首次 push（尚无上游分支）"
+    need_cifid="首次 push（尚无可用上游分支）"
 else
     changed=$(git diff --name-only "$upstream"..HEAD)
     if printf '%s\n' "$changed" | grep -qE '(^|/)requirements[^/]*\.txt$|^m2_server/tests/|^\.github/workflows/ci\.yml$'; then
