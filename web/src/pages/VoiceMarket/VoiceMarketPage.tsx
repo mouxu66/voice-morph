@@ -185,7 +185,7 @@ export function MarketPage(p: VoiceMarket) {
 
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
-      <header className="sticky top-0 z-30 border-b border-border bg-card/80 px-5 py-4 backdrop-blur-xl sm:px-8 lg:px-12">
+      <header className="border-b border-border bg-card/80 px-5 py-4 backdrop-blur-xl sm:px-8 lg:px-12">
         <div className="mx-auto max-w-7xl">
           {/* 第一行：大搜索框 + 大蓝色「搜索」按钮（HMCL 风格） */}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
