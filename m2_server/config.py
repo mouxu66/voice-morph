@@ -42,9 +42,35 @@ TTS_VENV_PY = _path("VM_TTS_VENV_PY", ROOT / "tts_trial" / "venv312" / "Scripts"
 # RVC 整合包根目录
 RVC_ROOT = _path("VM_RVC_ROOT", Path("D:/RVC"))
 
-# 默认 RVC 实验名（新音色用各自 voice_id 作为 exp 名）
-# meituan_rat 是 2026-08-29 固定源 A/B（源=用户本人录音，pitch=0）中选定的最佳音色。
-RVC_DEFAULT_EXP = _str("VM_RVC_EXP", "meituan_rat")
+# 默认 RVC 实验名（新音色用各自 voice_id 作为 exp 名）。
+# 留空 = 本机没有“默认音色”：调用方应提示“请先创建/训练一个音色”。
+# 2026-09-13 前这里写的是作者本人的音色名（他 08-29 A/B 选出的最佳音色）——
+# 对开源用户而言那是一个必然不存在的实验名，且属于私人音色指纹。
+RVC_DEFAULT_EXP = _str("VM_RVC_EXP", "")
+
+def _resolve_default_ref() -> Path:
+    """兜底参考音：哪个音色都没有自己的参考音频时（市场下载的多半如此）用它，
+    保证链路永远出声，而不是静默失败。
+
+    优先 VM_DEFAULT_REF；否则用 tts_models/ref 下的参考音（名字随人不同，
+    所以按字典序取一个并保持稳定）；两者都没有时返回通用名字，
+    由调用方报“参考音频不存在”并指向 VM_DEFAULT_REF。
+
+    不写死具体文件名是有原因的：2026-09-13 前这里写的是作者本人的
+    `meituan_rat_002.wav`，对开源用户来说必然不存在。
+    """
+    env = os.environ.get("VM_DEFAULT_REF")
+    if env:
+        return Path(env)
+    ref_dir = TTS_MODELS_DIR / "ref"
+    if ref_dir.is_dir():
+        found = sorted(ref_dir.glob("*.wav"))
+        if found:
+            return found[0]
+    return ref_dir / "default.wav"
+
+
+DEFAULT_REF_AUDIO = _resolve_default_ref()
 
 # 语料导出目录（RVC 整合包的 dataset_raw）
 RVC_EXPORT_DIR = _path("VM_RVC_EXPORT_DIR", RVC_ROOT / "dataset_raw" / "rvc_dataset")

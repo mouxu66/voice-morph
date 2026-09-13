@@ -89,20 +89,31 @@ def diagnose():
         })
 
     # 5) 默认音色 RVC 权重（pth + index）
-    weights_dir = cfg.rvc_exp_dirs(cfg.RVC_DEFAULT_EXP)[0]
-    pth = find_pth(cfg.RVC_DEFAULT_EXP, weights_dir)
-    idx = next(weights_dir.glob("added_*.index"), None) if weights_dir.exists() else None
-    if pth and idx:
+    # 未配置默认音色时**不能**拿空实验名去 rvc_exp_dirs()：那会拼出 RVC_ROOT/logs，
+    # 反而可能扫到别人的 .pth 报“就绪”（2026-09-13 起默认音色为空，故补这道门）
+    # 注意：这里**不能**用早返回 —— 下面还有第 6 项（GPU/CUDA）、以及末尾的汇总，
+    # 早返回会静默丢掉那几行（本改动第一版就是这毛病，靠读函数尾才发现）。
+    if not cfg.RVC_DEFAULT_EXP:
         items.append({
-            "key": "rvc_weights", "ok": True, "label": f"RVC 权重（{cfg.RVC_DEFAULT_EXP}）",
-            "detail": str(pth), "hint": "",
+            "key": "rvc_weights", "ok": False, "label": "RVC 权重（未指定音色）",
+            "detail": "尚未指定默认音色（VM_RVC_EXP 为空）",
+            "hint": "先在「音色库」创建音色并训练，或设置 VM_RVC_EXP 指定默认音色。无权重时实时变声不可用，但 TTS/离线变声仍可用。",
         })
     else:
-        items.append({
-            "key": "rvc_weights", "ok": False, "label": f"RVC 权重（{cfg.RVC_DEFAULT_EXP}）",
-            "detail": f"未找到训练好的 .pth 或 .index（{weights_dir}）",
-            "hint": "该音色还没训练 RVC 模型：先在「音色微调」生成语料并训练，或在 RVC 整合包里完成训练。无权重时实时变声不可用，但 TTS/离线变声仍可用。",
-        })
+        weights_dir = cfg.rvc_exp_dirs(cfg.RVC_DEFAULT_EXP)[0]
+        pth = find_pth(cfg.RVC_DEFAULT_EXP, weights_dir)
+        idx = next(weights_dir.glob("added_*.index"), None) if weights_dir.exists() else None
+        if pth and idx:
+            items.append({
+                "key": "rvc_weights", "ok": True, "label": f"RVC 权重（{cfg.RVC_DEFAULT_EXP}）",
+                "detail": str(pth), "hint": "",
+            })
+        else:
+            items.append({
+                "key": "rvc_weights", "ok": False, "label": f"RVC 权重（{cfg.RVC_DEFAULT_EXP}）",
+                "detail": f"未找到训练好的 .pth 或 .index（{weights_dir}）",
+                "hint": "该音色还没训练 RVC 模型：先在「音色微调」生成语料并训练，或在 RVC 整合包里完成训练。无权重时实时变声不可用，但 TTS/离线变声仍可用。",
+            })
 
     # 6) GPU / CUDA（仅告警，不阻断 CPU 推理）
     cuda = torch.cuda.is_available()

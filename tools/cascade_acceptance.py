@@ -17,6 +17,7 @@ input_device 含 CABLE 即回环，脚本会带 code-review 式检查）。
 import argparse
 import json
 import subprocess
+import os
 import sys
 import time
 import urllib.request
@@ -27,7 +28,9 @@ sys.path.insert(0, str(ROOT / "m2_server"))
 
 API = "http://127.0.0.1:8000/api"
 WORKER = "http://127.0.0.1:8001"
-RVC_PY = Path("D:/RVC/.venv/Scripts/python.exe")
+# 与 config.py 同一约定：整合包位置用 VM_RVC_ROOT 覆盖（默认是作者本机的 D:/RVC）
+RVC_ROOT = Path(os.environ.get("VM_RVC_ROOT", "D:/RVC"))
+RVC_PY = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 STREAM_PY = ROOT / "m2_server" / "cascade_stream.py"
 
 

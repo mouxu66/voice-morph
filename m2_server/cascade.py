@@ -44,7 +44,8 @@ STREAM_PY = Path(__file__).resolve().parent / "cascade_stream.py"
 RVC_VENV_PY = cfg.RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 STATE_FILE = cfg.OUTPUTS_DIR / "cascade_state.json"
 RUN_LOG = cfg.OUTPUTS_DIR / "cascade_run.log"
-DEFAULT_REF = ROOT / "tts_models" / "ref" / "meituan_rat_002.wav"
+# 兜底参考音（经 config 走 VM_DEFAULT_REF，不再写死作者本机的音色文件）
+DEFAULT_REF = cfg.DEFAULT_REF_AUDIO
 
 OUTPUT_DEVICE = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "CABLE Input")
 

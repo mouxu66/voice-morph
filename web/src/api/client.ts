@@ -544,6 +544,8 @@ export async function exportRvcDataset(voiceId?: string): Promise<{ ok: boolean;
 // ---- 袋鼠 RVC 模型状态（训练完成后的只读展示） ----
 
 export type RvcModelStatus = {
+  /** RVC 实验名（= 音色 id）。后端未指定默认音色时为空字符串。 */
+  exp: string;
   trained: boolean;
   pth_exists: boolean;
   index_exists: boolean;

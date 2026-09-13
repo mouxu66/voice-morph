@@ -105,6 +105,9 @@ def export_rvc_dataset(exp_name: str | None = None, voice_id: str | None = None)
     if not RVC_DATASET_DIR.exists():
         raise HTTPException(400, "还没有训练语料，请先生成")
     exp = exp_name or voice_id or RVC_DEFAULT_EXP
+    if not exp:
+        # 空实验名会把语料导到 dataset_raw/ 根目录（越写越乱），必须先拒绝
+        raise HTTPException(400, "未指定音色：请选择音色，或设置 VM_RVC_EXP 作为默认音色")
     # 前缀后必须紧跟 "_"，否则 rvc_mei 会误匹配到 rvc_meituan_rat 的语料
     prefix = f"rvc_{re.sub(r'[^0-9A-Za-z_-]', '_', voice_id)}_" if voice_id else None
     files = [f for f in RVC_DATASET_DIR.glob("*.wav")
@@ -128,6 +131,11 @@ def export_rvc_dataset(exp_name: str | None = None, voice_id: str | None = None)
 def rvc_model_status(exp_name: str | None = None):
     """RVC 模型训练完成状态（供前端「模型已就绪」卡片展示）；可按音色 ID 查询。"""
     exp = exp_name or RVC_DEFAULT_EXP
+    if not exp:
+        # 未指定音色：返回空态，而不是拿空实验名去拼路径 —— 那会得到 RVC_ROOT/logs，
+        # 可能扫到别人的 .pth 误报“已训练”（2026-09-13 起默认音色可以为空）。
+        return {"exp": "", "trained": False, "pth_exists": False, "index_exists": False,
+                "dataset_count": 0, "weights_dir": "", "dataset_dir": ""}
     weights_dir = cfg.rvc_exp_dirs(exp)[0]
     pth = find_pth(exp, weights_dir)
     idx = next(weights_dir.glob("added_*.index"), None) if weights_dir.exists() else None

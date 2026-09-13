@@ -843,8 +843,11 @@ def run_live_asr(args):
 def main():
     p = argparse.ArgumentParser(description="级联变声子进程（录音→ASR→TTS）")
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根
+    # 兜底参考音：正常调用方（cascade.py）会显式传 --ref-audio 并先验存不存在，
+    # 这里只是“手工直接跑本脚本”时的默认值，故不写死任何具体音色文件。
     p.add_argument("--ref-audio",
-                   default=os.path.join(_root, "tts_models", "ref", "meituan_rat_002.wav"))
+                   default=os.environ.get("VM_DEFAULT_REF")
+                   or os.path.join(_root, "tts_models", "ref", "default.wav"))
     p.add_argument("--ref-text", default="", help="参考文字稿；空则 x-vector 声纹模式")
     p.add_argument("--chunk-max-s", type=float, default=6.0)
     p.add_argument("--silence-ms", type=int, default=400)

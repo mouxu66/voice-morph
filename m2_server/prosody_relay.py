@@ -21,7 +21,9 @@ from runtime import OUT, VOICEBANK
 
 # 兜底参考音：音色没有自己的参考音频（市场下载的多数如此）时用它，
 # 保证中转链路永远出声，而不是静默失败。
-DEFAULT_REF = Path(cfg.ROOT) / "tts_models" / "ref" / "meituan_rat_002.wav"
+# 具体路径由 VM_DEFAULT_REF 决定（config.DEFAULT_REF_AUDIO）——2026-09-13 前
+# 这里写死的是作者本机的音色文件，开源用户机器上必然不存在。
+DEFAULT_REF = Path(cfg.DEFAULT_REF_AUDIO)
 
 # 转写文本短于此长度视为无效（whisper 对噪声可能吐出零碎字），
 # 直接跳过中转走原音频，避免把一句噪声放大成一段胡话。

@@ -1,4 +1,5 @@
 import importlib
+import re
 import sys
 from pathlib import Path
 
@@ -12,10 +13,40 @@ def test_defaults_point_to_sensible_locations():
     import config
     assert isinstance(config.ROOT, Path)
     assert str(config.RVC_ROOT).replace("\\", "/").lower() == "d:/rvc"
-    assert config.RVC_DEFAULT_EXP == "meituan_rat"
     assert config.SERVER_HOST == "0.0.0.0"
     assert config.SERVER_PORT == 8000
     assert config.CORS_ORIGINS == ["*"]
+
+
+def test_no_private_voice_baked_into_config():
+    """config.py 里不得把**具体音色名**当默认值。
+
+    2026-09-13 前 `VM_RVC_EXP` 的默认值是作者本人的音色（meituan_rat）——对开源
+    用户而言那是个必然不存在的实验名，也属于私人音色指纹。
+
+    这里查**源码文本**而不是运行时值：本机 .env 会把值盖回去（config.py 会
+    load_dotenv），跑起来看根本区分不出“默认写死了”还是“.env 提供了”。
+    """
+    src = (Path(__file__).resolve().parents[1] / "config.py").read_text(encoding="utf-8")
+    m = re.search(r'RVC_DEFAULT_EXP\s*=\s*_str\(\s*"VM_RVC_EXP"\s*,\s*"([^"]*)"', src)
+    assert m, "找不到 RVC_DEFAULT_EXP 的定义（改名？那就同步改这条检查）"
+    assert m.group(1) == "", (
+        f"默认音色被写死为 {m.group(1)!r}；应留空，由 VM_RVC_EXP 提供（见 .env.example）"
+    )
+
+
+def test_default_voice_and_ref_are_env_driven(monkeypatch, tmp_path):
+    """默认音色 / 兜底参考音都必须是环境变量驱动的。"""
+    monkeypatch.setenv("VM_RVC_EXP", "my_voice")
+    monkeypatch.setenv("VM_DEFAULT_REF", str(tmp_path / "ref.wav"))
+    import config as cfg
+    importlib.reload(cfg)
+    try:
+        assert cfg.RVC_DEFAULT_EXP == "my_voice"
+        assert str(cfg.DEFAULT_REF_AUDIO) == str(tmp_path / "ref.wav")
+        assert str(cfg.rvc_exp_dirs()[0]).replace("\\", "/").endswith("logs/my_voice")
+    finally:
+        importlib.reload(cfg)
 
 
 def test_rvc_texts_loaded_from_bundled_file():
