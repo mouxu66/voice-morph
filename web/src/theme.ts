@@ -37,11 +37,11 @@ export function setStoredTheme(mode: ThemeMode) {
 
 const SIMPLE_KEY = "vm-simple-mode";
 
-/** 极简模式：只给「只需要变声」的用户保留核心入口，状态跨重启保留。 */
+/** 极简模式：默认开启（未设置即视为开启），用户可在设置里关闭，选择跨重启保留。 */
 export function getStoredSimpleMode(): boolean {
-  return localStorage.getItem(SIMPLE_KEY) === "1";
+  return localStorage.getItem(SIMPLE_KEY) !== "0";
 }
 
 export function setStoredSimpleMode(v: boolean) {
-  localStorage.setItem(SIMPLE_KEY, v ? "1" : "");
+  localStorage.setItem(SIMPLE_KEY, v ? "1" : "0");
 }
