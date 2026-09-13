@@ -20,7 +20,7 @@
 ### 一键前置检查
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File D:\变声\scripts\release.ps1 -DryRun -BaseUrl http://192.168.145.1:9000
+powershell -ExecutionPolicy Bypass -File D:\变声\scripts\release.ps1 -DryRun -BaseUrl http://192.168.1.100:9000
 ```
 
 只检查不构建，输出当前版本 / 证书状态 / 产物目录 / 更新源地址。**建议每次发版先跑这个。**
@@ -37,11 +37,11 @@ cd D:\变声
 $env:CSC_KEY_PASSWORD = '<你的 pfx 密码>'
 
 # 2) 前置检查（可选，推荐）
-powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -DryRun -BaseUrl http://192.168.145.1:9000
+powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -DryRun -BaseUrl http://192.168.1.100:9000
 
 # 3) 一条命令发版
 powershell -ExecutionPolicy Bypass -File scripts\release.ps1 `
-  -BaseUrl http://192.168.145.1:9000 `
+  -BaseUrl http://192.168.1.100:9000 `
   -Notes "修复录音卡顿；新增音高建议"
 
 # 4) 上传
@@ -89,7 +89,7 @@ python -m http.server 9000 --directory D:\变声\web\release2
 客户端（或 VM）环境变量指向**主机 IP**（不能用 `localhost`——VM 里的 localhost 是 VM 自己）：
 
 ```
-VM_UPDATE_URL = http://192.168.145.1:9000/latest.json
+VM_UPDATE_URL = http://192.168.1.100:9000/latest.json
 ```
 
 ### 正式分发
@@ -175,7 +175,7 @@ git checkout <good-commit> -- web/src m2_server web/electron
 
 # 2) 正常发版（版本号会从当前值继续 +1，天然高于坏版本）
 powershell -ExecutionPolicy Bypass -File scripts\release.ps1 `
-  -BaseUrl http://192.168.145.1:9000 `
+  -BaseUrl http://192.168.1.100:9000 `
   -Notes "回滚：修复 x.x.x 引入的录音崩溃"
 
 # 3) 上传，用户检查更新即会升到这个修复版
@@ -210,14 +210,14 @@ Rename-Item D:\变声\web\release2\latest.json latest.json.disabled
 
 ```powershell
 # 不升版本，重打包 + 重生成清单（适合修了构建配置、要重发同一版本）
-powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -SkipBump -BaseUrl http://192.168.145.1:9000
+powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -SkipBump -BaseUrl http://192.168.1.100:9000
 ```
 
 > 因为 `updater.cjs` 会按 sha256 判断缓存，重发的包内容若变了，用户端会**自动重下**，不会卡在旧包上。
 
 ## 六、验证发版是否成功
 
-发版后必须实际验证一遍（详见根目录 `README-vm-test.md` 的 VM 端到端流程）：
+发版后必须实际验证一遍（详见 `docs/internal/README-vm-test.md` 的 VM 端到端流程）：
 
 ```powershell
 # 主机起更新源
@@ -239,7 +239,7 @@ powershell -ExecutionPolicy Bypass -File D:\变声\scripts\test-update-e2e.ps1
 | `tools/test-manifest-pick.cjs` | 选包逻辑单测（候选过滤 + 版本匹配 + mtime 优先级），发版前建议跑 |
 | `web/electron/updater.cjs` | 客户端更新逻辑（检查/下载/校验/安装） |
 | `web/electron/update-ipc.cjs` | 更新 IPC + 启动静默检查 |
-| `README-vm-test.md` | VM 端到端测试手册 |
+| `docs/internal/README-vm-test.md` | VM 端到端测试手册（内部：作者本机环境专用） |
 | `scripts/test-update-e2e.ps1` | 端到端自动更新测试 |
 | `.workbuddy/memory/auto-update.md` | 更新链路全部踩坑记录 |
 

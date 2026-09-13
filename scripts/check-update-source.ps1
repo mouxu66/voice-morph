@@ -1,7 +1,7 @@
 ﻿# check-update-source.ps1 —— 在 Win10 虚拟机内运行，验证能访问主机更新源。
 #
 # 用法（VM 内 PowerShell）：
-#   powershell -ExecutionPolicy Bypass -File scripts/check-update-source.ps1 -HostIP 192.168.19.1 -Port 9000
+#   powershell -ExecutionPolicy Bypass -File scripts/check-update-source.ps1 -HostIP 192.168.1.100 -Port 9000
 #   或读取同目录 vm-test.config.ps1 的 $HostIP / $UpdatePort：
 #   powershell -ExecutionPolicy Bypass -File scripts/check-update-source.ps1 -ConfigFile scripts\vm-test.config.ps1
 #

@@ -97,7 +97,10 @@ certs/
 voice-morph-desktop/
 web/dist_old_bak*/
 
-# ===== VM 端到端测试私有配置（含账号/密码/IP，不入库）=====
+# ===== 本机私有配置（含路径/账号/密码，不入库）=====
+# .env：config.py 用 python-dotenv 自动加载本机机密与路径覆盖；模板见 .env.example。
+# 2026-09-13 补：此前只靠 pre-commit 钩子按文件名拦，.gitignore 里反而漏了它。
+.env
 scripts/vm-test.config.ps1
 .freebuff/
 .trae/

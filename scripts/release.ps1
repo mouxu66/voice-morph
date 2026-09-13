@@ -2,7 +2,8 @@
 #
 # 运行（任意工作目录均可，路径以本脚本位置锚定）：
 #   powershell -ExecutionPolicy Bypass -File scripts\release.ps1
-#   powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -BaseUrl http://192.168.145.1:9000 -Notes "修复录音卡顿"
+#   示例（换成你自己的更新源地址）：
+#   powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -BaseUrl http://192.168.1.100:9000 -Notes "修复录音卡顿"
 #   powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -SkipBump        # 不升版本，只重打包当前版本
 #   powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -DryRun          # 只检查前置条件，不构建
 #

@@ -77,6 +77,6 @@ CABLE Output                                   ← 系统默认【录音】设�
 | `tts_trial/audio_vol_check.py` | 主音量/静音 + 各会话音量 | `tts_trial/vol_out.txt` |
 
 约定（重要）：
-- 需要提权（UAC）的脚本**必须放在纯英文路径**（如 `C:\Users\mouxu\AppData\Local\Temp\`），
+- 需要提权（UAC）的脚本**必须放在纯英文路径**（如 `C:\Users\<你的用户名>\AppData\Local\Temp\`），
   中文路径会让 `Start-Process -Verb RunAs` 的参数乱码 → 提权进程静默失败（exit 0 无日志）。
 - 终端长任务会被超时杀死：验证类脚本一律结果写文件 + `Start-Process` 分离运行。
