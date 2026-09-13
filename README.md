@@ -339,6 +339,22 @@ python m2_server/server.py
 
 ---
 
+## 日志与排障
+
+后端**刻意不做日志级别管理**——这一点容易被当成缺陷，先讲清楚为什么：
+
+- **日志即 `stdout`**。`m2_server` 顶层 66 个模块里，9 个用 `logging`、16 个直接 `print()`，
+  全仓**没有** `logging.basicConfig`。原因是后端以**子进程**形态被 Electron 托管：
+  `backend.cjs` 捕获它的 stdout/stderr，转发到主进程控制台并落盘到
+  `%APPDATA%\变声工坊\backend.log`（`app.getPath("userData")` 下）。再加一层级别开关
+  只有配置成本、没有收益。
+- 因此直接 `python m2_server/server.py` 时，日志就是你的终端输出，**没有 `--log-level` 可调**。
+- 子任务的独立日志落在 `outputs/` 下：级联变声 `outputs/cascade_run.log`、
+  微调 `outputs/<...>/train_run.log`。
+- 排障优先看 `/api/doctor`（`tools/doctor.py`）与前端「设置 → 诊断」面板，而不是翻日志。
+
+---
+
 ## 已确认的技术决策
 
 - 克隆方式：**VC 语音转换**（不做 ASR+TTS），保留你的语气/停顿/情绪
