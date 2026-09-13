@@ -72,6 +72,8 @@ export type SetupStatus = {
     ttsVenvPy: string;
     rvcRoot: string;
     setupSeen: boolean;
+    /** 桌宠换装首启引导是否已看过（置 true 后不再自动开口） */
+    petGuideSeen: boolean;
   };
   configPath: string;
   items: SetupItem[];

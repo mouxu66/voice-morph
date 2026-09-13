@@ -25,6 +25,8 @@ const DEFAULTS = {
   // 用户是否已处理过首启引导（点过"去配置"或"稍后配置"）。
   // 置 true 后不再自动弹窗，避免每次启动都骚扰；UI 侧仍有常驻降级提示。
   setupSeen: false,
+  // 桌宠换装首启引导是否已看过：置 true 后不再自动开口，设置里可手动重播。
+  petGuideSeen: false,
 };
 
 /** 用户可配置的路径字段白名单（save 只接受这些键，防止写入任意垃圾） */
@@ -46,6 +48,7 @@ function normalize(raw) {
     }
   }
   out.setupSeen = raw.setupSeen === true;
+  out.petGuideSeen = raw.petGuideSeen === true;
   out.version = Number.isInteger(raw.version) ? raw.version : DEFAULTS.version;
   return out;
 }

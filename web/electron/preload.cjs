@@ -20,7 +20,7 @@ contextBridge.exposeInMainWorld("electron", {
   petGuide: (payload) => ipcRenderer.send("pet:guide", payload),
 
   // ---- 模型配置 / 首启引导 ----
-  /** 只读状态：{ config, configPath, items, ttsOk, rvcOk, allOk, missing, setupSeen } */
+  /** 只读状态：{ config, configPath, items, ttsOk, rvcOk, allOk, missing, setupSeen, petGuideSeen } */
   setupStatus: () => ipcRenderer.invoke("setup:status"),
   /** 弹目录选择器（tts_models / tts_venv / rvc_root），返回 { canceled, path, ok, reason } */
   setupPickDir: (kind) => ipcRenderer.invoke("setup:pick-dir", kind),
