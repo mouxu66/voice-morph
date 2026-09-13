@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Activity, Cable, Download, Eye, EyeOff, FolderOpen, HardDrive, Moon, Monitor, Palette, RotateCcw, Settings2, Sparkles, Stethoscope, Sun } from "lucide-react"
+import { Activity, Cable, Download, Eye, EyeOff, FolderOpen, HardDrive, LayoutGrid, Moon, Monitor, Palette, RotateCcw, Settings2, Sparkles, Stethoscope, Sun } from "lucide-react"
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { getHealth, listVoices, rvcLiveReset } from "@/api/client"
 import { StudioNav } from "@/components/voice-studio/StudioNav"
@@ -12,7 +12,7 @@ import { UpdateDialog } from "@/components/UpdateDialog"
 import { ToastViewport } from "@/lib/notify"
 import { appVersion, getSetupStatus, hasSetup, hasUpdate as canCheckUpdate, onUpdateAvailable, petGuide, saveSetup, type PetGuidePayload, type UpdateCheck } from "@/lib/electron"
 import { useAppStore } from "@/store/useAppStore"
-import { ThemeMode, getStoredTheme, setStoredTheme } from "@/theme"
+import { ThemeMode, getStoredSimpleMode, getStoredTheme, setStoredSimpleMode, setStoredTheme } from "@/theme"
 import { LiveRoute } from "@/pages/Live/index"
 import { TtsRoute } from "@/pages/Tts/index"
 import { VoicesRoute } from "@/pages/Voices/index"
@@ -54,9 +54,13 @@ function useServiceState() {
 function AppChrome({
   petGuideEnabled,
   onTogglePetGuide,
+  simpleMode,
+  onToggleSimple,
 }: {
   petGuideEnabled: boolean
   onTogglePetGuide: () => void
+  simpleMode: boolean
+  onToggleSimple: () => void
 }) {
   const currentLocation = useLocation()
   const { health } = useAppStore()
@@ -134,7 +138,7 @@ function AppChrome({
           {restoreMsg && <p className="mt-2 px-1 text-center text-xs leading-5 text-primary">{restoreMsg}</p>}
         </div>
         <div className="mt-8">
-          <StudioNav compact />
+          <StudioNav compact simpleMode={simpleMode} />
         </div>
         <div className="mt-auto">
           <div className={`flex items-center gap-2 rounded-md border px-3 py-2.5 text-xs ${online ? "border-primary/30 bg-primary/10 text-primary" : serviceState === "starting" ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-500" : "border-destructive/30 bg-destructive/10 text-destructive"}`}>
@@ -182,9 +186,9 @@ function AppChrome({
             </button>
           </div>
         </div>
-        {settingsOpen && <div className="absolute right-5 top-14 w-48 rounded-lg border border-border bg-card p-2 shadow-lg sm:right-8"><p className="px-2 py-1 text-xs text-muted-foreground">界面主题</p><div className="mt-1 grid grid-cols-3 gap-1">{([['dark', '暗色', Moon], ['light', '亮色', Sun], ['system', '系统', Monitor]] as [ThemeMode, string, typeof Moon][]).map(([mode, label, Icon]) => <button type="button" key={mode} onClick={() => { setStoredTheme(mode); setTheme(mode); setSettingsOpen(false) }} className={`flex flex-col items-center gap-1 rounded-md px-2 py-2 text-xs ${theme === mode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="h-4 w-4" />{label}</button>)}</div><div className="mt-2 border-t border-border pt-2 space-y-1"><p className="px-2 py-1 text-xs text-muted-foreground">桌宠</p><button type="button" onClick={() => { window.dispatchEvent(new CustomEvent("replay-pet-guide")); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><Sparkles className="h-3.5 w-3.5" />让桌宠再讲一遍本页</button><button type="button" onClick={() => { window.dispatchEvent(new CustomEvent("replay-pet-onboarding")); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><Palette className="h-3.5 w-3.5" />重播换装引导</button>            <button type="button" onClick={() => onTogglePetGuide()} className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><span className="flex items-center gap-2">{petGuideEnabled ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}{petGuideEnabled ? "切页时介绍页面" : "已关闭切页介绍"}</span><span className={`h-2 w-2 rounded-full ${petGuideEnabled ? "bg-primary" : "bg-muted-foreground/30"}`} /></button></div><div className="mt-2 space-y-1 border-t border-border pt-2"><p className="px-2 py-1 text-xs text-muted-foreground">维护</p><button type="button" onClick={() => { setModelOpen(true); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><FolderOpen className="h-3.5 w-3.5" />模型与引擎配置</button><button type="button" onClick={() => { setStorageOpen(true); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><HardDrive className="h-3.5 w-3.5" />存储占用与清理</button></div>{canCheckUpdate && <div className="mt-2 space-y-1 border-t border-border pt-2"><p className="px-2 py-1 text-xs text-muted-foreground">应用</p><button type="button" onClick={() => { setAutoUpdate(null); setUpdateOpen(true); setSettingsOpen(false) }} className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><span className="flex items-center gap-2"><Download className="h-3.5 w-3.5" />检查更新</span>{version && <span className="font-mono text-[10px] opacity-70">v{version}</span>}</button></div>}</div>}
+        {settingsOpen && <div className="absolute right-5 top-14 w-48 rounded-lg border border-border bg-card p-2 shadow-lg sm:right-8"><p className="px-2 py-1 text-xs text-muted-foreground">界面主题</p><div className="mt-1 grid grid-cols-3 gap-1">{([['dark', '暗色', Moon], ['light', '亮色', Sun], ['system', '系统', Monitor]] as [ThemeMode, string, typeof Moon][]).map(([mode, label, Icon]) => <button type="button" key={mode} onClick={() => { setStoredTheme(mode); setTheme(mode); setSettingsOpen(false) }} className={`flex flex-col items-center gap-1 rounded-md px-2 py-2 text-xs ${theme === mode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="h-4 w-4" />{label}</button>)}</div><button type="button" onClick={() => { onToggleSimple(); setSettingsOpen(false) }} className="mt-2 flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><span className="flex items-center gap-2"><LayoutGrid className="h-3.5 w-3.5" />极简模式</span><span className={`h-2 w-2 rounded-full ${simpleMode ? "bg-primary" : "bg-muted-foreground/30"}`} /></button><div className="mt-2 border-t border-border pt-2 space-y-1"><p className="px-2 py-1 text-xs text-muted-foreground">桌宠</p><button type="button" onClick={() => { window.dispatchEvent(new CustomEvent("replay-pet-guide")); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><Sparkles className="h-3.5 w-3.5" />让桌宠再讲一遍本页</button><button type="button" onClick={() => { window.dispatchEvent(new CustomEvent("replay-pet-onboarding")); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><Palette className="h-3.5 w-3.5" />重播换装引导</button>            <button type="button" onClick={() => onTogglePetGuide()} className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><span className="flex items-center gap-2">{petGuideEnabled ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}{petGuideEnabled ? "切页时介绍页面" : "已关闭切页介绍"}</span><span className={`h-2 w-2 rounded-full ${petGuideEnabled ? "bg-primary" : "bg-muted-foreground/30"}`} /></button></div><div className="mt-2 space-y-1 border-t border-border pt-2"><p className="px-2 py-1 text-xs text-muted-foreground">维护</p><button type="button" onClick={() => { setModelOpen(true); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><FolderOpen className="h-3.5 w-3.5" />模型与引擎配置</button><button type="button" onClick={() => { setStorageOpen(true); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><HardDrive className="h-3.5 w-3.5" />存储占用与清理</button></div>{canCheckUpdate && <div className="mt-2 space-y-1 border-t border-border pt-2"><p className="px-2 py-1 text-xs text-muted-foreground">应用</p><button type="button" onClick={() => { setAutoUpdate(null); setUpdateOpen(true); setSettingsOpen(false) }} className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><span className="flex items-center gap-2"><Download className="h-3.5 w-3.5" />检查更新</span>{version && <span className="font-mono text-[10px] opacity-70">v{version}</span>}</button></div>}</div>}
       </header>
-      <div className="fixed inset-x-0 top-16 z-10 border-b border-border bg-card/80 py-1.5 backdrop-blur-xl lg:hidden"><StudioNav /></div>
+      <div className="fixed inset-x-0 top-16 z-10 border-b border-border bg-card/80 py-1.5 backdrop-blur-xl lg:hidden"><StudioNav simpleMode={simpleMode} /></div>
       {/* 缺模型时的全局降级提示：不阻塞启动，只提示相关功能不可用 */}
       <SetupBanner onOpen={() => setModelOpen(true)} />
       <EnvHealth open={envOpen} onClose={() => setEnvOpen(false)} />
@@ -204,6 +208,7 @@ export default function App() {
   const { setHealth, setVoices } = useAppStore()
   const location = useLocation()
   const [petGuideEnabled, setPetGuideEnabled] = useState(true)
+  const [simpleMode, setSimpleMode] = useState(getStoredSimpleMode())
 
   useEffect(() => {
     let alive = true
@@ -263,6 +268,12 @@ export default function App() {
       <AppChrome
         petGuideEnabled={petGuideEnabled}
         onTogglePetGuide={() => setPetGuideEnabled((v) => !v)}
+        simpleMode={simpleMode}
+        onToggleSimple={() => setSimpleMode((v) => {
+          const next = !v
+          setStoredSimpleMode(next)
+          return next
+        })}
       />
       <main className="relative min-h-[100dvh] pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-[7.25rem] lg:pb-0 lg:pl-64 lg:pt-16">
         <Routes>
@@ -281,7 +292,7 @@ export default function App() {
           <Route path="/audiobook" element={<Navigate to="/tts?tab=book" replace />} />
           <Route path="/wechat" element={<Navigate to="/tts?tab=wechat" replace />} />
           <Route path="/effects" element={<Navigate to="/offlinevc?tab=fx" replace />} />
-          <Route path="*" element={<Navigate to="/workshop" replace />} />
+          <Route path="*" element={<Navigate to="/live" replace />} />
         </Routes>
       </main>
       {/* 页面内导览桌宠：随路由切换介绍当前页 */}

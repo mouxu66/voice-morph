@@ -34,3 +34,14 @@ export function setStoredTheme(mode: ThemeMode) {
   localStorage.setItem(KEY, mode);
   applyTheme(mode);
 }
+
+const SIMPLE_KEY = "vm-simple-mode";
+
+/** 极简模式：只给「只需要变声」的用户保留核心入口，状态跨重启保留。 */
+export function getStoredSimpleMode(): boolean {
+  return localStorage.getItem(SIMPLE_KEY) === "1";
+}
+
+export function setStoredSimpleMode(v: boolean) {
+  localStorage.setItem(SIMPLE_KEY, v ? "1" : "");
+}
