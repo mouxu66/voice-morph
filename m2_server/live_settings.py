@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
-"""实时变声本地设置：输入设备选择 + 输入降噪开关。
+"""实时变声本地设置：输入设备选择 + 输入降噪开关 + 性能档位。
 
 为什么要独立设置文件
 --------------------
 输入设备原来写死在环境变量（VM_LIVE_INPUT_DEVICE）/默认值里，用户没法在界面上
 换麦克风（手机当麦克风、USB 麦克风、调音台都接不进实时链路）。降噪开关
 （RVC 自带 I_noise_reduce）原来只在 RVC GUI 里有，无头模式下永远 False。
+性能档位（perf_profile）控制实时变声的推理参数与伴随进程：
+  - balanced  现状参数，字幕/自我监听按需开关
+  - game      更省占用：block_time 加大、extra_time/index_rate 降低，
+              启动时不自动拉起字幕与自我监听（适合边打游戏边变声）
 
 设置落在 outputs/live_settings.json，三方共用：
   - rvc_live._resolve_device_names：输入设备候选的第一优先级
@@ -31,7 +35,9 @@ SETTINGS_PATH = Path(
     os.environ.get("VM_LIVE_SETTINGS", _ROOT / "outputs" / "live_settings.json")
 )
 
-DEFAULTS = {"input_device": "", "denoise": True}
+PERF_BALANCED = "balanced"
+PERF_GAME = "game"
+DEFAULTS = {"input_device": "", "denoise": True, "perf_profile": PERF_BALANCED}
 
 _lock = threading.Lock()
 
@@ -54,13 +60,16 @@ def get() -> dict:
     for k in DEFAULTS:
         if k in raw and raw[k] is not None:
             out[k] = raw[k]
-    # denoise 必须是 bool；input_device 必须是 str
+    # denoise 必须是 bool；input_device 必须是 str；perf_profile 只认两个档位
     out["denoise"] = bool(out["denoise"])
     out["input_device"] = str(out["input_device"] or "").strip()
+    if out["perf_profile"] not in (PERF_BALANCED, PERF_GAME):
+        out["perf_profile"] = PERF_BALANCED
     return out
 
 
-def update(input_device: str | None = None, denoise: bool | None = None) -> dict:
+def update(input_device: str | None = None, denoise: bool | None = None,
+           perf_profile: str | None = None) -> dict:
     """合并写设置；未传的字段保持原值。返回写入后的完整设置。"""
     with _lock:
         data = get()
@@ -68,6 +77,10 @@ def update(input_device: str | None = None, denoise: bool | None = None) -> dict
             data["input_device"] = str(input_device).strip()
         if denoise is not None:
             data["denoise"] = bool(denoise)
+        if perf_profile is not None:
+            # 非法档位直接忽略（保持原值），不该静默写成坏值
+            if perf_profile in (PERF_BALANCED, PERF_GAME):
+                data["perf_profile"] = perf_profile
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         # 原子写：先写临时文件再替换，避免并发读到大半个 JSON
         fd, tmp = tempfile.mkstemp(dir=str(SETTINGS_PATH.parent), suffix=".tmp")

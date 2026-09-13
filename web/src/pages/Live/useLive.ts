@@ -7,6 +7,7 @@ import {
   listRvcDataset,
   listRvcVoices,
   rvcLiveMonitor,
+  rvcLiveSetProfile,
   rvcLiveStart,
   rvcLiveStatus,
   rvcLiveStop,
@@ -54,6 +55,7 @@ export function useLive() {
 
   const [starting, setStarting] = useState(false)
   const [stopping, setStopping] = useState(false)
+  const [restarting, setRestarting] = useState(false)
   const [training, setTraining] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -319,6 +321,34 @@ export function useLive() {
     [refreshAudioDevices],
   )
 
+  // ---- 性能档位（balanced/game） + GPU 显存 ----
+
+  const perfProfile = liveStatus?.perf_profile
+  const perfProfileDesc = liveStatus?.perf_profile_desc
+
+  const setProfile = useCallback(
+    async (profile: string) => {
+      if (profile === perfProfile) return
+      setRestarting(true)
+      setFeedback(null)
+      try {
+        const r = await rvcLiveSetProfile(profile)
+        setFeedback({
+          tone: "ok",
+          text: r.restarted
+            ? `已切换为「${r.profile_desc ?? profile}」，正在自动重启变声。`
+            : `已保存为「${r.profile_desc ?? profile}」，下次开启变声生效。`,
+        })
+      } catch (error) {
+        setFeedback({ tone: "error", text: msgOf(error, "切换性能档位失败") })
+      } finally {
+        setRestarting(false)
+        tickRef.current()
+      }
+    },
+    [perfProfile],
+  )
+
   return {
     voicesInfo,
     voices: voicesInfo?.voices ?? [],
@@ -339,12 +369,19 @@ export function useLive() {
     activeStep,
     starting,
     stopping,
+    restarting,
     training,
     generating,
     importing,
     feedback,
+    perfProfile,
+    perfProfileDesc,
+    gpuTotalMb: liveStatus?.gpu_total_mb ?? null,
+    gpuUsedMb: liveStatus?.gpu_used_mb ?? null,
+    liveProcVramMb: liveStatus?.live_proc_vram_mb ?? null,
     start,
     stop,
+    setProfile,
     toggleMonitor,
     audioDevices,
     refreshAudioDevices,

@@ -5,6 +5,7 @@ import {
   CircleAlert,
   Database,
   Download,
+  Gauge,
   Loader2,
   Mic,
   Mic2,
@@ -132,6 +133,11 @@ export function LivePage(p: ReturnType<typeof useLive>) {
   const trainRunning = Boolean(p.trainStatus?.running)
   const genRunning = Boolean(p.genStatus?.running)
   const logLines = p.trainStatus?.log_tail ?? []
+  // GPU 显存占用百分比（供性能卡片显存条使用）
+  const gpuPct =
+    p.gpuTotalMb && p.gpuUsedMb
+      ? Math.min(100, Math.round((p.gpuUsedMb / p.gpuTotalMb) * 100))
+      : 0
 
   // 训练日志默认收起，不占页面空间；出现新错误时自动弹出
   const [logOpen, setLogOpen] = useState(false)
@@ -178,6 +184,73 @@ export function LivePage(p: ReturnType<typeof useLive>) {
             未检测到 RVC 整合包（{p.voicesInfo.rvc_root}）。实时变声依赖它，请先用环境变量 VM_RVC_ROOT 指向你的 RVC 目录，或把整合包放到该路径。
           </p>
         )}
+
+        {/* 性能模式：两档切换 + GPU 显存占用（面向边打游戏边变声的用户） */}
+        <section className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="font-mono text-xs uppercase tracking-widest text-primary">PERFORMANCE</p>
+              <h3 className="mt-1 flex items-center gap-2 text-lg font-semibold text-card-foreground">
+                <Gauge className="h-4 w-4 text-primary" />
+                性能模式
+              </h3>
+              <p className="mt-1.5 max-w-xl text-xs leading-5 text-muted-foreground">
+                选「游戏低占用」会自动关掉实时转写（桌宠字幕）与自我监听，并降低推理开销，适合边打游戏边变声。
+              </p>
+            </div>
+            <div className="flex shrink-0 rounded-lg border border-border bg-background/70 p-1">
+              {([
+                ["balanced", "均衡·音质优先"],
+                ["game", "游戏低占用"],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  disabled={p.restarting}
+                  onClick={() => void p.setProfile(value)}
+                  className={cn(
+                    "rounded-md px-3 py-1.5 text-xs transition disabled:pointer-events-none disabled:opacity-60",
+                    p.perfProfile === value
+                      ? "bg-primary text-primary-foreground shadow-md"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {p.gpuTotalMb ? (
+            <div className="mt-4 space-y-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-muted-foreground">GPU 显存占用</span>
+                <span className="font-mono text-card-foreground">
+                  {(p.gpuUsedMb! / 1024).toFixed(1)} / {(p.gpuTotalMb / 1024).toFixed(0)} GB
+                  {p.liveProcVramMb != null && (
+                    <span className="ml-2 text-muted-foreground">变声进程约 {p.liveProcVramMb} MB</span>
+                  )}
+                </span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-muted-foreground/30">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-all",
+                    gpuPct > 85 ? "bg-destructive" : "bg-primary",
+                  )}
+                  style={{ width: `${gpuPct}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
+
+          {p.restarting && (
+            <p className="mt-3 flex items-center gap-2 text-xs text-primary">
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+              正按新档位重启实时变声（约 3 秒）…
+            </p>
+          )}
+        </section>
 
         {/* 01 选音色 —— 实时页以前没有这一步，导致"选了却不像" */}
         <section>

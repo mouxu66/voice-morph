@@ -608,6 +608,14 @@ export type RvcLiveStatus = {
   monitor_on?: boolean;
   monitor_gain?: number | null;
   asr_running?: boolean;
+  /** 性能档位：balanced=均衡·音质优先 / game=游戏低占用 */
+  perf_profile?: string;
+  perf_profile_desc?: string;
+  /** GPU 显存（MB）；无 GPU 或 nvidia-smi 不可用时为 null */
+  gpu_total_mb?: number | null;
+  gpu_used_mb?: number | null;
+  /** 实时变声子进程显存（MB）；探测不到时为 null */
+  live_proc_vram_mb?: number | null;
   live_running: boolean;
   audio_switched: boolean;
   last_error?: string;
@@ -667,6 +675,24 @@ export async function rvcLiveMonitor(on: boolean, gain?: number): Promise<{ ok: 
   const qs = new URLSearchParams({ on: String(on) });
   if (gain !== undefined) qs.set("gain", String(gain));
   return jsonFetch(`/rvc/live/monitor?${qs}`, { method: "POST" });
+}
+
+export type LiveProfileResult = {
+  ok: boolean;
+  profile: string;
+  profile_desc?: string;
+  restarted?: boolean;
+  gpu_total_mb?: number | null;
+  gpu_used_mb?: number | null;
+  live_proc_vram_mb?: number | null;
+};
+
+export async function rvcLiveGetProfile(): Promise<LiveProfileResult> {
+  return jsonFetch("/rvc/live/profile");
+}
+
+export async function rvcLiveSetProfile(profile: string): Promise<LiveProfileResult> {
+  return jsonFetch("/rvc/live/profile", { method: "POST", body: JSON.stringify({ profile }) });
 }
 
 export async function rvcLiveReset(): Promise<{ ok: boolean; reset?: boolean; error?: string }> {

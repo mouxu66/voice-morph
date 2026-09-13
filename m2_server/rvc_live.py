@@ -93,6 +93,88 @@ REALTIME_TUNING = {
     "f0method": "rmvpe",
 }
 
+# 性能档位参数表：每次 start 前由 _apply_model_config 写进 RVC config.json。
+# 注意：balanced/game 都基于基线复制，绝不污染 REALTIME_TUNING 本身；
+# fp32（is_half=False）与 f0method=rmvpe 是全项目铁律，档位不覆盖。
+PROFILE_TUNING = {
+    "balanced": dict(REALTIME_TUNING),
+    "game": {
+        **REALTIME_TUNING,
+        # 分块加长 → 推理频次更低、更省；上下文与索引权重下调 → 显存/算力更省。
+        # 代价：单句延迟略增、音质略降（面向边打游戏边变声的场景）。
+        "block_time": 0.35,
+        "extra_time": 1.5,
+        "index_rate": 0.3,
+    },
+}
+PROFILE_DESC = {"balanced": "均衡·音质优先", "game": "游戏低占用"}
+
+# GPU 显存探测缓存（1s TTL）：status 轮询较频繁，避免反复 spawn nvidia-smi
+_gpu_cache: dict = {"ts": 0.0, "used": None, "total": None, "proc": None}
+
+
+def _nvidia_smi(query: str) -> list[str] | None:
+    """跑一次 nvidia-smi（CSV 无头）；nvidia-smi 缺失/非 0 返回码一律返回 None。"""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if out.returncode != 0:
+            return None
+        return [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+    except Exception:
+        return None
+
+
+def _gpu_used_mb() -> int | None:
+    rows = _nvidia_smi("memory.used")
+    if not rows:
+        return None
+    try:
+        return int(rows[0].split(",")[0])
+    except ValueError:
+        return None
+
+
+def _gpu_total_mb() -> int | None:
+    rows = _nvidia_smi("memory.total")
+    if not rows:
+        return None
+    try:
+        return int(rows[0].split(",")[0])
+    except ValueError:
+        return None
+
+
+def _live_proc_vram_mb() -> int | None:
+    """实时变声子进程的显存占用（compute-apps 只列有 CUDA 上下文的进程）。"""
+    rows = _nvidia_smi("pid,used_memory")
+    if not rows:
+        return None
+    targets = set(_find_realtime_pids())
+    if _state["live"].get("pid"):
+        targets.add(_state["live"]["pid"])
+    for row in rows:
+        parts = row.replace(",", " ").split()
+        if len(parts) < 2:
+            continue
+        pid, mem = parts[0], parts[-1]
+        if pid.isdigit() and int(pid) in targets and mem.lstrip("-").isdigit():
+            return int(mem)
+    # 进程还没拿到 CUDA 上下文不视为失败
+    return None
+
+
+def _gpu_snapshot() -> dict:
+    """1s TTL 缓存的三连查结果，status/profile 接口共用。"""
+    now = time.time()
+    if now - _gpu_cache["ts"] >= 1.0:
+        _gpu_cache.update(ts=now, used=_gpu_used_mb(), total=_gpu_total_mb(),
+                          proc=_live_proc_vram_mb())
+    return {"gpu_total_mb": _gpu_cache["total"], "gpu_used_mb": _gpu_cache["used"],
+            "live_proc_vram_mb": _gpu_cache["proc"]}
+
 
 def _active_exp() -> str:
     """当前生效的 RVC 实验名（音色 ID）：最近一次启动的训练，否则回退默认。"""
@@ -506,7 +588,8 @@ def _apply_model_config() -> bool:
     cfg_json["index_path"] = str(idx).replace("\\", "/")
     # 基线参数统一覆盖：否则 GUI 上次遗留的实验性滑杆值会一直生效，
     # 而"实时听起来怪"绝大多数是这些参数导致的，不是模型问题。
-    cfg_json.update(REALTIME_TUNING)
+    # 按性能档位取参数表（balanced=现状 / game=更低占用）。
+    cfg_json.update(PROFILE_TUNING[live_settings.get()["perf_profile"]])
     # A8 输入降噪：live_settings.denoise（默认开）写入 RVC 自带 I_noise_reduce。
     # RVC 内置输入降噪 = 帧级 crossfade 降噪，代价约 +40ms 延迟（min(crossfade, 0.04)）；
     # 无头模式下 GUI 复选框永远 False，所以必须在每次启动时显式写入。
@@ -655,6 +738,10 @@ def rvc_live_status(exp_name: str | None = None):
         "input_device": _live_input_device() or INPUT_DEVICE,
         "monitor_on": bool(_find_monitor_pids()),
         "monitor_gain": _state["live"].get("monitor_gain"),
+        # 性能档位 + GPU 显存占用（无 GPU/nvidia-smi 不可用时 gpu_* 为 null）
+        "perf_profile": live_settings.get()["perf_profile"],
+        "perf_profile_desc": PROFILE_DESC.get(live_settings.get()["perf_profile"], ""),
+        **_gpu_snapshot(),
         # 实时转写（桌宠字幕）：running=转写子进程存活；stage/last_text 供桌宠渲染
         **{f"asr_{k}": v for k, v in _asr_state().items()},
     }
@@ -696,6 +783,46 @@ def _mme_input_devices() -> list[dict]:
 class LiveDevicesPayload(BaseModel):
     input_device: str | None = None
     denoise: bool | None = None
+
+
+class LiveProfilePayload(BaseModel):
+    profile: str
+
+
+@router.get("/rvc/live/profile")
+def rvc_live_profile_get():
+    """当前性能档位 + GPU 显存占用（供前端展示显存条）。"""
+    p = live_settings.get()["perf_profile"]
+    return {"ok": True, "profile": p,
+            "profile_desc": PROFILE_DESC.get(p, ""), **_gpu_snapshot()}
+
+
+@router.post("/rvc/live/profile")
+def rvc_live_profile_set(payload: LiveProfilePayload):
+    """切换性能档位（balanced/game）。
+
+    变声运行中切换 = 自动重启生效：stop（已还原声卡、清理字幕/监听）→ start 同一音色。
+    game 档重启后字幕与自我监听默认全关（start 内按档位处理）。
+    重启任一步失败时声卡已被还原，前端应提示用户点「一键恢复音频」。
+    """
+    profile = payload.profile.strip()
+    if profile not in PROFILE_TUNING:
+        raise HTTPException(status_code=400,
+                            detail=f"未知性能档位：{profile}（可选 balanced / game）")
+    changed = profile != live_settings.get()["perf_profile"]
+    if changed:
+        live_settings.update(perf_profile=profile)
+    restarted = False
+    if changed and _live_proc_alive():
+        # stop 尽力执行：失败也不阻断 start（声卡 restore/apply 幂等）
+        try:
+            rvc_live_stop()
+        except Exception as e:  # pragma: no cover - 防御性兜底
+            logger.warning("[profile] 切换档位停止旧变声异常（继续重启）: %s", e)
+        rvc_live_start(exp_name=_active_exp(), monitor=(profile == "balanced"))
+        restarted = True
+    return {"ok": True, "restarted": restarted, "profile": profile,
+            "profile_desc": PROFILE_DESC.get(profile, "")}
 
 
 @router.get("/rvc/live/audio_devices")
@@ -824,10 +951,13 @@ def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
     """启动实时变声。
 
     monitor: 是否开启自我监听（把变声后的声音回环到耳机，让自己听得到）。
-             不传时取环境变量 VM_LIVE_MONITOR（默认开）。
+             不传时取环境变量 VM_LIVE_MONITOR（默认开；game 性能档默认关）。
     monitor_gain: 监听音量，默认 0.8。
     """
-    monitor = MONITOR_ENABLED if monitor is None else bool(monitor)
+    # 性能档位：game 档默认不开自我监听与实时字幕（两个伴随进程是最吃 CPU/占用的部分）
+    profile = live_settings.get()["perf_profile"]
+    # game 档默认关监听；显式传 monitor=True 仍可手动开
+    monitor = (profile != "game" and MONITOR_ENABLED) if monitor is None else bool(monitor)
     monitor_gain = MONITOR_GAIN if monitor_gain is None else float(monitor_gain)
     # 级联变声与实时变声互斥：两者抢 GPU 且都要占 CABLE（反向检查在 cascade.start）
     from cascade import _cascade_alive
@@ -913,9 +1043,10 @@ def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
     threading.Thread(target=_live_waiter, args=(proc,), daemon=True).start()
 
     # 拉起实时转写子进程（桌宠字幕）：只采真麦 + ASR，无声卡操作，失败不影响变声
+    # game 档不自动拉起（whisper 最吃 CPU），需要时可在状态面板手动开
     asr_started = False
     try:
-        if STREAM_PY.exists():
+        if profile != "game" and STREAM_PY.exists():
             ASR_RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
             asr_log = open(ASR_RUN_LOG, "ab")
             subprocess.Popen(

@@ -34,7 +34,7 @@ def _tmp_settings(tmp_path, monkeypatch):
 
 def test_defaults_when_missing():
     s = live_settings.get()
-    assert s == {"input_device": "", "denoise": True}
+    assert s == {"input_device": "", "denoise": True, "perf_profile": "balanced"}
 
 
 def test_roundtrip_update():
@@ -58,7 +58,7 @@ def test_corrupt_file_falls_back(tmp_path, monkeypatch):
     p = tmp_path / "live_settings.json"
     p.write_text("{not json", encoding="utf-8")
     monkeypatch.setattr(live_settings, "SETTINGS_PATH", p)
-    assert live_settings.get() == {"input_device": "", "denoise": True}
+    assert live_settings.get() == {"input_device": "", "denoise": True, "perf_profile": "balanced"}
     # 保存覆盖坏文件后恢复正常
     live_settings.update(denoise=False)
     assert live_settings.get()["denoise"] is False
@@ -141,3 +141,82 @@ def test_resolve_prefers_explicit_device(monkeypatch):
     monkeypatch.setattr(_sp, "run", lambda *a, **k: _R())
     inp, _out = rvc_live._resolve_device_names()
     assert inp == "CABLE Output (VB-Audio Virtual C"
+
+
+# ---------------- 性能档位（perf_profile） ----------------
+
+def test_perf_default_balanced():
+    assert live_settings.get()["perf_profile"] == "balanced"
+
+
+def test_perf_roundtrip_switch():
+    live_settings.update(perf_profile="game")
+    assert live_settings.get()["perf_profile"] == "game"
+    live_settings.update(perf_profile="balanced")
+    assert live_settings.get()["perf_profile"] == "balanced"
+
+
+def test_perf_invalid_profile_ignored():
+    """非法档位一律忽略：不静默写坏值，也不覆盖已有合法档位。"""
+    live_settings.update(perf_profile="ultra")
+    assert live_settings.get()["perf_profile"] == "balanced"
+    live_settings.update(perf_profile="game")
+    live_settings.update(perf_profile="???")
+    assert live_settings.get()["perf_profile"] == "game"
+
+
+_GPU_SNAP = {"gpu_total_mb": 8192, "gpu_used_mb": 2048, "live_proc_vram_mb": 512}
+
+
+def test_perf_get_endpoint(monkeypatch):
+    monkeypatch.setattr(rvc_live, "_gpu_snapshot", lambda: dict(_GPU_SNAP))
+    r = rvc_live.rvc_live_profile_get()
+    assert r["ok"] is True
+    assert r["profile"] == "balanced"
+    assert r["profile_desc"] == "均衡·音质优先"
+    assert r["gpu_total_mb"] == 8192
+    assert r["gpu_used_mb"] == 2048
+    assert r["live_proc_vram_mb"] == 512
+
+
+def test_perf_set_valid_idle(monkeypatch):
+    """变声未运行：只落盘，不触发重启。"""
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: False)
+    r = rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="game"))
+    assert r["ok"] is True
+    assert r["profile"] == "game"
+    assert r["restarted"] is False
+    assert live_settings.get()["perf_profile"] == "game"
+
+
+def test_perf_set_unknown_400():
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as ei:
+        rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="ultra"))
+    assert ei.value.status_code == 400
+    assert "未知性能档位" in str(ei.value.detail)
+
+
+def test_perf_set_running_restarts_with_game_flags(monkeypatch):
+    """变声运行中切换到 game：stop 后以同音色重启，monitor=False（自我监听关闭）。"""
+    calls: list = []
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: True)
+    monkeypatch.setattr(rvc_live, "_active_exp", lambda: "kangaroo")
+    monkeypatch.setattr(rvc_live, "rvc_live_stop", lambda: calls.append("stop"))
+    monkeypatch.setattr(rvc_live, "rvc_live_start", lambda *a, **k: calls.append(k))
+    r = rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="game"))
+    assert r["restarted"] is True
+    assert live_settings.get()["perf_profile"] == "game"
+    stop_call, start_kw = calls
+    assert stop_call == "stop"
+    assert start_kw == {"exp_name": "kangaroo", "monitor": False}
+
+
+def test_perf_set_same_profile_does_not_restart(monkeypatch):
+    """切回当前档位：幂等，不落盘不重启。"""
+    live_settings.update(perf_profile="game")
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: True)
+    monkeypatch.setattr(rvc_live, "rvc_live_stop", lambda: None)
+    monkeypatch.setattr(rvc_live, "rvc_live_start", lambda *a, **k: None)
+    r = rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="game"))
+    assert r["restarted"] is False
