@@ -18,6 +18,8 @@ uvicorn[standard]
 python-multipart
 pydantic
 requests
+Pillow          # 微信录音浮层截图 + 绿钮质心定位（wechat_voice）· 截图链路是主进程内调用，
+                # 缺了会在「发送语音」时抛 ModuleNotFoundError（2026-09-13 瘦环境实测暴露）
 
 # 音频处理
 demucs          # 人声分离（去 BGM）

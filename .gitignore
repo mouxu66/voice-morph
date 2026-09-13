@@ -14,6 +14,9 @@ build/
 # ===== 虚拟环境（不入库） =====
 .venv/
 tts_trial/venv312/
+# 复刻 CI 的瘦环境（只装 requirements-dev.txt，见 docs/犯错指南.md §3.9）
+# 注意：gitignore 不支持行尾注释，注释必须单独一行，否则整行会被当成 pattern
+.venv-ci/
 
 # ===== 前端依赖与构建产物 =====
 web/node_modules/

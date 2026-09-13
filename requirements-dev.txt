@@ -2,8 +2,8 @@
 #
 # 为什么不是 `-r requirements.txt`：那会拉 torch / torchaudio / demucs（>2GB、
 # CI 上要 5~8 分钟），而本项目的测试全部用 monkeypatch 隔离了模型、微信真机与
-# ffmpeg，跑测试并不需要它们。2026-09-11 实测：屏蔽 torch/demucs/librosa 后
-# 全量仍是 473 passed（仅 3 例按设计 skip）。
+# ffmpeg，跑测试并不需要它们。2026-09-13 实测（真建瘦 venv 跑，不再靠"屏蔽"）：
+# 全量 573 passed + 3 skipped（3 例按设计 skip）。
 #
 # ⚠️ 两个刻意不装的包，别"顺手补上"：
 #   - torch      ：test_server.py 里唯一依赖它的用例用 importorskip 自行跳过；
@@ -31,3 +31,10 @@ requests
 # 以下两项是**顶层导入**（不是懒加载），缺了连 import 都过不去
 sounddevice            # wechat_voice / play_worker
 pyaudiowpatch          # loopback_capture（Windows WASAPI 内录）
+
+# 测试路径直接用到的包 —— 本机 .venv 里它们只是**别的包的传递依赖**（Pillow 来自
+# gradio/matplotlib/tensorboard，comtypes 来自 pycaw/uiautomation），所以本机全绿、
+# 瘦环境直接红：2026-09-13 实测 2 failed + 2 errors（PIL / comtypes 均 ModuleNotFoundError）。
+# 凡测试或 tools/ 会 import 的包，必须写在这里，别指望传递依赖。
+Pillow                 # test_wechat_record 的绿钮定位用例 + wechat_voice 截图链路
+comtypes               # test_audio_diag_tools 会 exec tools/cable_watch.py（其顶层 import comtypes）
