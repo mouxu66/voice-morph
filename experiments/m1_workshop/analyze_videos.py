@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 # 快速"看"视频：抽音 + ASR 识别语言/内容 + 估算 BGM/人声占比
+# 注：本脚本是作者本机的一次性实验脚本，输入视频需自行放到 ~/Downloads（或改 DOWNLOADS）。
 import os, subprocess, sys, json, tempfile
+from pathlib import Path
 import numpy as np, soundfile as sf
 
+# 2026-09-13 开源前脱敏：不再写死 C:\Users\<作者名>\Downloads
+DOWNLOADS = Path.home() / "Downloads"
+
 VIDEOS = [
-    ("D:/Users/mouxu/Downloads/老板的胆子真是肥嘟嘟的_哔哩哔哩_bilibili.mp4", "老板的胆子..."),
-    ("D:/Users/mouxu/Downloads/神人の外卖（5）_哔哩哔哩_bilibili-20260827-ne4zlou33r.mp4", "神人の外卖5"),
-    ("D:/Users/mouxu/Downloads/video_260828_110637.mp4", "video_110637"),
-    ("D:/Users/mouxu/Downloads/《美团袋鼠视频合集》_哔哩哔哩_bilibili.mp4", "袋鼠合集"),
-    ("D:/Users/mouxu/Downloads/video_260828_105338.mp4", "video_105338"),
+    (DOWNLOADS / "老板的胆子真是肥嘟嘟的_哔哩哔哩_bilibili.mp4", "老板的胆子..."),
+    (DOWNLOADS / "神人の外卖（5）_哔哩哔哩_bilibili-20260827-ne4zlou33r.mp4", "神人の外卖5"),
+    (DOWNLOADS / "video_260828_110637.mp4", "video_110637"),
+    (DOWNLOADS / "《美团袋鼠视频合集》_哔哩哔哩_bilibili.mp4", "袋鼠合集"),
+    (DOWNLOADS / "video_260828_105338.mp4", "video_105338"),
 ]
 TMP = "D:/变声/m1_workshop/_tmp_audio"
 os.makedirs(TMP, exist_ok=True)

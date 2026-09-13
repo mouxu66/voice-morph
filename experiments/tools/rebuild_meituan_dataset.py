@@ -1,19 +1,26 @@
 # 用用户指定的两个纯净视频重建 meituan_rat 训练集：清空旧素材 -> 提取 -> 分离 -> 切片 -> 装入
+import os
 import sys
 import shutil
 from pathlib import Path
 
-sys.path.insert(0, r"D:\变声\m2_server")
+# 路径一律从「本文件位置 / 环境变量 / 家目录」推导，不写死作者机器路径
+# （2026-09-13 开源前脱敏：原先写死 D:\变声 与 C:\Users\<作者名>\Downloads）
+ROOT = Path(__file__).resolve().parents[2]        # experiments/tools/x.py -> 项目根
+DOWNLOADS = Path.home() / "Downloads"
+RVC_ROOT = Path(os.environ.get("VM_RVC_ROOT", "D:/RVC"))
+
+sys.path.insert(0, str(ROOT / "m2_server"))
 import importlib.util
 
-spec = importlib.util.spec_from_file_location("pipeline", r"D:\变声\m1_workshop\pipeline.py")
+spec = importlib.util.spec_from_file_location("pipeline", str(ROOT / "m1_workshop" / "pipeline.py"))
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-DATASET = Path(r"D:\RVC\dataset\meituan_rat")
+DATASET = RVC_ROOT / "dataset" / "meituan_rat"
 VIDEOS = [
-    Path(r"C:\Users\mouxu\Downloads\video_260828_105338.mp4"),
-    Path(r"C:\Users\mouxu\Downloads\video_260828_110637.mp4"),
+    DOWNLOADS / "video_260828_105338.mp4",
+    DOWNLOADS / "video_260828_110637.mp4",
 ]
 
 # 1) 清空旧数据集

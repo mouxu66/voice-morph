@@ -3,7 +3,7 @@
 import os
 import shutil
 
-SRC_DIR = r"C:\Users\mouxu\Downloads\我胆子就是肥嘟嘟的"
+SRC_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "我胆子就是肥嘟嘟的")
 RAW = r"D:\变声\media\raw_videos"
 CLIPS = r"D:\变声\media\clips"
 OUT = r"D:\变声\tts_trial\move_out.txt"
