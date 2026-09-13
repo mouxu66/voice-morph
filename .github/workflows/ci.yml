@@ -30,6 +30,15 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
+      # check.py 的前两步（requires / electron-load）用 node 直接跑
+      # tools/check-require.cjs 与 tools/test-electron-load.cjs —— 它们是
+      # 2026-09-12「装了打不开」事故的机器门禁，**不能因为这里没 node 就跳过**。
+      # 镜像里其实预装了 Node，但那是镜像的隐式行为：显式钉一版，
+      # 否则哪天镜像变了就变成"未找到 node（需要 Node.js）"的假红。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       # 瘦环境：装 requirements-dev.txt 而不是 requirements.txt
       # （后者含 torch/demucs，>2GB，测试用不上；理由见该文件注释）
       - name: 安装测试依赖
