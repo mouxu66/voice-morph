@@ -1,20 +1,16 @@
-import { AudioLines, FlaskConical, Library, Mic2, PawPrint, Radio, Radar, Speech, Store, Waves } from "lucide-react"
+import { AudioLines, Library, Mic2, PawPrint, Radio, Speech } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 
 const items = [
   { path: "/workshop", label: "音色工坊", icon: Mic2 },
-  { path: "/discover", label: "发掘音色", icon: Radar },
-  { path: "/ft", label: "音色微调", icon: FlaskConical },
   { path: "/voices", label: "音色库", icon: Library },
-  { path: "/market", label: "音色市场", icon: Store },
-  { path: "/pet-market", label: "人偶市场", icon: PawPrint },
+  { path: "/live", label: "实时变声", icon: Radio },
   { path: "/tts", label: "语音合成", icon: Speech },
-  { path: "/live", label: "RVC 实时", icon: Radio },
-  { path: "/qwen", label: "千问变声", icon: Waves },
   { path: "/offlinevc", label: "离线工坊", icon: AudioLines },
+  { path: "/pet-market", label: "人偶市场", icon: PawPrint },
 ]
 
-// 注意：合并页（实时变声/语音合成/离线工坊）内部的 tab 自带就绪降级提示，
+// 注意：合并页（音色工坊/音色库/实时变声/语音合成/离线工坊）内部的 tab 自带就绪降级提示，
 // 「离线变声」无模型时页面内会引导去训练，不再整页锁定。
 export function StudioNav({ compact = false }: { compact?: boolean }) {
   const currentLocation = useLocation()

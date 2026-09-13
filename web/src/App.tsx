@@ -14,26 +14,18 @@ import { appVersion, getSetupStatus, hasSetup, hasUpdate as canCheckUpdate, onUp
 import { useAppStore } from "@/store/useAppStore"
 import { ThemeMode, getStoredTheme, setStoredTheme } from "@/theme"
 import { LiveRoute } from "@/pages/Live/index"
-import { CascadeRoute } from "@/pages/Cascade/index"
 import { TtsRoute } from "@/pages/Tts/index"
 import { VoicesRoute } from "@/pages/Voices/index"
 import { WorkshopRoute } from "@/pages/Workshop/index"
-import { DiscoverRoute } from "@/pages/Discover/index"
-import { FtRoute } from "@/pages/Ft/index"
 import { OfflineVcRoute } from "@/pages/OfflineVc/index"
-import { VoiceMarketRoute } from "@/pages/VoiceMarket/index"
 import { PetMarketRoute } from "@/pages/PetMarket/index"
 
 const pageTitles: Record<string, string> = {
-  "/live": "RVC 实时变声",
-  "/qwen": "千问变声",
   "/workshop": "音色工坊",
-  "/discover": "发掘音色",
   "/voices": "音色库",
+  "/live": "实时变声",
   "/tts": "语音合成",
-  "/ft": "音色微调",
   "/offlinevc": "离线工坊",
-  "/market": "音色市场",
   "/pet-market": "人偶市场",
 }
 
@@ -274,18 +266,18 @@ export default function App() {
       />
       <main className="relative min-h-[100dvh] pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-[7.25rem] lg:pb-0 lg:pl-64 lg:pt-16">
         <Routes>
-          <Route path="/live" element={<LiveRoute />} />
-          <Route path="/qwen" element={<CascadeRoute />} />
           <Route path="/workshop" element={<WorkshopRoute />} />
-          <Route path="/discover" element={<DiscoverRoute />} />
           <Route path="/voices" element={<VoicesRoute />} />
+          <Route path="/live" element={<LiveRoute />} />
           <Route path="/tts" element={<TtsRoute />} />
-          <Route path="/ft" element={<FtRoute />} />
           <Route path="/offlinevc" element={<OfflineVcRoute />} />
-          <Route path="/market" element={<VoiceMarketRoute />} />
           <Route path="/pet-market" element={<PetMarketRoute />} />
           {/* 旧路由重定向到合并页对应 tab */}
-          <Route path="/cascade" element={<Navigate to="/qwen" replace />} />
+          <Route path="/discover" element={<Navigate to="/workshop?tab=discover" replace />} />
+          <Route path="/ft" element={<Navigate to="/workshop?tab=ft" replace />} />
+          <Route path="/market" element={<Navigate to="/voices?tab=market" replace />} />
+          <Route path="/qwen" element={<Navigate to="/live?tab=qwen" replace />} />
+          <Route path="/cascade" element={<Navigate to="/live?tab=qwen" replace />} />
           <Route path="/audiobook" element={<Navigate to="/tts?tab=book" replace />} />
           <Route path="/wechat" element={<Navigate to="/tts?tab=wechat" replace />} />
           <Route path="/effects" element={<Navigate to="/offlinevc?tab=fx" replace />} />
