@@ -33,7 +33,7 @@
 
 ## 五、Electron 主进程
 - [ ] 不依赖 `ELECTRON_RUN_AS_NODE` / `NODE_OPTIONS` 注入；IPC handler 内异常有 catch。
-- [ ] 不动 `.asar_tmp/` / `repack_asar.cjs` / `extract_asar.cjs`。
+- [ ] 不动 `.asar_tmp/`（旧 asar 解包残留）；重打包只走 `cd web && npm run electron:build`（`repack_asar.cjs` 等 4 个旧脚本已于 2026-09-13 删除）。
 
 ## 六、收尾
 - [ ] 破坏性清理走 `tools/hard_delete.py`，不依赖 `shutil.rmtree` 真删。

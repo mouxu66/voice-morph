@@ -20,7 +20,11 @@ $targets = @(
   "release.ps1",
   "check-update-source.ps1",
   "build-and-publish.ps1",
-  "vm-test.config.example.ps1"
+  "vm-test.config.example.ps1",
+  # tools/ 下的 ps1 也体检。2026-09-13 实测：sync_backend.ps1 是 UTF-8 **无 BOM**
+  # 且含中文，PS 5.1 按 GBK 解会错位吃掉引号 → 谁改动其中的中文都可能变成
+  # "字符串缺少终止符"而根本跑不起来（之前只是碰巧没踩到）。补 BOM 后纳入名单。
+  "..\tools\sync_backend.ps1"
 )
 
 $results = [System.Collections.Generic.List[string]]::new()

@@ -33,7 +33,7 @@ powershell -ExecutionPolicy Bypass -File D:\变声\scripts\release.ps1 -DryRun -
 # 0) 进仓库根（脚本不依赖 CWD，但习惯上在这跑）
 cd D:\变声
 
-# 1) 设签名密码（每次新开终端都要设，不写进文件）
+# 1) 设签名密码（每次新开终端都要设，不写进文件、也不写进本手册）
 $env:CSC_KEY_PASSWORD = '<你的 pfx 密码>'
 
 # 2) 前置检查（可选，推荐）
@@ -131,7 +131,7 @@ VM_UPDATE_URL = http://192.168.145.1:9000/latest.json
 
 ### E5 · 打包报签名失败 / 包不带签名
 
-- `CSC_KEY_PASSWORD` 没设或设错 → 重新设（`<你的 pfx 密码>`）。
+- `CSC_KEY_PASSWORD` 没设或设错 → 重新设（具体值见证书管理处，**不落盘、不入库**）。
 - 证书文件缺失 → 确认 `certs/black-seraph.pfx` 存在。
 - 只想本地测：不加签名也能跑，只是用户会看到「未知发布者」。
 

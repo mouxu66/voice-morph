@@ -55,7 +55,7 @@
 
 ## 桌面端改动如何生效（防误判）
 
-- 本机桌面端（变声工坊.exe）经 `electron/main.cjs` 的 `resolveProjectRoot()` **优先命中 `D:\变声` 源码根**：后端直接跑 `D:\变声\m2_server\server.py`，前端优先加载 `D:\变声\web\dist\index.html`。**改完 m2_server 或 web 后：`cd web && npx vite build`，然后重启桌面端即生效**——不需要 sync_backend.ps1，也不需要 repack_asar.cjs。
-- `tools/sync_backend.ps1` 与 `resources/backend/m2_server` 副本、`resources/backend/web_dist` **只服务于分发到别的机器的安装包**（resolveProjectRoot 回退路径）；`repack_asar.cjs` 重打的 asar 内 dist 仅是前端第三兜底。**分发副本现在无需手动同步**：后端启动（= 每次打开桌面端）会自动把 `m2_server`/`tools`/`web/dist` 镜像到副本（`m2_server/backend_autosync.py`，`VM_BACKEND_AUTOSYNC=0` 可关）；sync_backend.ps1 仅剩手动应急用途。
-- Electron 主进程源码在 `web/electron/*.cjs`（模块化），现役 app.asar 由 `npm run electron:build`（electron-builder）从 web/ 构建；**`.asar_tmp/` + `repack_asar.cjs`/`extract_asar.cjs` 是 2026-09-03 模块化重构之前的过时流程，禁止再跑**（会拿 46KB 旧单体主进程覆盖现役装配层）。
+- 本机桌面端（变声工坊.exe）经 `electron/main.cjs` 的 `resolveProjectRoot()` **优先命中 `D:\变声` 源码根**：后端直接跑 `D:\变声\m2_server\server.py`，前端优先加载 `D:\变声\web\dist\index.html`。**改完 m2_server 或 web 后：`cd web && npx vite build`，然后重启桌面端即生效**——不需要 sync_backend.ps1，也不需要重打 asar。
+- `tools/sync_backend.ps1` 与 `resources/backend/m2_server` 副本、`resources/backend/web_dist` **只服务于分发到别的机器的安装包**（resolveProjectRoot 回退路径）。**分发副本现在无需手动同步**：后端启动（= 每次打开桌面端）会自动把 `m2_server`/`tools`/`web/dist` 镜像到副本（`m2_server/backend_autosync.py`，`VM_BACKEND_AUTOSYNC=0` 可关）；sync_backend.ps1 仅剩手动应急用途。
+- Electron 主进程源码在 `web/electron/*.cjs`（模块化），现役 app.asar 由 `npm run electron:build`（electron-builder）从 web/ 构建；**`.asar_tmp/` + `repack_asar.cjs`/`extract_asar.cjs`/`probe_asar.cjs`/`tools/verify_asar_repack.cjs` 是 2026-09-03 模块化重构之前的过时流程，已于 2026-09-13 全部删除**（它们会拿 46KB 旧单体主进程覆盖现役装配层）。`web/electron` 里剩余的 `smoke-loadpath.cjs` 是现役的加载自检。
 - 常见误判：以为"重启无效是因为桌面端跑内嵌副本"——本机不成立，先查根因再下结论。

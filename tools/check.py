@@ -67,6 +67,10 @@ FAST_TESTS = [
     "m2_server/tests/test_live_settings.py",
     "m2_server/tests/test_play_worker.py",
     "m2_server/tests/test_wechat_uia.py",
+    # 硬编码凭据门禁（tools/check_secrets.py 的仓库自检，约 0.05s）：
+    # 2026-09-13 那个明文证书密码就是从".githooks 只按文件名拦密钥"的缝里进的仓库，
+    # 放进 --fast 才能在提交那一刻拦住。
+    "m2_server/tests/test_check_secrets.py",
 ]
 
 

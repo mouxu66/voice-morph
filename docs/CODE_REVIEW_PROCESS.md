@@ -57,7 +57,7 @@ npm run build        # = tsc -b && vite build，类型检查 + 打包必须过
 ### 阶段 3 · 合入
 - 所有 🔴 清零，🟡 协商一致。
 - 用 `git-commit` / `conventional-commit` 技能生成规范化提交（铁律 1，不 `--no-verify`）。
-- 桌面端改动：`cd web && npx vite build` 后重启桌面端即生效（无需 sync_backend / repack_asar）。
+- 桌面端改动：`cd web && npx vite build` 后重启桌面端即生效（无需 sync_backend；asar 重打流程已于 2026-09-13 删除，只有重新分发时才跑 `npm run electron:build`）。
 
 ### 阶段 4 · 合入后
 - 踩坑/决策/环境坑写入 `D:\变声\.workbuddy\memory\YYYY-MM-DD.md`（跨会话长期结论入 `MEMORY.md`）。

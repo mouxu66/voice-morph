@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     把项目源码同步进打包安装目录（voice-morph-desktop/resources/backend）。
@@ -71,4 +71,5 @@ $n2 = Sync-Dir -Src (Join-Path $ProjectRoot "tools")      -Dst (Join-Path $Targe
 Write-Host ""
 Write-Host "m2_server: $n1 个文件更新" -ForegroundColor Green
 Write-Host "tools:     $n2 个文件更新" -ForegroundColor Green
-Write-Host "完成。接下来重打 app.asar（若改了 web/electron 下文件）：node repack_asar.cjs" -ForegroundColor Green
+Write-Host "完成。本机开发不必重打包：main.cjs 的 resolveProjectRoot() 优先命中 D:\变声 源码根。" -ForegroundColor Green
+Write-Host "仅当要重新分发安装包、且改了 web/electron 时才执行：cd web; npm run electron:build" -ForegroundColor Yellow

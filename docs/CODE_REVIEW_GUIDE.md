@@ -106,7 +106,7 @@
 - [ ] 不依赖被注入的环境变量（`ELECTRON_RUN_AS_NODE` / `NODE_OPTIONS`）；如需干净启动用 `env -u` 剥离。
 - [ ] IPC 通道注册齐全；`ipcMain.handle` 内异常要 catch 并返回错误，不让渲染进程挂死。
 - [ ] `resolveProjectRoot()` 优先命中 `D:/变声` 源码根；分发副本由 `backend_autosync.py` 自动镜像，不要手改 `resources/backend` 副本。
-- [ ] 不要跑 `.asar_tmp/` / `repack_asar.cjs` / `extract_asar.cjs`（2026-09-03 重构前的过时流程）。
+- [ ] 不要跑 `.asar_tmp/`（2026-09-03 重构前的过时流程）；`repack_asar.cjs` / `extract_asar.cjs` / `probe_asar.cjs` / `verify_asar_repack.cjs` 已于 2026-09-13 删除，重打包走 `cd web && npm run electron:build`。
 
 ### 2.6 移动端 `mobile`（Expo / RN）
 - [ ] 低延迟音频链路（mic → PC 流式 → playback）不阻塞 UI 线程；注意低端机（荣耀 Play 50 Plus）AnTuTu ~52 万。

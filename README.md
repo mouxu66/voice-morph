@@ -131,11 +131,11 @@
 
 ## 后端 M2（FastAPI）
 
-`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。9 个独立 router：
+`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**24 个独立 router**（对应 `server.py` 里 24 处 `include_router`）：
 
-`cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history`（历史）。
+`cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history_api`（历史）。
 
-原 `server.py` 内联的业务已于 2026-09-03 按域拆为独立路由模块：`system_api`（health/diagnose）、`voices_api`（音色库+音色包）、`raw_media_api`（素材库/上传）、`pipeline_api`（流水线）、`clips_api`（切片/质检/说话人分离）、`tts_api`、`mine_api`（音色挖掘）、`capture_api`（桌宠内录）、`ab_api`（盲听）、`audio_api`（设备配置/巡检）、`media_api`（静态音频）、`rvc_dataset_api`（训练集）；共享状态收敛在 `runtime.py`。
+原 `server.py` 内联的业务已于 2026-09-03 按域拆为独立路由模块：`system_api`（health/diagnose）、`voices_api`（音色库+音色包）、`raw_media_api`（素材库/上传）、`pipeline_api`（流水线）、`clips_api`（切片/质检/说话人分离）、`tts_api`、`mine_api`（音色挖掘）、`capture_api`（桌宠内录）、`ab_api`（盲听）、`ab_chain`（A/B 链路对比 + 自然度打分）、`audio_api`（设备配置/巡检）、`media_api`（静态音频）、`rvc_dataset_api`（训练集）、`market_api`（模型市场）、`pet_market_api`（桌宠市场）；共享状态收敛在 `runtime.py`。
 
 接口清单（节选）：`GET /api/health`、`/api/diagnose`、`/api/voices`、`/api/raw_videos`、`POST /api/pipeline/run`、`/api/clips`、`POST /api/voicebank`、`POST /api/tts`、`POST /api/mine/run`、`POST /api/capture/loopback`、`POST /api/ab/run`、`/api/rvc/live/*`、`/api/wechat/*`、`/api/audio/*`。
 
@@ -145,7 +145,7 @@
 
 ## 移动端（Expo）
 
-Expo SDK 54 + RN 0.81 + expo-router 文件路由 + Zustand。`mobile/api.ts` 调 PC 后端实现**微信语音遥控**：手机打字 → PC 用 Qwen3-TTS 合成 → 自动发到微信（走 `wechat_voice` 接口 + 桌宠置顶引导点击发送）。当前需手动填 PC 局域网 IP（后续补 mDNS 自动发现）。
+Expo SDK 54 + RN 0.81 + expo-router 文件路由 + Zustand。`mobile/src/api.ts` 调 PC 后端实现**微信语音遥控**：手机打字 → PC 用 Qwen3-TTS 合成 → 自动发到微信（走 `wechat_voice` 接口 + 桌宠置顶引导点击发送）。当前需手动填 PC 局域网 IP（后续补 mDNS 自动发现）。
 
 ---
 
@@ -257,7 +257,7 @@ npm run electron:build    # 产出 release2/win-unpacked/ 和 NSIS 安装包
 ```powershell
 cd mobile
 npm install
-# 改 mobile/api.ts 里的 PC 后端地址为 本机局域网IP:8000
+# 改 mobile/src/store.ts 里的 PC 后端地址为 本机局域网IP:8000（默认 http://192.168.1.10:8000）
 npx expo start          # 扫码或连模拟器；真机需同一局域网
 ```
 
@@ -317,7 +317,7 @@ python m2_server/server.py
 | 分离后人声仍带 BGM（发闷发混） | `pipeline.py` 里 `DEMUCS_MODEL` 换成 `htdemucs_ft` |
 | 切片全是噪音 | `pipeline.py` 里 `SILENCE_THRESH` 调到 `-38` |
 | 实时变声没声音 | 检查 VB-CABLE 已装；`/api/audio/apply` 一键设录音=CABLE Output |
-| 换网络手机连不上 PC | 改 `mobile/api.ts` 的 PC 局域网 IP（后续补 mDNS 自动发现） |
+| 换网络手机连不上 PC | 改 `mobile/src/store.ts` 的 PC 局域网 IP（后续补 mDNS 自动发现） |
 | 转换「像但不太像」 | 零样本正常水平；素材凑到 30s+ 会明显提升；要逼真上 GPT-SoVITS/RVC 训练 |
 
 ---
@@ -343,6 +343,6 @@ python m2_server/server.py
 
 1. ~~**后端拆包（最推荐）**~~ **✅ 已完成（2026-09-03）**：`server.py`（原 1734 行）已拆为 `runtime.py`（共享状态）+ 12 个按域路由模块（`system/voices/raw_media/pipeline/clips/tts/mine/capture/ab/audio/media/rvc_dataset_api`），server.py 只留装配层；90 个测试全过、真实后端冒烟通过，行为零变更。
 2. **移动端 mDNS 自动发现**：当前手机手动填 PC 局域网 IP；加 `@react-native-community/zeroconf`，PC 后端广播 `_voicemorph._tcp.local`，手机自动发现，纯增量改动，体验提升明显。
-3. **共享 API 客户端**：`web/src` 与 `mobile/api.ts` 各写一份 fetch，可从 FastAPI `/openapi.json` 生成共享 client 防漂移（当前规模低优先级）。
+3. **共享 API 客户端**：`web/src` 与 `mobile/src/api.ts` 各写一份 fetch，可从 FastAPI `/openapi.json` 生成共享 client 防漂移（当前规模低优先级）。
 4. **桌面壳保持 Electron**：不迁 Tauri——本项目需 spawn Python 子进程 + 原生音频设备切换 + 自动更新 + 透明桌宠窗，Electron 现成且稳妥；Tauri 更适合无 Python 后端的轻量工具（如另开的「写作伴侣」）。
 5. ~~**桌面壳主进程拆分**~~ **✅ 已完成（2026-09-03）**：`main.cjs`（原 1258 行）已拆为 backend / pet / pet-actions / alt-hint / update-ipc 5 个职责模块，main.cjs 只留装配层（153 行）；IPC 通道与启动顺序零变更，并顺带修复了启动更新推送因未 await 而静默失效的问题。

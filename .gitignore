@@ -91,7 +91,8 @@ m2_server/data/
 certs/
 *.pfx
 *.p12
-# ===== asar 打包工作区（可由 extract_asar.cjs 重建）=====
+# ===== asar 打包工作区（旧流程残留：解包/重打脚本已于 2026-09-13 删除，
+# 条目留着防止误提交那个含旧单体主进程的目录）=====
 .asar_tmp/
 voice-morph-desktop/
 web/dist_old_bak*/

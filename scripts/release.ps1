@@ -46,7 +46,9 @@ Ok "当前版本：$($pkgBefore.version)"
 # 证书密码：签名必需，缺了打出来的包会被 SmartScreen 拦
 if (-not $env:CSC_KEY_PASSWORD) {
   Warn "未设置 CSC_KEY_PASSWORD —— 安装包将不带签名，Windows 会拦。"
-  Warn "  设法：`$env:CSC_KEY_PASSWORD = '<你的 pfx 密码>'（或从证书管理处取）"
+  # 密码绝不写进仓库：这里只给用法，具体值从证书管理处取（2026-09-13 前这里写死过明文，
+  # 会随发布日志一起落盘；改后由 tools/check_secrets.py 机器拦截）
+  Warn "  设法：`$env:CSC_KEY_PASSWORD = '<你的 pfx 密码>'（自签证书可用 scripts\gen-selfsigned-cert.ps1 重建）"
   Warn "  仅本地测试可忽略；正式发版必须设置。"
 } else {
   Ok "CSC_KEY_PASSWORD 已设置（签名将启用）"
