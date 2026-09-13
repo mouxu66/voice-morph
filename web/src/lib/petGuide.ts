@@ -4,7 +4,7 @@ import { petGuide, type PetGuidePayload } from "@/lib/electron"
  * 桌宠页面导览：每个页面配一段口播文案 + 一组动作。
  *
  * action = 精灵图（pet/svg 下的 webp 序列帧），motion = 叠在外层的 CSS 动作，
- * 两者组合出「这一页在干什么」的观感，避免九个页面长得一个样。
+ * 两者组合出「这一页在干什么」的观感，避免每个页面长得一个样。
  *
  * 行文约束：页面内气泡更宽，但单句仍控制在 15 个全角字符以内，避免折行难看。
  */
@@ -24,30 +24,13 @@ export const GUIDES: Record<string, PageGuide> = {
     action: "build",
     motion: "pop",
   },
-  "/discover": {
-    title: "发掘音色",
-    lines: ["听到喜欢的声音？", "右键我可以内录抖音，", "视频音频也能投喂我。"],
-    action: "listen",
-    motion: "float",
-  },
-  "/ft": {
-    title: "音色微调",
-    lines: ["想更像本人，就在这练。", "朗读 60 句，训专属音色。", "对比试听，满意再入库。"],
-    action: "think",
-    motion: "lean",
-  },
   "/voices": {
     title: "音色库",
     lines: ["这里是你的声音仓库。", "能自动挖掘候选音色，", "试听满意就存下来。"],
     action: "idle",
     motion: "wave",
   },
-  "/market": {
-    title: "音色市场",
-    lines: ["缺音色？来市场逛逛。", "推荐清单一键装，", "双源搜索找更多。"],
-    action: "shop",
-    motion: "float",
-  },
+  // /discover、/ft 已并入「音色工坊」，/market 已并入「音色库」，不再单独介绍。
   "/tts": {
     title: "语音合成",
     lines: ["选个音色念一段话。", "长文稿切「有声书」模式，", "按句合成自动拼接。"],
