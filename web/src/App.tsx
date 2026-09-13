@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react"
-import { Activity, Cable, Download, Eye, EyeOff, FolderOpen, HardDrive, Moon, Monitor, RotateCcw, Settings2, Sparkles, Stethoscope, Sun } from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { Activity, Cable, Download, Eye, EyeOff, FolderOpen, HardDrive, Moon, Monitor, Palette, RotateCcw, Settings2, Sparkles, Stethoscope, Sun } from "lucide-react"
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { getHealth, listVoices, rvcLiveReset } from "@/api/client"
 import { StudioNav } from "@/components/voice-studio/StudioNav"
@@ -10,7 +10,7 @@ import { StoragePanel } from "@/components/StoragePanel"
 import { PetGuide } from "@/components/PetGuide"
 import { UpdateDialog } from "@/components/UpdateDialog"
 import { ToastViewport } from "@/lib/notify"
-import { appVersion, hasUpdate as canCheckUpdate, onUpdateAvailable, type UpdateCheck } from "@/lib/electron"
+import { appVersion, getSetupStatus, hasSetup, hasUpdate as canCheckUpdate, onUpdateAvailable, petGuide, saveSetup, type PetGuidePayload, type UpdateCheck } from "@/lib/electron"
 import { useAppStore } from "@/store/useAppStore"
 import { ThemeMode, getStoredTheme, setStoredTheme } from "@/theme"
 import { LiveRoute } from "@/pages/Live/index"
@@ -35,6 +35,18 @@ const pageTitles: Record<string, string> = {
   "/offlinevc": "离线工坊",
   "/market": "音色市场",
   "/pet-market": "人偶市场",
+}
+
+/** 桌宠换装首启引导载荷：首次启动由桌宠开口介绍"可以换样子"，设置里也可手动重播 */
+function onboardingGuide(): PetGuidePayload {
+  return {
+    page: "pet-onboarding",
+    title: "换装小贴士",
+    lines: ["我是你的桌面人偶", "想要换个样子吗？", "去侧边栏「人偶市场」挑一个"],
+    action: "wave",
+    motion: "float",
+    duration: 9500,
+  }
 }
 
 // 服务状态：在线 / 启动中（启动后 45s 内从未连上，视为正在加载模型）/ 离线
@@ -178,7 +190,7 @@ function AppChrome({
             </button>
           </div>
         </div>
-        {settingsOpen && <div className="absolute right-5 top-14 w-48 rounded-lg border border-border bg-card p-2 shadow-lg sm:right-8"><p className="px-2 py-1 text-xs text-muted-foreground">界面主题</p><div className="mt-1 grid grid-cols-3 gap-1">{([['dark', '暗色', Moon], ['light', '亮色', Sun], ['system', '系统', Monitor]] as [ThemeMode, string, typeof Moon][]).map(([mode, label, Icon]) => <button type="button" key={mode} onClick={() => { setStoredTheme(mode); setTheme(mode); setSettingsOpen(false) }} className={`flex flex-col items-center gap-1 rounded-md px-2 py-2 text-xs ${theme === mode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="h-4 w-4" />{label}</button>)}</div><div className="mt-2 border-t border-border pt-2 space-y-1"><p className="px-2 py-1 text-xs text-muted-foreground">桌宠</p><button type="button" onClick={() => { window.dispatchEvent(new CustomEvent("replay-pet-guide")); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><Sparkles className="h-3.5 w-3.5" />让桌宠再讲一遍本页</button>            <button type="button" onClick={() => onTogglePetGuide()} className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><span className="flex items-center gap-2">{petGuideEnabled ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}{petGuideEnabled ? "切页时介绍页面" : "已关闭切页介绍"}</span><span className={`h-2 w-2 rounded-full ${petGuideEnabled ? "bg-primary" : "bg-muted-foreground/30"}`} /></button></div><div className="mt-2 space-y-1 border-t border-border pt-2"><p className="px-2 py-1 text-xs text-muted-foreground">维护</p><button type="button" onClick={() => { setModelOpen(true); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><FolderOpen className="h-3.5 w-3.5" />模型与引擎配置</button><button type="button" onClick={() => { setStorageOpen(true); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><HardDrive className="h-3.5 w-3.5" />存储占用与清理</button></div>{canCheckUpdate && <div className="mt-2 space-y-1 border-t border-border pt-2"><p className="px-2 py-1 text-xs text-muted-foreground">应用</p><button type="button" onClick={() => { setAutoUpdate(null); setUpdateOpen(true); setSettingsOpen(false) }} className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><span className="flex items-center gap-2"><Download className="h-3.5 w-3.5" />检查更新</span>{version && <span className="font-mono text-[10px] opacity-70">v{version}</span>}</button></div>}</div>}
+        {settingsOpen && <div className="absolute right-5 top-14 w-48 rounded-lg border border-border bg-card p-2 shadow-lg sm:right-8"><p className="px-2 py-1 text-xs text-muted-foreground">界面主题</p><div className="mt-1 grid grid-cols-3 gap-1">{([['dark', '暗色', Moon], ['light', '亮色', Sun], ['system', '系统', Monitor]] as [ThemeMode, string, typeof Moon][]).map(([mode, label, Icon]) => <button type="button" key={mode} onClick={() => { setStoredTheme(mode); setTheme(mode); setSettingsOpen(false) }} className={`flex flex-col items-center gap-1 rounded-md px-2 py-2 text-xs ${theme === mode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}><Icon className="h-4 w-4" />{label}</button>)}</div><div className="mt-2 border-t border-border pt-2 space-y-1"><p className="px-2 py-1 text-xs text-muted-foreground">桌宠</p><button type="button" onClick={() => { window.dispatchEvent(new CustomEvent("replay-pet-guide")); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><Sparkles className="h-3.5 w-3.5" />让桌宠再讲一遍本页</button><button type="button" onClick={() => { window.dispatchEvent(new CustomEvent("replay-pet-onboarding")); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><Palette className="h-3.5 w-3.5" />重播换装引导</button>            <button type="button" onClick={() => onTogglePetGuide()} className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><span className="flex items-center gap-2">{petGuideEnabled ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}{petGuideEnabled ? "切页时介绍页面" : "已关闭切页介绍"}</span><span className={`h-2 w-2 rounded-full ${petGuideEnabled ? "bg-primary" : "bg-muted-foreground/30"}`} /></button></div><div className="mt-2 space-y-1 border-t border-border pt-2"><p className="px-2 py-1 text-xs text-muted-foreground">维护</p><button type="button" onClick={() => { setModelOpen(true); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><FolderOpen className="h-3.5 w-3.5" />模型与引擎配置</button><button type="button" onClick={() => { setStorageOpen(true); setSettingsOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><HardDrive className="h-3.5 w-3.5" />存储占用与清理</button></div>{canCheckUpdate && <div className="mt-2 space-y-1 border-t border-border pt-2"><p className="px-2 py-1 text-xs text-muted-foreground">应用</p><button type="button" onClick={() => { setAutoUpdate(null); setUpdateOpen(true); setSettingsOpen(false) }} className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"><span className="flex items-center gap-2"><Download className="h-3.5 w-3.5" />检查更新</span>{version && <span className="font-mono text-[10px] opacity-70">v{version}</span>}</button></div>}</div>}
       </header>
       <div className="fixed inset-x-0 top-16 z-10 border-b border-border bg-card/80 py-1.5 backdrop-blur-xl lg:hidden"><StudioNav /></div>
       {/* 缺模型时的全局降级提示：不阻塞启动，只提示相关功能不可用 */}
@@ -217,6 +229,39 @@ export default function App() {
     const timer = window.setInterval(() => void poll(), 5000)
     return () => { alive = false; window.clearInterval(timer) }
   }, [setHealth, setVoices])
+
+  // ---- 桌宠换装首启引导 ----
+  const onboardingFired = useRef(false)
+  const petGuideEnabledRef = useRef(petGuideEnabled)
+  petGuideEnabledRef.current = petGuideEnabled
+
+  const sayPetOnboarding = useCallback(() => {
+    petGuide(onboardingGuide())
+  }, [])
+
+  // 首次启动（且还没看过引导、导览开着）约 10s 后让桌宠开口一次——避开首屏切页讲解，
+  // 随后落盘 petGuideSeen 标记；StrictMode 双跑用 ref 防重
+  useEffect(() => {
+    if (!hasSetup || onboardingFired.current) return
+    onboardingFired.current = true
+    let alive = true
+    void getSetupStatus().then((st) => {
+      if (!alive) return
+      if (!st || st.config.petGuideSeen) return
+      window.setTimeout(() => {
+        if (petGuideEnabledRef.current) sayPetOnboarding()
+        void saveSetup({ petGuideSeen: true })
+      }, 10_000)
+    })
+    return () => { alive = false }
+  }, [sayPetOnboarding])
+
+  // 设置下拉「重播换装引导」：再次让桌宠开口介绍
+  useEffect(() => {
+    const onReplay = () => sayPetOnboarding()
+    window.addEventListener("replay-pet-onboarding" as any, onReplay)
+    return () => window.removeEventListener("replay-pet-onboarding" as any, onReplay)
+  }, [sayPetOnboarding])
 
   return (
     <div className="relative min-h-[100dvh] bg-gradient-to-br from-background via-background to-card text-foreground">
