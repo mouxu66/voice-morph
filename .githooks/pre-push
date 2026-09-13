@@ -25,4 +25,24 @@ else
     exit 0
 fi
 
+# ---------- CI 保真复刻（仅在"改依赖 / 加测试 / 改 CI 配置"时）----------
+# 本机全绿 ≠ CI 绿（2026-09-13 的 Pillow/comtypes 事故，见 docs/犯错指南.md §3.9）。
+# 但 --ci-fidelity 要 3 分钟，每次 push 都跑会把人逼去用 --no-verify 绕过；
+# 所以只在这类"真会改变 CI 环境或覆盖率"的改动上跑。
+upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
+need_cifid=""
+if [ -z "$upstream" ]; then
+    # 首次 push 本来就是"去让 CI 跑一次"的那一刻，直接复刻最划算
+    need_cifid="首次 push（尚无上游分支）"
+else
+    changed=$(git diff --name-only "$upstream"..HEAD)
+    if printf '%s\n' "$changed" | grep -qE '(^|/)requirements[^/]*\.txt$|^m2_server/tests/|^\.github/workflows/ci\.yml$'; then
+        need_cifid="改动涉及依赖清单 / 测试 / CI 配置"
+    fi
+fi
+if [ -n "$need_cifid" ]; then
+    echo "[pre-push] $need_cifid → 复刻 CI 环境再跑一遍（约 3 分钟）"
+    "$PY" tools/check.py --ci-fidelity
+fi
+
 exec "$PY" tools/check.py   # 末尾留注释：行尾残留的 CR 落进注释里就无害

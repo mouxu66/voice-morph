@@ -168,6 +168,23 @@ pip install -r requirements.txt
 # 4. Qwen3-TTS 需要独立环境 venv312（torch2.8+cu129），见 tts_trial/venv312，当前环境内已就绪
 ```
 
+### 自检（改完代码 / 依赖后）
+
+```powershell
+python tools\check.py                 # 全量：requires + electron-load + ruff + pytest + tsc
+python tools\check.py --fast          # 提交前（pre-commit 钩子跑的就是它）
+python tools\check.py --ci-fidelity   # 复刻 CI：在只装 requirements-dev.txt 的干净 venv 里跑 CI 那条命令
+```
+
+**改了依赖、或加了新测试，一定跑 `--ci-fidelity` 再推。** 本机 `.venv` 全绿不代表 CI 绿：
+本机多装的包（包括别的包顺手带进来的**传递依赖**）会把"依赖没声明"这类问题整个挡住。
+它自动从 `.github/workflows/ci.yml` 读版本号、建 `.venv-ci/`、跑 CI 同一条命令，
+并在结尾诚实列出没被复刻的差异（runner 镜像 / Linux 大小写 / `npm ci` 全新安装）。
+来龙去脉见 `docs/犯错指南.md` §3.9。
+
+git 钩子由 `python tools/install_hooks.py` 安装（`core.hooksPath=.githooks`）：
+pre-commit 跑 `--fast`，pre-push 跑全量。
+
 ---
 
 ## 新机器部署（换电脑 / 给别人装）

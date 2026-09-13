@@ -26,6 +26,24 @@
     python tools/check.py --no-web        # 没有 Node 环境时
     python tools/check.py --only pytest   # 只跑某一项（逗号分隔）
     python tools/check.py --list          # 只看会跑什么，不执行
+    python tools/check.py --ci-fidelity   # 复刻 CI：在只装 requirements-dev.txt 的干净
+                                          # venv 里跑 CI 那条命令（改依赖后必跑）
+
+为什么需要 --ci-fidelity（2026-09-13 事故）：
+    本机 `.venv` 全绿不代表 CI 绿。那天 CI 首次运行就会红 2 failed + 2 errors，
+    因为 `Pillow` / `comtypes` 从未写进任何 requirements —— 本机有只是因为它们是
+    **别的包的传递依赖**（Pillow←gradio/matplotlib，comtypes←pycaw/uiautomation）。
+    更阴的是 `from PIL import ...` 写在函数体里，`import server` 干净环境照样成功，
+    "能启动"这个检查完全没看见缺口。细节见 docs/犯错指南.md §3.9。
+
+    本模式就是这个事故的机器对策：拿**干净 venv** 跑 CI 那条命令。
+
+    · venv 固定为项目根 `.venv-ci/`（已 gitignore），只装 requirements-dev.txt
+    · Python 版本从 `.github/workflows/ci.yml` **读**，不在这里写死
+      （写死的话"复刻"自己会跟 CI 漂移，那就白复刻了）
+    · 依赖变更靠 stamp（requirements-dev.txt 的 sha256 + 版本号）判定，
+      没变就跳过 pip install，省 1~2 分钟
+    · `--recreate` 用 `venv --clear` 重建，保证零污染（手工装过东西的 venv 不可信）
 
 设计约定（都是踩过的坑，别改）：
 
@@ -40,7 +58,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -113,9 +133,19 @@ def _npx_cmd() -> list[str] | None:
     return [exe] if exe else None
 
 
+def _say(text: str = "") -> None:
+    """打印并立刻 flush。
+
+    子进程是直接写 fd 的，而父进程的 print 在**管道**里是块缓冲的：不 flush 就会看到
+    "子进程输出在前、标题在后"的错乱日志（2026-09-13 实测 `| tail` 时就是这样）。
+    CI 日志全是管道，所以跟子进程相邻的标题一律走这里。
+    """
+    print(text, flush=True)
+
+
 def _run(name: str, cmd: list[str], cwd: Path) -> tuple[bool, str]:
     """跑一条检查，输出直接透传给终端（CI 日志要能一眼看懂）。返回 (是否通过, 备注)。"""
-    print(f"\n=== [{name}] {' '.join(cmd)}")
+    _say(f"\n=== [{name}] {' '.join(cmd)}")
     started = time.perf_counter()
     try:
         proc = subprocess.run(cmd, cwd=str(cwd), env=_env())
@@ -123,7 +153,7 @@ def _run(name: str, cmd: list[str], cwd: Path) -> tuple[bool, str]:
         return False, f"命令不存在：{exc}"
     elapsed = time.perf_counter() - started
     ok = proc.returncode == 0
-    print(f"--- [{name}] {'通过' if ok else '失败'}（{elapsed:.1f}s）")
+    _say(f"--- [{name}] {'通过' if ok else '失败'}（{elapsed:.1f}s）")
     return ok, f"{elapsed:.1f}s"
 
 
@@ -198,6 +228,182 @@ STEPS = {
 }
 
 
+# ============ CI 保真复刻（--ci-fidelity）============
+# 为什么需要：见模块 docstring。一句话 —— 本机 .venv 全绿不代表 CI 绿（2026-09-13
+# 就是靠这个手段发现 Pillow/comtypes 从未被声明）。
+#
+# 这里只做三件事：建/更新干净 venv → 用它跑 CI 那条命令 → 报告哪些差异没被复刻。
+# 刻意**不写死版本号**，而是从 ci.yml 读：写死的话"复刻"自己会跟 CI 漂移。
+
+CI_VENV = ROOT / ".venv-ci"                    # 已 gitignore（见 .gitignore 的"虚拟环境"段）
+CI_REQ = ROOT / "requirements-dev.txt"
+CI_STAMP = CI_VENV / ".ci-deps-stamp"          # 内容 = requirements 的 sha256 + Python 版本
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+
+# 不引 PyYAML（check.py 保持零依赖），只抠当前 ci.yml 的写法。
+# 抠不到就回落默认值，**并在报告里写明**——宁可说清"本次没按 CI 的版本跑"，
+# 也不要装作复刻成功了。
+_CI_PY_VER_RE = re.compile(r"python-version:\s*[\"']?(\d+\.\d+)")
+_CI_NODE_VER_RE = re.compile(r"node-version:\s*[\"']?(\d+(?:\.\d+)*)")
+DEFAULT_CI_PY = "3.11"
+DEFAULT_CI_NODE = "22"
+
+
+def _ci_workflow_text() -> str:
+    try:
+        return CI_WORKFLOW.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _ci_python_version(ci_text: str) -> str | None:
+    m = _CI_PY_VER_RE.search(ci_text)
+    return m.group(1) if m else None
+
+
+def _ci_node_version(ci_text: str) -> str | None:
+    m = _CI_NODE_VER_RE.search(ci_text)
+    return m.group(1) if m else None
+
+
+def _deps_stamp(req_bytes: bytes, py_version: str) -> str:
+    """依赖指纹：requirements-dev.txt 的内容 + Python 版本。任一变化就重装。"""
+    return f"{hashlib.sha256(req_bytes).hexdigest()[:12]}|{py_version}"
+
+
+def _venv_python(venv: Path) -> Path:
+    """venv 里的解释器路径（Windows 与 POSIX 不同）。"""
+    return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _probe_python(cmd: list[str]) -> str | None:
+    """问一个启动器要 `X.Y` 形式的版本号；不存在/不可执行返回 None。"""
+    try:
+        proc = subprocess.run(
+            [*cmd, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            capture_output=True, encoding="utf-8", errors="replace",
+        )
+    except OSError:
+        return None
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def _find_python(want: str) -> tuple[list[str], str | None]:
+    """找与 CI 钉的版本一致的解释器；找不到就用当前解释器（报告里会标注）。"""
+    candidates: list[list[str]] = []
+    for name in (f"python{want}", "python3", "python"):
+        exe = shutil.which(name)
+        if exe:
+            candidates.append([exe])
+    if os.name == "nt":
+        candidates.append(["py", f"-{want}"])       # Windows 官方启动器
+    candidates.append([sys.executable])
+    fallback: tuple[list[str], str | None] | None = None
+    for cmd in candidates:
+        version = _probe_python(cmd)
+        if version == want:
+            return cmd, version
+        if version and fallback is None:
+            fallback = (cmd, version)
+    return fallback or ([sys.executable], None)
+
+
+def _probe_node() -> str | None:
+    exe = shutil.which("node")
+    if exe is None:
+        return None
+    try:
+        proc = subprocess.run([exe, "-v"], capture_output=True,
+                              encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    out = proc.stdout.strip()
+    return out.lstrip("v") or None
+
+
+def _ensure_ci_venv(recreate: bool) -> tuple[Path | None, str, str]:
+    """建/更新瘦 venv。返回（venv 里的解释器, 想要的版本, 实际用的版本）。
+
+    用 `venv --clear` 实现重建：它删目录内容是 stdlib 行为，**不走 shutil.rmtree**
+    —— 本机的 safe-delete shim 会拦 rmtree（见 docs/犯错指南.md §3.5）。
+    """
+    ci_text = _ci_workflow_text()
+    want = _ci_python_version(ci_text)
+    if not want:
+        want = DEFAULT_CI_PY
+        _say(f"[ci-fidelity] 警告：读不到 ci.yml 的 python-version，回落 {want}")
+    launcher, real = _find_python(want)
+    if real != want:
+        _say(f"[ci-fidelity] 警告：找不到 Python {want}，用 {real or '未知'} 代替（保真度下降）")
+
+    py = _venv_python(CI_VENV)
+    if recreate or not py.exists():
+        cmd = [*launcher, "-m", "venv", *(["--clear"] if recreate else []), str(CI_VENV)]
+        _say(f"[ci-fidelity] {' '.join(cmd)}")
+        if subprocess.run(cmd, cwd=str(ROOT)).returncode != 0:
+            return None, want, real or ""
+
+    stamp_now = _deps_stamp(CI_REQ.read_bytes(), real or want)
+    try:
+        stamp_old = CI_STAMP.read_text(encoding="utf-8").strip()
+    except OSError:
+        stamp_old = ""
+    if stamp_old == stamp_now and not recreate:
+        _say(f"[ci-fidelity] 依赖指纹未变（{stamp_now}），跳过 pip install")
+    else:
+        # 先说 --recreate：它自己会清掉 stamp，否则会误报成"首次建立"（日志要能解释自己）
+        if recreate:
+            why = "--recreate（--clear 重建）"
+        elif not stamp_old:
+            why = "首次建立"
+        else:
+            why = "依赖或版本变了"
+        _say(f"[ci-fidelity] 装瘦环境依赖（{why}）：{CI_REQ.name}")
+        for cmd in ([str(py), "-m", "pip", "install", "-q", "--upgrade", "pip"],
+                    [str(py), "-m", "pip", "install", "-q", "-r", str(CI_REQ)]):
+            if subprocess.run(cmd, cwd=str(ROOT), env=_env()).returncode != 0:
+                _say(f"[ci-fidelity] 依赖安装失败，可手跑看详情：{' '.join(cmd)}")
+                return None, want, real or ""
+        CI_STAMP.write_text(stamp_now + "\n", encoding="utf-8")
+    return py, want, real or want
+
+
+def _check_ci_fidelity(recreate: bool = False) -> int:
+    """在干净 venv 里跑 CI 的那条命令，并诚实报告"哪些差异没被复刻"。"""
+    _say(f"\n=== [ci-fidelity] 复刻 CI（干净 venv：{CI_VENV.name}/）")
+    py, want, real = _ensure_ci_venv(recreate)
+    if py is None:
+        _say("\n[ci-fidelity] 瘦环境准备失败，本项未完成。")
+        return 2
+
+    # 与 ci.yml 的 backend job 逐字相同（同一脚本、同一开关）
+    backend_ok, _ = _run("ci-backend",
+                         [str(py), str(ROOT / "tools" / "check.py"), "--no-web"], ROOT)
+
+    # 与 web job 对应，但只能本机近似：CI 跑在 Linux + npm ci 全新安装
+    web_ok: bool | None = None
+    if shutil.which("npx"):
+        web_ok, _ = _check_web()
+    else:
+        _say("\n=== [ci-web] 跳过：本机没有 npx")
+
+    ci_node = _ci_node_version(_ci_workflow_text()) or DEFAULT_CI_NODE
+    ok = backend_ok and web_ok is not False
+    print("\n================ ci-fidelity 汇总 ================")
+    print(f"  [{'PASS' if backend_ok else 'FAIL'}] 后端 job（requires/electron/ruff/pytest）")
+    print(f"  [{'SKIP' if web_ok is None else ('PASS' if web_ok else 'FAIL')}] 前端 job（tsc -b，本机近似）")
+    print(f"  Python：CI 钉 {want} / 本次实际 {real}")
+    print(f"  node  ：CI 钉 {ci_node} / 本机 {_probe_node() or '未知'}")
+    print("\n  结论：" + ("CI 应会绿（后端+前端都过）" if ok else "CI 仍会红，先修上面 FAIL 的那步"))
+    print("""
+  未被复刻的差异（别把这里的绿当成 CI 一定绿）：
+    · runner 是全新的 windows-latest / ubuntu-latest 镜像，本机不是
+    · 前端 job 跑在 Linux：大小写敏感 + npm ci 全新安装，本机只能近似
+    · 偶发并发/时序问题（历史上撞过一次随机挂的队列用例），本机不复现不代表没有
+    · CI 没有你的 .env / 本机资源文件，本机有""")
+    return 0 if ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="变声项目一键自检")
     ap.add_argument("--fast", action="store_true",
@@ -206,8 +412,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", default="",
                     help="只跑指定项（逗号分隔：requires,electron,ruff,pytest,web）")
     ap.add_argument("--list", action="store_true", help="只列出将要执行的命令")
+    ap.add_argument("--ci-fidelity", action="store_true",
+                    help="复刻 CI：在只装 requirements-dev.txt 的干净 venv（.venv-ci/）里"
+                         "跑 CI 那条命令。改了依赖/加了测试后跑它（约 3 分钟）")
+    ap.add_argument("--recreate", action="store_true",
+                    help="配合 --ci-fidelity：先 --clear 重建瘦 venv（手工装过东西的 venv 不可信）")
     args = ap.parse_args(argv)
     _console()
+
+    # CI 保真复刻是独立模式：它不跑"当前环境"的检查，而是先造一个干净环境再回来跑，
+    # 所以 --only/--fast 对它无效（与 ci.yml 保持一致才是它的全部意义）。
+    if args.ci_fidelity:
+        return _check_ci_fidelity(recreate=args.recreate)
 
     # 顺序按「快 → 慢」：requires/electron/ruff 都是毫秒级静态或直接加载检查，
     # 放前面先拦低级错误；pytest 居中；web（tsc）最慢，只在非 --fast 时跑。
