@@ -61,6 +61,8 @@ builder_log.txt
 # ===== 试验脚本产物 / 诊断输出 =====
 tts_trial/*.txt
 tts_trial/ft_train_*.jsonl
+# e2e 更新测试拷回的 VM 安装诊断缓存（含本机路径/用户名，勿入库）
+scripts/install-diag.json
 
 # ===== 试验归档（诊断 scratch，不入库）=====
 tts_trial/_archive/
