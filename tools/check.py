@@ -45,6 +45,24 @@
       没变就跳过 pip install，省 1~2 分钟
     · `--recreate` 用 `venv --clear` 重建，保证零污染（手工装过东西的 venv 不可信）
 
+"本机绿 ≠ CI 绿"其实有**两根轴**，第一根是依赖集，第二根是本机资源：
+
+    轴① 依赖集 —— 干净 venv 解决（上面那套）。
+    轴② 本机资源 —— ffmpeg / `D:\\RVC` / 微调产物 / 开发机屏幕分辨率这类"开发机有、
+         runner 没有"的东西。**2026-09-13 CI 首跑红的 13 条全部来自这根轴**，
+         而当时只复刻了轴①，绿灯照样放行（细节见 docs/犯错指南.md §3.10）。
+         对策分两层，缺一层都拦不住：
+             (a) `VM_BARE_RUNNER=1` —— m2_server/conftest.py 的资源探测把一切都判为
+                 "不存在"，于是做了守卫的用例干净 skip、跳过集与 CI 对齐；
+             (b) **从 PATH 摘掉含 ffmpeg 的目录** —— 这一层才是关键：(a) 只约束
+                 "走了探测"的用例，而 2026-09-13 红掉的 9 条是
+                 `subprocess.run(["ffmpeg", ...])` 这种**绕过探测**的写法，
+                 本机 PATH 上有它就照样绿。(b) 让这类用例在本机也红。
+         注意 CI 会**额外安装** workflow 里声明的东西（如 ffmpeg），所以依赖它们的
+         用例在本机模拟下跳过、在 CI 上真跑 —— 两个绿灯合起来才是真绿。
+         另：屏幕分辨率这类"环境本身"的差异没法用环境变量模拟，只能靠用例自己
+         桩掉（见 test_wechat_record 的 `_fake_user32_screen`）。
+
 设计约定（都是踩过的坑，别改）：
 
 - **必须设 `CODEBUDDY_SAFE_DELETE_ENABLED=0`**：本机 safe-delete shim 会把
@@ -143,18 +161,56 @@ def _say(text: str = "") -> None:
     print(text, flush=True)
 
 
-def _run(name: str, cmd: list[str], cwd: Path) -> tuple[bool, str]:
-    """跑一条检查，输出直接透传给终端（CI 日志要能一眼看懂）。返回 (是否通过, 备注)。"""
+def _run(name: str, cmd: list[str], cwd: Path,
+         extra_env: dict | None = None) -> tuple[bool, str]:
+    """跑一条检查，输出直接透传给终端（CI 日志要能一眼看懂）。返回 (是否通过, 备注)。
+
+    `extra_env` 里值为 None 表示**从子进程环境里删掉**这个变量（不是设成空串）。
+    """
     _say(f"\n=== [{name}] {' '.join(cmd)}")
+    env = _env()
+    for key, val in (extra_env or {}).items():
+        if val is None:
+            env.pop(key, None)
+        else:
+            env[key] = val
     started = time.perf_counter()
     try:
-        proc = subprocess.run(cmd, cwd=str(cwd), env=_env())
+        proc = subprocess.run(cmd, cwd=str(cwd), env=env)
     except FileNotFoundError as exc:
         return False, f"命令不存在：{exc}"
     elapsed = time.perf_counter() - started
     ok = proc.returncode == 0
     _say(f"--- [{name}] {'通过' if ok else '失败'}（{elapsed:.1f}s）")
     return ok, f"{elapsed:.1f}s"
+
+
+def _bare_runner_env() -> tuple[dict, list[str]]:
+    """构造"裸 runner"子进程环境；返回 (extra_env, 从 PATH 里摘掉的目录)。
+
+    为什么要动 PATH，而不只是让探测说"没有"：
+        `VM_BARE_RUNNER=1` 只约束**走了探测**的用例（`m2_server/conftest.py` 的
+        `ffmpeg_bin` 夹具）。若某个用例绕过探测直接写
+        `subprocess.run(["ffmpeg", ...])`，本机 PATH 上有它就照样绿 ——
+        而 2026-09-13 CI 上红掉的 9 条，正是这种写法（`test_pet_scan._mk_gif`
+        原来就硬编码 `"ffmpeg"`）。把含 ffmpeg 的 PATH 目录摘掉，才能让
+        "没做守卫"的用例在本机也红出来。
+
+    RVC 运行环境 / 微调产物是文件系统路径、不在 PATH 上，摘不掉；
+    那类依赖已由用例自己桩掉（见 test_rvc_worker 的 `_fake_rvc_env`）。
+    """
+    dropped: list[str] = []
+    kept: list[str] = []
+    for part in os.environ.get("PATH", "").split(os.pathsep):
+        if not part:
+            continue
+        if any((Path(part) / n).exists() for n in ("ffmpeg.exe", "ffmpeg")):
+            dropped.append(part)
+        else:
+            kept.append(part)
+    extra: dict = {"VM_BARE_RUNNER": "1", "FFMPEG_PATH": None,
+                   "PATH": os.pathsep.join(kept)}
+    return extra, dropped
 
 
 def _check_ruff() -> tuple[bool, str]:
@@ -376,9 +432,20 @@ def _check_ci_fidelity(recreate: bool = False) -> int:
         _say("\n[ci-fidelity] 瘦环境准备失败，本项未完成。")
         return 2
 
-    # 与 ci.yml 的 backend job 逐字相同（同一脚本、同一开关）
+    # 与 ci.yml 的 backend job 逐字相同（同一脚本、同一开关），只多一份"裸 runner"环境：
+    # 让"本机有、runner 没有"的资源（ffmpeg / D:\RVC / 微调产物）真的缺席。
+    # 这不是多余的谨慎 —— 2026-09-13 CI 首跑红的 13 条**全部**来自这根轴，
+    # 而当时的 --ci-fidelity 只看依赖集，照样给了绿灯。
+    # 判定规则见 m2_server/conftest.py 顶部「本机资源探测」。
+    bare_env, dropped = _bare_runner_env()
+    _say("[ci-fidelity] 本机资源按裸 runner 模拟（VM_BARE_RUNNER=1）")
+    for d in dropped:
+        _say(f"[ci-fidelity]   · 已从 PATH 摘掉（含 ffmpeg）：{d}")
+    if not dropped:
+        _say("[ci-fidelity]   · 注意：PATH 上没找到 ffmpeg，本机本来就等价于裸 runner")
     backend_ok, _ = _run("ci-backend",
-                         [str(py), str(ROOT / "tools" / "check.py"), "--no-web"], ROOT)
+                         [str(py), str(ROOT / "tools" / "check.py"), "--no-web"], ROOT,
+                         extra_env=bare_env)
 
     # 与 web job 对应，但只能本机近似：CI 跑在 Linux + npm ci 全新安装
     web_ok: bool | None = None
@@ -394,13 +461,17 @@ def _check_ci_fidelity(recreate: bool = False) -> int:
     print(f"  [{'SKIP' if web_ok is None else ('PASS' if web_ok else 'FAIL')}] 前端 job（tsc -b，本机近似）")
     print(f"  Python：CI 钉 {want} / 本次实际 {real}")
     print(f"  node  ：CI 钉 {ci_node} / 本机 {_probe_node() or '未知'}")
+    print("  本机资源：已按裸 runner 模拟（VM_BARE_RUNNER=1），跳过集应与 CI 对齐")
     print("\n  结论：" + ("CI 应会绿（后端+前端都过）" if ok else "CI 仍会红，先修上面 FAIL 的那步"))
     print("""
   未被复刻的差异（别把这里的绿当成 CI 一定绿）：
     · runner 是全新的 windows-latest / ubuntu-latest 镜像，本机不是
     · 前端 job 跑在 Linux：大小写敏感 + npm ci 全新安装，本机只能近似
     · 偶发并发/时序问题（历史上撞过一次随机挂的队列用例），本机不复现不代表没有
-    · CI 没有你的 .env / 本机资源文件，本机有""")
+    · 本机资源已按"缺失"模拟；但 CI 会**额外安装** workflow 里声明的东西
+      （如 ffmpeg）—— 依赖它们的用例在本机模拟下跳过、在 CI 上真跑。
+      所以两边都绿才是真绿：这里绿 = 没有用例会在裸机器上崩，
+      全量自检（钩子紧接着跑的那条）绿 = 那些用例本身也过。""")
     return 0 if ok else 1
 
 
@@ -414,7 +485,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--list", action="store_true", help="只列出将要执行的命令")
     ap.add_argument("--ci-fidelity", action="store_true",
                     help="复刻 CI：在只装 requirements-dev.txt 的干净 venv（.venv-ci/）里"
-                         "跑 CI 那条命令。改了依赖/加了测试后跑它（约 3 分钟）")
+                         "跑 CI 那条命令，并把本机资源按裸 runner 模拟（VM_BARE_RUNNER=1）。"
+                         "改了依赖/加了测试/改了 CI 配置后跑它（约 3 分钟）")
     ap.add_argument("--recreate", action="store_true",
                     help="配合 --ci-fidelity：先 --clear 重建瘦 venv（手工装过东西的 venv 不可信）")
     args = ap.parse_args(argv)
