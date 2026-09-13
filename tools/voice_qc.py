@@ -3,13 +3,13 @@
 
 用法（跑在主 .venv，与 8000 服务同环境；变声验收依赖 worker 8001）：
     # 数据集预检：切片数/总时长/时长分布(max/median)/响度(max_dBFS)/语速（超 6 字/秒记警告）
-    python tools/voice_qc.py --dataset D:\\RVC\\dataset\\meituan_rat
+    python tools/voice_qc.py --dataset D:\\RVC\\dataset\\<音色名>
 
     # 变声验收：测试音频 → 离线变声 → 时长比/f0偏移/ASR重合/声纹余弦 → score 0-100
-    python tools/voice_qc.py --voice meituan_rat
+    python tools/voice_qc.py --voice <音色名>
 
     # 两种模式可同时跑（同名时合并写进同一个 <exp>.json）
-    python tools/voice_qc.py --dataset D:\\RVC\\dataset\\meituan_rat --voice meituan_rat
+    python tools/voice_qc.py --dataset D:\\RVC\\dataset\\<音色名> --voice <音色名>
 
 变声验收口径：
     - 测试输入优先用「其他音色」的参考音频（跨音色转换才检验泛化），音色库只有
@@ -38,7 +38,7 @@ RVC_VENV_PY = cfg.RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 INFER_PY = ROOT / "m2_server" / "offline_vc_infer.py"
 QC_DIR = cfg.OUTPUTS_DIR / "qc"
 
-# 语速警告阈值（字/秒）：素材语速过快会直接劣化模型可懂度（meituan_rat 的教训）
+# 语速警告阈值（字/秒）：素材语速过快会直接劣化模型可懂度（作者踩过的坑）
 SPEED_WARN = 6.0
 
 

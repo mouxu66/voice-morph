@@ -63,9 +63,9 @@ CABLE Output                                   ← 系统默认【录音】设�
 ### 症状 C：变声功能本身不可用
 依次检查：
 1. 主服务 8000 存活：`GET http://127.0.0.1:8000/api/health`（必须用 `D:\变声\.venv` 启动）
-2. `GET /api/rvc/live/status` → model_ok（缺 `D:\RVC\logs\meituan_rat\meituan_rat.pth`+index 则要先训练）
+2. `GET /api/rvc/live/status` → model_ok（缺 `D:\RVC\logs\<音色名>\<音色名>.pth`+index 则要先训练）
 3. CABLE 设备存在且 Active（diag 里 state=1）；VB-Cable 被禁用会导致 apply 找不到 CABLE Output
-4. RVC 窗口秒退 → 看 `D:\RVC\logs\meituan_rat\realtime_gui.log`
+4. RVC 窗口秒退 → 看 `D:\RVC\logs\<音色名>\realtime_gui.log`
 
 ## 四、给 AI 的运维工具箱
 

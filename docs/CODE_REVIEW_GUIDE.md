@@ -89,7 +89,7 @@
 ### 2.3 TTS 流式 `qwen3_tts_service.py` / `cascade_stream.py`
 - [ ] 真·流式 `generate_voice_clone_streaming` 正确逐块 yield `(chunk, sr, timing)`，首包 TTFA 在目标区间（cs=8~12 → 0.5~0.7s）。
 - [ ] 采样率恒 24000，长度前缀帧协议不变 → cascade 客户端零改。
-- [ ] 声纹 `create_voice_clone_prompt(x_vector_only_mode=True)` 用目标音色自身 ref，无则回退 `tts_models/ref/meituan_rat_002.wav`。
+- [ ] 声纹 `create_voice_clone_prompt(x_vector_only_mode=True)` 用目标音色自身 ref，无则回退兜底参考音（`config.DEFAULT_REF_AUDIO` / `VM_DEFAULT_REF`）。
 - [ ] 加载/预热失败降级 TTS 直出并记状态；warmup 在 serve 前完成。
 - [ ] 客户端断开能及时取消生成循环。
 

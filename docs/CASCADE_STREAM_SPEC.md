@@ -27,7 +27,7 @@
 | TTS（已加速） | 同上 | `POST /tts` `{text, language, ref_audio, ref_text, fast:true}` → wav bytes，响应头 `X-Fast-TTS: 1/0` |
 | 声纹/健康检查 | 同上 | `POST /emb`、`GET /health` → `{status, version, fast_tts}` |
 | 声卡切换 | `m2_server/audio_config.ps1` | `powershell -NoProfile -ExecutionPolicy Bypass -File <ps1> -action apply\|restore\|reset` |
-| 音色参考音频 | `D:/变声/tts_models/ref/meituan_rat_002.wav` | 22.05kHz 单声道，3.08s |
+| 音色参考音频 | `tts_models/ref/*.wav`（兜底用，可用 `VM_DEFAULT_REF` 覆盖） | 22.05kHz 单声道，约 3s |
 
 **实测性能基线（2026-08-30）**
 

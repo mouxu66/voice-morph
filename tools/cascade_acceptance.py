@@ -25,6 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "m2_server"))
+import config as cfg  # noqa: E402
 
 API = "http://127.0.0.1:8000/api"
 WORKER = "http://127.0.0.1:8001"
@@ -186,7 +187,9 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     pf = sub.add_parser("file", help="文件模式全链路验收")
     pf.add_argument("file")
-    pf.add_argument("--ref", default=str(ROOT / "tts_models" / "ref" / "meituan_rat_002.wav"))
+    # 兜底参考音与主链路同源（VM_DEFAULT_REF / tts_models/ref 下第一个 wav）。
+    # 2026-09-13 前这里写死作者本机的私有音色文件，对开源用户必然不存在。
+    pf.add_argument("--ref", default=str(cfg.DEFAULT_REF_AUDIO))
     sub.add_parser("latency", help="实时延迟统计（需先启动级联并说话）")
     sub.add_parser("restore", help="声卡还原检查")
     args = p.parse_args()

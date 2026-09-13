@@ -127,7 +127,7 @@ powershell -ExecutionPolicy Bypass -File scripts\test-update-e2e.ps1
 
 ```
 [PASS] VM 回滚至干净快照并启动
-[PASS] 0.2.1 静默安装成功  C:\Users\jjjj\AppData\Local\Programs\voice-morph-desktop\voice-morph-desktop.exe
+[PASS] 0.2.1 静默安装成功  C:\Users\<guest 用户>\AppData\Local\Programs\voice-morph-desktop\voice-morph-desktop.exe
 [PASS] 更新源可达（latest.json 合法） PASS:0.2.2
 [PASS] 更新检测→下载→静默安装→退出 已完成
 [PASS] 版本生效           磁盘 exe 版本=0.2.2，期望 0.2.2
