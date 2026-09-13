@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  backendPrefix,
   cancelPipeline,
   deleteRawVideo,
   diarizeClips,
@@ -255,7 +256,7 @@ export function useWorkshop() {
     const query = selectedClips.size
       ? `?${[...selectedClips].map((c) => `clips=${encodeURIComponent(c)}`).join("&")}`
       : ""
-    const url = (import.meta.env.DEV ? "" : "http://127.0.0.1:8000") + `/api/export/rvc${query}`
+    const url = backendPrefix() + `/api/export/rvc${query}`
     try {
       const res = await fetch(url)
       if (!res.ok) throw new Error(`导出失败（${res.status}）`)

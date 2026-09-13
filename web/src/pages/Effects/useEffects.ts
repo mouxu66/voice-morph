@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { backendPrefix } from "../../api/client"
 
 /**
  * 效果器工作台状态机：选音频 → 叠效果链 → A/B 试听 → 下载。
  *
- * 后端 /api/effects/* 直接 POST multipart（不走 client.ts，避免与其并发改动冲突）。
- * DSP 全在本地 CPU 线程池跑，不占 GPU，与实时链路互不干扰。
+ * 后端 /api/effects/* 直接 POST multipart（不走 client.ts 的 jsonFetch 封装，
+ * 但复用它的 backendPrefix() 判定基址）。DSP 全在本地 CPU 线程池跑，不占 GPU，
+ * 与实时链路互不干扰。
  */
 
 // 与后端 effects.py CATALOG 对应的类型
@@ -30,13 +32,10 @@ export type FxStep = {
   params: Record<string, number>
 }
 
-const BASE = import.meta.env.DEV
-  ? "/api"
-  : typeof location !== "undefined" && (location.protocol === "http:" || location.protocol === "https:")
-    ? "/api"
-    : "http://127.0.0.1:8000/api"
-
 type Feedback = { tone: "ok" | "error" | "info"; text: string }
+
+// /api 基址：与 client.ts 共用同一处判定，避免"各 hook 各写一份"（2026-09-13 收敛）
+const BASE = backendPrefix() + "/api"
 
 export function useEffects() {
   const [catalog, setCatalog] = useState<FxMeta[]>([])
