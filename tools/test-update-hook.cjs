@@ -8,6 +8,7 @@
 // 本机开发永远走不到；它又是 VM 端到端测试的**唯一观测点**——
 // 一旦「下载失败时也静默不写结果文件」，测试只能看到「链路未完成」，无法定性。
 const assert = require("node:assert");
+const { installElectronStub } = require("./electron-stub.cjs");
 const fs = require("node:fs");
 const http = require("node:http");
 const os = require("node:os");
@@ -34,18 +35,14 @@ const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vm-hook-test-"));
 const resultPath = path.join(tmpRoot, "update-check-result.json");
 
 // 桩掉 electron（app.isPackaged / getPath / getVersion）
-const webRoot = path.join(__dirname, "..", "web");
-const electronEntry = require.resolve("electron", { paths: [webRoot] });
+// 桩装在 require updater/update-ipc 之前；不依赖本机是否装过 web/node_modules
 const fakeApp = {
   isPackaged: true,
   getPath: () => tmpRoot,
   getVersion: () => "0.2.0",
   quit: () => {},
 };
-require.cache[electronEntry] = {
-  id: electronEntry, filename: electronEntry, loaded: true,
-  exports: { app: fakeApp, ipcMain: { handle: () => {}, on: () => {} } },
-};
+installElectronStub({ app: fakeApp, ipcMain: { handle: () => {}, on: () => {} } });
 
 const updater = require("../web/electron/updater.cjs");
 const { scheduleStartupUpdateCheck } = require("../web/electron/update-ipc.cjs");

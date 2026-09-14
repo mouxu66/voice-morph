@@ -7,6 +7,7 @@
 // 这里用 require.cache 顶替 electron 模块，记录注册的通道并逐个真实调用，
 // 验证「渲染层拿到的返回值形状」与「用户取消/选错路径」等分支都不会炸。
 const assert = require("node:assert");
+const { installElectronStub } = require("./electron-stub.cjs");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -16,35 +17,36 @@ let userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-ipc-userdata-"));
 let dialogPlan = { pickResult: { canceled: true }, msgChoice: 1 };
 const dialogCalls = [];
 
-const electronEntry = require.resolve("electron", { paths: [path.join(__dirname, "..", "web")] });
-require.cache[electronEntry] = {
-  id: electronEntry, filename: electronEntry, loaded: true,
-  exports: {
-    app: {
-      isPackaged: true,
-      getPath: (name) => (name === "userData" ? userDataDir : userDataDir),
-      quit: () => { dialogCalls.push({ kind: "quit" }); },
-    },
-    ipcMain: {
-      handle: (name, fn) => { handlers[name] = fn; },
-    },
-    dialog: {
-      showMessageBoxSync: (_win, opts) => {
-        // 兼容 (win, opts) 与 (opts) 两种调用形态
-        const o = opts || _win;
-        dialogCalls.push({ kind: "message", title: o.title, buttons: o.buttons });
-        return dialogPlan.msgChoice;
-      },
-      showOpenDialog: async (...args) => {
-        const opts = args.length > 1 ? args[1] : args[0];
-        dialogCalls.push({ kind: "open", title: opts.title });
-        return dialogPlan.pickResult;
-      },
-    },
-    shell: { showItemInFolder: () => { dialogCalls.push({ kind: "reveal" }); } },
-    BrowserWindow: function () {},
+// 桩装在 require app-config/setup-ipc 之前；不依赖本机是否装过 web/node_modules。
+// electronEntry 是合成 id，后面的 require.cache[electronEntry].exports 照旧可用。
+const electronEntry = installElectronStub({
+  app: {
+    isPackaged: true,
+    getPath: (name) => (name === "userData" ? userDataDir : userDataDir),
+    quit: () => { dialogCalls.push({ kind: "quit" }); },
   },
-};
+  ipcMain: {
+    handle: (name, fn) => { handlers[name] = fn; },
+  },
+  dialog: {
+    showMessageBoxSync: (_win, opts) => {
+      // 兼容 (win, opts) 与 (opts) 两种调用形态
+      const o = opts || _win;
+      dialogCalls.push({ kind: "message", title: o.title, buttons: o.buttons });
+      return dialogPlan.msgChoice;
+    },
+    showOpenDialog: async (...args) => {
+      const opts = args.length > 1 ? args[1] : args[0];
+      dialogCalls.push({ kind: "open", title: opts.title });
+      return dialogPlan.pickResult;
+    },
+  },
+  shell: {
+    showItemInFolder: () => { dialogCalls.push({ kind: "reveal" }); },
+    openExternal: async (url) => { dialogCalls.push({ kind: "open-external", url }); },
+  },
+  BrowserWindow: function () {},
+});
 
 const handlers = {};
 const appConfig = require("../web/electron/app-config.cjs");
@@ -68,11 +70,57 @@ function makeFullEnv() {
 const checks = [];
 function t(name, fn) { checks.push({ name, fn }); }
 
-t("registerSetupIpc: 六个通道全部注册", () => {
+t("registerSetupIpc: 全部通道注册齐全（少一个就是 UI 上有个按钮点了没反应）", () => {
   setup.registerSetupIpc(() => null);
   for (const ch of ["setup:status", "setup:pick-dir", "setup:save", "setup:dismiss",
-                    "setup:run-wizard", "setup:reset", "setup:show-config"]) {
+                    "setup:run-wizard", "setup:reset", "setup:show-config",
+                    "setup:guides", "setup:open-guide-link", "setup:scan"]) {
     assert.strictEqual(typeof handlers[ch], "function", `缺少通道 ${ch}`);
+  }
+});
+
+t("setup:guides: 回传指引与核对日期", async () => {
+  const r = await handlers["setup:guides"]({});
+  assert.ok(r.verifiedAt, "要带核对日期 —— 链接会腐烂，用户有权知道它是什么时候核的");
+  assert.strictEqual(r.guides.length, 3);
+  for (const g of r.guides) {
+    assert.ok(g.links.length > 0 && g.steps.length > 0 && g.sizeText);
+  }
+});
+
+t("setup:open-guide-link: 越界/未知 kind 一律拒绝，不会被诱导打开任意地址", async () => {
+  dialogCalls.length = 0;
+  assert.strictEqual((await handlers["setup:open-guide-link"]({}, "tts_models", 999)).ok, false);
+  assert.strictEqual((await handlers["setup:open-guide-link"]({}, "不存在", 0)).ok, false);
+  // 传 URL 字符串冒充序号也不行：类型不对直接拒
+  assert.strictEqual(
+    (await handlers["setup:open-guide-link"]({}, "tts_models", "https://evil.example.com")).ok,
+    false,
+  );
+  assert.strictEqual(dialogCalls.filter((c) => c.kind === "open-external").length, 0);
+  const good = await handlers["setup:open-guide-link"]({}, "rvc_root", 0);
+  assert.strictEqual(good.ok, true);
+  assert.ok(good.url.startsWith("https://"));
+});
+
+t("setup:scan: 返回候选与统计，且不因渲染层参数缺失而出错", async () => {
+  // 打桩到最底层：这里测的是"IPC 把参数透传 + 回传形状"，
+  // 真扫一遍本机会花 1–3s 且结果随机器变 —— 那是 test-model-scan.cjs 的活。
+  const modelScan = require("../web/electron/model-scan.cjs");
+  const real = modelScan.scan;
+  modelScan.scan = async (opts) => ({
+    candidates: { rvc_root: [{ path: "D:\\RVC", score: 20, reasons: ["x"] }] },
+    stats: { dirsVisited: opts.maxDirs || 3000, truncated: false, elapsedMs: 1, maxDirs: 3000, roots: 8 },
+  });
+  try {
+    const r = await handlers["setup:scan"]({}, undefined);
+    assert.strictEqual(r.ok, true);
+    assert.ok(r.stats && typeof r.stats.dirsVisited === "number");
+    assert.strictEqual(r.candidates.rvc_root[0].path, "D:\\RVC");
+    const only = await handlers["setup:scan"]({}, { kinds: ["tts_venv"] });
+    assert.deepStrictEqual(Object.keys(only.candidates), ["rvc_root"]); // 桩不区分，只验透传不炸
+  } finally {
+    modelScan.scan = real;
   }
 });
 
@@ -191,48 +239,160 @@ t("runFirstRunGuide: 已全部就绪 → 直接返回 false，不弹任何窗", 
   assert.strictEqual(dialogCalls.length, 0, "全就绪时不该弹引导");
 });
 
-t("runFirstRunGuide: 用户选「稍后配置」→ 标 setupSeen 且返回 false（不阻塞）", async () => {
-  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-ipc-guide-later-"));
-  dialogPlan.msgChoice = 1; // 「稍后配置」
+t("runFirstRunGuide: 扫到候选 + 选「直接使用」→ 落盘推荐位置并返回 true", async () => {
+  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-ipc-guide-use-"));
+  const { models, py, rvc } = makeFullEnv();
+  dialogPlan.msgChoice = 0; // 「直接使用」
   dialogCalls.length = 0;
-  const changed = await setup.runFirstRunGuide(null);
-  assert.strictEqual(changed, false, "稍后配置不应触发后端重启");
-  assert.strictEqual(appConfig.load().setupSeen, true, "必须落盘 setupSeen，否则每次启动都弹");
-  assert.ok(dialogCalls.some((c) => c.kind === "message"), "应弹过引导对话框");
+  const changed = await setup.runFirstRunGuide(null, {
+    scan: async () => ({
+      ok: true,
+      stats: null,
+      candidates: {
+        tts_models: [{ path: models, score: 9, reasons: ["x"], recommended: true }],
+        tts_venv: [{ path: py, score: 9, reasons: ["x"], recommended: true }],
+        rvc_root: [{ path: rvc, score: 20, reasons: ["x"], recommended: true }],
+      },
+    }),
+  });
+  assert.strictEqual(changed, true, "写入配置后应返回 true 以触发后端重启");
+  const c = appConfig.load();
+  assert.strictEqual(c.ttsModelsDir, models);
+  assert.strictEqual(c.ttsVenvPy, py);
+  assert.strictEqual(c.rvcRoot, rvc);
+  assert.strictEqual(c.setupSeen, true);
+  assert.ok(dialogCalls.some((x) => x.kind === "message"), "应弹过引导对话框");
 });
 
-t("runFirstRunGuide: 用户选「退出应用」→ 调 app.quit 且不写配置", async () => {
-  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-ipc-guide-quit-"));
-  dialogPlan.msgChoice = 2; // 「退出应用」
+t("runFirstRunGuide: 扫到候选 + 选「我自己选目录」→ 转入手动向导", async () => {
+  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-ipc-guide-manual-"));
+  const { models } = makeFullEnv();
+  dialogPlan.msgChoice = 1;
+  const realOpen = require.cache[electronEntry].exports.dialog.showOpenDialog;
+  require.cache[electronEntry].exports.dialog.showOpenDialog = async (...args) => {
+    const o = args.length > 1 ? args[1] : args[0];
+    return String(o.title).includes("tts_models")
+      ? { canceled: false, filePaths: [models] }
+      : { canceled: true };
+  };
+  try {
+    const changed = await setup.runFirstRunGuide(null, {
+      scan: async () => ({
+        ok: true, stats: null,
+        candidates: { tts_models: [{ path: "/scan/found/other", score: 9, reasons: [], recommended: true }] },
+      }),
+    });
+    assert.strictEqual(changed, true);
+    assert.strictEqual(
+      appConfig.load().ttsModelsDir, models,
+      "用户明确选「我自己选目录」时不能被扫描结果顶替",
+    );
+  } finally {
+    require.cache[electronEntry].exports.dialog.showOpenDialog = realOpen;
+  }
+});
+
+t("runFirstRunGuide: 扫到候选 + 选「稍后配置」→ 标 setupSeen 且不写路径", async () => {
+  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-ipc-guide-later-"));
+  dialogPlan.msgChoice = 2;
   dialogCalls.length = 0;
-  const changed = await setup.runFirstRunGuide(null);
+  const changed = await setup.runFirstRunGuide(null, {
+    scan: async () => ({
+      ok: true, stats: null,
+      candidates: { rvc_root: [{ path: "/scan/hit", score: 9, reasons: [], recommended: true }] },
+    }),
+  });
+  assert.strictEqual(changed, false, "稍后配置不应触发后端重启");
+  assert.strictEqual(appConfig.load().setupSeen, true, "必须落盘 setupSeen，否则每次启动都弹");
+  assert.strictEqual(appConfig.load().rvcRoot, "", "稍后配置不得偷偷写入扫描结果");
+});
+
+t("runFirstRunGuide: 没扫到 + 选「打开下载指引」→ 打开的是常量里的官方链接", async () => {
+  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-ipc-guide-dl-"));
+  dialogPlan.msgChoice = 0;
+  dialogCalls.length = 0;
+  const changed = await setup.runFirstRunGuide(null, {
+    scan: async () => ({ ok: true, stats: null, candidates: {} }),
+  });
+  assert.strictEqual(changed, false);
+  assert.strictEqual(appConfig.load().setupSeen, true);
+  const opened = dialogCalls.filter((c) => c.kind === "open-external");
+  assert.strictEqual(opened.length, 1, "应打开且只打开一个链接");
+  const expected = require("../web/electron/model-guides.cjs").resolveLink("tts_models", 0);
+  assert.strictEqual(opened[0].url, expected.url, "打开的必须是指引常量里的链接");
+  assert.ok(/^https:\/\//.test(opened[0].url));
+});
+
+t("runFirstRunGuide: 没扫到 + 选「退出应用」→ app.quit 且不写配置", async () => {
+  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-ipc-guide-quit-"));
+  dialogPlan.msgChoice = 3;
+  dialogCalls.length = 0;
+  const changed = await setup.runFirstRunGuide(null, {
+    scan: async () => ({ ok: true, stats: null, candidates: {} }),
+  });
   assert.strictEqual(changed, false);
   assert.ok(dialogCalls.some((c) => c.kind === "quit"), "应调用 app.quit");
   assert.strictEqual(appConfig.load().setupSeen, false, "退出流程不该改配置");
 });
 
-t("runFirstRunGuide: 选「现在配置」且用户选好目录 → 返回 true 并落盘", async () => {
+t("runFirstRunGuide: 扫描失败（ok:false）时退回「没扫到」分支，不炸", async () => {
+  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-ipc-guide-scanfail-"));
+  dialogPlan.msgChoice = 2; // 稍后配置
+  const changed = await setup.runFirstRunGuide(null, {
+    scan: async () => ({ ok: false, reason: "扫描炸了", candidates: {}, stats: null }),
+  });
+  assert.strictEqual(changed, false);
+  assert.ok(dialogCalls.some((c) => c.kind === "message"), "失败也要弹（给下载指引），不能白屏");
+});
+
+t("scanResources: 内部异常转成 {ok:false}，绝不向上抛（首启链路上抛异常 = 应用打不开）", async () => {
+  const modelScan = require("../web/electron/model-scan.cjs");
+  const real = modelScan.scan;
+  modelScan.scan = async () => { throw new Error("boom"); };
+  try {
+    const r = await setup.scanResources();
+    assert.strictEqual(r.ok, false);
+    assert.ok(String(r.reason).includes("boom"), "原因要带上，便于对着日志排查");
+    assert.deepStrictEqual(r.candidates, {}, "失败时给空表，调用方不用判 null");
+  } finally {
+    modelScan.scan = real;
+  }
+});
+
+t("scanResources: 把已配置路径作为 extraRoots 喂给扫描（用户挪过目录也能找回来）", async () => {
+  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-ipc-scanroots-"));
+  const { models, rvc } = makeFullEnv();
+  appConfig.save({ ttsModelsDir: models, rvcRoot: rvc });
+  const modelScan = require("../web/electron/model-scan.cjs");
+  const real = modelScan.scan;
+  let seen = null;
+  modelScan.scan = async (opts) => { seen = opts; return { candidates: {}, stats: null }; };
+  try {
+    await setup.scanResources({ kinds: ["rvc_root"] });
+    assert.deepStrictEqual(seen.kinds, ["rvc_root"]);
+    assert.ok(seen.extraRoots.includes(models), "已配置的模型目录要参与寻找");
+    assert.ok(seen.extraRoots.includes(rvc), "已配置的 RVC 根要参与寻找");
+  } finally {
+    modelScan.scan = real;
+  }
+});
+
+t("runFirstRunGuide: 用户选好目录 → 返回 true 并落盘", async () => {
   userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-ipc-guide-now-"));
   const { models, rvc } = makeFullEnv();
-  dialogPlan.msgChoice = 0; // 「现在配置」
-  // 向导会按缺失项依次取目录：第 1 次给 tts_models，第 2 次给 rvc，其余取消
-  const queue = [
-    { canceled: false, filePaths: [models] },
-    { canceled: false, filePaths: [models] },  // tts_venv（会被推导，但向导仍会问）
-    { canceled: false, filePaths: [rvc] },
-  ];
-  const orig = dialogPlan.pickResult;
-  let i = 0;
+  dialogPlan.msgChoice = 1; // 没扫到分支里的「我自己选目录」
   const realOpen = require.cache[electronEntry].exports.dialog.showOpenDialog;
   require.cache[electronEntry].exports.dialog.showOpenDialog = async (...args) => {
     const o = args.length > 1 ? args[1] : args[0];
-    if (String(o.title).includes("tts_models")) return queue[0];
+    if (String(o.title).includes("tts_models")) return { canceled: false, filePaths: [models] };
     if (String(o.title).includes("解释器")) return { canceled: true }; // 跳过（可推导）
-    if (String(o.title).includes("RVC")) return queue[2];
+    if (String(o.title).includes("RVC")) return { canceled: false, filePaths: [rvc] };
     return { canceled: true };
   };
   try {
-    const changed = await setup.runFirstRunGuide(null);
+    const changed = await setup.runFirstRunGuide(null, {
+      scan: async () => ({ ok: true, stats: null, candidates: {} }),
+    });
     assert.strictEqual(changed, true, "有配置写入时应返回 true 以触发后端重启");
     const c = appConfig.load();
     assert.strictEqual(c.ttsModelsDir, models);
@@ -240,8 +400,17 @@ t("runFirstRunGuide: 选「现在配置」且用户选好目录 → 返回 true 
     assert.strictEqual(c.setupSeen, true);
   } finally {
     require.cache[electronEntry].exports.dialog.showOpenDialog = realOpen;
-    dialogPlan.pickResult = orig;
   }
+});
+
+t("toPatch: kind → 配置字段名映射，未知 kind 与空值一律丢弃", () => {
+  const { CONFIG_KEY, toPatch } = setup;
+  assert.deepStrictEqual(Object.keys(CONFIG_KEY).sort(), ["rvc_root", "tts_models", "tts_venv"]);
+  assert.deepStrictEqual(
+    toPatch({ tts_models: "D:\\m", tts_venv: "D:\\p", rvc_root: "D:\\R" }),
+    { ttsModelsDir: "D:\\m", ttsVenvPy: "D:\\p", rvcRoot: "D:\\R" },
+  );
+  assert.deepStrictEqual(toPatch({ 未知: "x", tts_models: "" }), {}, "未知 kind 与空值不得写进配置");
 });
 
 t("runSetupWizard: 全部取消 → 返回 false，不写任何配置", async () => {

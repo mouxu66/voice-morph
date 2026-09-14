@@ -6,6 +6,7 @@
 // 说明：用真实本地 loopback http.server（随机端口）当更新源，updater 全程真实请求，
 //      不 stub http/https；只桩 electron（app.getPath userData + getVersion）。
 const assert = require("node:assert");
+const { installElectronStub } = require("./electron-stub.cjs");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -15,18 +16,14 @@ const path = require("node:path");
 let currentVersion = "0.2.0";
 let userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-updater-test-"));
 
-const webRoot = path.join(__dirname, "..", "web");
-const electronEntry = require.resolve("electron", { paths: [webRoot] });
-require.cache[electronEntry] = {
-  id: electronEntry, filename: electronEntry, loaded: true,
-  exports: {
-    app: {
-      getPath: (name) => userDataDir,
-      getVersion: () => currentVersion,
-      quit: () => {},
-    },
+// 桩装在 require updater.cjs 之前；不依赖本机是否装过 web/node_modules
+installElectronStub({
+  app: {
+    getPath: (name) => userDataDir,
+    getVersion: () => currentVersion,
+    quit: () => {},
   },
-};
+});
 const updater = require("../web/electron/updater.cjs");
 
 (async function main() {

@@ -10,26 +10,24 @@
 //
 // 用真 electron 桩（require.cache 顶替）+ 真临时目录树，不 mock fs。
 const assert = require("node:assert");
+const { installElectronStub } = require("./electron-stub.cjs");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
 let userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-setup-userdata-"));
-const electronEntry = require.resolve("electron", { paths: [path.join(__dirname, "..", "web")] });
-require.cache[electronEntry] = {
-  id: electronEntry, filename: electronEntry, loaded: true,
-  exports: {
-    app: {
-      isPackaged: false,
-      getPath: (name) => (name === "userData" ? userDataDir : userDataDir),
-      quit: () => {},
-    },
-    ipcMain: { handle: () => {} },
-    dialog: { showMessageBoxSync: () => 0, showOpenDialog: async () => ({ canceled: true }) },
-    shell: { showItemInFolder: () => {} },
-    BrowserWindow: function () {},
+// 桩装在 any `web/electron/*.cjs` 之前；不依赖本机是否装过 web/node_modules
+const electronEntry = installElectronStub({
+  app: {
+    isPackaged: false,
+    getPath: (name) => (name === "userData" ? userDataDir : userDataDir),
+    quit: () => {},
   },
-};
+  ipcMain: { handle: () => {} },
+  dialog: { showMessageBoxSync: () => 0, showOpenDialog: async () => ({ canceled: true }) },
+  shell: { showItemInFolder: () => {} },
+  BrowserWindow: function () {},
+});
 
 const appConfig = require("../web/electron/app-config.cjs");
 const modelSetup = require("../web/electron/model-setup.cjs");
