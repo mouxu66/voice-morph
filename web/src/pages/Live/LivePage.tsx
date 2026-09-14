@@ -195,7 +195,7 @@ export function LivePage(p: ReturnType<typeof useLive>) {
                 性能模式
               </h3>
               <p className="mt-1.5 max-w-xl text-xs leading-5 text-muted-foreground">
-                选「游戏低占用」会自动关掉实时转写（桌宠字幕）与自我监听，并降低推理开销，适合边打游戏边变声。
+                选「游戏低占用」会自动隐藏桌宠、关掉实时转写（字幕）与自我监听，并把显存探测降频到 10 秒一次，适合边打游戏边变声。
               </p>
             </div>
             <div className="flex shrink-0 rounded-lg border border-border bg-background/70 p-1">

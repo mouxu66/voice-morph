@@ -109,8 +109,24 @@ PROFILE_TUNING = {
 }
 PROFILE_DESC = {"balanced": "均衡·音质优先", "game": "游戏低占用"}
 
-# GPU 显存探测缓存（1s TTL）：status 轮询较频繁，避免反复 spawn nvidia-smi
+# GPU 显存探测缓存：均衡档 1s TTL（显存条跟手）；游戏档 10s TTL。
+# 为什么游戏档要拉长：_gpu_snapshot 一次要 spawn 3 个 nvidia-smi（used/total/pid），
+# 而 /rvc/live/status 被前端（忙时 1.5s）与桌宠（2s）同时轮询 —— 相当于游戏中每秒
+# 1~2 次进程创建。nvidia-smi 查询会短暂占用 GPU 驱动，是全屏游戏掉帧的元凶之一。
+# 代价：游戏档显存条最多滞后 10s（2026-09-14 用户确认可接受）。
+_GPU_TTL_BALANCED = 1.0
+_GPU_TTL_GAME = 10.0
 _gpu_cache: dict = {"ts": 0.0, "used": None, "total": None, "proc": None}
+
+
+def _gpu_ttl() -> float:
+    """当前性能档对应的探测 TTL。设置读取异常时按均衡档处理（宁可多探测，不让显存条停更）。"""
+    try:
+        if live_settings.get()["perf_profile"] == live_settings.PERF_GAME:
+            return _GPU_TTL_GAME
+    except Exception:
+        pass
+    return _GPU_TTL_BALANCED
 
 
 def _nvidia_smi(query: str) -> list[str] | None:
@@ -167,9 +183,9 @@ def _live_proc_vram_mb() -> int | None:
 
 
 def _gpu_snapshot() -> dict:
-    """1s TTL 缓存的三连查结果，status/profile 接口共用。"""
+    """按性能档 TTL 缓存的三连查结果，status/profile 接口共用（TTL 见 _gpu_ttl）。"""
     now = time.time()
-    if now - _gpu_cache["ts"] >= 1.0:
+    if now - _gpu_cache["ts"] >= _gpu_ttl():
         _gpu_cache.update(ts=now, used=_gpu_used_mb(), total=_gpu_total_mb(),
                           proc=_live_proc_vram_mb())
     return {"gpu_total_mb": _gpu_cache["total"], "gpu_used_mb": _gpu_cache["used"],

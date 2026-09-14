@@ -4,6 +4,11 @@
 // 右键可切「仅变声时显示」。页面功能介绍在主窗口内显眼处（PetGuide 组件）。
 // 位置与开关记忆在 userData/pet.json。
 //
+// 2026-09-14 起新增第三条、优先级最高的一档：**实时变声的性能档为 game（游戏低占用）时，
+// 桌宠一律退场**，压过上面的「常驻显示」。理由：用户「日常和游戏要分开」——日常发微信
+// 语音时桌宠该在，打游戏时它是置顶透明窗（持续参与桌面合成 + 挡视线），该消失。
+// 判定规则全在 pet-visibility.cjs（纯函数，可单测），本文件只负责喂状态与执行显隐。
+//
 // 注意：桌宠触发的业务动作（发微信语音/挖掘/实时变声开关）通过 createPetWindow(actions)
 // 依赖注入传入（见 pet-actions.cjs），本模块不反向依赖动作模块，避免循环 require。
 const { app, BrowserWindow, Menu, ipcMain, screen } = require("electron");
@@ -12,6 +17,7 @@ const fs = require("fs");
 const http = require("http");
 const backend = require("./backend.cjs");
 const { BACKEND_PORT } = backend;
+const { PERF_GAME, shouldShowPet, parseLiveStatus } = require("./pet-visibility.cjs");
 
 // 加载 pet 资源（2026-09-12 语义随生产加载路径修复而变）：
 //   开发（源码版）：可命中 D:\变声 源码 pet 目录，改源码重开即生效；
@@ -31,9 +37,22 @@ let petGuideUntil = 0;      // 页面导览的展示截止时间戳（ms）
 let petLastGuide = null;    // 最近一次导览内容，供右键「再讲一遍本页」复用
 let petReady = false;       // pet.html 是否已加载完（加载完成前导览先排队）
 let petPendingGuide = null; // 加载完成前收到的导览请求
+let petRunning = false;     // 最近一次轮询到的级联/实时变声运行态
+let petPerfProfile = "";    // 最近一次轮询到的性能档；"game" 时桌宠一律退场
 
 function getPetWin() {
   return petWin;
+}
+
+/** 把当前所有影响显隐的状态收口成 shouldShowPet 的入参，避免多处重复拼参数。 */
+function petShowInput() {
+  return {
+    mode: petPref.mode,
+    userHidden: petUserHidden,
+    perfProfile: petPerfProfile,
+    running: petRunning,
+    guideActive: petGuideActive(),
+  };
 }
 
 function loadPetPref() {
@@ -74,8 +93,11 @@ function cascadeRunning() {
   });
 }
 
-function liveVoiceRunning() {
-  // 实时变声（RVC）运行中 → 桌宠也出现（挂实时字幕）
+function liveVoiceStatus() {
+  // 实时变声（RVC）状态：running → 桌宠现身挂实时字幕；
+  // perfProfile === "game" → 桌宠一律退场（见 pet-visibility.cjs）。
+  // 探测失败一律走 parseLiveStatus(null)，退化为「未运行 + 无档位」= 原有行为，
+  // 绝不因为后端没起来就让桌宠永久隐身。
   return new Promise((resolve) => {
     const req = http.get(
       { host: "127.0.0.1", port: BACKEND_PORT, path: "/api/rvc/live/status", timeout: 2000 },
@@ -83,12 +105,12 @@ function liveVoiceRunning() {
         let data = "";
         res.on("data", (c) => (data += c));
         res.on("end", () => {
-          try { resolve(Boolean(JSON.parse(data).live_running)); } catch { resolve(false); }
+          try { resolve(parseLiveStatus(JSON.parse(data))); } catch { resolve(parseLiveStatus(null)); }
         });
       },
     );
-    req.on("error", () => resolve(false));
-    req.on("timeout", () => { req.destroy(); resolve(false); });
+    req.on("error", () => resolve(parseLiveStatus(null)));
+    req.on("timeout", () => { req.destroy(); resolve(parseLiveStatus(null)); });
   });
 }
 
@@ -101,6 +123,9 @@ function showPetGuide(payload) {
   if (!payload || typeof payload !== "object") return;
   if (!petPref.guide) return;          // 用户关掉了导览
   petLastGuide = payload;
+  // 游戏档：桌宠已退场，导览不该再把它拽回来（否则 showInactive 会闪一下）。
+  // petLastGuide 已经存好，切回均衡后「让桌宠再讲一遍本页」仍有内容可播。
+  if (petPerfProfile === PERF_GAME) return;
   // 桌宠窗口还没建好 / pet.html 还没加载完就先排着，加载完成回调里补发。
   // 主窗口的 React 首屏可能在 petWin 就绪前就发出导览请求，少了这层会漏掉开场介绍。
   if (!petWin || !petReady) { petPendingGuide = payload; return; }
@@ -146,6 +171,8 @@ function setPetVisible(v) {
     petPref.mode = "always";
     savePetPref();
     if (petHideTimer) { clearTimeout(petHideTimer); petHideTimer = null; }
+    // 游戏档：模式照落盘，但现在不显示（等切回均衡自然出现），免得 2s 后又被轮询收回
+    if (!shouldShowPet(petShowInput())) return;
     petWin.showInactive();
   } else {
     if (petHideTimer) { clearTimeout(petHideTimer); petHideTimer = null; }
@@ -156,6 +183,7 @@ function setPetVisible(v) {
 
 function petVisible() {
   if (!petWin) return false;
+  if (petPerfProfile === PERF_GAME) return false;   // 游戏档一律视为不可见（设置面板据此显示）
   return petPref.mode === "always" ? !petUserHidden : petWin.isVisible();
 }
 
@@ -285,29 +313,47 @@ function createPetWindow(actions = {}) {
     return;
   }
 
-  // 常驻模式：窗口一就绪就出现在右下角，不用等 2s 轮询的首帧
-  petWin.once("ready-to-show", () => {
-    if (petWin && !petUserHidden && petPref.mode === "always") petWin.showInactive();
+  // 常驻模式：窗口一就绪就出现在右下角，不用等 2s 轮询的首帧。
+  // 但先问一次后端：上次退出时若停在游戏档，开软件就不该冒头再被收回（那会闪一下）。
+  petWin.once("ready-to-show", async () => {
+    const win = petWin;
+    if (!win) return;
+    const [cascade, live] = await Promise.all([cascadeRunning(), liveVoiceStatus()]);
+    if (petWin !== win) return;   // await 期间窗口被销毁（主窗口关闭）就别再碰它
+    petRunning = cascade || live.running;
+    petPerfProfile = live.perfProfile;
+    if (shouldShowPet(petShowInput())) win.showInactive();
   });
 
   // 显隐轮询：级联变声或实时变声运行即出现（showInactive 不抢通话焦点），都停止 5s 后隐藏。
   // 页面导览同样会临时唤醒窗口（petGuideActive），讲完自动退场。
+  // 游戏档（perf_profile=game）优先级最高：一律不显示，且立刻退场（不留 5s 尾巴）。
   setInterval(async () => {
     if (!petWin) return;
-    const [cascade, liveVoice] = await Promise.all([cascadeRunning(), liveVoiceRunning()]);
-    const running = cascade || liveVoice;
-    if (running) petUserHidden = false;
-    const shouldShow = !petUserHidden && (petPref.mode === "always" || running || petGuideActive());
+    const [cascade, live] = await Promise.all([cascadeRunning(), liveVoiceStatus()]);
+    petRunning = cascade || live.running;
+    petPerfProfile = live.perfProfile;
+    if (petRunning) petUserHidden = false;
+    const shouldShow = shouldShowPet(petShowInput());
     // 只要满足显示条件就取消未触发的隐藏定时器：停止后 5s 内热键重启级联时
     // 窗口仍可见，走不进 showInactive 分支，旧代码会让定时器到点误藏正在运行的桌宠
     if (shouldShow && petHideTimer) { clearTimeout(petHideTimer); petHideTimer = null; }
     if (shouldShow && !petWin.isVisible()) {
       petWin.showInactive();
-    } else if (!shouldShow && petWin.isVisible() && !petHideTimer) {
-      petHideTimer = setTimeout(() => {
-        petHideTimer = null;
-        if (petWin && !petUserHidden && petPref.mode === "cascade" && !petGuideActive()) petWin.hide();
-      }, 5000);
+    } else if (!shouldShow && petWin.isVisible()) {
+      if (petPerfProfile === PERF_GAME) {
+        // 游戏档：立刻退场。用户正在进游戏，置顶透明窗多留一秒都碍事
+        if (petHideTimer) { clearTimeout(petHideTimer); petHideTimer = null; }
+        petWin.hide();
+      } else if (!petHideTimer) {
+        // 其余情况保留 5s 缓冲（级联刚停又热键重启时不至于闪一下）。
+        // 回调里**重新求值**而不是沿用闭包里的 shouldShow：旧代码硬编码
+        // `petPref.mode === "cascade"`，导致「常驻」模式下 shouldShow 一旦变 false 就再也藏不掉。
+        petHideTimer = setTimeout(() => {
+          petHideTimer = null;
+          if (petWin && !shouldShowPet(petShowInput())) petWin.hide();
+        }, 5000);
+      }
     }
   }, 2000);
 }

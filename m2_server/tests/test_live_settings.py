@@ -7,6 +7,7 @@
      （直接调用 FastAPI 端点函数，不起 app；mock 设备枚举与进程探测）
 """
 import sys
+import time
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -220,3 +221,75 @@ def test_perf_set_same_profile_does_not_restart(monkeypatch):
     monkeypatch.setattr(rvc_live, "rvc_live_start", lambda *a, **k: None)
     r = rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="game"))
     assert r["restarted"] is False
+
+
+# ---------------- 游戏档降低显存探测频率（2026-09-14） ----------------
+# _gpu_snapshot 一次要 spawn 3 个 nvidia-smi，status 被前端与桌宠同时轮询时
+# 相当于游戏中每秒 1~2 次进程创建（抢 GPU 驱动 → 掉帧）。游戏档把 TTL 拉到 10s。
+
+_EMPTY_GPU_CACHE = {"ts": 0.0, "used": None, "total": None, "proc": None}
+
+
+def _patch_gpu_probe(monkeypatch):
+    """把探测层换成计数器：_nvidia_smi 返回固定行，_find_realtime_pids 置空。
+
+    返回 calls 列表，len(calls) 即「本轮起了几次 nvidia-smi」。
+    """
+    calls: list[str] = []
+
+    def fake_smi(query):
+        calls.append(query)
+        return ["1234"]
+
+    monkeypatch.setattr(rvc_live, "_nvidia_smi", fake_smi)
+    monkeypatch.setattr(rvc_live, "_find_realtime_pids", lambda: [])
+    monkeypatch.setattr(rvc_live, "_gpu_cache", dict(_EMPTY_GPU_CACHE))
+    return calls
+
+
+def test_gpu_probe_balanced_ttl_1s(monkeypatch):
+    """均衡档：TTL 1s —— 2s 前的缓存已过期，第二次调用会重新探测（3 → 6 次）。"""
+    calls = _patch_gpu_probe(monkeypatch)
+    live_settings.update(perf_profile="balanced")
+
+    rvc_live._gpu_snapshot()
+    assert len(calls) == 3, "首次快照应三连查（used/total/pid）"
+
+    rvc_live._gpu_cache["ts"] = time.time() - 2.0   # 伪造 2s 前的缓存
+    rvc_live._gpu_snapshot()
+    assert len(calls) == 6, "均衡档 TTL 1s，2s 前的缓存必须失效"
+
+
+def test_gpu_probe_game_ttl_10s(monkeypatch):
+    """游戏档：TTL 10s —— 2s 前的缓存仍命中（省掉进程创建），11s 前才重探。"""
+    calls = _patch_gpu_probe(monkeypatch)
+    live_settings.update(perf_profile="game")
+
+    rvc_live._gpu_snapshot()
+    assert len(calls) == 3
+
+    rvc_live._gpu_cache["ts"] = time.time() - 2.0
+    rvc_live._gpu_snapshot()
+    assert len(calls) == 3, "游戏档 2s 前的缓存应命中，不再 spawn nvidia-smi"
+
+    rvc_live._gpu_cache["ts"] = time.time() - 11.0
+    rvc_live._gpu_snapshot()
+    assert len(calls) == 6, "超过 10s 才该重探"
+
+
+def test_gpu_ttl_by_profile(monkeypatch):
+    live_settings.update(perf_profile="balanced")
+    assert rvc_live._gpu_ttl() == rvc_live._GPU_TTL_BALANCED
+    live_settings.update(perf_profile="game")
+    assert rvc_live._gpu_ttl() == rvc_live._GPU_TTL_GAME
+
+
+def test_gpu_ttl_falls_back_on_broken_settings(monkeypatch):
+    """设置读取异常时按均衡档：宁可多探测，也不让显存条长时间停更。"""
+
+    def boom():
+        raise RuntimeError("settings unreadable")
+
+    monkeypatch.setattr(live_settings, "get", boom)
+    assert rvc_live._gpu_ttl() == rvc_live._GPU_TTL_BALANCED
+
