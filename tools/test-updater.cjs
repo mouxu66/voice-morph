@@ -1,12 +1,15 @@
 // 更新器专项测试（updater.cjs 全分支，无 UI、无真实安装包）：
-//   版本比较 / 未配置源 / 连接失败 / 新版本判定 / 跳过版本 / 强制更新 /
-//   下载缓存复用 / 安装包重传重下 / sha256 缺失拒绝 / 校验失败 / 安装包不存在。
+//   版本比较 / 默认源指向 GitHub / 显式关闭源 / 连接失败 / 新版本判定 / 跳过版本 /
+//   强制更新 / 下载缓存复用 / 安装包重传重下 / sha256 缺失拒绝 / 校验失败 /
+//   安装包不存在 / 拉起安装程序并落标记 / 安装后缓存清理。
 //
 // 运行：node tools/test-updater.cjs —— 退出码 0 = 通过，非 0 = 失败。
 // 说明：用真实本地 loopback http.server（随机端口）当更新源，updater 全程真实请求，
-//      不 stub http/https；只桩 electron（app.getPath userData + getVersion）。
+//      不 stub http/https；只桩 electron（app.getPath userData + getVersion）与
+//      child_process.spawn（防止测试真的去跑安装程序）。
 const assert = require("node:assert");
 const { installElectronStub } = require("./electron-stub.cjs");
+const childProcess = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -15,6 +18,16 @@ const path = require("node:path");
 
 let currentVersion = "0.2.0";
 let userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-updater-test-"));
+
+// spawn 桩：installUpdate 会 detached 拉起安装程序 —— 测试里绝不能真跑 exe。
+// updater.cjs 顶层写的是 `const { spawn } = require("child_process")`，解构在 require
+// 时刻就把值取走了，所以必须在 require updater 之前替换（之后替换对它是无效的）。
+const realSpawn = childProcess.spawn;
+const spawnCalls = [];
+childProcess.spawn = (cmd, args, opts) => {
+  spawnCalls.push({ cmd, args, opts });
+  return { unref() {} };
+};
 
 // 桩装在 require updater.cjs 之前；不依赖本机是否装过 web/node_modules
 installElectronStub({
@@ -90,12 +103,56 @@ const updater = require("../web/electron/updater.cjs");
   };
   const resetUserData = () => { userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-updater-test-")); };
 
+  // ---------- 更新源地址 ----------
+  t("默认更新源：指向 GitHub Releases 的最新版永久别名", () => {
+    const prev = process.env.VM_UPDATE_URL;
+    try {
+      delete process.env.VM_UPDATE_URL;
+      assert.strictEqual(
+        updater.manifestUrl(),
+        "https://github.com/mouxu66/voice-morph/releases/latest/download/latest.json",
+      );
+    } finally {
+      if (prev !== undefined) process.env.VM_UPDATE_URL = prev;
+    }
+  });
+  t("默认更新源：用 latest 别名而非写死 tag（发版无需改代码）", () => {
+    const prev = process.env.VM_UPDATE_URL;
+    try {
+      delete process.env.VM_UPDATE_URL;
+      const u = updater.manifestUrl();
+      assert.match(u, /^https:\/\//, "必须是 https");
+      assert.match(u, /\/releases\/latest\/download\//, "必须走 latest 永久别名");
+      assert.match(u, /latest\.json$/, "必须指向清单文件本身");
+    } finally {
+      if (prev !== undefined) process.env.VM_UPDATE_URL = prev;
+    }
+  });
+  t("显式关闭源：VM_UPDATE_URL=off → 空串（纯本地）", () => {
+    const prev = process.env.VM_UPDATE_URL;
+    try {
+      for (const v of ["off", "OFF", "0", "none", "false", "disabled"]) {
+        process.env.VM_UPDATE_URL = v;
+        assert.strictEqual(updater.manifestUrl(), "", `${v} 应关闭更新`);
+      }
+      process.env.VM_UPDATE_URL = "https://example.com/latest.json";
+      assert.strictEqual(updater.manifestUrl(), "https://example.com/latest.json");
+    } finally {
+      if (prev === undefined) delete process.env.VM_UPDATE_URL;
+      else process.env.VM_UPDATE_URL = prev;
+    }
+  });
+
   // ---------- checkForUpdates ----------
-  t("checkForUpdates: 未配置源 = configured:false（纯本地不请求）", async () => {
-    delete process.env.VM_UPDATE_URL;
-    const r = await updater.checkForUpdates();
-    assert.strictEqual(r.configured, false);
-    assert.strictEqual(r.hasUpdate, false);
+  t("checkForUpdates: 显式关闭源 = configured:false（纯本地不请求）", async () => {
+    process.env.VM_UPDATE_URL = "off";
+    try {
+      const r = await updater.checkForUpdates();
+      assert.strictEqual(r.configured, false);
+      assert.strictEqual(r.hasUpdate, false);
+    } finally {
+      delete process.env.VM_UPDATE_URL;
+    }
   });
   t("checkForUpdates: 连接失败 -> ok:false", async () => {
     process.env.VM_UPDATE_URL = "http://127.0.0.1:1/latest.json"; // 必然不可达端口
@@ -203,6 +260,58 @@ const updater = require("../web/electron/updater.cjs");
     const r = updater.installUpdate(path.join(os.tmpdir(), "vm-missing-setup.exe"));
     assert.strictEqual(r.ok, false);
   });
+  t("installUpdate: 拉起安装程序 + 落「待安装」标记", () => {
+    resetUserData();
+    const exe = path.join(userDataDir, "VoiceMorph-Setup-9.9.9.exe");
+    fs.writeFileSync(exe, "fake-installer");
+    const before = spawnCalls.length;
+    const r = updater.installUpdate(exe);
+    assert.strictEqual(r.ok, true, r.reason);
+    assert.strictEqual(spawnCalls.length, before + 1, "应拉起安装程序一次");
+    assert.strictEqual(spawnCalls[before].cmd, exe);
+    assert.deepStrictEqual(spawnCalls[before].args, [], "默认应无参（弹 NSIS 向导）");
+    assert.strictEqual(spawnCalls[before].opts.detached, true, "必须 detached：退出后安装程序仍存活");
+    assert.ok(fs.existsSync(updater.pendingInstallFile()), "必须落标记，否则缓存永远清不掉");
+  });
+
+  // ---------- sweepDownloadedPackages（安装后清缓存） ----------
+  function seedCache(names) {
+    resetUserData();
+    const dir = updater.updateDir();
+    fs.mkdirSync(dir, { recursive: true });
+    for (const n of names) fs.writeFileSync(path.join(dir, n), "cached");
+    return dir;
+  }
+  t("sweep: 未交接过的下载包保留（还能复用缓存）", () => {
+    const dir = seedCache(["VoiceMorph-Setup-9.9.9.exe"]);
+    const r = updater.sweepDownloadedPackages();
+    assert.deepStrictEqual(r.removed, []);
+    assert.strictEqual(r.handedOff, false);
+    assert.ok(fs.existsSync(path.join(dir, "VoiceMorph-Setup-9.9.9.exe")),
+      "没点过「立即更新」的包不能删，否则用户得重下 100MB");
+  });
+  t("sweep: 已交接给安装程序 → 下次启动清空缓存与标记", () => {
+    const dir = seedCache(["VoiceMorph-Setup-9.9.9.exe"]);
+    fs.writeFileSync(updater.pendingInstallFile(), "{}");
+    const r = updater.sweepDownloadedPackages();
+    assert.deepStrictEqual(r.removed, ["VoiceMorph-Setup-9.9.9.exe"]);
+    assert.deepStrictEqual(r.failed, []);
+    assert.strictEqual(r.handedOff, true);
+    assert.strictEqual(fs.existsSync(path.join(dir, "VoiceMorph-Setup-9.9.9.exe")), false);
+    assert.strictEqual(fs.existsSync(updater.pendingInstallFile()), false, "清干净了才摘标记");
+  });
+  t("sweep: 无标记时也清掉中断下载的 .part 残片", () => {
+    const dir = seedCache(["VoiceMorph-Setup-9.9.9.exe.part", "VoiceMorph-Setup-9.9.9.exe"]);
+    const r = updater.sweepDownloadedPackages();
+    assert.deepStrictEqual(r.removed, ["VoiceMorph-Setup-9.9.9.exe.part"]);
+    assert.ok(fs.existsSync(path.join(dir, "VoiceMorph-Setup-9.9.9.exe")), "完整包保留");
+  });
+  t("sweep: 目录不存在时不炸", () => {
+    resetUserData();   // 新 mkdtemp 里还没有 updates/
+    const r = updater.sweepDownloadedPackages();
+    assert.deepStrictEqual(r.removed, []);
+    assert.deepStrictEqual(r.failed, []);
+  });
   t("installArgs: 默认无参；VM_UPDATE_TEST_AUTO 开启时带 /S", () => {
     const prev = process.env.VM_UPDATE_TEST_AUTO;
     try {
@@ -247,6 +356,7 @@ const updater = require("../web/electron/updater.cjs");
     catch (e) { fail += 1; process.stdout.write(`  ✗ ${name}\n    ${e.message}\n`); }
   }
   server.close();
+  childProcess.spawn = realSpawn;
   process.stdout.write(`\n[test-updater] ${pass} 通过, ${fail} 失败\n`);
   process.exit(fail === 0 ? 0 : 1);
 })();
