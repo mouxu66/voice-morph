@@ -56,7 +56,8 @@ def http_json(method: str, path: str, timeout: float = 60.0, body: dict | None =
     import urllib.request
     url = BACKEND_URL + path
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
+    headers = {"Content-Type": "application/json"} if body is not None else {}
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
