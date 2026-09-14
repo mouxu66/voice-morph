@@ -8,6 +8,11 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -DryRun          # 只检查前置条件，不构建
 #   powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -Publish         # 打完后直接发 GitHub Release（推荐）
 #   powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -SkipSign        # 不签名（本地自测；用户装时会看到"未知发布者"）
+#   powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -Publish -BumpLevel minor   # 里程碑版本（0.2.x → 0.3.0）
+#
+# 发版节奏（2026-09-14 定）：按大版本发，不随每次改动发。日常改动只 git push（客户端感知不到），
+# 本地自测用 `npm run build && npx electron-builder --dir` 出 win-unpacked 即可，**不碰版本号**。
+# 版本号只在真正发版这一步升，升多少由 -BumpLevel 决定（默认 patch）。详见 docs/release-sop.md「〇、发版节奏」。
 #
 # 与 build-and-publish.ps1 的关系：本脚本是面向发版的正式入口，多了前置检查、
 # 版本号一致性校验、清单校验（sha256 回读比对）、GitHub Release 发布、历史产物清理、
@@ -21,7 +26,8 @@ param(
   [switch]$Mandatory,           # 标记强制更新（前端不给"跳过此版本"）
   [switch]$Publish,             # 发布到 GitHub Release（上传 exe + blockmap + latest.json）
   [switch]$SkipPrune,           # 不清理 release2 里的历史安装包（默认保留最近 2 个版本）
-  [switch]$SkipBump,            # 跳过 npm version patch
+  [switch]$SkipBump,            # 跳过升版本（默认按 -BumpLevel 升）
+  [string]$BumpLevel = "patch", # 升版本级别：patch | minor | major（"只在大版本发"的节奏用 minor/major）
   [switch]$SkipBuild,           # 跳过前端构建（electron:build 已含 build，通常无需单跑）
   [switch]$SkipSign,            # 不签名（手头没有 pfx 密码时的本地自测；禁止用于正式分发）
   [switch]$DryRun               # 只做前置检查，不实际构建
@@ -39,6 +45,13 @@ function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Ok($msg)   { Write-Host "    [OK] $msg" -ForegroundColor Green }
 function Warn($msg) { Write-Host "    [!] $msg" -ForegroundColor Yellow }
 function Die($msg)  { Write-Host "`n[FAIL] $msg" -ForegroundColor Red; exit 1 }
+
+# 升版本级别白名单：放在任何构建之前校验，免得拼错参数白跑一次完整打包（几分钟）。
+# 也保证 -DryRun 能当场发现拼错。
+$ValidBumpLevels = @("patch", "minor", "major")
+if ($ValidBumpLevels -notcontains $BumpLevel) {
+  Die "无效的 -BumpLevel '$BumpLevel'（可选：$($ValidBumpLevels -join ' / ')）"
+}
 
 Write-Host "================ 变声工坊发版 ================"
 Write-Host "仓库根：$RepoRoot"
@@ -146,15 +159,15 @@ if ($SkipBuild) {
   Ok "前端构建完成"
 }
 
-# ---------- 3. 版本号 +1 ----------
-Step "3/7 版本号"
+# ---------- 3. 版本号 ----------
+Step "3/7 版本号（$BumpLevel）"
 if ($SkipBump) {
   Warn "已跳过升版本（-SkipBump），保持 $($pkgBefore.version)"
 } else {
   Push-Location $WebDir
   try {
-    npm version patch --no-git-tag-version
-    if ($LASTEXITCODE -ne 0) { Die "npm version patch 失败" }
+    npm version $BumpLevel --no-git-tag-version
+    if ($LASTEXITCODE -ne 0) { Die "npm version $BumpLevel 失败" }
   } finally { Pop-Location }
 }
 $pkgAfter = Get-Content $PkgJson -Raw | ConvertFrom-Json

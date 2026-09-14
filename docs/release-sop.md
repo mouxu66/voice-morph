@@ -18,9 +18,9 @@
 
 **已定节奏**：
 
-- **日常改动** → 只 `git push`，**不发 Release**。自己用本地构建（见下）
-- **里程碑**（`0.3.0` / `1.0.0` 这种）→ `release.ps1 -Publish` 发一次
-- **必须让所有人升级的关键修复** → 发，并在 `latest.json` 里标 `mandatory: true`
+- **日常改动** → 只 `git push`，**不发 Release**。自己用本地构建（见下）。**版本号一个字都不碰**
+- **里程碑**（`0.3.0` / `1.0.0` 这种）→ `release.ps1 -Publish -BumpLevel minor`（或 `major`）
+- **必须让所有人升级的关键修复** → 发，并加 `-Mandatory`
   （普通更新用户能点「跳过此版本」，标了 mandatory 的**跳不过去**，见 `updater.cjs`）
 
 **少发是安全的（有代码依据，不用怕）**：线上没有 Release 时，`latest.json` 返回 404 →
@@ -30,9 +30,15 @@
 **唯一代价**：不发 Release = **别人拿不到你的修复**，永远停在旧版本。
 你本机可以随时跑最新本地构建，但**别的机器 / 已安装的用户**不会自己变新。
 
-**版本号要跟节奏对齐**：`compareVersion(latest.version, current) > 0` 只要有递增就会提示。
-既然只在大版本发，**就别为每次本地构建都升版本号**——否则会出现
-"本地一路 0.2.3→0.2.9 一个都没发，最后发的那个还是 0.2.9"，里程碑和补丁分不出来。
+**版本号只在发版那一步升，本地开发天然不碰它**：`release.ps1` 的升版本在第 3 步（构建之后），
+日常 `git push` 和本地 `--dir` 打包都不会改 `web/package.json` 的 version。所以"本地搞"不需要任何额外动作。
+
+但**升多少必须跟节奏对齐**：`release.ps1` 默认只升 `patch`（0.2.3 → 0.2.4），
+而"只在大版本发"要的是 `0.2.3 → 0.3.0` —— 所以里程碑发版**必须显式给 `-BumpLevel minor`**，
+否则你会一路发出 0.2.4 / 0.2.5 …，里程碑和补丁分不出来（`compareVersion` 只要求递增，不挑级别，
+所以它不会报错，只会悄悄发错版本号）。
+
+重发同版本（修包重传）用 `-SkipBump`。
 
 ### 本地日常怎么用最新代码（不发 Release 的前提）
 
@@ -131,6 +137,7 @@ powershell -ExecutionPolicy Bypass -File scripts\release.ps1 `
 | `-NotesFile path.md` | 更新说明文件（优先级高于 `-Notes`） |
 | `-Mandatory` | 强制更新，前端不给「跳过此版本」 |
 | `-SkipBump` | 不升版本，只重打包当前版本（重发同版本时用） |
+| `-BumpLevel patch\|minor\|major` | 升版本级别，默认 `patch`。**按「〇、发版节奏」只在大版本发时用 `minor`（0.2.3 → 0.3.0）或 `major`**；非法值在任何构建之前就 FAIL（不白跑打包） |
 | `-SkipBuild` | 跳过单独的前端构建（`electron:build` 内部已含） |
 | `-DryRun` | 只做前置检查 |
 
