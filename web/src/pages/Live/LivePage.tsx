@@ -18,8 +18,9 @@ import {
   WandSparkles,
 } from "lucide-react"
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import type { useLive } from "@/pages/Live/useLive"
+import { useLive } from "@/pages/Live/useLive"
 import { ErrorPanel } from "@/components/ErrorPanel"
+import { EffectLadderCard } from "@/components/EffectLadderCard"
 import { LiveLevelMeter } from "@/components/voice-studio/LiveLevelMeter"
 import { RvcChainDiagram } from "@/components/voice-studio/RvcChainDiagram"
 import { RvcVoicePicker } from "@/components/voice-studio/RvcVoicePicker"
@@ -606,6 +607,13 @@ export function LivePage(p: ReturnType<typeof useLive>) {
             )}
           </section>
         </div>
+
+        {/* 03.5 效果阶梯：想更像？回去补素材 */}
+        <EffectLadderCard
+          currentLevel={p.modelOk ? 2 : p.datasetCount > 0 ? 1 : 0}
+          modelReady={p.modelOk}
+          compact
+        />
 
         {/* 04 训练日志：默认收起成一行，点击展开；出错自动弹出 */}
         {(logLines.length > 0 || trainRunning) && (

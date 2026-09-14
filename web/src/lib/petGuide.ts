@@ -18,6 +18,12 @@ export type PageGuide = {
 export const GREETING = "嗨，我是你的导览小助手，下面带你熟悉这一页~"
 
 export const GUIDES: Record<string, PageGuide> = {
+  "/home": {
+    title: "首页 · 零基础",
+    lines: ["第一次来？跟我走。", "往下滑就是入门教程，", "五步做出第一个音色。"],
+    action: "build",
+    motion: "wave",
+  },
   "/workshop": {
     title: "音色工坊",
     lines: ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"],

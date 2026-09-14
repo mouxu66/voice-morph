@@ -14,6 +14,7 @@ import { ToastViewport } from "@/lib/notify"
 import { appVersion, getSetupStatus, hasSetup, hasUpdate as canCheckUpdate, onUpdateAvailable, petGuide, saveSetup, type PetGuidePayload, type UpdateCheck } from "@/lib/electron"
 import { useAppStore } from "@/store/useAppStore"
 import { ThemeMode, getStoredSimpleMode, getStoredTheme, setStoredSimpleMode, setStoredTheme } from "@/theme"
+import { HomeRoute } from "@/pages/Home/index"
 import { LiveRoute } from "@/pages/Live/index"
 import { TtsRoute } from "@/pages/Tts/index"
 import { VoicesRoute } from "@/pages/Voices/index"
@@ -22,12 +23,13 @@ import { OfflineVcRoute } from "@/pages/OfflineVc/index"
 import { PetMarketRoute } from "@/pages/PetMarket/index"
 
 const pageTitles: Record<string, string> = {
-  "/workshop": "音色工坊",
-  "/voices": "音色库",
+  "/home": "首页",
+  "/workshop": "训练变声",
+  "/voices": "我的音色",
   "/live": "实时变声",
-  "/tts": "语音合成",
-  "/offlinevc": "离线工坊",
-  "/pet-market": "人偶市场",
+  "/tts": "输字变声",
+  "/offlinevc": "工具箱",
+  "/pet-market": "桌宠皮肤",
 }
 
 /** 桌宠换装首启引导载荷：首次启动由桌宠开口介绍"可以换样子"，设置里也可手动重播 */
@@ -79,7 +81,7 @@ function AppChrome({
   const [updateOpen, setUpdateOpen] = useState(false)
   const [autoUpdate, setAutoUpdate] = useState<UpdateCheck | null>(null)
   const [version, setVersion] = useState<string | null>(null)
-  const pageTitle = pageTitles[currentLocation.pathname] ?? "音色工坊"
+  const pageTitle = pageTitles[currentLocation.pathname] ?? "首页"
 
   // 当前版本号（设置里显示）；非桌面端为 null
   useEffect(() => {
@@ -281,6 +283,8 @@ export default function App() {
       />
       <main className="relative min-h-[100dvh] pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-[7.25rem] lg:pb-0 lg:pl-64 lg:pt-16">
         <Routes>
+          <Route path="/home" element={<HomeRoute />} />
+          <Route path="/" element={<Navigate to="/home" replace />} />
           <Route path="/workshop" element={<WorkshopRoute />} />
           <Route path="/voices" element={<VoicesRoute />} />
           <Route path="/live" element={<LiveRoute />} />
@@ -296,7 +300,7 @@ export default function App() {
           <Route path="/audiobook" element={<Navigate to="/tts?tab=book" replace />} />
           <Route path="/wechat" element={<Navigate to="/tts?tab=wechat" replace />} />
           <Route path="/effects" element={<Navigate to="/offlinevc?tab=fx" replace />} />
-          <Route path="*" element={<Navigate to="/live" replace />} />
+          <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </main>
       {/* 页面内导览桌宠：随路由切换介绍当前页 */}

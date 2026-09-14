@@ -1,26 +1,32 @@
 import { useState } from "react"
-import { AudioLines, ChevronDown, ChevronUp, Library, Mic2, PawPrint, Radio, Speech } from "lucide-react"
+import { ChevronDown, ChevronUp, Home, Library, Mic2, PawPrint, Radio, Speech, Wrench } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 
 const items = [
-  { path: "/workshop", label: "音色工坊", icon: Mic2 },
-  { path: "/voices", label: "音色库", icon: Library },
+  { path: "/home", label: "首页", icon: Home, exact: true },
+  { path: "/workshop", label: "训练变声", icon: Mic2 },
+  { path: "/voices", label: "我的音色", icon: Library },
   { path: "/live", label: "实时变声", icon: Radio },
-  { path: "/tts", label: "语音合成", icon: Speech },
-  { path: "/offlinevc", label: "离线工坊", icon: AudioLines },
-  { path: "/pet-market", label: "人偶市场", icon: PawPrint },
+  { path: "/tts", label: "输字变声", icon: Speech },
+  { path: "/offlinevc", label: "工具箱", icon: Wrench },
+  { path: "/pet-market", label: "桌宠皮肤", icon: PawPrint },
 ]
 
-/** 极简模式：侧边栏只留「变声」相关的核心入口，进阶功能收进「更多功能」 */
+/**
+ * 极简模式：导航收敛成「首页 + 三条主路径」——
+ * 免训练变声（秒出效果）/ 训练变声（攒素材练嗓子）/ 工具箱（整段变声等进阶），
+ * 其余页面收进「更多功能」。
+ */
 const CORE_ITEMS = [
-  { path: "/live", label: "实时变声", icon: Radio },
-  { path: "/voices", label: "音色库", icon: Library },
-  { path: "/tts", label: "语音合成", icon: Speech },
+  { path: "/home", label: "首页", icon: Home, exact: true },
+  { path: "/tts", label: "免训练变声", icon: Speech },
+  { path: "/workshop", label: "训练变声", icon: Mic2 },
+  { path: "/offlinevc", label: "工具箱", icon: Wrench },
 ]
 const MORE_ITEMS = [
-  { path: "/workshop", label: "音色工坊", icon: Mic2 },
-  { path: "/offlinevc", label: "离线工坊", icon: AudioLines },
-  { path: "/pet-market", label: "人偶市场", icon: PawPrint },
+  { path: "/voices", label: "我的音色", icon: Library },
+  { path: "/live", label: "实时变声", icon: Radio },
+  { path: "/pet-market", label: "桌宠皮肤", icon: PawPrint },
 ]
 
 // 注意：合并页（音色工坊/音色库/实时变声/语音合成/离线工坊）内部的 tab 自带就绪降级提示，
@@ -35,14 +41,18 @@ export function StudioNav({ compact = false, simpleMode = false }: { compact?: b
   const linkClass = (active: boolean) =>
     `inline-flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-xs transition ${active ? "bg-primary text-primary-foreground shadow-md" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`
 
+  // 激活判断：首页是根路径，必须精确匹配（否则连 /home/something 也会点亮）；其余沿用 endsWith
+  const isActive = (item: { path: string; exact?: boolean }) =>
+    item.exact ? currentLocation.pathname === item.path : currentLocation.pathname.endsWith(item.path)
+
   return (
     <nav className={compact ? "flex flex-col gap-1" : "no-scrollbar flex gap-1.5 overflow-x-auto px-4 py-1"}>
-      {(simpleMode ? CORE_ITEMS : items).map(({ path, label, icon: Icon }) => {
-        const active = currentLocation.pathname.endsWith(path)
+      {(simpleMode ? CORE_ITEMS : items).map((item) => {
+        const active = isActive(item)
         return (
-          <Link key={path} to={path} className={linkClass(active)}>
-            <Icon className="h-4 w-4" />
-            {label}
+          <Link key={item.path} to={item.path} className={linkClass(active)}>
+            <item.icon className="h-4 w-4" />
+            {item.label}
           </Link>
         )
       })}
@@ -57,12 +67,12 @@ export function StudioNav({ compact = false, simpleMode = false }: { compact?: b
             更多功能
           </button>
           {expanded &&
-            MORE_ITEMS.map(({ path, label, icon: Icon }) => {
-              const active = currentLocation.pathname.endsWith(path)
+            MORE_ITEMS.map((item) => {
+              const active = isActive(item)
               return (
-                <Link key={path} to={path} className={linkClass(active)}>
-                  <Icon className="h-4 w-4" />
-                  {label}
+                <Link key={item.path} to={item.path} className={linkClass(active)}>
+                  <item.icon className="h-4 w-4" />
+                  {item.label}
                 </Link>
               )
             })}
