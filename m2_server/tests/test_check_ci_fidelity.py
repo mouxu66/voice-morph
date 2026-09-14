@@ -117,11 +117,13 @@ def test_ci_fidelity_is_not_a_default_step(check):
 
     2026-09-14 起默认清单多了 `licenses`（第三方许可登记门禁）：它只要 0.05s 且纯本地，
     进 pre-commit 才拦得住"加依赖却没登记许可"那一次提交 —— 所以这里同步改，
-    而不是把它排除在外。改这个集合时**两边都要动**，别只改一边做成假绿。
+    而不是把它排除在外。同日又多了 `nodetest` 与 `ps1lint`（前者复刻"CI 不装 npm 依赖"，
+    后者体检 scripts/*.ps1）；两者都不进 --fast，由 pre-push / CI 兜底。
+    改这个集合时**两边都要动**，别只改一边做成假绿。
     """
     assert "ci-fidelity" not in check.STEPS
     assert set(check.STEPS) == {
-        "licenses", "requires", "electron", "nodetest", "ruff", "pytest", "web",
+        "licenses", "requires", "electron", "ps1lint", "nodetest", "ruff", "pytest", "web",
     }
 
 

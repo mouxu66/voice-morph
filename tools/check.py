@@ -4,7 +4,7 @@
 检查入口**：跑不跑、跑哪些、环境变量设没设，全靠人记得。2026-09-11 的代码审查
 就撞上两次「文档写着全绿、实际已过期」（GBK 编码失败的用例、随机挂的队列用例）。
 
-本脚本把六个检查串起来，顺序按「快 → 慢」，失败即停并返回非零：
+本脚本把八个检查串起来，顺序按「快 → 慢」，失败即停并返回非零：
 
     1. licenses    —— 第三方许可登记门禁：`THIRD_PARTY_NOTICES.md` 的机器块必须与
                       当前依赖集严格相等（漏登记 / 残留条目 / 缺义务行都判红）。
@@ -16,11 +16,18 @@
     3. electron    —— 用 electron 桩 require 全部 electron/*.cjs，require 阶段崩即 FAIL。
                       requires 的上位替代：还能抓 require 了不存在的路径、
                       顶层求值期访问 undefined 等。约 0.15s。
-    4. ruff        —— 静态扫描，专抓真 bug 类规则（F/E9：未定义名、未用变量、
+    4. ps1lint     —— 静态体检 scripts/*.ps1：语法解析 / 被吞掉的换行 / 必填参数 / BOM。
+                      release.ps1 是发版唯一入口，它坏了会在最关键的时刻失败，而这类坑
+                      本机 grep 看不出来。约 1s。没有 PowerShell 就跳过。
+    5. nodetest    —— 跑 tools/test-*.cjs 与冒烟脚本，并**复刻 CI 的"无 npm 依赖"环境**。
+                      CI 的 backend job 从不 npm install，而本机装了 node_modules ——
+                      没有这一步就会出现"本机绿、CI 红"（2026-09-14 真踩过）。
+                      约 3.5s，进 --ci-fidelity 的裸 runner 复刻。
+    6. ruff        —— 静态扫描，专抓真 bug 类规则（F/E9：未定义名、未用变量、
                       f-string 缺占位符、语法错误）。实测抓到过 rvc_common 的
                       未定义 logger（生产代码 NameError）。
-    5. pytest      —— m2_server 全量（默认）或快速子集（--fast）。
-    6. tsc -b      —— web 前端类型检查（不产出 dist）。
+    7. pytest      —— m2_server 全量（默认）或快速子集（--fast）。
+    8. tsc -b      —— web 前端类型检查（不产出 dist）。
 
 用法：
 
@@ -435,10 +442,35 @@ def _check_electron_load() -> tuple[bool, str]:
     return _run("electron-load", [node, str(script)], ROOT)
 
 
+#: 项目自带的 PS 静态体检脚本（语法 / 吞换行 / 必填参数 / BOM）
+PS1_LINT_SCRIPT = "scripts/test-ps1-lint.ps1"
+
+
+def _check_ps1_lint() -> tuple[bool, str]:
+    """静态体检 `scripts/*.ps1`。
+
+    为什么值得单独一步：`release.ps1` 是**发版唯一入口**，它语法坏了会在最关键的时刻
+    失败；而它最常踩的坑（Edit 吞换行、PS 5.1 吃 BOM / 中文乱码）本机 grep 看不出来。
+    没有 PowerShell 就跳过而非失败：跳过是诚实的，假装通过不是。
+    """
+    script = ROOT / PS1_LINT_SCRIPT
+    if not script.exists():
+        return False, f"未找到 {PS1_LINT_SCRIPT}"
+    ps = shutil.which("powershell") or shutil.which("pwsh")
+    if ps is None:
+        return True, "跳过（未找到 powershell/pwsh）"
+    return _run(
+        "ps1lint",
+        [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+        ROOT,
+    )
+
+
 STEPS = {
     "licenses": lambda fast: _check_licenses(),
     "requires": lambda fast: _check_requires(),
     "electron": lambda fast: _check_electron_load(),
+    "ps1lint": lambda fast: _check_ps1_lint(),
     "nodetest": lambda fast: _check_node_tests(),
     "ruff": lambda fast: _check_ruff(),
     "pytest": lambda fast: _check_pytest(fast),
@@ -660,17 +692,20 @@ def main(argv: list[str] | None = None) -> int:
         return _check_ci_fidelity(recreate=args.recreate)
 
     # 顺序按「快 → 慢」：licenses/requires/electron/ruff 都是毫秒级静态或直接加载检查，
-    # 放前面先拦低级错误；nodetest（约 3.5s）与 pytest 居中；web（tsc）最慢，只在非 --fast 时跑。
+    # 放前面先拦低级错误；ps1lint（约 1s）、nodetest（约 3.5s）与 pytest 居中；web（tsc）最慢，
+    # 只在非 --fast 时跑。
     # requires + electron 都进 fast：合计约 0.25s，专治「拆文件漏 require」
     # 这类启动即崩、编译器又不报的 bug（2026-09-12 事故）。
     # licenses 进 fast：许可漏登记只有"加依赖那一次提交"能拦，且只要 0.05s。
+    # ps1lint 不进 fast：要起一个 PowerShell 进程（约 1s），而 scripts/*.ps1 改动很少；
+    # pre-push 与 CI 都会跑到它，不必占 pre-commit 的预算。
     # nodetest 不进 fast：8 个 node 进程的启动开销就 3.5s，而 pre-commit 只有 8s 预算 ——
     # 让钩子变慢，人就该开始绕过它了。全量 / pre-push / CI 都会跑。
     names = [n.strip() for n in args.only.split(",") if n.strip()] or [
-        "licenses", "requires", "electron", "ruff", "nodetest", "pytest", "web"
+        "licenses", "requires", "electron", "ps1lint", "ruff", "nodetest", "pytest", "web"
     ]
     if args.fast:
-        names = [n for n in names if n not in ("web", "nodetest")]
+        names = [n for n in names if n not in ("web", "nodetest", "ps1lint")]
     if args.no_web:
         names = [n for n in names if n != "web"]
     unknown = [n for n in names if n not in STEPS]
