@@ -55,7 +55,12 @@
 
 ## 桌面端改动如何生效（防误判）
 
-- 本机桌面端（变声工坊.exe）经 `electron/main.cjs` 的 `resolveProjectRoot()` **优先命中 `D:\变声` 源码根**：后端直接跑 `D:\变声\m2_server\server.py`，前端优先加载 `D:\变声\web\dist\index.html`。**改完 m2_server 或 web 后：`cd web && npx vite build`，然后重启桌面端即生效**——不需要 sync_backend.ps1，也不需要重打 asar。
-- `tools/sync_backend.ps1` 与 `resources/backend/m2_server` 副本、`resources/backend/web_dist` **只服务于分发到别的机器的安装包**（resolveProjectRoot 回退路径）。**分发副本现在无需手动同步**：后端启动（= 每次打开桌面端）会自动把 `m2_server`/`tools`/`web/dist` 镜像到副本（`m2_server/backend_autosync.py`，`VM_BACKEND_AUTOSYNC=0` 可关）；sync_backend.ps1 仅剩手动应急用途。
+- 桌面端有**两种运行形态，生效路径完全不同**（2026-09-14 读 `web/electron/backend.cjs` 实测确认；此前本文写的"一律优先命中 `D:\变声` 源码根"**只对源码模式成立**）：
+  - **源码模式**（`npm run electron`，`app.isPackaged === false`）：`resolveProjectRoot()` 候选第一项是 `__dirname/../..` = `D:\变声` → 后端跑 `D:\变声\m2_server\server.py`，前端加载 `D:\变声\web\dist\index.html`。**改完重启即生效。**
+  - **安装版**（`变声工坊.exe`，`app.isPackaged === true`）：`resolveProjectRoot()` **直接 early-return 包内 `resources/backend`**，`frontendHtmlCandidates()` 也只返回 `resources/backend/web_dist/index.html` —— **绝不回退 `D:\变声` 源码根**（防止自动更新装了新包却仍读旧源码）。改 `m2_server`/`web` 仍会生效，因为后端启动时 `backend_autosync.py` 会把 `D:\变声` 的 `m2_server`/`tools`/`web/dist` 镜像进包内副本。
+  - **但 `web/electron/*.cjs`（主进程）不在镜像范围内**——它只活在 app.asar 里。改主进程（`pet.cjs`/`backend.cjs`/`alt-hint.cjs`/`setup-ipc.cjs` 等）**必须 `npm run electron:build` 重打 asar 再装新包/换 exe**；重启旧包无效，且会留下"前端文案已更新、主进程行为还是旧的"的半新半旧状态。
+- `tools/sync_backend.ps1` 与 `resources/backend/m2_server` 副本、`resources/backend/web_dist`：对**安装版**而言这是 `resolveProjectRoot()` 的**唯一**路径（见上），对源码模式而言才是兜底副本。**分发副本现在无需手动同步**：后端启动（= 每次打开桌面端）会自动把 `m2_server`/`tools`/`web/dist` 镜像到副本（`m2_server/backend_autosync.py`，`VM_BACKEND_AUTOSYNC=0` 可关）；sync_backend.ps1 仅剩手动应急用途。
 - Electron 主进程源码在 `web/electron/*.cjs`（模块化），现役 app.asar 由 `npm run electron:build`（electron-builder）从 web/ 构建；**`.asar_tmp/` + `repack_asar.cjs`/`extract_asar.cjs`/`probe_asar.cjs`/`tools/verify_asar_repack.cjs` 是 2026-09-03 模块化重构之前的过时流程，已于 2026-09-13 全部删除**（它们会拿 46KB 旧单体主进程覆盖现役装配层）。`web/electron` 里剩余的 `smoke-loadpath.cjs` 是现役的加载自检。
-- 常见误判：以为"重启无效是因为桌面端跑内嵌副本"——本机不成立，先查根因再下结论。
+- 常见误判（2026-09-14 实测澄清）：
+  - "重启就生效" —— **只对 `m2_server`/`web` 成立**。主进程改动不重打包就永远不生效。
+  - 判断某份构建到底含不含某改动，**不要猜，直接验指纹**：`grep -c "<新符号>" <安装目录>/resources/app.asar`（asar 内文件内容为原文，可直接 grep）。本次即靠 `shouldShowPet` 计数 0 vs 8 区分出「安装版 0.2.2 未含改动」与「打包版 0.2.3 已含改动」。同理可查包内 `resources/backend/m2_server/*.py` 与 `web_dist/assets/*.js`。
