@@ -16,8 +16,9 @@ from urllib.parse import quote
 from market_images import image_url
 
 # 精选条目配图：优先远程图库缓存（VM_MARKET_IMG_REPO 自动同步），回退打包图
-# assets/market_imgs/<voice_id>.<ext>。角色向音色用网络搜集的形象图（懒羊羊/曼波/
-# 孙悟空/派大星），人设向用 OpenMoji 主题图标（CC BY-SA 4.0, © hfg-gmuend/openmoji）。
+# assets/market_imgs/<voice_id>.<ext>。角色向音色的配图为自生成的原创卡通插画
+# （2026-09-14 起，取代此前无授权链的网络搜集图），人设向用 OpenMoji 主题图标
+# （CC BY-SA 4.0, © hfg-gmuend/openmoji）。
 # 无图条目前端按分类配色首字母占位。解析逻辑统一在 market_images 模块。
 ASSET_DIR = Path(__file__).resolve().parent / "assets" / "market_imgs"
 

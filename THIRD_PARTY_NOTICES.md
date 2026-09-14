@@ -101,7 +101,7 @@ librosa — **ISC**；Pillow — **HPND**；requests / python-multipart / pyaudi
 |---|---|---|
 | G1 | OFL 字体许可原文未随安装包（§1） | 三份 `LICENSE` 放进安装包 `resources/licenses/`，UI 加"开源许可"入口 |
 | G2 | OpenMoji 署名未随分发（§1） | 同上入口里列出 `CC BY-SA 4.0 © hfg-gmuend/openmoji` |
-| G3 | 4 张**角色形象配图**为网络搜集（懒羊羊 / 曼波 / 孙悟空 / 派大星），**无授权链** | 换成自制图或 OpenMoji 占位；这是**目前最实的 IP 风险** |
+| G3 | ~~4 张**角色形象配图**为网络搜集（懒羊羊 / 曼波 / 孙悟空 / 派大星），**无授权链**~~ | ✅ **已解决（2026-09-14）**：全部替换为自生成原创卡通插画（`market_imgs/{lanyangyang,katoong_lanyangyang,katoong_manbo,sunwukong,paidaxing}`），并删除孤儿 `manbo.png`。需同步重推远程图库 `mouxu66/voice-market-assets` 清掉 CDN 旧图，客户端 TTL 6h 内拉新 |
 | G4 | 市场条目许可只写兜底文案，未回读模型卡 | 安装时抓 HF/魔搭 `license` 字段写入 `source.json`，前端展示 |
 | G5 | `demucs` 预训练权重许可未核 | 若将来随发行物分发权重，先核 |
 | G6 | RVC 整合包随附底模（`pretrained_v2` / `hubert_base`）未核 | 同上；目前只作为前置依赖由用户自备，风险低 |

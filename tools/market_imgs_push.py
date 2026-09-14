@@ -62,7 +62,7 @@ def main() -> None:
             f"# voice-market-assets\n\n"
             f"变声工坊·音色市场精选配图库（revision {revision}，{len(files)} 张）。\n\n"
             f"同步通道：`cdn.jsdelivr.net/gh/{args.repo}@main/images.json`\n"
-            f"角色形象图版权归原权利方，仅供个人学习研究；OpenMoji 图标 CC BY-SA 4.0。\n",
+            f"配图均为本仓库自生成的原创插画（MIT）；OpenMoji 图标为 CC BY-SA 4.0。\n",
             "utf-8")
         run(["git", "add", "-A"], cwd=work)
         run(["git", "-c", "user.name=voice-morph", "-c", "user.email=dev@local",
