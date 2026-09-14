@@ -137,11 +137,30 @@ def _terminate_proc() -> None:
     _proc = None
 
 
+def worker_alive() -> bool:
+    """worker 是否真的在跑（通 /health 才算）。
+
+    给状态面板用：游戏档卸载后这里变 False，前端据此展示「语音合成引擎已卸载，
+    显存已释放」；不用 _ready 是因为服务重启后复用的 worker 没有 _proc/_ready。
+    """
+    return _health_ok()
+
+
 def shutdown_worker() -> None:
-    """供外部（如 server 关闭、清理脚本）显式回收 worker。"""
+    """供外部（如切到游戏档、server 关闭、清理脚本）显式回收 worker。
+
+    除了杀掉本进程拉起的 _proc，还要清理端口上残留的本项目 worker：
+    服务重启后 _proc 为 None、worker 被 _ensure_worker 复用，只杀 _proc 会
+    漏掉这块 ~4.8GB 显存（2026-09-15 实测）。按命令行判断只杀本项目 worker，
+    绝不误伤占用 8001 的其他程序。
+    """
     global _ready
     _ready = False
     _terminate_proc()
+    for pid in _pids_on_port():
+        if _is_our_worker(pid):
+            print(f"[qwen3_tts] shutdown_worker 回收遗留 worker PID={pid}", flush=True)
+            _kill_pid(pid)
 
 
 atexit.register(_terminate_proc)

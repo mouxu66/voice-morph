@@ -30,6 +30,7 @@ except ImportError:  # 兜底：直接以模块方式运行时
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
     import config as cfg
 import live_settings
+import qwen3_tts
 from rvc_common import (ensure_infer_pth, exp_display_name, exp_snapshot, exp_source, find_pth, _find_pids_by_cmdline, _kill_pids)
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,31 @@ PROFILE_TUNING = {
     },
 }
 PROFILE_DESC = {"balanced": "均衡·音质优先", "game": "游戏低占用"}
+
+# Qwen3-TTS worker 预热后的显存占用（2026-09-15 实测，8GB 卡上约占 4.8GB）。
+# game 档会把 worker 杀卸载，给游戏腾出这块显存；切回均衡/用时按需懒加载。
+TTS_WORKER_VRAM_MB = 4800
+
+
+def _sync_worker_for_profile(profile: str) -> bool:
+    """按性能档位同步 Qwen3-TTS worker（游戏档卸载，其余档位不动）。
+
+    game 档是「只保留核心变声」：RVC 实时推理仅占 ~1GB 显存，worker 却要预热
+    4.8GB。切到 game 时把 worker 卸载，让出显存给游戏；回到 balanced 也不主动
+    拉起（懒加载），等真用上语音合成时再加载。
+
+    返回卸载前 worker 是否存活（供前端提示「已释放 ~4.8GB 显存」）。
+    杀不干净只影响释放效果，绝不阻断变声本身。
+    """
+    was_alive = qwen3_tts.worker_alive()
+    if profile == live_settings.PERF_GAME and was_alive:
+        try:
+            qwen3_tts.shutdown_worker()
+            logger.info("[profile] game 档已卸载 Qwen3-TTS worker（释放约 %.1fGB 显存）",
+                        TTS_WORKER_VRAM_MB / 1024)
+        except Exception as e:
+            logger.warning("[profile] 卸载 Qwen3-TTS worker 失败（不影响变声）: %s", e)
+    return was_alive
 
 # GPU 显存探测缓存：均衡档 1s TTL（显存条跟手）；游戏档 10s TTL。
 # 为什么游戏档要拉长：_gpu_snapshot 一次要 spawn 3 个 nvidia-smi（used/total/pid），
@@ -758,6 +784,8 @@ def rvc_live_status(exp_name: str | None = None):
         "perf_profile": live_settings.get()["perf_profile"],
         "perf_profile_desc": PROFILE_DESC.get(live_settings.get()["perf_profile"], ""),
         **_gpu_snapshot(),
+        # 语音合成引擎（Qwen3-TTS worker）是否驻留显存：game 档卸载后为 False
+        "tts_worker_alive": qwen3_tts.worker_alive(),
         # 实时转写（桌宠字幕）：running=转写子进程存活；stage/last_text 供桌宠渲染
         **{f"asr_{k}": v for k, v in _asr_state().items()},
     }
@@ -810,7 +838,9 @@ def rvc_live_profile_get():
     """当前性能档位 + GPU 显存占用（供前端展示显存条）。"""
     p = live_settings.get()["perf_profile"]
     return {"ok": True, "profile": p,
-            "profile_desc": PROFILE_DESC.get(p, ""), **_gpu_snapshot()}
+            "profile_desc": PROFILE_DESC.get(p, ""),
+            "tts_worker_alive": qwen3_tts.worker_alive(),
+            **_gpu_snapshot()}
 
 
 @router.post("/rvc/live/profile")
@@ -826,8 +856,12 @@ def rvc_live_profile_set(payload: LiveProfilePayload):
         raise HTTPException(status_code=400,
                             detail=f"未知性能档位：{profile}（可选 balanced / game）")
     changed = profile != live_settings.get()["perf_profile"]
+    worker_was_alive = False
     if changed:
         live_settings.update(perf_profile=profile)
+        # 切到 game 档即卸载 Qwen3-TTS worker（释放 ~4.8GB 显存给游戏）；
+        # 切回 balanced 不主动拉起，用时懒加载。
+        worker_was_alive = _sync_worker_for_profile(profile)
     restarted = False
     if changed and _live_proc_alive():
         # stop 尽力执行：失败也不阻断 start（声卡 restore/apply 幂等）
@@ -838,7 +872,10 @@ def rvc_live_profile_set(payload: LiveProfilePayload):
         rvc_live_start(exp_name=_active_exp(), monitor=(profile == "balanced"))
         restarted = True
     return {"ok": True, "restarted": restarted, "profile": profile,
-            "profile_desc": PROFILE_DESC.get(profile, "")}
+            "profile_desc": PROFILE_DESC.get(profile, ""),
+            "tts_worker_alive": qwen3_tts.worker_alive(),
+            "tts_freed_mb": TTS_WORKER_VRAM_MB if (profile == live_settings.PERF_GAME
+                                                    and worker_was_alive) else 0}
 
 
 @router.get("/rvc/live/audio_devices")
@@ -972,6 +1009,9 @@ def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
     """
     # 性能档位：game 档默认不开自我监听与实时字幕（两个伴随进程是最吃 CPU/占用的部分）
     profile = live_settings.get()["perf_profile"]
+    # game 档只保留核心变声：把 Qwen3-TTS worker 卸载（释放 ~4.8GB 显存给游戏），
+    # 防止上次会话留下的 worker 在游戏过程中继续占着显存。
+    _sync_worker_for_profile(profile)
     # game 档默认关监听；显式传 monitor=True 仍可手动开
     monitor = (profile != "game" and MONITOR_ENABLED) if monitor is None else bool(monitor)
     monitor_gain = MONITOR_GAIN if monitor_gain is None else float(monitor_gain)

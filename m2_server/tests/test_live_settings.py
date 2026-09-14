@@ -223,6 +223,96 @@ def test_perf_set_same_profile_does_not_restart(monkeypatch):
     assert r["restarted"] is False
 
 
+# ---------------- 游戏档卸载 Qwen3-TTS worker（2026-09-15） ----------------
+# 核心诉求：边打游戏边变声时「只保留核心功能」—— RVC 实时推理仅占 ~1GB 显存，
+# 而语音合成 worker 预热要占 ~4.8GB。切到 game 档把它杀卸载（模型文件本来就在
+# 盘里 tts_models/，杀掉进程即释放显存，等于「放回硬盘」），切回再按需懒加载。
+
+
+@pytest.fixture
+def fake_tts_worker(monkeypatch):
+    """把 qwen3_tts 生命周期函数换成可记账的假实现，断言卸载行为不碰真 worker。"""
+    state = {"alive": False, "shutdown_calls": 0}
+
+    def alive() -> bool:
+        return state["alive"]
+
+    def shutdown() -> None:
+        state["shutdown_calls"] += 1
+        state["alive"] = False
+
+    monkeypatch.setattr(rvc_live.qwen3_tts, "worker_alive", alive)
+    monkeypatch.setattr(rvc_live.qwen3_tts, "shutdown_worker", shutdown)
+    return state
+
+
+def test_game_profile_idle_unloads_worker(fake_tts_worker, monkeypatch):
+    """未运行变声时切 game：落盘 + 立即卸载 worker（释放显存是即时效果）。"""
+    fake_tts_worker["alive"] = True
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: False)
+    r = rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="game"))
+    assert r["profile"] == "game" and r["restarted"] is False
+    assert fake_tts_worker["shutdown_calls"] == 1
+    assert fake_tts_worker["alive"] is False
+    assert r["tts_worker_alive"] is False
+    assert r["tts_freed_mb"] == rvc_live.TTS_WORKER_VRAM_MB
+
+
+def test_game_profile_running_unloads_worker(fake_tts_worker, monkeypatch):
+    """变声运行中切 game：stop+start 之外还必须卸载 worker（跑游戏前要把显存让出来）。"""
+    fake_tts_worker["alive"] = True
+    calls = []
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: True)
+    monkeypatch.setattr(rvc_live, "_active_exp", lambda: "kangaroo")
+    monkeypatch.setattr(rvc_live, "rvc_live_stop", lambda: calls.append("stop"))
+    monkeypatch.setattr(rvc_live, "rvc_live_start", lambda *a, **k: calls.append(k))
+    r = rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="game"))
+    assert r["restarted"] is True
+    assert fake_tts_worker["shutdown_calls"] == 1
+    assert r["tts_freed_mb"] == rvc_live.TTS_WORKER_VRAM_MB
+
+
+def test_balanced_switch_keeps_worker(fake_tts_worker, monkeypatch):
+    """切回均衡档：不卸载也不主动拉起（懒加载，等真用上合成再起）。"""
+    fake_tts_worker["alive"] = True
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: False)
+    r = rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="balanced"))
+    assert r["profile"] == "balanced"
+    assert fake_tts_worker["shutdown_calls"] == 0
+    # 卸载逻辑不在 balanced 路径里，worker 维持原样
+    assert fake_tts_worker["alive"] is True
+    assert r["tts_freed_mb"] == 0
+
+
+def test_worker_already_dead_no_repeat_shutdown(fake_tts_worker, monkeypatch):
+    """worker 本就未驻留时切 game：不重复杀、不虚报释放量。"""
+    fake_tts_worker["alive"] = False
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: False)
+    r = rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="game"))
+    assert fake_tts_worker["shutdown_calls"] == 0
+    assert r["tts_freed_mb"] == 0
+
+
+def test_sync_helper_game_unloads_balanced_keeps(fake_tts_worker):
+    """_sync_worker_for_profile：game 档卸载，balanced 档不动（rvc_live_start 共用）。"""
+    fake_tts_worker["alive"] = True
+    was_alive = rvc_live._sync_worker_for_profile("game")
+    assert was_alive is True
+    assert fake_tts_worker["shutdown_calls"] == 1
+    # balanced：不杀
+    rvc_live._sync_worker_for_profile("balanced")
+    assert fake_tts_worker["shutdown_calls"] == 1
+
+
+def test_profile_get_exposes_tts_worker_alive(fake_tts_worker, monkeypatch):
+    """profile GET 带出引擎驻留状态，供前端展示「已卸载/仍在」。"""
+    monkeypatch.setattr(rvc_live, "_gpu_snapshot", lambda: dict(_GPU_SNAP))
+    fake_tts_worker["alive"] = True
+    assert rvc_live.rvc_live_profile_get()["tts_worker_alive"] is True
+    fake_tts_worker["alive"] = False
+    assert rvc_live.rvc_live_profile_get()["tts_worker_alive"] is False
+
+
 # ---------------- 游戏档降低显存探测频率（2026-09-14） ----------------
 # _gpu_snapshot 一次要 spawn 3 个 nvidia-smi，status 被前端与桌宠同时轮询时
 # 相当于游戏中每秒 1~2 次进程创建（抢 GPU 驱动 → 掉帧）。游戏档把 TTL 拉到 10s。

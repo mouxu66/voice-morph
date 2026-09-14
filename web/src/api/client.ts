@@ -633,6 +633,8 @@ export type RvcLiveStatus = {
   gpu_used_mb?: number | null;
   /** 实时变声子进程显存（MB）；探测不到时为 null */
   live_proc_vram_mb?: number | null;
+  /** 语音合成引擎（Qwen3-TTS worker）是否驻留显存：game 档卸载后为 false */
+  tts_worker_alive?: boolean;
   live_running: boolean;
   audio_switched: boolean;
   last_error?: string;
@@ -702,6 +704,10 @@ export type LiveProfileResult = {
   gpu_total_mb?: number | null;
   gpu_used_mb?: number | null;
   live_proc_vram_mb?: number | null;
+  /** 语音合成引擎是否驻留显存：game 档卸载后为 false */
+  tts_worker_alive?: boolean;
+  /** 本次切换释放的显存（MB）；未切到 game 或 worker 本就未驻留时为 0 */
+  tts_freed_mb?: number;
 };
 
 export async function rvcLiveGetProfile(): Promise<LiveProfileResult> {

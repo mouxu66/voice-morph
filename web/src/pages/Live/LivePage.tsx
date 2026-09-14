@@ -196,7 +196,7 @@ export function LivePage(p: ReturnType<typeof useLive>) {
                 性能模式
               </h3>
               <p className="mt-1.5 max-w-xl text-xs leading-5 text-muted-foreground">
-                选「游戏低占用」会自动隐藏桌宠、关掉实时转写（字幕）与自我监听，并把显存探测降频到 10 秒一次，适合边打游戏边变声。
+                选「游戏低占用」会自动隐藏桌宠、关掉实时转写（字幕）与自我监听、卸载语音合成引擎（释放约 4.8GB 显存给游戏），并把显存探测降频到 10 秒一次，适合边打游戏边变声。
               </p>
             </div>
             <div className="flex shrink-0 rounded-lg border border-border bg-background/70 p-1">
@@ -221,6 +221,13 @@ export function LivePage(p: ReturnType<typeof useLive>) {
               ))}
             </div>
           </div>
+
+          {p.perfProfile === "game" && p.ttsWorkerAlive === false && (
+            <p className="mt-3 flex items-center gap-2 text-xs text-emerald-500">
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+              语音合成引擎已卸载，显存已让给游戏；再次使用语音合成时会按需自动加载。
+            </p>
+          )}
 
           {p.gpuTotalMb ? (
             <div className="mt-4 space-y-1.5">

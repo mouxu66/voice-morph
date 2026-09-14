@@ -1,32 +1,75 @@
-import { ArrowRight, AudioLines, Headphones, HelpCircle, Keyboard, Mic2, Minus, Plus, Radio, ShieldCheck, Sparkles, Speech, Users, Volume2, Wrench } from "lucide-react"
+import { ArrowRight, AudioLines, Headphones, HelpCircle, Keyboard, Loader2, Mic2, Minus, Plus, Radio, RefreshCw, ShieldCheck, Sparkles, Speech, Users, Volume2, Wrench } from "lucide-react"
 import { useState } from "react"
 import { Link } from "react-router-dom"
+import { mediaUrl, type MarketItem } from "@/api/client"
+import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { EffectLadderCard } from "@/components/EffectLadderCard"
+import { cn } from "@/lib/utils"
 import { useAppStore } from "@/store/useAppStore"
+import { useHomeDemo } from "@/pages/Home/useHomeDemo"
 
 /**
  * 首页 · 先玩再定制。
- * 首屏给「立刻能玩」的两条路（试听现成音色 / 输字让它说），
+ * 首屏给「立刻能玩」的两条路（预置音色即点即听 / 输字让它说），
  * 玩出兴趣后再引导「定制自己的音色」（采集 → 存音色 → 输字 → 训练 → 送进微信/游戏）。
  */
-const PLAY_ITEMS = [
-  {
-    to: "/voices?tab=market",
-    icon: Headphones,
-    title: "先试听：挑个现成音色",
-    desc: "官方预置了开源音色，点开就能听。挑一个顺耳的，马上就能用。",
-    tag: "免费 · 立刻能听",
-    tone: "primary" as const,
-  },
-  {
-    to: "/tts?tab=single",
-    icon: Keyboard,
-    title: "输字，让它替你说",
-    desc: "选好音色后输入文字，它立刻念给你听。打字越多说得越多，全程本地免费。",
-    tag: "30 秒出效果",
-    tone: "accent" as const,
-  },
+
+/** 缩略图分类色（与音色市场保持一致） */
+const CATEGORY_TONE: Array<[RegExp, string, string]> = [
+  [/卡通|角色/, "from-amber-500/25 to-amber-500/5", "ring-amber-500/30"],
+  [/女声/, "from-pink-500/25 to-pink-500/5", "ring-pink-500/30"],
+  [/男声/, "from-sky-500/25 to-sky-500/5", "ring-sky-500/30"],
 ]
+const DEFAULT_TONE = ["from-violet-500/25 to-violet-500/5", "ring-violet-500/30"] as const
+
+/** 首页试听卡：demo 直接播；无 demo 首次生成（下载模型 → 转换），ready 后直播 */
+function HomeDemoCard({ item, previews, onTrigger, isPlayable }: {
+  item: MarketItem
+  previews: ReturnType<typeof useHomeDemo>["previews"]
+  onTrigger: (item: MarketItem) => void
+  isPlayable: (url?: string) => boolean
+}) {
+  const voiceId = item.prefs?.voice_id ?? item.voice_id ?? ""
+  const prev = previews[voiceId]
+  const demoUrl = isPlayable(item.demo) ? mediaUrl(item.demo as string) : null
+  const readyUrl = prev?.status === "ready" ? mediaUrl(prev.url) : null
+  const tone = CATEGORY_TONE.find(([re]) => re.test(item.category ?? "")) ?? DEFAULT_TONE
+  const [grad, ring] = tone
+  const Initial = (item.name || item.repo || "?").trim().charAt(0).toUpperCase()
+  const href = readyUrl ?? demoUrl
+  return (
+    <div className="flex items-center gap-3 rounded-2xl border border-border bg-card/85 p-3.5 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg">
+      <div className={cn("relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br text-lg font-bold text-foreground ring-1", grad, ring)}>
+        {Initial}
+        {item.image && <img src={mediaUrl(item.image)} alt={item.name} className="absolute inset-0 h-full w-full object-cover" loading="lazy" />}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold text-card-foreground" title={item.desc || item.name}>{item.name}</p>
+        <p className="mt-0.5 text-[10px] text-muted-foreground">{item.category ?? "音色"} · {item.platform}</p>
+        {href ? (
+          <StudioAudioPlayer src={href} label="试听" className="mt-1.5 min-w-0" />
+        ) : prev?.status === "generating" ? (
+          <span className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground" title="首次试听需先下载模型并转换，需几分钟">
+            <Loader2 className="h-3 w-3 animate-spin text-primary" />试听准备中…
+          </span>
+        ) : prev?.status === "failed" || prev?.status === "skipped" ? (
+          <button type="button" onClick={() => onTrigger(item)} title={prev.error || "重试生成试听"}
+            className="mt-1.5 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[11px] text-foreground transition hover:border-primary hover:text-primary">
+            <RefreshCw className="h-3 w-3" />重试试听
+          </button>
+        ) : (
+          <button type="button" onClick={() => onTrigger(item)}
+            title={`点一下即听${item.size_hint_mb && !demoUrl ? `（首次需下载模型约 ${item.size_hint_mb}M）` : ""}`}
+            className={cn("mt-1.5 inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px]",
+              demoUrl ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
+                : "border-border text-foreground hover:border-primary hover:text-primary")}>
+            <Headphones className="h-3 w-3" />{demoUrl ? "播放试听" : "点一下即听"}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
 
 /** 玩出兴趣后，进阶三张卡（理念：先玩，再定制） */
 const ADVANCED_ITEMS = [
@@ -123,6 +166,8 @@ const GLOSSARY = [
 export function HomePage() {
   const voices = useAppStore((s) => s.voices)
   const [glossaryOpen, setGlossaryOpen] = useState(false)
+  const demo = useHomeDemo()
+  const featured = demo.items?.slice(0, 6) ?? []
 
   // 根据全局音色数据算"效果阶梯当前位置"（零后端改动，App 已 5s 轮询填充 voices）
   const hasRef = voices.some((v) => v.has_reference !== false && (v.has_reference === true || v.duration_s >= 3))
@@ -149,40 +194,58 @@ export function HomePage() {
       </header>
 
       <main className="mx-auto max-w-7xl space-y-12 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
-        {/* 立刻能玩：首屏第一件事 */}
+        {/* 立刻能玩：首屏第一件事 = 预置音色即点即听 */}
         <section>
           <div className="mb-5">
             <p className="font-mono text-xs uppercase tracking-widest text-primary">STEP 0 · 不花时间</p>
-            <h3 className="mt-2 text-2xl font-semibold text-foreground">先玩起来：一条空着手也能走的路</h3>
-            <p className="mt-1.5 text-sm text-muted-foreground">不用找素材、不用训练。跟着卡片的顺序点，一分钟内听到效果。</p>
+            <h3 className="mt-2 text-2xl font-semibold text-foreground">先玩起来：点一个音色，马上听到它</h3>
+            <p className="mt-1.5 text-sm text-muted-foreground">下面全是官方预置的开源音色——不用找素材、不用训练，点一下就能听。</p>
           </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            {PLAY_ITEMS.map(({ to, icon: Icon, title, desc, tag, tone }) => (
-              <Link
-                key={title}
-                to={to}
-                className={`group rounded-2xl border p-5 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg ${
-                  tone === "primary"
-                    ? "border-primary/50 bg-gradient-to-br from-primary/15 via-card to-card"
-                    : "border-primary/30 bg-card/85"
-                }`}
-              >
-                <span className={`flex h-10 w-10 items-center justify-center rounded-lg border ${tone === "primary" ? "border-primary/50 bg-primary/10 text-primary" : "border-primary/40 bg-primary/5 text-primary"}`}>
-                  <Icon className="h-5 w-5" />
-                </span>
-                <h4 className="mt-3 text-sm font-semibold text-card-foreground">{title}</h4>
-                <p className="mt-1 inline-block rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">{tag}</p>
-                <p className="mt-2.5 text-xs leading-5 text-muted-foreground">{desc}</p>
-                <span className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary opacity-0 transition group-hover:opacity-100">
-                  从这里开始 <ArrowRight className="h-3.5 w-3.5" />
-                </span>
+
+          {demo.items === null ? (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {Array.from({ length: 6 }, (_, i) => (
+                <div key={i} className="h-[92px] animate-pulse rounded-2xl border border-border bg-card/60" />
+              ))}
+            </div>
+          ) : featured.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border bg-card/50 px-6 py-10 text-center">
+              <Users className="h-6 w-6 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">预置清单还没连上后端，稍后自动刷新；也可以先去音色市场逛逛。</p>
+              <Link to="/voices?tab=market" className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20">
+                去音色市场 <ArrowRight className="h-3.5 w-3.5" />
               </Link>
-            ))}
+            </div>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {featured.map((item) => (
+                <HomeDemoCard
+                  key={item.id ?? item.name}
+                  item={item}
+                  previews={demo.previews}
+                  onTrigger={demo.triggerPreview}
+                  isPlayable={demo.isPlayable}
+                />
+              ))}
+            </div>
+          )}
+
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="flex items-center gap-2 text-xs text-muted-foreground">
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
+              预置的都是开源音色，免费、本地运行，不涉及版权问题。
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <Link to="/tts?tab=single"
+                className="inline-flex items-center gap-1.5 rounded-md border border-primary/50 bg-primary px-3 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:bg-primary/90">
+                <Keyboard className="h-3.5 w-3.5" />挑好了？输字让它说话
+              </Link>
+              <Link to="/voices?tab=market"
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground transition hover:border-primary hover:text-primary">
+                更多音色 <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
           </div>
-          <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-            <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
-            预置的都是开源音色，免费、本地运行，不涉及版权问题。
-          </p>
         </section>
 
         {/* 玩出兴趣后，再谈定制 */}

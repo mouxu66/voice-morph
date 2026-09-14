@@ -333,11 +333,15 @@ export function useLive() {
       setFeedback(null)
       try {
         const r = await rvcLiveSetProfile(profile)
+        const freed = r.tts_freed_mb
+          ? `已卸载语音合成引擎，释放约 ${(r.tts_freed_mb / 1024).toFixed(1)} GB 显存给游戏。`
+          : ""
         setFeedback({
           tone: "ok",
-          text: r.restarted
-            ? `已切换为「${r.profile_desc ?? profile}」，正在自动重启变声。`
-            : `已保存为「${r.profile_desc ?? profile}」，下次开启变声生效。`,
+          text:
+            (r.restarted
+              ? `已切换为「${r.profile_desc ?? profile}」，正在自动重启变声。`
+              : `已保存为「${r.profile_desc ?? profile}」，下次开启变声生效。`) + freed,
         })
       } catch (error) {
         setFeedback({ tone: "error", text: msgOf(error, "切换性能档位失败") })
@@ -379,6 +383,8 @@ export function useLive() {
     gpuTotalMb: liveStatus?.gpu_total_mb ?? null,
     gpuUsedMb: liveStatus?.gpu_used_mb ?? null,
     liveProcVramMb: liveStatus?.live_proc_vram_mb ?? null,
+    /** 语音合成引擎是否驻留显存（game 档卸载后为 false） */
+    ttsWorkerAlive: liveStatus?.tts_worker_alive ?? null,
     start,
     stop,
     setProfile,
