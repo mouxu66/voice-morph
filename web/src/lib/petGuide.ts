@@ -19,8 +19,8 @@ export const GREETING = "嗨，我是你的导览小助手，下面带你熟悉�
 
 export const GUIDES: Record<string, PageGuide> = {
   "/home": {
-    title: "首页 · 零基础",
-    lines: ["第一次来？跟我走。", "往下滑就是入门教程，", "五步做出第一个音色。"],
+    title: "首页 · 先玩再定制",
+    lines: ["第一次来？跟我走。", "先挑个音色试听一下，", "再输字让它替你说。"],
     action: "build",
     motion: "wave",
   },

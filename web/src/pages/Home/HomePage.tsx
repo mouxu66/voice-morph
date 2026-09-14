@@ -1,38 +1,62 @@
-import { ArrowRight, AudioLines, HelpCircle, Mic2, Minus, Plus, Radio, ShieldCheck, Sparkles, Speech, Users, Volume2, Wrench } from "lucide-react"
+import { ArrowRight, AudioLines, Headphones, HelpCircle, Keyboard, Mic2, Minus, Plus, Radio, ShieldCheck, Sparkles, Speech, Users, Volume2, Wrench } from "lucide-react"
 import { useState } from "react"
 import { Link } from "react-router-dom"
 import { EffectLadderCard } from "@/components/EffectLadderCard"
 import { useAppStore } from "@/store/useAppStore"
 
-/** 三张主路径 CTA：首屏就给用户"我该从哪条路走"的判断 */
-const PATHS = [
+/**
+ * 首页 · 先玩再定制。
+ * 首屏给「立刻能玩」的两条路（试听现成音色 / 输字让它说），
+ * 玩出兴趣后再引导「定制自己的音色」（采集 → 存音色 → 输字 → 训练 → 送进微信/游戏）。
+ */
+const PLAY_ITEMS = [
   {
-    to: "/tts?tab=single",
-    icon: Speech,
-    title: "免训练变声",
-    tag: "最快 · 10 秒听到效果",
-    desc: "输一段字，马上用指定音色读出来。最适合先尝尝「变声」到底是什么感觉。",
+    to: "/voices?tab=market",
+    icon: Headphones,
+    title: "先试听：挑个现成音色",
+    desc: "官方预置了开源音色，点开就能听。挑一个顺耳的，马上就能用。",
+    tag: "免费 · 立刻能听",
     tone: "primary" as const,
   },
   {
+    to: "/tts?tab=single",
+    icon: Keyboard,
+    title: "输字，让它替你说",
+    desc: "选好音色后输入文字，它立刻念给你听。打字越多说得越多，全程本地免费。",
+    tag: "30 秒出效果",
+    tone: "accent" as const,
+  },
+]
+
+/** 玩出兴趣后，进阶三张卡（理念：先玩，再定制） */
+const ADVANCED_ITEMS = [
+  {
     to: "/workshop",
     icon: Mic2,
-    title: "训练变声",
-    tag: "最像 · 攒素材练出专属嗓子",
-    desc: "从一条素材开始，一步步养成你的专属音色，最后能开着麦实时变声。",
-    tone: "accent" as const,
+    title: "训练变声：专属嗓子",
+    desc: "从你的素材开始，练一副只属于你的音色——不像预置，是「你那副」。",
+    tag: "最像 · 慢工细活",
+    tone: "default" as const,
+  },
+  {
+    to: "/live?tab=rvc",
+    icon: Radio,
+    title: "实时变声：开麦就用",
+    desc: "训练完成后，你说话、它出声，实时开麦直接用（游戏 / 会议 / 语音）。",
+    tag: "要先用上面练出模型",
+    tone: "default" as const,
   },
   {
     to: "/offlinevc",
     icon: Wrench,
-    title: "工具箱",
-    tag: "进阶 · 整段变声 / 效果器",
-    desc: "把录好的整段音频一次性变声、叠加混响电音，适合后期配音与剪辑。",
+    title: "工具箱：整段变声",
+    desc: "把录好的整段音频一次性变成目标音色，适合配音与剪辑后期。",
+    tag: "进阶",
     tone: "default" as const,
   },
 ]
 
-/** 「第一条音色」最小闭环：5 步，每步讲清"做什么 + 为什么" */
+/** 「做一副专属嗓子」定制闭环：5 步，每步讲清"做什么 + 为什么" */
 const STEPS = [
   {
     icon: Volume2,
@@ -109,43 +133,41 @@ export function HomePage() {
 
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
-      {/* Hero：一句话讲清这是干嘛的，首屏放三大入口 */}
+      {/* Hero：先玩——零门槛第一条"立刻能玩"的路 */}
       <header className="relative overflow-hidden border-b border-border px-5 py-12 sm:px-8 lg:px-12 lg:py-16">
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/10 via-background to-card" aria-hidden="true" />
         <div className="relative mx-auto max-w-7xl">
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">HOME / 零基础入门</p>
+          <p className="font-mono text-xs uppercase tracking-widest text-primary">HOME / 先玩，再定制</p>
           <h2 className="mt-4 max-w-3xl font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
-            让任何声音，都变成你的
+            让任何声音，替你说
           </h2>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-            这不是塞给你一堆工具，而是从一条素材开始，一步一步带你走到最后——
-            能在微信里用真声说话、开着麦打游戏。往下滑，跟着做就行。
+            先挑一个现成音色，免费试听、输字就能让它说话——不找素材、不训练，30
+            秒先玩起来。玩顺了，再往下滑，把它练成你的专属嗓子。
           </p>
         </div>
       </header>
 
       <main className="mx-auto max-w-7xl space-y-12 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
-        {/* 三大主路径：首屏跳板 */}
+        {/* 立刻能玩：首屏第一件事 */}
         <section>
           <div className="mb-5">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">THREE PATHS</p>
-            <h3 className="mt-2 text-2xl font-semibold text-foreground">三条路，先想清楚你要哪种</h3>
-            <p className="mt-1.5 text-sm text-muted-foreground">不确定？就从「免训练变声」开始——最快尝到甜头，任何时刻都能回来换跑道。</p>
+            <p className="font-mono text-xs uppercase tracking-widest text-primary">STEP 0 · 不花时间</p>
+            <h3 className="mt-2 text-2xl font-semibold text-foreground">先玩起来：一条空着手也能走的路</h3>
+            <p className="mt-1.5 text-sm text-muted-foreground">不用找素材、不用训练。跟着卡片的顺序点，一分钟内听到效果。</p>
           </div>
-          <div className="grid gap-4 md:grid-cols-3">
-            {PATHS.map(({ to, icon: Icon, title, tag, desc, tone }) => (
+          <div className="grid gap-4 md:grid-cols-2">
+            {PLAY_ITEMS.map(({ to, icon: Icon, title, desc, tag, tone }) => (
               <Link
                 key={title}
                 to={to}
                 className={`group rounded-2xl border p-5 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg ${
                   tone === "primary"
                     ? "border-primary/50 bg-gradient-to-br from-primary/15 via-card to-card"
-                    : tone === "accent"
-                      ? "border-primary/30 bg-card/85"
-                      : "border-border bg-card/85"
+                    : "border-primary/30 bg-card/85"
                 }`}
               >
-                <span className={`flex h-10 w-10 items-center justify-center rounded-lg border ${tone === "primary" ? "border-primary/50 bg-primary/10 text-primary" : "border-border bg-background text-muted-foreground"}`}>
+                <span className={`flex h-10 w-10 items-center justify-center rounded-lg border ${tone === "primary" ? "border-primary/50 bg-primary/10 text-primary" : "border-primary/40 bg-primary/5 text-primary"}`}>
                   <Icon className="h-5 w-5" />
                 </span>
                 <h4 className="mt-3 text-sm font-semibold text-card-foreground">{title}</h4>
@@ -157,14 +179,46 @@ export function HomePage() {
               </Link>
             ))}
           </div>
+          <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+            <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
+            预置的都是开源音色，免费、本地运行，不涉及版权问题。
+          </p>
         </section>
 
-        {/* 最小闭环：第一条音色的完整教程 */}
+        {/* 玩出兴趣后，再谈定制 */}
+        <section>
+          <div className="mb-5">
+            <p className="font-mono text-xs uppercase tracking-widest text-primary">WANT MORE</p>
+            <h3 className="mt-2 text-2xl font-semibold text-foreground">玩过了？三条路把你带向"专属"</h3>
+            <p className="mt-1.5 text-sm text-muted-foreground">想要"不撞声音"、开麦就能用的专属嗓子？往下是正经玩法，随时可以回来。</p>
+          </div>
+          <div className="grid gap-4 md:grid-cols-3">
+            {ADVANCED_ITEMS.map(({ to, icon: Icon, title, desc, tag, tone }) => (
+              <Link
+                key={title}
+                to={to}
+                className="group rounded-2xl border border-border bg-card/85 p-5 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg"
+              >
+                <span className={`flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-background ${tone === "default" ? "text-muted-foreground" : "text-primary"}`}>
+                  <Icon className="h-5 w-5" />
+                </span>
+                <h4 className="mt-3 text-sm font-semibold text-card-foreground">{title}</h4>
+                <p className="mt-1 inline-block rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">{tag}</p>
+                <p className="mt-2.5 text-xs leading-5 text-muted-foreground">{desc}</p>
+                <span className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary opacity-0 transition group-hover:opacity-100">
+                  去看看 <ArrowRight className="h-3.5 w-3.5" />
+                </span>
+              </Link>
+            ))}
+          </div>
+        </section>
+
+        {/* 定制闭环：给想要专属音色的人 */}
         <section>
           <div className="mb-5">
             <p className="font-mono text-xs uppercase tracking-widest text-primary">FIRST VOICE</p>
-            <h3 className="mt-2 text-2xl font-semibold text-foreground">跟着做：你的第一条音色</h3>
-            <p className="mt-1.5 text-sm text-muted-foreground">五步走完最小闭环。每一屏顶部都有导览小助手，不懂的词随时点开下面的白话解释。</p>
+            <h3 className="mt-2 text-2xl font-semibold text-foreground">想做专属嗓子？五步走完</h3>
+            <p className="mt-1.5 text-sm text-muted-foreground">下面是完整教程。每一屏顶部都有导览小助手，不懂的词随时点开下面的白话解释。</p>
           </div>
           <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-md sm:p-6">
             <ol className="flex flex-col gap-1">

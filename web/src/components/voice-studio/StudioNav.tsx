@@ -14,12 +14,12 @@ const items = [
 
 /**
  * 极简模式：导航收敛成「首页 + 三条主路径」——
- * 免训练变声（秒出效果）/ 训练变声（攒素材练嗓子）/ 工具箱（整段变声等进阶），
+ * 输字变声（先玩，秒出效果）/ 训练变声（攒素材练嗓子）/ 工具箱（整段变声等进阶），
  * 其余页面收进「更多功能」。
  */
 const CORE_ITEMS = [
   { path: "/home", label: "首页", icon: Home, exact: true },
-  { path: "/tts", label: "免训练变声", icon: Speech },
+  { path: "/tts", label: "输字变声", icon: Speech },
   { path: "/workshop", label: "训练变声", icon: Mic2 },
   { path: "/offlinevc", label: "工具箱", icon: Wrench },
 ]
