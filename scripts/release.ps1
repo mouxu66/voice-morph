@@ -167,11 +167,14 @@ else           { Step "4/7 签名打包（electron-builder --win）" }
 Push-Location $WebDir
 try {
   if ($SkipSign) {
-    # 用 CLI 覆盖掉 win.certificateFile。certificateFile 为空串时 electron-builder 会判定
-    # 「无签名信息」而跳过签名；否则它会拿空密码去调 signtool，重试 3 次后打包失败。
+    # 用 electron-builder.nosign.cjs 把 win.certificateFile 覆盖成真正的 null。
+    # 不能走 CLI：cscInfo 的判定是 `certificateFile != null`，而
+    #   -c.win.certificateFile=      → 空串被当成证书路径 → ENOENT: open ''
+    #   -c.win.certificateFile=null  → CLI 不做 JSON 解析 → 被当成文件名 "null"
+    # 两条都试过，都失败；只有配置文件里给 null 才跳过签名。详见该文件注释。
     npm run build
     if ($LASTEXITCODE -ne 0) { Die "前端构建失败（退出码 $LASTEXITCODE）" }
-    npx electron-builder --win "-c.win.certificateFile="
+    npx electron-builder --win --config electron-builder.nosign.cjs
     if ($LASTEXITCODE -ne 0) { Die "electron-builder 打包失败（退出码 $LASTEXITCODE）" }
   } else {
     npm run electron:build
@@ -338,7 +341,7 @@ foreach ($f in $files) {
   Write-Host ("  {0,-42} {1,10}" -f $rel, $size)
 }
 Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "总计：{0:N1} MB" -f (($files | ForEach-Object { (Get-Item $_).Length } | Measure-Object -Sum).Sum / 1MB)
+Write-Host ("总计：{0:N1} MB" -f (($files | ForEach-Object { (Get-Item $_).Length } | Measure-Object -Sum).Sum / 1MB))
 
 if ($Publish) {
   Write-Host "`n本次已由 -Publish 直接发到 GitHub Release，无需手动上传。" -ForegroundColor Green
