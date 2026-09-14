@@ -98,3 +98,27 @@ def on_bare_runner() -> bool:
     模拟模式下也要跟着跳过，否则 --ci-fidelity 的跳过集跟 CI 对不上。
     """
     return bare_runner()
+
+
+@pytest.fixture(autouse=True)
+def _offline_market_license(monkeypatch):
+    """市场许可探测一律离线（G4）。
+
+    为什么放在 conftest 而不是各个测试文件里：`market_install` 会在**安装收尾**调
+    `market_license.probe()`，也就是说任何一条"跑一遍安装"的用例都会顺手发一个
+    真实 HTTP 请求。那种依赖不会以失败的形式暴露 —— 它表现为 CI 变慢、偶发超时、
+    以及在没网的 runner 上莫名其妙地变红。所以在这里**一次性掐掉**默认取数层。
+
+    打桩的是 `_default_get`（最底下那层）而不是 `probe` 本身，这样
+    `probe` 的三态判定、两个 parser 都还在被测；需要真实响应的用例自己传
+    `probe(entry, get=...)` 注入，不受影响。
+    """
+    import market_license
+
+    def _no_network(url: str, timeout: float):  # noqa: ARG001
+        raise RuntimeError(
+            "测试环境不做真实网络请求：market_license._default_get 已被 conftest 打桩。"
+            "需要构造响应请传 probe(..., get=...) 或直接测 parse_*_license()。"
+        )
+
+    monkeypatch.setattr(market_license, "_default_get", _no_network)

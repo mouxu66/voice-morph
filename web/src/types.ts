@@ -62,6 +62,16 @@ export interface VoiceInfo {
   qc?: VoiceQc | null;
   /** 来源标记：market=市场安装；自训/导入无标记（logs/<id>/source.json） */
   source?: string;
+  /** 市场音色的上游许可（G4 回读）：仅在 license_source 存在时出现 */
+  source_license?: string;
+  /**
+   * 许可的来路，三态语义不同、**不能合并展示**（见 m2_server/market_license.py）：
+   *   model-card  = 读到了上游许可，source_license 是许可名
+   *   unlabeled   = 读通了但上游没标 → 未标注即默认保留所有权利，只能沿用兜底文案
+   *   unreachable = 没读通，与"没标"不是一回事，需再查
+   */
+  license_source?: "model-card" | "unlabeled" | "unreachable" | string;
+  license_checked_at?: string;
   /** 市场安装音色已生成的自动试听地址（outputs/market/<id>_preview.wav） */
   preview_url?: string;
 }

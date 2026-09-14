@@ -112,7 +112,7 @@ electron-builder 配置（`files` + `extraResources`）推出**真实打包面**
 | 权重 | 许可 | 说明 |
 |---|---|---|
 | Qwen3-TTS 1.7B（`tts_models/`） | Apache-2.0 | 本机加载，不入库 |
-| **音色市场 30 款精选** | 逐条 `license` 字段：HF 源 = "社区自训·仅供个人使用，勿商用"；魔搭源 = "未标注·仅供个人学习研究，勿商用" | 来源 `chaye741/RVC-Voice-Models`(HF, 13 款) / `hudddd/Retrieval-based-Voice`(魔搭, 17 款)。前端已展示提醒（`market_manifest.py`）。⚠️ **缺口**：未回读 HF/魔搭模型卡的 license 字段，仅用兜底文案 |
+| **音色市场 30 款精选** | 逐条 `license` 字段：HF 源 = "社区自训·仅供个人使用，勿商用"；魔搭源 = "未标注·仅供个人学习研究，勿商用" | 来源 `chaye741/RVC-Voice-Models`(HF, 13 款) / `hudddd/Retrieval-based-Voice`(魔搭, 17 款)。前端已展示提醒（`market_manifest.py`）。✅ **已回读模型卡（G4, 2026-09-14）**：两个上游**均未标注许可**（HF 无 `cardData`、tags 仅 `region:us`；魔搭 `Data.License`/`LicenseName`/`LicenseLink` 全空）→ 兜底文案就是正确表述。安装时自动回读并连同来路写入 `logs/<id>/source.json`，`/voices` 暴露、前端展示（`market_license.py`） |
 | 袋鼠音色 / 自训模型（`logs/kangaroo_v2*`） | 项目自有，素材为**自录** | 与 §4.3 一致 |
 | 未接入的选型候选 | 见 `docs/product/research/m1e_语音模型选型调研_2026-09-14.md` §4 | IndexTTS2 = bilibili Model Use License（免版税可用；**§3.4(c) 不得用于改进其他 AI 模型**） |
 
@@ -128,26 +128,29 @@ electron-builder 配置（`files` + `extraResources`）推出**真实打包面**
 
 ## 5 已知缺口（待修 —— 别当"已经解决"）
 
-> 现状：**6 条里 5 条已了结**（G1/G3 修完、G2 撤销、G5/G6 核实并机器化），只剩 **G4**。
+> 现状：**6 条全部了结** —— G1/G3 修复、G2 撤销、G4/G5/G6 核实（G4 结论与预期相反，见下）。
 
 | # | 缺口 | 修法 |
 |---|---|---|
 | G1 | ~~OFL 字体许可原文未随安装包（§1）~~ | ✅ **已解决（2026-09-14）**：载荷 `web/public/licenses/` 随 `web/dist` 进 `app.asar` + `backend/web_dist` 两处；界面入口「设置 → 关于 → 开源许可」；`tools/sync_license_payload.py` 生成、`tools/audit_licenses.py` 核验（含版本 vs lockfile、字体依赖双向对齐）。**加字体只改 `package.json` 会在 CI 红** |
 | G2 | ~~OpenMoji 署名未随分发（§1）~~ | ❌ **撤销 —— 这是条 phantom obligation**。核实（2026-09-14）：`git log --all --diff-filter=A -- '*openmoji*'` 为空、`market_imgs/` 31 个文件全为自制插画、无相关依赖、`find` 无图标文件。义务源自一句描述*意图*的注释，**没有产物**。已删掉该注释并改为资产触发判据（`ASSET_TRIGGERS` + `test_repo_has_no_phantom_openmoji_obligation`）：真引入图标那天自动要求署名 |
 | G3 | ~~4 张**角色形象配图**为网络搜集（懒羊羊 / 曼波 / 孙悟空 / 派大星），**无授权链**~~ | ✅ **已解决（2026-09-14）**：全部替换为自生成原创卡通插画（`market_imgs/{lanyangyang,katoong_lanyangyang,katoong_manbo,sunwukong,paidaxing}`），并删除孤儿 `manbo.png`。需同步重推远程图库 `mouxu66/voice-market-assets` 清掉 CDN 旧图，客户端 TTL 6h 内拉新 |
-| G4 | 市场条目许可只写兜底文案，未回读模型卡 | 安装时抓 HF/魔搭 `license` 字段写入 `source.json`，前端展示 |
+| G4 | ~~市场条目许可只写兜底文案，未回读模型卡~~ | ✅ **已解决（2026-09-14）**，但**结论与预期相反**：回读实现+落盘已完成（`market_license.py` → 安装收尾写入 `source.json` → `/voices` 暴露 → 前端展示），而实测发现**两个上游都没标注许可** —— HF 源 tags 只有 `region:us`（无 `cardData`）、魔搭源 `Data.License`/`LicenseName`/`LicenseLink` 三个字段全是空串。所以兜底文案"仅供个人学习研究，勿商用"**不是占位符，而是当前法律状态下唯一正确的表述**（未标注 = 默认保留所有权利）。实现上强制区分 `unlabeled`（查过了，上游没写）/ `unreachable`（这次没查成）—— 两者后续动作不同，塌缩成一个值会让溯源文件开始撒谎 |
 | G5 | ~~`demucs` 预训练权重许可未核~~ | ✅ **已核（2026-09-14）**：代码 MIT（原文 `Copyright (c) Meta Platforms, Inc. and affiliates.`）；**权重无独立声明**，且训练自 MUSDB18（官方写明"仅教学用途、未经版权方明示许可不得用于任何商业目的"）。结论 = **不得打进发行物**；本项目不分发 → 现状合规。门禁已覆盖（§2.3） |
 | G6 | ~~RVC 整合包随附底模（`pretrained_v2` / `hubert_base`）未核~~ | ✅ **已核（2026-09-14）**：HF 标签 `license: mit`，但同仓 `使用需遵守的协议-LICENSE.txt` 正文写明 **"本软件仅供研究使用"**，且"不认可该条款则不能使用/引用软件包内所有代码和文件"。结论 = **不得打进发行物**；用户在 `D:\RVC` 自备 → 现状无分发义务。门禁已覆盖（§2.3）。附注：`hubert_base` 的架构是 `HubertModelWithFinalProj`，上游 `lengyue233/content-vec-best` 本身确为 MIT —— 是 **RVC 的分发版本**加了条款 |
 
-> **三种失效方式，各配一层机器判据**（2026-09-14）：
+> **四种失效方式，各配一层机器判据**（2026-09-14）：
 > - G1 「**义务写了没做**」—— 文档说会附原文，实际没附 → 履行层**验产物**（读文件系统）。
 > - G2 「**义务凭空要求**」—— 没有任何产物，却挂了个缺口要人去填 → 触发层**要求有来源**（扫资产）。
+> - G4 「**缺口的前提是错的**」—— G4 假设"回读一下就能拿到许可名"，实测是"上游压根没标"。
+>   于是"补上许可名"这个修法本身不成立 —— 实现要做的反而是**把"上游没标"记清楚**，
+>   并区分"查过了没有"与"这次没查成"。**先验证缺口成不成立，再动手补。**
 > - G5/G6 「**标签说有，条款说没有**」—— HF/GitHub 标 `license: mit`，另有中文/数据集条款
 >   限制用途 → 夹带层**扫真实打包面**（推 electron-builder 配置 + 扫权重后缀）。
 >
-> 三者共通的教训：**别信声明，信产物**。手写断言、平台标签、README 的一句话都会撒谎，
-> 文件系统与条款原文不会。判据宁可窄一点也别误报 —— 一条开始喊狼来了的规则，
-> 下一次真出事时没人会看它。
+> 四者共通的教训：**别信声明，信产物**。手写断言、平台标签、README 的一句话、
+> 甚至缺口表里自己写的那句前提，都会撒谎 —— 文件系统与条款原文不会。
+> 判据宁可窄一点也别误报：一条开始喊狼来了的规则，下一次真出事时没人会看它。
 
 <!-- audit:deps:begin -->
 python:comtypes

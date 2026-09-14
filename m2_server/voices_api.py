@@ -14,7 +14,7 @@ from fastapi.responses import Response
 
 import config as cfg
 from common import MAX_UPLOAD_BYTES, is_valid_voice_id, selected_voice
-from rvc_common import exp_display_name, exp_snapshot, exp_source
+from rvc_common import exp_display_name, exp_license, exp_snapshot, exp_source
 from runtime import API_PREFIX, CLIPS_DIR, RAW_DIR, VIDEO_SUFFIXES, VOICEBANK, clip_prefix
 
 router = APIRouter(prefix=API_PREFIX)
@@ -65,6 +65,7 @@ def list_voices():
             "kind": meta.get("kind") or "clone",
             "has_reference": True,
             "source": exp_source(d.name),
+            **exp_license(d.name),
             **exp_snapshot(d.name),
         }
 
@@ -87,6 +88,7 @@ def list_voices():
                 "has_reference": False,
                 "source": exp_source(d.name),
                 "preview_url": _market_preview_url(d.name),
+                **exp_license(d.name),
                 **snap,
             }
 

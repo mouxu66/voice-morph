@@ -340,16 +340,44 @@ class InstallManager:
                 p.unlink(missing_ok=True)
         return {"voice_id": voice_id, "removed": [str(p) for p in paths]}
 
-    def write_source(self, voice_id: str, manifest_id: str, display_name: str):
-        """安装落位后写入溯源标记（logs/<id>/source.json），供卸载与音色库角标使用。"""
+    def _probe_license(self, manifest_id: str) -> dict | None:
+        """回读该条目的上游许可（G4）。**任何失败都返回 None**，不影响安装。
+
+        单测里靠 `market_license.probe` 的 `get` 注入点规避真实网络；
+        这里则统一走"查条目 → 探测"两步，条目找不到就当没探测过。
+        """
+        if not manifest_id:
+            return None
+        try:
+            from market_license import probe
+            from market_manifest import find_manifest_item
+
+            entry = find_manifest_item(manifest_id)
+            if not entry:
+                return None
+            return probe(entry)
+        except Exception:  # noqa: BLE001 —— 溯源信息拿不到不该让用户装不上音色
+            return None
+
+    def write_source(self, voice_id: str, manifest_id: str, display_name: str,
+                     license_fields: dict | None = None):
+        """安装落位后写入溯源标记（logs/<id>/source.json），供卸载与音色库角标使用。
+
+        `license_fields` 来自 `market_license.probe()`（G4）：把"上游到底标了什么"
+        连同**来路**一起落盘。三态区分是刻意的 —— `unlabeled`（读通了但上游没标）与
+        `unreachable`（没读通）含义完全不同，混成一个"无许可"会让人误判已核实过。
+        """
         src = cfg.RVC_ROOT / "logs" / voice_id / "source.json"
         src.parent.mkdir(parents=True, exist_ok=True)
-        src.write_text(json.dumps({
+        payload = {
             "source": "market",
             "manifest_id": manifest_id,
             "display_name": display_name,
             "installed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        }
+        if license_fields:
+            payload.update(license_fields)
+        src.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # ---- 后台线程 ----
     def _run(self, voice_id: str, download: dict, index: dict | None,
@@ -399,7 +427,8 @@ class InstallManager:
             self._set_install(status="staging", phase="注册音色",
                               message="正在写入音色库 …", percent=_pct_of(2, INSTALL_PHASES))
             self._stage(voice_id)
-            self.write_source(voice_id, manifest_id, display_name)
+            # G4：回读上游许可并连同"来路"落进 source.json（探测失败不影响安装）
+            self.write_source(voice_id, manifest_id, display_name, self._probe_license(manifest_id))
             # A2：安装收尾自动触发试听生成（fire-and-forget，GPU 忙则 skipped 等前端重试）
             try:
                 from market_preview import try_auto_preview

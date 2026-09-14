@@ -57,6 +57,28 @@ def exp_source(exp: str) -> str:
     return str(source_meta(exp).get("source") or "")
 
 
+def exp_license(exp: str) -> dict:
+    """市场安装音色的许可溯源（G4）：`source.json` 里的 license* 字段。
+
+    三个字段的含义（由 `market_license.probe` 落盘，语义区分是刻意的）：
+      - `license_source == "model-card"`：读到了上游许可，`source_license` 是许可名
+      - `"unlabeled"`：读通了但**上游没标** —— 未标注即默认保留所有权利，
+        故此时 `source_license` 为空，前端只能沿用兜底文案
+      - `"unreachable"`：没读通（网络/接口变化），与"没标"不是一回事
+
+    自训/本地导入音色没有这些字段 → 返回空 dict，调用方不展示许可行。
+    """
+    meta = source_meta(exp)
+    kind = str(meta.get("license_source") or "")
+    if not kind:
+        return {}
+    return {
+        "source_license": str(meta.get("license") or ""),
+        "license_source": kind,
+        "license_checked_at": str(meta.get("license_checked_at") or ""),
+    }
+
+
 def exp_display_name(exp: str, fallback: str | None = None) -> str:
     """音色中文显示名，优先级：市场 source.json > 实验目录 meta.json > 目录名。
 
