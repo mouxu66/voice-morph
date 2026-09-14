@@ -14,6 +14,29 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
+const { installElectronStub } = require("./electron-stub.cjs");
+
+// 必须先装桩，再 require 受测模块：`setup-ipc.cjs` 在**顶层** require("electron")，
+// 而 CI 的 backend job 不装 npm 包 —— 2026-09-14 CI 实测本文件曾因此 1/24 失败。
+const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-home-"));
+installElectronStub({
+  app: {
+    isPackaged: false,
+    // 统一指向确定的空临时目录：candidateRoots 会问 home，给死值测试才可复现
+    getPath: () => homeDir,
+    getVersion: () => "0.2.0",
+    on: () => {},
+    quit: () => {},
+    whenReady: () => Promise.resolve(),
+  },
+  dialog: {
+    showMessageBoxSync: () => 0,
+    showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+  },
+  ipcMain: { handle: () => {}, on: () => {} },
+  shell: { openExternal: async () => {}, showItemInFolder: () => {} },
+});
+
 const guides = require("../web/electron/model-guides.cjs");
 const modelSetup = require("../web/electron/model-setup.cjs");
 const scan = require("../web/electron/model-scan.cjs");

@@ -4,11 +4,16 @@
 // 回归点（2026-09-12 坑）：安装版（app.isPackaged=true）绝不回退到本机 D:\变声 源码根，
 // 否则自动更新装完新安装包，应用仍读 d:\变声\web\dist 旧前端、跑 d:\变声\m2_server 旧后端。
 //
-// 模式参考 2026-09-03 记录：require.cache 顶替 electron 桩，让纯 Node 能加载主进程模块。
+// 模式参考 2026-09-03 记录：顶替 electron 桩，让纯 Node 能加载主进程模块。
+// 2026-09-14：改用同目录的 `electron-stub.cjs`（合成 id，不查磁盘）—— 原来的
+// `require.resolve("electron")` 要求本机装过 `web/node_modules`，于是 CI（backend job
+// 不装 npm 包）上这个冒烟根本跑不起来，只能在本机凭自觉跑。
 const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+
+const { installElectronStub } = require("./electron-stub.cjs");
 
 let isPackaged = false;
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-userdata-"));
@@ -33,9 +38,7 @@ const electronStub = {
   globalShortcut: { register: () => true, unregisterAll: () => {} },
   screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) },
 };
-require.cache[require.resolve("electron")] = {
-  id: "electron", filename: "electron.js", loaded: true, exports: electronStub,
-};
+installElectronStub(electronStub);
 
 function withResourcesPath(dir) {
   Object.defineProperty(process, "resourcesPath", { value: dir, configurable: true });
