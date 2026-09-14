@@ -94,13 +94,25 @@ PRIVACY_RULES: list[tuple[str, str]] = [
 # 内建规则**只认机械痕迹**（来源标记），一条具体标题都不含 —— 理由见模块 docstring。
 # 具体标题从**不入库**的 `.audit-materials.txt` 读，见 _material_rules()。
 #
+# 2026-09-14 收窄：原来"出现平台名即命中"，于是一次真实误报 —— IndexTTS2 的
+# **许可名**与"B 站 Index 团队"这类**归因**全被报成"第三方素材名泄漏"。噪音之外还有
+# 更坏的后果：它会逼着人把许可名从合规文档里删掉，而那是**唯一必须写出它的地方**
+# （`THIRD_PARTY_NOTICES.md` / 选型报告 §6.2）。
+# 真正的目标是**下载文件名**里的来源标记，因此要求标记处于文件名语境：
+#   · 紧邻媒体扩展名（`…_<标记>_<标记>.mp4` 这种下载命名）
+#   · 或被 `_` / `-` 包夹（`…_<标记>-20260827-ne4zlou33r…`）
+# 光提平台名不算泄漏 —— 平台是公开信息，敏感的从来是**片名**；片名由本地清单按字面兜底。
+#
 # 标记本身也得**拼出来**：直接写成完整字符串，规则源码会命中它自己 ——
 # 于是历史清干净了这个工具还是红的，那道门就废了。
 # （跟 `test_check_secrets.py` 里 `_pv()` 那条纪律是同一件事。）
+_MEDIA_EXT = r"(?:mp4|mkv|flv|webm|mov|avi|mp3|wav|m4a|aac|srt|ass|danmaku|xml)"
 _BILI_CJK = "哔哩" + "哔"
 _BILI_LATIN = "bili" + "bili"
+_MARK = rf"(?:{_BILI_CJK}|{_BILI_LATIN})"
 MATERIAL_RULES: list[tuple[str, str]] = [
-    (rf"(?i){_BILI_CJK}|{_BILI_LATIN}", "B 站下载文件名 / 来源标记"),
+    (rf"(?i){_MARK}[^\s]{{0,40}}\.{_MEDIA_EXT}", "下载文件名里的来源标记（标记后跟媒体扩展名）"),
+    (rf"(?i)[_\-]{_MARK}[_\-]", "下载文件名里的来源标记（标记被下划线或连字符包夹）"),
 ]
 
 MATERIAL_LIST_FILE = ".audit-materials.txt"

@@ -128,6 +128,57 @@ def test_material_list_matches_literally_not_as_regex(ah, tmp_path):
     assert list(ah._iter_hits("axb", rules)) == []
 
 
+# ---------------- 内建标记规则的**语境要求**（2026-09-14 收窄）----------------
+#
+# 背景：老规则"出现平台名即命中"把 IndexTTS2 的**许可名**（合规文档里唯一必须写出它
+# 的地方）和"B 站 XX 团队"这类归因全报成素材名泄漏。噪音之外还有更坏的后果 ——
+# 它会逼着人把许可名从合规文档里删掉。所以规则改为要求**文件名语境**。
+# 下面正反两组用例一起钉住这个边界：真文件名照样抓得住，纯平台名/许可名不再误报。
+
+def _mk(*parts: str) -> str:
+    """把标记拼出来写进测试，别让本文件被自己的规则命中（同 `_pv()` 纪律）。"""
+    return "".join(parts)
+
+
+_BILI_MARK = _mk("哔哩", "哔哩")
+_BILI_MARK_LATIN = _mk("bili", "bili")
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        f"《某合集》_{_BILI_MARK}_{_BILI_MARK_LATIN}.mp4",              # 双标记 + 扩展名
+        f"某视频_{_BILI_MARK_LATIN}-20260827-ne4zlou33r.mp4",           # 标记后带平台 id 段
+        f"x_{_BILI_MARK}.flv",                                          # 只有中文标记 + flv
+        f"{_BILI_MARK_LATIN}_某视频.srt",                                # 字幕文件也算下载产物
+    ],
+)
+def test_marker_rule_catches_download_filenames(ah, filename):
+    hits = [m.group(0) for _d, m in ah._iter_hits(filename, list(ah.MATERIAL_RULES))]
+    assert hits, f"下载文件名没被拦住：{filename}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"{_BILI_MARK_LATIN} Model Use License Agreement",   # IndexTTS2 的许可名，必须能写
+        f"{_BILI_MARK_LATIN} 团队 / {_BILI_MARK}",            # 归因 / 平台名
+        f"参见 {_BILI_MARK} 官网与 www.{_BILI_MARK_LATIN}.com",
+    ],
+)
+def test_marker_rule_ignores_platform_mentions_without_filename_context(ah, text):
+    """**这次收窄的反例**：许可名与归因不是素材名泄漏，误报会逼人删掉该写的东西。"""
+    hits = [m.group(0) for _d, m in ah._iter_hits(text, list(ah.MATERIAL_RULES))]
+    assert hits == [], f"不该命中的文本被拦住了：{text} → {hits}"
+
+
+def test_marker_rule_does_not_fire_on_own_regex_source(ah):
+    """规则源码自己不能命中自己（`_MEDIA_EXT` 里就写着 mp4 等扩展名）。"""
+    rules = list(ah.MATERIAL_RULES)
+    for rule, _desc in rules:
+        assert list(ah._iter_hits(rule, rules)) == [], f"规则命中了它自己的正则：{rule}"
+
+
 # ---------------- _head_index / _tag：按内容判「HEAD 仍含」 ----------------
 
 def test_head_index_maps_fragment_to_head_paths(ah):
