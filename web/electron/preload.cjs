@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld("electron", {
   // ---- 模型配置 / 首启引导 ----
   /** 只读状态：{ config, configPath, items, ttsOk, rvcOk, allOk, missing, setupSeen, petGuideSeen } */
   setupStatus: () => ipcRenderer.invoke("setup:status"),
+  /** 下载指引：{ verifiedAt, guides: [{ key, label, sizeText, why, layout, steps, links, notes }] } */
+  setupGuides: () => ipcRenderer.invoke("setup:guides"),
+  /** 打开指引里的某条链接（只传 kind + 序号，URL 由主进程从常量里查） */
+  setupOpenGuideLink: (kind, index) => ipcRenderer.invoke("setup:open-guide-link", kind, index),
+  /** 自动扫描本机：{ ok, candidates: { [kind]: [{path,score,reasons,recommended}] }, stats } */
+  setupScan: (opts) => ipcRenderer.invoke("setup:scan", opts),
   /** 弹目录选择器（tts_models / tts_venv / rvc_root），返回 { canceled, path, ok, reason } */
   setupPickDir: (kind) => ipcRenderer.invoke("setup:pick-dir", kind),
   /** 保存配置（部分字段亦可），返回保存后的最新状态 */
