@@ -17,9 +17,10 @@ MIT License，© 2026 mouxu（见根目录 `LICENSE`）。
 |---|---|---|
 | Electron 32 + Chromium | Electron MIT；Chromium 为 BSD 等多许可 | ✅ 已覆盖：electron-builder 自动在安装目录生成 `LICENSE.electron.txt` + `LICENSES.chromium.html`（实测 `web/release2/win-unpacked/` 下存在）。**打包时不要删这两个文件** |
 | 前端生产依赖 10 个（见机器块 `npm:`） | MIT / ISC / OFL-1.1 | 随 `web/dist` 打包进安装包。表见 §1.1 |
-| **字体** `@fontsource/inter` `@fontsource/jetbrains-mono` `@fontsource/outfit` | **OFL-1.1** | ⚠️ **缺口**：目前只打包 woff2，**未随发行物附许可原文**。OFL-1.1 §1 要求再分发字体时附带版权声明与许可。版权行（取自各包内 `LICENSE` 原文）：`Copyright 2016 The Inter Project Authors` / `Copyright 2020 The JetBrains Mono Project Authors` / `Copyright 2021 The Outfit Project Authors`。**待修**：把三份 LICENSE 放进安装包 `resources/licenses/` |
-| 市场占位图（OpenMoji 图标） | **CC BY-SA 4.0**，© hfg-gmuend/openmoji | ⚠️ **缺口**：署名目前只写在 `m2_server/market_manifest.py` 的注释里，**未随分发可见**。CC BY-SA 要求署名 + 相同方式共享 |
+| **字体** `@fontsource/inter` `@fontsource/jetbrains-mono` `@fontsource/outfit` | **OFL-1.1** | ✅ **已随包分发**：三份许可原文在 `web/public/licenses/{inter,jetbrains-mono,outfit}-OFL-1.1.txt`。`web/public/` 是 vite 静态目录 → 原样进 `web/dist/` → 而 `dist` **两条路都在发行物里**（`build.files` 进 `app.asar` + `build.extraResources` 进 `backend/web_dist`），所以不需要改打包配置就满足 OFL-1.1 §1。界面上「设置 → 关于 → 开源许可」直接展示（`LicensesDialog.tsx`），后端 SPA catch-all 负责把 `web_dist/licenses/…` 发出去。版权行**由原文正则提取**、不手写 |
+| **许可原文载荷**（`web/public/licenses/`） | 逐条见其 `index.json` | 由 `tools/sync_license_payload.py` 生成（**别手改**）；`tools/audit_licenses.py` 核对"声明的原文在不在、版权行对不对得上、版本与 lockfile 一致不"，并强制**字体依赖 ⇄ 载荷条目双向对齐** |
 | 宠物皮肤 `furina`（`m2_server/assets/pet-skins/furina/`） | MIT，来源 `Ice-teapop/desktop-pet`（原创 SVG） | ✅ **合规范例**：目录内已附 `LICENSE`，`skin.json` 带 `license` / `attribution` 字段。新增皮肤照此办理 |
+| ~~市场占位图（OpenMoji 图标）~~ | ~~CC BY-SA 4.0~~ | ❌ **撤销（phantom obligation）**：**发行物里从来没有 OpenMoji 资产**。`git log --all --diff-filter=A -- '*openmoji*'` 为空；`market_imgs/` 31 个文件全是自制插画；无相关的 npm/Python 依赖；`find` 也搜不到图标文件。那条"署名缺口"只源自 `market_manifest.py` 里一句**描述意图的注释** —— 意图没落地，义务就无从谈起。现改为**资产触发**判据（`ASSET_TRIGGERS`）：真引入图标那天，门禁会立刻要求补署名 |
 | 项目自制资产 | 同仓库 MIT | `market_imgs` 中的自绘/自生成封面；**不含** §5 记的角色形象图 |
 
 ### 1.1 前端生产依赖
@@ -99,12 +100,18 @@ librosa — **ISC**；Pillow — **HPND**；requests / python-multipart / pyaudi
 
 | # | 缺口 | 修法 |
 |---|---|---|
-| G1 | OFL 字体许可原文未随安装包（§1） | 三份 `LICENSE` 放进安装包 `resources/licenses/`，UI 加"开源许可"入口 |
-| G2 | OpenMoji 署名未随分发（§1） | 同上入口里列出 `CC BY-SA 4.0 © hfg-gmuend/openmoji` |
+| G1 | ~~OFL 字体许可原文未随安装包（§1）~~ | ✅ **已解决（2026-09-14）**：载荷 `web/public/licenses/` 随 `web/dist` 进 `app.asar` + `backend/web_dist` 两处；界面入口「设置 → 关于 → 开源许可」；`tools/sync_license_payload.py` 生成、`tools/audit_licenses.py` 核验（含版本 vs lockfile、字体依赖双向对齐）。**加字体只改 `package.json` 会在 CI 红** |
+| G2 | ~~OpenMoji 署名未随分发（§1）~~ | ❌ **撤销 —— 这是条 phantom obligation**。核实（2026-09-14）：`git log --all --diff-filter=A -- '*openmoji*'` 为空、`market_imgs/` 31 个文件全为自制插画、无相关依赖、`find` 无图标文件。义务源自一句描述*意图*的注释，**没有产物**。已删掉该注释并改为资产触发判据（`ASSET_TRIGGERS` + `test_repo_has_no_phantom_openmoji_obligation`）：真引入图标那天自动要求署名 |
 | G3 | ~~4 张**角色形象配图**为网络搜集（懒羊羊 / 曼波 / 孙悟空 / 派大星），**无授权链**~~ | ✅ **已解决（2026-09-14）**：全部替换为自生成原创卡通插画（`market_imgs/{lanyangyang,katoong_lanyangyang,katoong_manbo,sunwukong,paidaxing}`），并删除孤儿 `manbo.png`。需同步重推远程图库 `mouxu66/voice-market-assets` 清掉 CDN 旧图，客户端 TTL 6h 内拉新 |
 | G4 | 市场条目许可只写兜底文案，未回读模型卡 | 安装时抓 HF/魔搭 `license` 字段写入 `source.json`，前端展示 |
 | G5 | `demucs` 预训练权重许可未核 | 若将来随发行物分发权重，先核 |
 | G6 | RVC 整合包随附底模（`pretrained_v2` / `hubert_base`）未核 | 同上；目前只作为前置依赖由用户自备，风险低 |
+
+> **G1/G2 的两种失效方式正好相对**，值得记一笔：
+> G1 是「**义务写了没做**」—— 文档说会附原文，实际没附；修法是让机器去**验产物**。
+> G2 是「**义务凭空要求**」—— 没有任何产物，却挂了个缺口要人去填。
+> 前者靠"验证履行"，后者靠"要求有触发源"。`tools/audit_licenses.py` 现在两层都管：
+> 履行层读文件系统，触发层扫资产。**手写断言会撒谎，文件系统不会。**
 
 <!-- audit:deps:begin -->
 python:comtypes

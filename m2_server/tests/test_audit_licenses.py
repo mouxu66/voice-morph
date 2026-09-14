@@ -39,6 +39,11 @@ def tool():
     return _load("audit_licenses")
 
 
+@pytest.fixture(scope="module")
+def sync():
+    return _load("sync_license_payload")
+
+
 # ------------------------------------------------------------------ 夹具构造
 PY_REQ = """\
 # 注释行要忽略
@@ -77,8 +82,64 @@ def _notices(deps: list[str], obligations: list[str] | None = None) -> str:
     )
 
 
+# ------------------------------------------------------------ 许可原文载荷夹具
+#
+# 载荷判据（"义务登记了" → "义务履行了"）比登记判据多一个物理层：
+# 光在 notices 里写 `ofl-font-notice` 不算数，`web/public/licenses/` 里得真有原文，
+# 且版权行与清单对得上。所以夹具必须能造出**一份合法的载荷**，
+# 否则每条正向用例都会因为"缺载荷"而红 —— 那样测的就不是登记逻辑了。
+def _payload_files(fonts: list[str]) -> dict[str, str]:
+    """构造 (载荷文件名 → 内容)，清单与原文的版权行**自洽**（漂移用例另行破坏）。"""
+    files: dict[str, str] = {
+        "PROJECT-LICENSE.txt": "MIT License\n\nCopyright (c) 2026 demo\n"
+    }
+    components = [
+        {
+            "id": "project-license",
+            "name": "demo 项目自身",
+            "version": "",
+            "license": "MIT",
+            "copyright": "Copyright (c) 2026 demo",
+            "file": "PROJECT-LICENSE.txt",
+            "distributed": "随安装包",
+            "scope": "本项目",
+        }
+    ]
+    for dep in fonts:
+        stem = dep.removeprefix("@fontsource/")
+        fname = f"{stem}-OFL-1.1.txt"
+        line = f"Copyright 2020 The {stem} Project Authors"
+        files[fname] = f"{line}\n\nSIL OPEN FONT LICENSE Version 1.1 - 26 February 2007\n"
+        components.append(
+            {
+                "id": f"font-{stem}",
+                "name": dep,
+                "version": "5.3.0",
+                "license": "OFL-1.1",
+                "copyright": line,
+                "file": fname,
+                "distributed": "随安装包",
+                "scope": f"{stem} 字体",
+            }
+        )
+    files["index.json"] = json.dumps({"components": components}, ensure_ascii=False, indent=2)
+    return files
+
+
+def write_payload(root: Path, files: dict[str, str]) -> Path:
+    dest = root / "web" / "public" / "licenses"
+    dest.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (dest / name).write_text(text, encoding="utf-8")
+    return dest
+
+
 def make_root(
-    tmp_path: Path, deps: list[str], notices: str | None = None, npm: dict | None = None
+    tmp_path: Path,
+    deps: list[str],
+    notices: str | None = None,
+    npm: dict | None = None,
+    payload: dict[str, str] | bool | None = None,
 ) -> Path:
     (tmp_path / "requirements.txt").write_text(PY_REQ, encoding="utf-8")
     (tmp_path / "requirements-dev.txt").write_text("pytest\n", encoding="utf-8")
@@ -89,6 +150,8 @@ def make_root(
     (tmp_path / "THIRD_PARTY_NOTICES.md").write_text(
         notices if notices is not None else _notices(deps), encoding="utf-8"
     )
+    if payload is not False:  # 传 False 表示"故意不写载荷"
+        write_payload(tmp_path, payload if payload is not None else _payload_files(["@fontsource/inter"]))
     return tmp_path
 
 
@@ -162,7 +225,9 @@ def test_no_font_dep_means_no_ofl_obligation(tool, tmp_path):
     """反向：没有字体依赖时不该强求 OFL 义务（规则由依赖触发，不是写死）。"""
     npm = {"name": "demo", "dependencies": {"react": "^19.0.0"}}
     deps = [*PY_DEPS, "npm:react"]
-    root = make_root(tmp_path, deps, notices=_notices(deps, ALWAYS), npm=npm)
+    root = make_root(
+        tmp_path, deps, notices=_notices(deps, ALWAYS), npm=npm, payload=_payload_files([])
+    )
     assert tool.audit(root)["ok"]
 
 
@@ -202,6 +267,150 @@ def test_missing_notices_file(tool, tmp_path):
     assert result["declared_count"] == 1
 
 
+# ------------------------------------------------ 第二层：许可原文载荷（"做了没"）
+#
+# 登记判据只证明"有人知道该附原文"，不证明"真附了"。这一组测的是物理层。
+def test_missing_payload_is_reported(tool, tmp_path):
+    """载荷整个缺失 → 红。这是 G1 那种"只打包了 woff2、没附 OFL 原文"的形态。"""
+    root = make_root(tmp_path, MATCHING, payload=False)
+    result = tool.audit(root)
+    assert not result["ok"]
+    assert any("缺少许可原文载荷" in e for e in result["errors"])
+    assert result["payload_components"] == 0
+
+
+def test_font_dep_without_payload_entry_is_reported(tool, tmp_path):
+    """字体依赖有、载荷里没有 → 红（OFL-1.1 §1 是硬要求，不是可选项）。"""
+    payload = _payload_files([])  # 故意漏掉 @fontsource/inter
+    root = make_root(tmp_path, MATCHING, payload=payload)
+    result = tool.audit(root)
+    assert not result["ok"]
+    assert any("@fontsource/inter" in e and "没有对应的许可原文载荷" in e for e in result["errors"])
+
+
+def test_payload_entry_for_removed_font_is_reported(tool, tmp_path):
+    """载荷里留着已删包的许可原文 → 也红（否则发行物里躺着无关许可，读者会误判清单是活的）。"""
+    npm = {"name": "demo", "dependencies": {"react": "^19.0.0"}}
+    deps = [*PY_DEPS, "npm:react"]
+    stale_payload = _payload_files(["@fontsource/inter"])  # inter 已不是依赖
+    root = make_root(tmp_path, deps, notices=_notices(deps, ALWAYS), npm=npm, payload=stale_payload)
+    result = tool.audit(root)
+    assert not result["ok"]
+    assert any("已不是声明依赖（残留）" in e for e in result["errors"])
+
+
+def test_payload_declared_file_missing_is_reported(tool, tmp_path):
+    """清单里声明了原文文件，但文件不在 → 红（清单不能自己给自己作证）。"""
+    payload = _payload_files(["@fontsource/inter"])
+    del payload["inter-OFL-1.1.txt"]
+    root = make_root(tmp_path, MATCHING, payload=payload)
+    result = tool.audit(root)
+    assert not result["ok"]
+    assert any("载荷声明的原文不存在" in e for e in result["errors"])
+
+
+def test_payload_copyright_drift_is_reported(tool, tmp_path):
+    """**最难查的漂移**：原文在、清单在，但清单声明的版权行与原文里的对不上。
+
+    这正是"把版权行手写进文档"必然产生的腐烂 —— 上游换了版权行，没人会去改文档。
+    所以本轮改成版权行从原文正则提取、由 sync 工具生成，并用这条测试钉住。
+    """
+    payload = _payload_files(["@fontsource/inter"])
+    manifest = json.loads(payload["index.json"])
+    for comp in manifest["components"]:
+        if comp["name"] == "@fontsource/inter":
+            comp["copyright"] = "Copyright 1999 Nobody"  # 单改清单，原文不动
+    payload["index.json"] = json.dumps(manifest, ensure_ascii=False)
+    root = make_root(tmp_path, MATCHING, payload=payload)
+    result = tool.audit(root)
+    assert not result["ok"]
+    assert any("找不到声明的版权行" in e for e in result["errors"])
+
+
+def test_empty_payload_file_is_reported(tool, tmp_path):
+    payload = _payload_files(["@fontsource/inter"])
+    payload["inter-OFL-1.1.txt"] = "   \n"
+    root = make_root(tmp_path, MATCHING, payload=payload)
+    result = tool.audit(root)
+    assert not result["ok"]
+    assert any("空文件" in e for e in result["errors"])
+
+
+def test_payload_manifest_must_be_valid_json(tool, tmp_path):
+    payload = _payload_files(["@fontsource/inter"])
+    payload["index.json"] = "{ 这不是 JSON"
+    root = make_root(tmp_path, MATCHING, payload=payload)
+    result = tool.audit(root)
+    assert not result["ok"]
+    assert any("不是合法 JSON" in e for e in result["errors"])
+
+
+def test_payload_manifest_component_must_have_required_fields(tool, tmp_path):
+    payload = _payload_files(["@fontsource/inter"])
+    manifest = json.loads(payload["index.json"])
+    del manifest["components"][1]["license"]  # 字体那条缺 license
+    payload["index.json"] = json.dumps(manifest, ensure_ascii=False)
+    root = make_root(tmp_path, MATCHING, payload=payload)
+    result = tool.audit(root)
+    assert not result["ok"]
+    assert any("缺少 `license`" in e for e in result["errors"])
+
+
+# ------------------------------------------------ 第三层：资产触发（不许凭空要求）
+def _put_asset(root: Path, rel: str) -> Path:
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"\x89PNG\r\n\x1a\n")
+    return p
+
+
+def test_asset_without_attribution_obligation_is_reported(tool, tmp_path):
+    """发行物里真出现了 openmoji 图标却没登记署名义务 → 红。"""
+    root = make_root(tmp_path, MATCHING)
+    _put_asset(root, "m2_server/assets/market_imgs/openmoji-rocket.png")
+    result = tool.audit(root)
+    assert not result["ok"]
+    assert result["asset_triggers"] == ["openmoji"]
+    assert any("openmoji-attribution" in e for e in result["errors"])
+
+
+def test_asset_trigger_is_satisfied_by_obligation_line(tool, tmp_path):
+    """登记了署名义务且资产确实存在 → 绿。"""
+    root = make_root(tmp_path, MATCHING, notices=_notices(MATCHING, [*ALWAYS, "ofl-font-notice", "openmoji-attribution"]))
+    _put_asset(root, "m2_server/assets/market_imgs/openmoji-rocket.png")
+    assert tool.audit(root)["ok"], tool.audit(root)["errors"]
+
+
+def test_no_asset_means_no_obligation_required(tool, tmp_path):
+    """**phantom obligation 的护栏**：资产不存在时不该要求署名。
+
+    2026-09-14 实证：NOTICES 曾把 "市场占位图 = OpenMoji" 列为分发组件并挂署名缺口，
+    而 `git log --all --diff-filter=A -- '*openmoji*'` 为空 —— 义务只源自一句描述意图
+    的代码注释。这条测试保证"没有产物就不许凭空要求"，否则手写断言能无限制造工作量。
+    """
+    root = make_root(tmp_path, MATCHING)
+    result = tool.audit(root)
+    assert result["ok"], result["errors"]
+    assert result["asset_triggers"] == []
+
+
+def test_attribution_text_in_payload_does_not_trigger_asset_rule(tool, tmp_path):
+    """署名文件本身是**补救措施**，不能自命中变成违规证据 —— 否则这条规则一加就废。"""
+    payload = _payload_files(["@fontsource/inter"])
+    payload["openmoji-CC-BY-SA-4.0.txt"] = "CC BY-SA 4.0 (c) hfg-gmuend/openmoji\n"
+    root = make_root(tmp_path, MATCHING, payload=payload)
+    result = tool.audit(root)
+    assert result["asset_triggers"] == []
+    assert result["ok"], result["errors"]
+
+
+def test_scan_assets_ignores_non_asset_extensions(tool, tmp_path):
+    """只有素材后缀才算资产；`.md`/`.py` 里提到 openmoji 不构成分发义务。"""
+    (tmp_path / "web" / "public").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "web" / "public" / "openmoji-notes.md").write_text("openmoji", encoding="utf-8")
+    assert tool.scan_assets(tmp_path, "openmoji") == []
+
+
 # ------------------------------------------------------------------ 解析
 def test_requirements_parsing(tool, tmp_path):
     """注释 / `-r` 指令 / 版本约束 / 环境标记 / 行尾注释都要剥干净。"""
@@ -228,6 +437,7 @@ def test_dev_dependencies_are_not_declared(tool, tmp_path):
 def test_missing_package_json_is_tolerated(tool, tmp_path):
     (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
     (tmp_path / "THIRD_PARTY_NOTICES.md").write_text(_notices(["python:requests"]), encoding="utf-8")
+    write_payload(tmp_path, _payload_files([]))
     assert tool.audit(tmp_path)["ok"]
 
 
@@ -257,3 +467,104 @@ def test_repo_itself_is_green(tool):
     assert result["ok"], result["errors"]
     assert result["declared_count"] >= 30
     assert (ROOT / "THIRD_PARTY_NOTICES.md").exists()
+
+
+def test_repo_ships_font_license_payload(tool):
+    """G1 的验收条件：三份 OFL 原文必须**真在**发行物路径里，且版权行来自原文。"""
+    result = tool.audit(ROOT)
+    assert result["payload_components"] >= 4, result["errors"]
+    for stem in ("inter", "outfit", "jetbrains-mono"):
+        f = ROOT / "web" / "public" / "licenses" / f"{stem}-OFL-1.1.txt"
+        assert f.is_file(), f"缺 {f}"
+        text = f.read_text(encoding="utf-8")
+        assert "SIL OPEN FONT LICENSE Version 1.1" in text
+        assert "Copyright" in text.splitlines()[0]
+
+
+def test_repo_has_no_phantom_openmoji_obligation(tool):
+    """G2 的验收条件：发行物里**没有** openmoji 资产 → 就不该要求署名义务。
+
+    这条测试的作用是双向的：将来真引入了 openmoji 图标，它会变红并强制补署名；
+    而如果有人重新写一条"网络搜集图"的义务却拿不出产物，这里不会被糊过去。
+    """
+    assert tool.scan_assets(ROOT, "openmoji") == []
+    assert tool.audit(ROOT)["asset_triggers"] == []
+
+
+def test_payload_versions_match_lockfile(tool):
+    """载荷里的版本号必须与入库的 lockfile 一致 —— 否则升级依赖后会留下过期许可。"""
+    locked = tool.locked_versions(ROOT)
+    assert locked.get("@fontsource/inter"), "lockfile 里读不到字体版本（结构变了？）"
+    result = tool.audit(ROOT)
+    assert not any("lockfile 是" in e for e in result["errors"]), result["errors"]
+
+
+# ------------------------------------------------------------------ 载荷生成器
+def _make_sync_root(tmp_path: Path) -> Path:
+    """造一个 sync 工具能跑的最小仓库：root LICENSE + node_modules 里的字体。"""
+    (tmp_path / "LICENSE").write_text("MIT License\n\nCopyright (c) 2026 demo\n", encoding="utf-8")
+    nm = tmp_path / "web" / "node_modules"
+    for pkg, stem, year in (
+        ("@fontsource/inter", "inter", 2016),
+        ("@fontsource/outfit", "outfit", 2021),
+        ("@fontsource/jetbrains-mono", "jetbrains-mono", 2020),
+    ):
+        d = nm / pkg
+        d.mkdir(parents=True)
+        (d / "package.json").write_text(json.dumps({"name": pkg, "version": "5.3.0"}), encoding="utf-8")
+        (d / "LICENSE").write_text(
+            f"Copyright {year} The {stem} Project Authors (https://example.invalid)\n\n"
+            "This Font Software is licensed under the SIL Open Font License, Version 1.1.\n",
+            encoding="utf-8",
+        )
+    return tmp_path
+
+
+def test_sync_writes_payload_then_check_passes(sync, tmp_path):
+    """生成 → 自检通过（生成器与校验器必须自洽，否则每次都要人工判断谁对）。"""
+    root = _make_sync_root(tmp_path)
+    assert sync.run(root, check=True) == 1  # 还没生成 → 漂移
+    assert sync.run(root, check=False) == 0
+    assert sync.run(root, check=True) == 0
+    manifest = json.loads((root / "web" / "public" / "licenses" / "index.json").read_text(encoding="utf-8"))
+    names = {c["name"] for c in manifest["components"]}
+    assert "@fontsource/inter" in names
+    assert manifest["components"][0]["copyright"].startswith("Copyright")
+
+
+def test_sync_check_detects_hand_edited_text(sync, tmp_path):
+    """有人手改载荷原文 → `--check` 必须发现（否则"请勿手改"只是句空话）。"""
+    root = _make_sync_root(tmp_path)
+    sync.run(root, check=False)
+    target = root / "web" / "public" / "licenses" / "inter-OFL-1.1.txt"
+    target.write_text("被我改坏了\n", encoding="utf-8")
+    assert sync.run(root, check=True) == 1
+    assert sync.run(root, check=False) == 0
+    assert "SIL Open Font License" in target.read_text(encoding="utf-8")
+
+
+def test_sync_removes_stray_payload_files(sync, tmp_path):
+    """包已删但原文还躺在发行物里 → 生成时清掉（否则许可清单会慢慢变成考古现场）。"""
+    root = _make_sync_root(tmp_path)
+    sync.run(root, check=False)
+    stray = root / "web" / "public" / "licenses" / "removed-font-OFL-1.1.txt"
+    stray.write_text("旧许可\n", encoding="utf-8")
+    assert sync.run(root, check=True) == 1
+    assert sync.run(root, check=False) == 0
+    assert not stray.exists()
+
+
+def test_sync_reports_missing_node_modules(sync, tmp_path):
+    """缺 node_modules 时说清"先 npm ci"，而不是抛个 FileNotFoundError 堆栈。"""
+    (tmp_path / "LICENSE").write_text("MIT\n", encoding="utf-8")
+    assert sync.run(tmp_path, check=False) == 1
+
+
+def test_sync_refuses_to_invent_copyright_line(sync, tmp_path):
+    """OFL 原文里提不到版权行时报错，**绝不编一个** —— 编出来的版权行比没有更糟。"""
+    root = _make_sync_root(tmp_path)
+    (root / "web" / "node_modules" / "@fontsource" / "inter" / "LICENSE").write_text(
+        "没有版权行的一段话\n", encoding="utf-8"
+    )
+    assert sync.run(root, check=False) == 1
+    assert not (root / "web" / "public" / "licenses").exists()

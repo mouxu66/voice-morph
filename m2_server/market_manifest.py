@@ -17,9 +17,15 @@ from market_images import image_url
 
 # 精选条目配图：优先远程图库缓存（VM_MARKET_IMG_REPO 自动同步），回退打包图
 # assets/market_imgs/<voice_id>.<ext>。角色向音色的配图为自生成的原创卡通插画
-# （2026-09-14 起，取代此前无授权链的网络搜集图），人设向用 OpenMoji 主题图标
-# （CC BY-SA 4.0, © hfg-gmuend/openmoji）。
+# （2026-09-14 起，取代此前无授权链的网络搜集图）。
 # 无图条目前端按分类配色首字母占位。解析逻辑统一在 market_images 模块。
+#
+# 注：此前这里写过"人设向用 OpenMoji 主题图标（CC BY-SA 4.0）"——**那句是假的**，
+# 图标从未落地到任何资产：`git log --all --diff-filter=A -- '*openmoji*'` 为空，
+# market_imgs 全是自制插画。它曾让 THIRD_PARTY_NOTICES 挂上一条凭空捏造的署名义务
+# （G2，2026-09-14 撤销）。注释描述意图可以，但**别把意图写成事实** ——
+# 断言会被下游当成依据。真引入图标时，tools/audit_licenses.py 的 ASSET_TRIGGERS
+# 会扫到并要求补署名，不靠这句注释。
 ASSET_DIR = Path(__file__).resolve().parent / "assets" / "market_imgs"
 
 

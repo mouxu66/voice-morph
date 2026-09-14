@@ -10,7 +10,18 @@ CC BY-SA、第三方素材等）。文档类交付物的通病是"写一次就�
 
 所以把"覆盖性"变成机器判据：**声明的依赖集** 与 **notices 里登记的名字集合**
 必须严格相等（双向），另外几条**已知义务**（字体许可原文、CC BY-SA 署名、
-VB-CABLE 禁止再分发、禁止把 NC 权重打进发行物…）必须各自有对应条目。
+VB-CABLE 分发条款、禁止把 NC 权重打进发行物…）必须各自有对应条目。
+
+三层判据，一层比一层硬
+----------------------
+1. **登记**：依赖集 ⇄ 机器块双向严格相等。漏登记、残留条目都红。
+2. **履行**：`ofl-font-notice` 这类义务，光"写了"不算 —— `web/public/licenses/`
+   里必须真有许可原文、版权行对得上、且与字体依赖双向对齐（`parse_payload`）。
+   把义务从"有人知道"升级成"机器能证明做了"。
+3. **不许凭空要求**：资产触发的义务（`ASSET_TRIGGERS`）只在**扫到资产**时才要求。
+   2026-09-14 实证：NOTICES 曾挂一条 "OpenMoji 署名缺口"，而 `git log --all
+   --diff-filter=A -- '*openmoji*'` 为空、资产全是自制插画 —— 义务源自一句描述
+   *意图*的代码注释，没有产物。**手写断言会撒谎，文件系统不会。**
 
 判据的非对称性是刻意的
 ----------------------
@@ -77,6 +88,33 @@ ALWAYS_OBLIGATIONS = {
 #: 依赖 → 触发义务的规则。加了对应依赖却不登记义务 = 失败。
 DEP_TRIGGERED_OBLIGATIONS = {
     "@fontsource/": "ofl-font-notice",
+}
+
+# ---------------------------------------------------------------- 许可原文载荷
+#
+# "登记了义务"和"履行了义务"是两件事。`ofl-font-notice = 随发行物附带 OFL 原文`
+# 写进机器块只证明**有人知道**这件事，不证明**做了**。
+# 所以这里再核一层：`web/public/licenses/`（→ web/dist → 随安装包分发，见
+# tools/sync_license_payload.py 的 docstring）里必须真有那份原文，且版权行对得上。
+#
+PAYLOAD_DIR = Path("web") / "public" / "licenses"
+PAYLOAD_MANIFEST = "index.json"
+
+# ---------------------------------------------------------------- 资产触发的义务
+#
+# 有些义务不是靠"依赖"触发的，而是靠"发行物里出现了某类资产"。
+# 设计意图：让 **phantom obligation（凭空捏造的义务）自己暴露出来**。
+# 2026-09-14 实例：NOTICES 曾把 "市场占位图 = OpenMoji 图标" 列为分发组件并挂了个
+# 署名缺口，但 `git log --all --diff-filter=A -- '*openmoji*'` 为空、`market_imgs/`
+# 全是自制插画 —— 那条义务源自一句**描述意图的代码注释**，从未有对应产物。
+# 手写断言会撒谎，文件系统不会：所以改成"扫到资产才要求署名"，没有资产就不要求。
+ASSET_ROOTS = ("m2_server/assets", "web/public")
+ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".ttf", ".otf", ".woff", ".woff2"}
+ASSET_TRIGGERS: dict[str, tuple[str, str]] = {
+    "openmoji": (
+        "openmoji-attribution",
+        "CC BY-SA 4.0 © hfg-gmuend/openmoji：署名 + 许可链接必须随分发可见",
+    ),
 }
 
 
@@ -178,6 +216,82 @@ def parse_notices(path: Path) -> tuple[list[str], dict[str, str], list[str]]:
     return deps, obligations, problems
 
 
+def parse_payload(root: Path) -> tuple[list[dict], list[str]]:
+    """读许可原文载荷 `web/public/licenses/index.json` → (组件列表, 结构性问题)。
+
+    只判"在不在、对不对得上"，不判"许可填得对不对"（那是正文的职责，见模块 docstring）。
+    """
+    path = root / PAYLOAD_DIR / PAYLOAD_MANIFEST
+    if not path.exists():
+        return [], [
+            f"缺少许可原文载荷：{PAYLOAD_DIR / PAYLOAD_MANIFEST}"
+            "（跑 `python tools/sync_license_payload.py` 生成）"
+        ]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return [], [f"载荷清单不是合法 JSON：{exc}"]
+
+    components = data.get("components")
+    if not isinstance(components, list) or not components:
+        return [], [f"载荷清单里 `components` 不是非空列表：{PAYLOAD_DIR / PAYLOAD_MANIFEST}"]
+
+    problems: list[str] = []
+    out: list[dict] = []
+    for i, comp in enumerate(components):
+        if not isinstance(comp, dict):
+            problems.append(f"载荷清单第 {i + 1} 项不是对象")
+            continue
+        for field in ("id", "name", "license", "file"):
+            if not str(comp.get(field) or "").strip():
+                problems.append(f"载荷清单第 {i + 1} 项缺少 `{field}`")
+        out.append(comp)
+    return out, problems
+
+
+def scan_assets(root: Path, key: str) -> list[str]:
+    """在发行物资产目录里找文件名含 `key` 的**素材**（返回相对路径，已排序）。
+
+    只看素材后缀 —— 否则许可原文载荷文件名（`openmoji-CC-BY-SA-4.0.txt`）会命中，
+    而那份文件是**补救措施**不是违规证据，自命中会让这条规则废掉。
+    """
+    hits: list[str] = []
+    payload = (root / PAYLOAD_DIR).resolve()
+    for rel in ASSET_ROOTS:
+        base = root / rel
+        if not base.is_dir():
+            continue
+        for p in base.rglob("*"):
+            if not p.is_file() or p.suffix.lower() not in ASSET_SUFFIXES:
+                continue
+            if payload in p.resolve().parents:  # 载荷目录是补救措施，不算资产
+                continue
+            if key in p.name.lower():
+                hits.append(str(p.relative_to(root)).replace("\\", "/"))
+    return sorted(hits)
+
+
+def locked_versions(root: Path) -> dict[str, str]:
+    """从 `web/package-lock.json`（**入库**，lockfileVersion 3）读各包的锁定版本。
+
+    为什么是 lock 而不是 node_modules：CI 上不装前端依赖，但 lock 是入库的 ——
+    这样"改了版本却没重跑 sync_license_payload.py"也能在 CI 被抓到，
+    而不必依赖本机 node_modules。
+    """
+    path = root / "web" / "package-lock.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    out: dict[str, str] = {}
+    for key, info in (data.get("packages") or {}).items():
+        if key.startswith("node_modules/") and isinstance(info, dict) and info.get("version"):
+            out[key[len("node_modules/"):]] = str(info["version"])
+    return out
+
+
 def audit(root: Path) -> dict:
     """跑一遍全部判据，返回可 JSON 化的结果（不打印、不退出）。"""
     declared: dict[str, list[str]] = {}
@@ -205,8 +319,72 @@ def audit(root: Path) -> dict:
                 required.add(key)
     missing_obligations = sorted(required - set(obligations))
 
+    # ---- 许可原文载荷：把"登记了义务"升级成"履行了义务" ----
+    payload, payload_problems = parse_payload(root)
+    payload_names = {str(c.get("name", "")).strip() for c in payload}
+    payload_by_file: dict[str, dict] = {}
+    for comp in payload:
+        fname = str(comp.get("file", "")).strip()
+        if not fname:
+            continue
+        target = root / PAYLOAD_DIR / fname
+        if not target.is_file():
+            payload_problems.append(f"载荷声明的原文不存在：{PAYLOAD_DIR / fname}")
+            continue
+        text = target.read_text(encoding="utf-8", errors="replace")
+        if not text.strip():
+            payload_problems.append(f"载荷原文是空文件：{PAYLOAD_DIR / fname}")
+            continue
+        want_copyright = str(comp.get("copyright") or "").strip()
+        if want_copyright and want_copyright not in text:
+            payload_problems.append(
+                f"{fname} 里找不到声明的版权行 `{want_copyright}`"
+                "（载荷与许可事实漂移了，别手改文件，跑 sync_license_payload.py）"
+            )
+        payload_by_file[fname] = comp
+
+    # 双向核对：字体依赖 ⇄ 载荷条目。加了字体却不附原文 = 真漏项（OFL §1 硬要求）。
+    font_deps = {n for n in declared_set if n.startswith("@fontsource/")}
+    payload_fonts = {n for n in payload_names if n.startswith("@fontsource/")}
+    if font_deps - payload_fonts:
+        payload_problems.append(
+            "字体依赖没有对应的许可原文载荷："
+            + ", ".join(sorted(font_deps - payload_fonts))
+            + "（加字体必须同步 tools/sync_license_payload.py 的 FONT_PACKAGES）"
+        )
+    if payload_fonts - font_deps:
+        payload_problems.append(
+            "载荷里的字体已不是声明依赖（残留）："
+            + ", ".join(sorted(payload_fonts - font_deps))
+        )
+
+    # 版本新鲜度：载荷声明的版本 vs lockfile。改了依赖没重跑 sync → 这里红。
+    locked = locked_versions(root)
+    for comp in payload:
+        name = str(comp.get("name", "")).strip()
+        ver = str(comp.get("version") or "").strip()
+        locked_ver = locked.get(name)
+        if ver and locked_ver and ver != locked_ver:
+            payload_problems.append(
+                f"载荷里 {name} 写的是 {ver}，lockfile 是 {locked_ver}"
+                "（升级依赖后忘了跑 sync_license_payload.py？）"
+            )
+
+    # ---- 资产触发的义务：有资产就必须有署名，没资产就不许凭空要求 ----
+    triggered: list[str] = []
+    for key, (oblig_key, hint) in sorted(ASSET_TRIGGERS.items()):
+        hits = scan_assets(root, key)
+        if hits:
+            triggered.append(key)
+            if oblig_key not in obligations:
+                payload_problems.append(
+                    f"发行物里出现了 {len(hits)} 个 `{key}` 资产（如 {hits[0]}），"
+                    f"但机器块里没有 `{oblig_key}` 义务条目 —— {hint}"
+                )
+
     errors: list[str] = []
     errors += problems
+    errors += payload_problems
     if missing:
         errors.append(f"{len(missing)} 个声明依赖未在 notices 登记：{', '.join(missing)}")
     if stale:
@@ -225,6 +403,9 @@ def audit(root: Path) -> dict:
         "duplicates": dupes,
         "missing_obligations": missing_obligations,
         "obligations": obligations,
+        "payload_components": len(payload_by_file),
+        "payload_errors": payload_problems,
+        "asset_triggers": triggered,
         "errors": errors,
     }
 
@@ -233,8 +414,11 @@ def render(result: dict) -> str:
     lines = [
         "第三方许可登记审计（tools/audit_licenses.py）",
         f"  声明依赖 {result['declared_count']} 个 / notices 登记 {result['listed_count']} 个"
-        f" / 义务条目 {len(result['obligations'])} 条",
+        f" / 义务条目 {len(result['obligations'])} 条"
+        f" / 许可原文载荷 {result.get('payload_components', 0)} 份",
     ]
+    if result.get("asset_triggers"):
+        lines.append(f"  资产触发义务：{', '.join(result['asset_triggers'])}")
     if result["ok"]:
         lines.append("  RESULT: OK")
         return "\n".join(lines)
@@ -243,7 +427,8 @@ def render(result: dict) -> str:
         lines.append(f"  - {e}")
     lines.append("")
     lines.append("  修法：改 `THIRD_PARTY_NOTICES.md` 的机器块（正文同步补许可事实），")
-    lines.append("        再去回溯一手来源确认许可 —— 别只把名字补上。")
+    lines.append("        许可原文载荷跑 `python tools/sync_license_payload.py`。")
+    lines.append("        两条都是先回溯一手来源确认许可，**别只把名字补上**。")
     return "\n".join(lines)
 
 
