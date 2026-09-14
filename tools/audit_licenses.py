@@ -10,18 +10,24 @@ CC BY-SA、第三方素材等）。文档类交付物的通病是"写一次就�
 
 所以把"覆盖性"变成机器判据：**声明的依赖集** 与 **notices 里登记的名字集合**
 必须严格相等（双向），另外几条**已知义务**（字体许可原文、CC BY-SA 署名、
-VB-CABLE 分发条款、禁止把 NC 权重打进发行物…）必须各自有对应条目。
+VB-CABLE 分发条款、禁止把 NC 权重打进发行物…）必须各自有对应条目；
+再往下核对"义务**履行**了没"与"发行物里**夹带**了没"。
 
 三层判据，一层比一层硬
 ----------------------
 1. **登记**：依赖集 ⇄ 机器块双向严格相等。漏登记、残留条目都红。
 2. **履行**：`ofl-font-notice` 这类义务，光"写了"不算 —— `web/public/licenses/`
-   里必须真有许可原文、版权行对得上、且与字体依赖双向对齐（`parse_payload`）。
-   把义务从"有人知道"升级成"机器能证明做了"。
+   里必须真有许可原文、版权行对得上、版本与入库的 lockfile 一致、且与字体依赖
+   双向对齐（`parse_payload`）。把义务从"有人知道"升级成"机器能证明做了"。
 3. **不许凭空要求**：资产触发的义务（`ASSET_TRIGGERS`）只在**扫到资产**时才要求。
    2026-09-14 实证：NOTICES 曾挂一条 "OpenMoji 署名缺口"，而 `git log --all
    --diff-filter=A -- '*openmoji*'` 为空、资产全是自制插画 —— 义务源自一句描述
    *意图*的代码注释，没有产物。**手写断言会撒谎，文件系统不会。**
+4. **不许悄悄夹带**：按 `web/package.json` 的 electron-builder 配置推出真实打包面，
+   扫模型权重后缀（`scan_forbidden_weights`）。红线 §4.1 原文只是"NC / Research
+   License 权重不得进发行物"一句话，2026-09-14 核完 G5/G6 后它有了具体名字
+   （demucs 权重训练自 MUSDB18；RVC 底模条款写"仅供研究使用"），于是把它变成
+   "打包面出现 `.pth`/`.onnx`/… 就红"。
 
 判据的非对称性是刻意的
 ----------------------
@@ -116,6 +122,25 @@ ASSET_TRIGGERS: dict[str, tuple[str, str]] = {
         "CC BY-SA 4.0 © hfg-gmuend/openmoji：署名 + 许可链接必须随分发可见",
     ),
 }
+
+# ---------------------------------------------------------------- 分发面权重扫描
+#
+# 红线 §4.1（"NC / Research License 权重不得进发行物"）此前只是**一句话**。
+# 2026-09-14 把 G5/G6 核完之后，这条红线有了两个具体名字：
+#   - demucs 预训练权重：代码 MIT，但权重训练自 MUSDB18（学术/非商用）
+#   - RVC 底模（hubert_base.pt / rmvpe.pt / pretrained_v2/*）：仓库标 `license:mit`，
+#     但同仓另有一份 `使用需遵守的协议-LICENSE.txt`，正文写着"本软件仅供研究使用"
+#     —— **标签是 MIT，条款不是**。
+# 两者都属于"看着能打包，实际不能"。而"不能"这件事，最可靠的表达方式是
+# **让打包配置里出现权重文件时直接红**，而不是指望下次发版的人记得。
+#
+# 只列权重后缀、不列 .zip/.7z：压缩包可能是合法素材，误报会让这条规则
+# 像狼来了一样被关掉（与 ASSET_TRIGGERS 同一套取舍）。
+FORBIDDEN_DIST_SUFFIXES = {
+    ".pth", ".pt", ".ckpt", ".onnx", ".safetensors", ".bin", ".gguf", ".ggml",
+    ".h5", ".pb", ".tflite", ".mlmodel", ".msgpack",
+}
+DIST_SKIP_PARTS = {"__pycache__", "tests", "data", ".pytest_cache", "node_modules", ".git"}
 
 
 def normalize(name: str) -> str:
@@ -292,6 +317,60 @@ def locked_versions(root: Path) -> dict[str, str]:
     return out
 
 
+def packaged_dirs(root: Path) -> list[tuple[str, Path]]:
+    """从 `web/package.json` 的 electron-builder 配置推出**实际被打包进去的目录**。
+
+    支持两种声明（当前项目两种都用）：
+      - `files: ["dist/**/*", "electron/**/*"]` —— 相对 `web/` 的 glob，取 `*` 之前的基目录
+      - `extraResources: [{from, to}]`      —— 相对 `web/` 的目录
+
+    返回 (配置里的原始写法, 解析出的绝对路径)。解析不到（目录不存在、含变量）就跳过 ——
+    这条规则是**兜底**，宁可少报也不能因为配置写法变化就误报。
+    """
+    pkg = root / "web" / "package.json"
+    if not pkg.exists():
+        return []
+    try:
+        build = (json.loads(pkg.read_text(encoding="utf-8")).get("build") or {})
+    except json.JSONDecodeError:
+        return []
+
+    web = root / "web"
+    raw: list[str] = []
+    for pattern in build.get("files") or []:
+        if isinstance(pattern, str):
+            raw.append(pattern.split("*", 1)[0].rstrip("/") or ".")
+    for entry in build.get("extraResources") or []:
+        if isinstance(entry, dict) and isinstance(entry.get("from"), str):
+            raw.append(entry["from"])
+        elif isinstance(entry, str):
+            raw.append(entry)
+
+    out: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
+    for item in raw:
+        if "$" in item:  # 含变量插值，推不准
+            continue
+        resolved = (web / item).resolve()
+        if resolved.is_dir() and resolved not in seen and resolved.is_relative_to(root.resolve()):
+            seen.add(resolved)
+            out.append((item, resolved))
+    return out
+
+
+def scan_forbidden_weights(root: Path) -> list[str]:
+    """扫打包面里的**模型权重**文件，返回相对路径（已排序）。空 = 干净。"""
+    hits: list[str] = []
+    for _raw, base in packaged_dirs(root):
+        for p in base.rglob("*"):
+            if not p.is_file() or p.suffix.lower() not in FORBIDDEN_DIST_SUFFIXES:
+                continue
+            if DIST_SKIP_PARTS & set(p.relative_to(base).parts):
+                continue
+            hits.append(str(p.relative_to(root)).replace("\\", "/"))
+    return sorted(hits)
+
+
 def audit(root: Path) -> dict:
     """跑一遍全部判据，返回可 JSON 化的结果（不打印、不退出）。"""
     declared: dict[str, list[str]] = {}
@@ -382,6 +461,16 @@ def audit(root: Path) -> dict:
                     f"但机器块里没有 `{oblig_key}` 义务条目 —— {hint}"
                 )
 
+    # ---- 红线 §4.1 的机器表达：发行物里不许有模型权重 ----
+    weights = scan_forbidden_weights(root)
+    if weights:
+        payload_problems.append(
+            f"打包面里出现了 {len(weights)} 个模型权重文件（如 {weights[0]}）。"
+            "红线 §4.1：NC / Research License 权重不得随发行物分发 —— "
+            "demucs 权重训练自 MUSDB18（学术）、RVC 底模条款写明\"仅供研究使用\"。"
+            "确需分发请先核实许可并同步 THIRD_PARTY_NOTICES.md。"
+        )
+
     errors: list[str] = []
     errors += problems
     errors += payload_problems
@@ -406,6 +495,7 @@ def audit(root: Path) -> dict:
         "payload_components": len(payload_by_file),
         "payload_errors": payload_problems,
         "asset_triggers": triggered,
+        "packaged_weights": weights,
         "errors": errors,
     }
 
@@ -416,6 +506,7 @@ def render(result: dict) -> str:
         f"  声明依赖 {result['declared_count']} 个 / notices 登记 {result['listed_count']} 个"
         f" / 义务条目 {len(result['obligations'])} 条"
         f" / 许可原文载荷 {result.get('payload_components', 0)} 份",
+        f"  打包面权重文件 {len(result.get('packaged_weights', []))} 个（红线 §4.1，应为 0）",
     ]
     if result.get("asset_triggers"):
         lines.append(f"  资产触发义务：{', '.join(result['asset_triggers'])}")

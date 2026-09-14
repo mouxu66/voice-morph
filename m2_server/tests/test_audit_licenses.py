@@ -411,6 +411,89 @@ def test_scan_assets_ignores_non_asset_extensions(tool, tmp_path):
     assert tool.scan_assets(tmp_path, "openmoji") == []
 
 
+# ------------------------------------------------ 第四层：分发面权重（红线 §4.1）
+#
+# 红线 §4.1 原本只是一句话。把 G5/G6 核完之后它有了具体名字：
+# demucs 权重训练自 MUSDB18（学术）、RVC 底模条款写"仅供研究使用"。
+# 两者都是"看着能打包、实际不能"，所以改成"打包面出现权重文件就红"。
+BUILD_PKG = {
+    "name": "demo",
+    "dependencies": {"react": "^19.0.0", "@fontsource/inter": "^5.3.0"},
+    "build": {
+        "files": ["dist/**/*", "electron/**/*"],
+        "extraResources": [
+            {"from": "dist", "to": "backend/web_dist"},
+            {"from": "../m2_server", "to": "backend/m2_server"},
+        ],
+    },
+}
+
+
+def test_packaged_dirs_follow_build_config(tool, tmp_path):
+    """`files` 的 glob 取 `*` 前的基目录；`extraResources.from` 按 `web/` 解析。"""
+    root = make_root(tmp_path, MATCHING, npm=BUILD_PKG)
+    (root / "web" / "dist").mkdir(parents=True)
+    (root / "web" / "electron").mkdir(parents=True)
+    (root / "m2_server").mkdir()  # 目录不存在时会被跳过（宁可少报也不误报）
+    names = {raw for raw, _p in tool.packaged_dirs(root)}
+    assert names == {"dist", "electron", "../m2_server"}
+
+
+def test_packaged_weight_is_reported(tool, tmp_path):
+    """把权重塞进打包目录 → 红。这是"顺手把 tts_models 加进 extraResources"的形态。"""
+    root = make_root(tmp_path, MATCHING, npm=BUILD_PKG)
+    (root / "m2_server").mkdir(exist_ok=True)
+    (root / "m2_server" / "rmvpe.pt").write_bytes(b"\x00")
+    result = tool.audit(root)
+    assert not result["ok"]
+    assert result["packaged_weights"] == ["m2_server/rmvpe.pt"]
+    assert any("红线 §4.1" in e for e in result["errors"])
+
+
+@pytest.mark.parametrize("rel", [
+    "m2_server/__pycache__/hubert_base.pt",
+    "m2_server/tests/fixture.pth",
+    "m2_server/data/cache.onnx",
+])
+def test_excluded_parts_do_not_trigger(tool, tmp_path, rel):
+    """`__pycache__` / `tests` / `data` 本来就不进包（filter 排除了），不该误报。
+
+    误报的代价很实：这条规则一旦开始喊狼来了，下一次真出事就没人看它。
+    """
+    root = make_root(tmp_path, MATCHING, npm=BUILD_PKG)
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"\x00")
+    assert tool.audit(root)["packaged_weights"] == []
+
+
+def test_archive_is_not_treated_as_weight(tool, tmp_path):
+    """`.zip` 不进权重后缀表 —— 压缩包可能是合法素材，宁可漏报也不误报。"""
+    root = make_root(tmp_path, MATCHING, npm=BUILD_PKG)
+    (root / "m2_server").mkdir(exist_ok=True)
+    (root / "m2_server" / "assets.zip").write_bytes(b"PK\x03\x04")
+    assert tool.audit(root)["packaged_weights"] == []
+
+
+def test_outside_repo_packaging_is_ignored(tool, tmp_path):
+    """`from` 指到仓库外（如 `D:/RVC`）时不解析 —— 本工具只对本仓库判据负责。"""
+    npm = dict(BUILD_PKG)
+    npm["build"] = {"extraResources": [{"from": "../../elsewhere", "to": "x"}]}
+    root = make_root(tmp_path, MATCHING, npm=npm)
+    assert tool.packaged_dirs(root) == []
+
+
+def test_repo_ships_no_model_weights(tool):
+    """**红线 §4.1 的当前基线**：发行物里 0 个权重文件。
+
+    这条测试变红意味着有人把底模/权重放进了打包面 —— 那时候先去看
+    `THIRD_PARTY_NOTICES.md` §2 的 demucs 与 RVC 两行，别急着改测试。
+    """
+    weights = tool.scan_forbidden_weights(ROOT)
+    assert weights == [], f"发行物里出现了权重：{weights}"
+    assert [raw for raw, _p in tool.packaged_dirs(ROOT)], "推不出打包目录（构建配置变了？）"
+
+
 # ------------------------------------------------------------------ 解析
 def test_requirements_parsing(tool, tmp_path):
     """注释 / `-r` 指令 / 版本约束 / 环境标记 / 行尾注释都要剥干净。"""
