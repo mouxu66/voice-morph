@@ -54,6 +54,10 @@ test_tts.wav
 *.zip
 媒体播放器*.mp4
 
+# ===== 升级/覆盖安装前的本机用户数据备份（config.json / pet.json 等，不入库）=====
+# 由覆盖安装流程手工生成，含本机绝对路径与用户偏好，对克隆者无意义。
+.backup/
+
 # ===== 构建日志 =====
 build_log.txt
 builder_log.txt
