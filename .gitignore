@@ -76,6 +76,10 @@ _ref/
 # ===== Qwen3-TTS 官方仓库（第三方 clone）=====
 tts_trial/Qwen3-TTS/
 
+# ===== MeanVC2 官方仓库（第三方 clone + 大权重 WavLM/fastu2pp/vocos，不入库；
+# 本地补丁 _jit_load_cn 中文路径 fallback 见 docs/犯错指南.md §3.12）=====
+tts_trial/MeanVC2/
+
 # ===== Seed-VC 官方仓库（第三方 clone，含自带 venv / checkpoints / .git）=====
 seed_vc/
 seed_vc_repo/
