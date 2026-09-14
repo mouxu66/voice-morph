@@ -145,6 +145,15 @@ def _report(name: str, ok: bool, detail: str) -> None:
     print(f"  {'OK  ' if ok else 'DRIFT'} {name}  {detail}")
 
 
+def _describe_drift(cur: bytes | None, want: bytes) -> str:
+    """差异描述。行尾差异单列 —— 它是 CRLF 检出造成的**假红**，不是内容问题。"""
+    if cur is None:
+        return "缺失"
+    if cur.replace(b"\r\n", b"\n") == want.replace(b"\r\n", b"\n"):
+        return "仅行尾不同（CRLF 检出？检查 .gitattributes 的 `web/public/licenses/** -text`）"
+    return f"不一致（现有 {len(cur)} 字节，应为 {len(want)}）"
+
+
 def run(root: Path, check: bool) -> int:
     try:
         targets = _targets(root)
@@ -164,8 +173,7 @@ def run(root: Path, check: bool) -> int:
             _report(name, True, f"{len(want)} 字节")
         else:
             drift += 1
-            note = "缺失" if cur is None else f"不一致（现有 {len(cur)} 字节，应为 {len(want)}）"
-            _report(name, False, note)
+            _report(name, False, _describe_drift(cur, want))
             if not check:
                 path.write_bytes(want)
 

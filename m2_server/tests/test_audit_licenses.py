@@ -568,3 +568,29 @@ def test_sync_refuses_to_invent_copyright_line(sync, tmp_path):
     )
     assert sync.run(root, check=False) == 1
     assert not (root / "web" / "public" / "licenses").exists()
+
+
+def test_drift_description_names_crlf_as_the_cause(sync):
+    """行尾差异要**指名道姓**说是 CRLF 检出，而不是报成"内容不一致"。
+
+    本仓库 core.autocrlf=true，载荷若被检出成 CRLF，每次 `--check` 都会假红；
+    真正的"有人手改了原文"就会淹没在这片噪声里。所以这条描述本身就是诊断信息。
+    """
+    text = "Copyright 2026 X\nSIL OPEN FONT LICENSE\n"
+    lf = text.encode("utf-8")
+    assert "缺失" in sync._describe_drift(None, lf)
+    assert "仅行尾不同" in sync._describe_drift(lf.replace(b"\n", b"\r\n"), lf)
+    assert "不一致" in sync._describe_drift(b"totally different", lf)
+
+
+def test_payload_files_are_byte_stable_across_checkout(sync):
+    """许可原文必须**字节稳定**：`.gitattributes` 里 `web/public/licenses/** -text`。
+
+    为什么值得测：`--check` 按字节比对。这条属性掉了以后，行为取决于各人的
+    `core.autocrlf`——CI 绿、同事机器红，是那种要查一整天的失败。
+    实测（2026-09-14）`-text` 在本机有效：blob 与检出都是 LF，4477 字节一致。
+    """
+    attrs = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert "web/public/licenses/** -text" in attrs
+    for f in (ROOT / "web" / "public" / "licenses").glob("*.txt"):
+        assert b"\r\n" not in f.read_bytes(), f"{f.name} 里混进了 CRLF"

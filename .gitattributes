@@ -15,3 +15,15 @@
 # 参数的一部分。Linux/WSL 上若仍遇到 bad interpreter，用
 # `sed -i 's/\r$//' .githooks/*` 就地转换即可。
 .githooks/* text eol=lf
+
+# 许可原文载荷必须是**字节稳定**的（2026-09-14 加）
+#
+# 这些文件由 tools/sync_license_payload.py 生成，而它的 `--check` 是按**字节**比对
+# —— 本仓库 core.autocrlf=true，载荷若被检出成 CRLF，生成器写的是 LF，
+# 于是每次 `--check` 都报漂移（假红），真正的手改反而淹没在噪声里。
+# 用 `-text`（等价 binary）彻底关掉这个文件的换行转换：
+# 存进去什么样、检出就什么样，许可原文里也不会混进 \r。
+#
+# 不用 `eol=lf`：上面的实测已经证明在本机（git + Git for Windows）没生效，
+# 而 `-text` 是"不碰"而非"要求某个值"，没有让位问题。
+web/public/licenses/** -text
