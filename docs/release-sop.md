@@ -37,45 +37,65 @@ cd D:\变声
 $env:CSC_KEY_PASSWORD = '<你的 pfx 密码>'
 
 # 2) 前置检查（可选，推荐）
-powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -DryRun -BaseUrl http://192.168.1.100:9000
+powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -DryRun -Publish
 
-# 3) 一条命令发版
+# 3) 一条命令发版：打包 + 生成清单 + 发 GitHub Release
+powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -Publish -Notes "修复录音卡顿"
+
+# 完事。客户端（已安装的旧版）启动 12 秒后会静默检查到，弹更新页。
+```
+
+**不再需要手动上传**：`-Publish` 会把 `exe` / `.blockmap` / `latest.json` 作为 asset 挂到
+新建的 GitHub Release 上。客户端读的是永久别名 `releases/latest/download/latest.json`，
+所以发新版客户端**不用改任何配置**。
+
+不用 GitHub 时（对象存储 / 局域网 / 网盘）仍走老路子：
+
+```powershell
 powershell -ExecutionPolicy Bypass -File scripts\release.ps1 `
-  -BaseUrl http://192.168.1.100:9000 `
-  -Notes "修复录音卡顿；新增音高建议"
-
-# 4) 上传
-#    把脚本打印的「待上传文件」三个文件传到更新源根目录：
-#      VoiceMorph-Setup-x.x.x.exe
-#      VoiceMorph-Setup-x.x.x.exe.blockmap
-#      latest.json
+  -BaseUrl https://example.com/voicemorph/download -Notes "修复录音卡顿"
+# 然后手动把「待上传文件」三个文件传到 -BaseUrl 指向的位置
 ```
 
 ### release.ps1 干了什么
 
 ```
-1/6 前置检查        版本号 / CSC_KEY_PASSWORD / 证书文件 / 产物目录 / 更新源地址
-2/6 前端构建        cd web && npm run build （tsc -b && vite build）
-3/6 版本号 +1       npm version patch --no-git-tag-version（不自动 git commit）
-4/6 签名打包        npm run electron:build（electron-builder --win，实为 build + pack）
+1/7 前置检查        版本号 / CSC_KEY_PASSWORD / 证书文件 / 产物目录 / 更新源地址
+                    └─ -Publish 时另查：gh 可执行文件、gh 登录状态
+2/7 前端构建        cd web && npm run build （tsc -b && vite build）
+3/7 版本号 +1       npm version patch --no-git-tag-version（不自动 git commit）
+4/7 签名打包        npm run electron:build（electron-builder --win，实为 build + pack）
 4.5 签名校验        Get-AuthenticodeSignature，Valid / NotSigned 明确提示
-5/6 生成清单        node electron/make-update-manifest.cjs --dir release2 --version <新版本>
+5/7 生成清单        node electron/make-update-manifest.cjs --dir release2 --version <新版本>
+                    └─ -Publish 且未给 -BaseUrl 时，自动推导 GitHub asset 直链作为 base-url
                     └─ 自校验：清单 sha256 与磁盘文件实际值比对，不一致直接 FAIL
                     └─ 自校验：清单 version 与 package.json 一致
-6/6 待上传清单      打印文件名 + 体积 + 上传目标 + 用户端 VM_UPDATE_URL 该指向哪
+6/7 发布到 GitHub   gh release create v<新版本> --latest，上传 exe / blockmap / latest.json
+                    └─ 自校验：实测 releases/latest/download/latest.json 的版本号是否为新版本
+7/7 清理历史产物     release2 里只保留最近 2 个版本的安装包（先截断到 0 字节再删，见下）
+                    + 打印待上传文件清单与体积
 ```
 
 ### 常用参数
 
 | 参数 | 用途 |
 |---|---|
-| `-BaseUrl <url>` | 更新源对外地址；清单 url 变成 `<url>/VoiceMorph-Setup-x.x.x.exe`。留空则 url 只是本地文件名 |
-| `-Notes "文本"` | 更新说明短文本，进 latest.json 的 `notes` |
+| `-Publish` | 打完后直接发 GitHub Release（建 tag + Release + 上传 asset + 探测别名）。**推荐** |
+| `-Repo <owner/name>` | `-Publish` 的目标仓库，默认 `mouxu66/voice-morph` |
+| `-SkipPrune` | 不清理 `release2` 里的历史安装包（默认保留最近 2 个版本） |
+| `-BaseUrl <url>` | 更新源对外地址；清单 url 变成 `<url>/VoiceMorph-Setup-x.x.x.exe`。`-Publish` 时会自动推导，无需手填 |
+| `-Notes "文本"` | 更新说明短文本，进 latest.json 的 `notes`，同时作为 Release 说明 |
 | `-NotesFile path.md` | 更新说明文件（优先级高于 `-Notes`） |
 | `-Mandatory` | 强制更新，前端不给「跳过此版本」 |
 | `-SkipBump` | 不升版本，只重打包当前版本（重发同版本时用） |
 | `-SkipBuild` | 跳过单独的前端构建（`electron:build` 内部已含） |
 | `-DryRun` | 只做前置检查 |
+
+> **清理历史产物**：`release2` 每发一次版就多一个 ~100MB 安装包，长期堆积几百 MB。
+> 现在默认只留最近 2 个版本（回滚够用）。删除前先 `SetLength(0)` 截断再删 ——
+> 本机的「安全删除」会把文件挪进回收站、空间不会立刻归还，截断过再删即使进回收站也只是空壳
+> （约定见 `tools/hard_delete.py`）。要留全量就加 `-SkipPrune`。
+
 
 ## 三、更新源怎么配
 
@@ -92,17 +112,45 @@ python -m http.server 9000 --directory D:\变声\web\release2
 VM_UPDATE_URL = http://192.168.1.100:9000/latest.json
 ```
 
-### 正式分发
+### 正式分发 · GitHub Releases（默认，推荐）
 
-任何能放静态文件的地方都行（对象存储 / GitHub Releases / 网盘直链 / 局域网共享）：
+`DEFAULT_MANIFEST_URL` 已经写死为本仓库的最新版永久别名：
+
+```
+https://github.com/mouxu66/voice-morph/releases/latest/download/latest.json
+```
+
+`/releases/latest/download/<asset>` 由 GitHub 动态解析到**最新**那个 Release 的同名 asset ——
+所以发新版只要 `-Publish`，客户端不换配置就能跟上。
+
+要点：
+
+1. 每个版本一个 Release（tag 形如 `v0.2.3`），asset 放三个文件：`VoiceMorph-Setup-x.y.z.exe`、
+   同名 `.blockmap`、`latest.json`。**`latest.json` 必须与安装包在同一个 Release 里**，
+   永久别名才取得到。
+2. `-Publish` 会自动 `--latest` 标记，避免 GitHub 按它自己的规则挑错"最新"。
+3. 仓库必须 **public**（私有仓库的 asset 需要 token，本项目 updater 不带 token）；
+   也正因如此，release 里的安装包是**公开可下载**的。
+4. GitHub 的 asset 直链会 302 到 CDN，updater 已支持跟随重定向（最多 5 跳）。
+
+### 正式分发 · 自建源（对象存储 / 网盘 / 局域网共享）
 
 1. 把 `latest.json` 与安装包、blockmap 上传到同一目录
 2. 发版时用 `-BaseUrl https://your.domain/path`，让清单里的 url 指向正确地址
 3. 客户端 `VM_UPDATE_URL` 指向该地址下的 `latest.json`
 
-> **持久配置**：`web/electron/updater.cjs` 里的 `DEFAULT_MANIFEST_URL` 默认是空串
-> （空 = 纯本地模式，不发任何网络请求）。要面向所有用户开更新，把它填成正式更新源地址。
-> 临时调试/内网分发用 `VM_UPDATE_URL` 环境变量覆盖即可。
+### 客户端怎么指向
+
+| 场景 | 做法 |
+|---|---|
+| 默认（安装版） | 什么都不用做，读 `DEFAULT_MANIFEST_URL` 的 GitHub 别名 |
+| 内网 / 自建源 / 调试 | 环境变量 `VM_UPDATE_URL=https://.../latest.json` |
+| 要完全离线 | 环境变量 `VM_UPDATE_URL=off`（也接受 `0` / `none` / `false` / `disabled`），一个请求都不发 |
+
+> `VM_UPDATE_URL` 优先级**高于** `DEFAULT_MANIFEST_URL`。注意：环境变量留空**不等于**关闭
+> —— 留空会回落到默认 GitHub 源；要关就用 `off`。改默认源要动
+> `web/electron/updater.cjs` 的常量，且**必须重新打包**才对已安装的旧版生效
+> （旧版读的是它自己 asar 里那份旧常量）。
 
 ## 四、常见错误处理
 
@@ -159,6 +207,32 @@ VM_UPDATE_URL = http://192.168.1.100:9000/latest.json
   改动过 `make-update-manifest.cjs` 或 `artifactName` 后务必跑一遍。
 - 事故后果的严重性：选错包 = 把旧包的 sha256 写进清单，客户端**校验通过、静默装回旧版**，日志无异常。
 
+### E9 · `-Publish` 报「gh 未登录」/ 找不到 gh
+
+- **找不到 gh**：脚本先在 PATH 找，找不到会退回 WorkBuddy 自带那份
+  （`%USERPROFILE%\.workbuddy-ai\bin\gh\bin\gh.exe`）。都没有就装一个，或去掉 `-Publish` 手动上传。
+- **报未登录但明明登录过**：本机 gh 默认读 `%APPDATA%\GitHub CLI`，而凭据在 `~/.config\gh`
+  —— 脚本会自动补 `GH_CONFIG_DIR`（2026-09-14 实测的坑）。若仍报错，手动设：
+  ```powershell
+  $env:GH_CONFIG_DIR = "$env:USERPROFILE\.config\gh"
+  gh auth status
+  ```
+- **真的没登录**：`gh auth login -h github.com -s repo,workflow`（`repo` 就够发 Release，
+  `workflow` 是为了以后加 Actions 不用重新授权）。
+
+### E10 · `-Publish` 报「Release vX.Y.Z 已存在」
+
+- 同一版本重发。GitHub 上先删掉那个 Release（tag 可留可删），或去掉 `-Publish` 走手动上传覆盖。
+- 若只想重打包**同版本**并覆盖：`-SkipBump` + 手动覆盖 asset（`gh release upload --clobber`）。
+
+### E11 · `-Publish` 后别名探测失败 / 版本对不上
+
+- 刚发布几十秒内 GitHub 的 `/releases/latest/...` 可能还没生效，等一会儿重试。
+- 版本对不上：检查这次 Release 是否被标成 latest（脚本已带 `--latest`）；若手动在网页上发过
+  Release，把新的那个标为 latest，或删掉多的那个。
+- 别名能通但客户端仍不更新：确认 `latest.json` **和安装包在同一个 Release 里**
+  （永久别名只解析同 Release 的 asset），且清单 `version` 确实大于客户端版本。
+
 ## 五、回滚方法
 
 ### 场景 A · 用户装坏了 / 新版有严重 bug，想退回旧版本
@@ -188,8 +262,21 @@ powershell -ExecutionPolicy Bypass -File scripts\release.ps1 `
 把更新源的 `latest.json` 临时下线（重命名或删掉）：
 
 ```powershell
-# 主机更新源
+# 自建源（局域网 / 对象存储）
 Rename-Item D:\变声\web\release2\latest.json latest.json.disabled
+```
+
+GitHub Releases 上没有"重命名 asset"这回事，改用下面任一方式：
+
+```powershell
+# 方式 1：把最新 Release 标成 prerelease —— /releases/latest/ 会跳过它，别名随即失效
+gh release edit v0.3.0 --prerelease --repo mouxu66/voice-morph
+
+# 方式 2：删掉 latest.json 这个 asset（安装包留着，方便手动救急）
+gh release delete-asset v0.3.0 latest.json --repo mouxu66/voice-morph
+
+# 恢复：改回来即可
+gh release edit v0.3.0 --prerelease=false --latest --repo mouxu66/voice-morph
 ```
 
 用户端会报「无法连接更新源 / HTTP 404」，但**不会崩**——更新失败是静默的，
@@ -203,6 +290,10 @@ Rename-Item D:\变声\web\release2\latest.json latest.json.disabled
 2. 直接运行旧版 `VoiceMorph-Setup-x.x.x.exe` 覆盖安装
    （NSIS 记住上次安装路径，会原地覆盖）
 3. 若提示已安装，可先在「设置 → 应用」里卸载，再装旧版
+
+> **注意**：`release2` 默认只保留**最近 2 个版本**（见 §二 的清理说明）。要救更旧的版本，
+> 得从 git 拉回对应代码重打包，或去 GitHub Releases 里翻历史 asset 手动下载。
+> 想长期留全量就发版时加 `-SkipPrune`。
 
 **注意**：手动装回旧版后，自动更新会立刻提示升级到新版。要暂时压住，可在应用里点「跳过此版本」。
 
@@ -235,10 +326,13 @@ powershell -ExecutionPolicy Bypass -File D:\变声\scripts\test-update-e2e.ps1
 |---|---|
 | `scripts/release.ps1` | **发版主入口**（本文档对应脚本） |
 | `scripts/build-and-publish.ps1` | 底层构建脚本（release.ps1 的前身，保留） |
+| `web/electron/UPDATE.md` | 客户端更新机制说明（更新源优先级 / 缓存清理 / 行为细节） |
 | `web/electron/make-update-manifest.cjs` | 生成 latest.json（含**按版本号选包**，见 §五 E8） |
 | `tools/test-manifest-pick.cjs` | 选包逻辑单测（候选过滤 + 版本匹配 + mtime 优先级），发版前建议跑 |
-| `web/electron/updater.cjs` | 客户端更新逻辑（检查/下载/校验/安装） |
-| `web/electron/update-ipc.cjs` | 更新 IPC + 启动静默检查 |
+| `tools/test-updater.cjs` | 更新器单测（默认源 / 关闭源 / 下载校验 / 落标记 / 缓存清理） |
+| `tools/test-update-hook.cjs` | 启动静默检查钩子单测 |
+| `web/electron/updater.cjs` | 客户端更新逻辑（检查/下载/校验/安装/清缓存） |
+| `web/electron/update-ipc.cjs` | 更新 IPC + 启动静默检查 + 启动时清缓存 |
 | `docs/internal/README-vm-test.md` | VM 端到端测试手册（内部：作者本机环境专用） |
 | `scripts/test-update-e2e.ps1` | 端到端自动更新测试 |
 | `.workbuddy/memory/auto-update.md` | 更新链路全部踩坑记录 |
@@ -250,13 +344,15 @@ powershell -ExecutionPolicy Bypass -File D:\变声\scripts\test-update-e2e.ps1
 [ ] $env:CSC_KEY_PASSWORD 已设置
 [ ] certs/black-seraph.pfx 存在
 [ ] 跑过 release.ps1 -DryRun，前置检查全 OK
-[ ] 跑过 node tools/test-manifest-pick.cjs（选包逻辑，17 项全绿）
+[ ] 跑过 node tools/test-update-hook.cjs / test-updater.cjs / test-manifest-pick.cjs（更新链路单测全绿）
 [ ] 更新说明已准备（-Notes 或 -NotesFile）
 [ ] 版本号递增正确（release.ps1 自动 patch）
 [ ] 打包后签名状态是 Valid（不是 NotSigned）
 [ ] latest.json 的 sha256 自校验通过（脚本自动做）
-[ ] 待上传三个文件已传到更新源同一目录
-[ ] 客户端 VM_UPDATE_URL 指向 latest.json
+[ ] 已发 GitHub Release（-Publish）：exe / blockmap / latest.json 三个 asset 在同一个 Release 里
+[ ] Release 已标 latest，且 releases/latest/download/latest.json 返回的就是新版本号
+[ ] 不用 GitHub 时：三个文件已传到 -BaseUrl 同一目录，客户端 VM_UPDATE_URL 指向该 latest.json
+[ ] release2 只剩最近 2 个版本（想留全量则明确用 -SkipPrune）
 [ ] 跑过 test-update-e2e.ps1，结果 PASS
 [ ] 更新说明已发给用户（如需要）
 ```
