@@ -9,6 +9,9 @@ Python 的 os.remove/shutil.rmtree）重定向成「移到回收站」，导致�
 绕过办法：删除前先把文件内容 truncate 到 0 —— 数据块立刻归还文件系统，
 之后即使被移进回收站也只是一个 0 字节空壳，不占空间。
 
+只读文件（git pack / 某些安装器留下的文件）会挡住这一步：`open(..., "r+b")`
+报 `[Errno 13] Permission denied` → 文件被跳过、空间不释放。故先清写保护。
+
 用法：
     python tools/hard_delete.py <path> [<path> ...]
     python tools/hard_delete.py --dry-run <path>   # 只统计不删除
@@ -17,14 +20,29 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
+
+
+def _clear_readonly(path: Path) -> None:
+    """清掉只读属性。
+
+    Windows 下 git 的 `.git/objects/pack/*.pack|*.idx|*.rev` 是只读的：
+    既不能 `open(..., "r+b")` 截断（Errno 13），也会挡住 `rmtree`。
+    """
+    try:
+        if not (path.stat().st_mode & stat.S_IWRITE):
+            os.chmod(path, stat.S_IWRITE)
+    except OSError:
+        pass
 
 
 def _truncate_tree(root: Path) -> tuple[int, int]:
     """递归把 root 下所有文件截断为 0 字节。返回 (文件数, 释放字节数)。"""
     n = freed = 0
     if root.is_file():
+        _clear_readonly(root)
         sz = root.stat().st_size
         if sz:
             with open(root, "r+b") as fh:
@@ -32,9 +50,11 @@ def _truncate_tree(root: Path) -> tuple[int, int]:
             freed += sz
         return 1, freed
     for dirpath, _dirnames, filenames in os.walk(root):
+        _clear_readonly(Path(dirpath))
         for fn in filenames:
             fp = Path(dirpath) / fn
             try:
+                _clear_readonly(fp)
                 sz = fp.stat().st_size
                 if sz:
                     with open(fp, "r+b") as fh:
@@ -63,6 +83,7 @@ def hard_delete(path: str | Path, dry_run: bool = False) -> int:
         if p.is_file() or p.is_symlink():
             os.remove(p)
         else:
+            _clear_readonly(p)
             shutil.rmtree(p, ignore_errors=True)
             if p.exists():  # rmtree 被拦截时的兜底
                 os.rmdir(p)

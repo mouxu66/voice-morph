@@ -8,6 +8,7 @@
 手段，它一崩就没法用了。
 """
 import importlib.util
+import stat
 import sys
 from pathlib import Path
 
@@ -84,3 +85,36 @@ def test_hard_delete_truncates_then_removes(tool, tmp_path):
     victim.write_bytes(b"z" * (1024 * 1024))
     tool.hard_delete(str(victim), dry_run=False)
     assert not victim.exists(), "应已被删除"
+
+
+def test_hard_delete_handles_readonly_file(tool, tmp_path):
+    """只读文件必须先清写保护再截断，否则被跳过 → 空间不释放。
+
+    背景（2026-09-14 实测）：删 D:\\meanvc2_exp 时，`MeanVC2/.git/objects/pack/`
+    下的 `*.pack` / `*.idx` / `*.rev` 是只读的，`open(fp, "r+b")` 直接
+    `[Errno 13] Permission denied`，这几个文件被跳过。git 仓库、部分安装器的
+    产物都是只读的，所以这条路径一定会再被走到。
+    """
+    victim = tmp_path / "readonly.bin"
+    victim.write_bytes(b"r" * (512 * 1024))
+    victim.chmod(stat.S_IREAD)
+    try:
+        assert not (victim.stat().st_mode & stat.S_IWRITE), "前置条件：文件应为只读"
+        tool.hard_delete(str(victim), dry_run=False)
+        assert not victim.exists(), "只读文件也必须被删除"
+    finally:
+        if victim.exists():  # 断言失败时别把只读文件留在 tmp 里
+            victim.chmod(stat.S_IWRITE)
+
+
+def test_truncate_tree_clears_readonly_without_removing(tool, tmp_path):
+    """_truncate_tree 对只读文件也应截断成功（返回非零释放字节）。"""
+    victim = tmp_path / "ro.bin"
+    victim.write_bytes(b"q" * 4096)
+    victim.chmod(stat.S_IREAD)
+    try:
+        n, freed = tool._truncate_tree(tmp_path)
+        assert n >= 1 and freed >= 4096, "只读文件的内容应被截断并计入释放量"
+        assert victim.stat().st_size == 0, "文件应已被截断为 0 字节"
+    finally:
+        victim.chmod(stat.S_IWRITE)
