@@ -319,6 +319,44 @@ def _tag(path: str, frag: str, head_index: dict[str, list[str]]) -> str:
     return "  [" + " · ".join(marks) + "]"
 
 
+def _section_rules(mat_rules: list[tuple[str, str]]) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """(章节键, 章节标题, 规则表)。扫与打印共用这一份 —— 两边各写一遍就会漂。"""
+    return [
+        ("secret", "1. 凭据类命中", SECRET_RULES),
+        ("privacy", "2. 机器指纹 / 隐私命中", PRIVACY_RULES),
+        ("material", "3. 第三方素材名命中", mat_rules),
+    ]
+
+
+def _collect_hits(contents: dict[str, str], blobs: dict[str, str],
+                  head_index: dict[str, list[str]],
+                  sections: list[tuple[str, str, list[tuple[str, str]]]],
+                  verbose: bool) -> dict[tuple[str, str, str, str], tuple[str, bool]]:
+    """扫全部可达 blob → `{(章节键, 规则描述, 路径, 命中片段): (展示行, 是否 HEAD 仍含)}`。
+
+    **去重键刻意不含展示行**：早先是拿整行文本去重，于是 `--verbose` 一开、上下文变长、
+    条数就跟着变 —— 同一份仓库能给出 110 处 / 74 处两个数，文档里引用哪个都对不上
+    （2026-09-14 修）。计数必须与显示模式无关，否则"基线"这种东西没法写。
+
+    计数单位是「**文件 × 命中片段**」，不是出现次数：同一文件里同一片段出现多次算一处。
+    这样"要动的文件"清单才精确，也不受"某行里出现几次"影响。
+    """
+    hits: dict[tuple[str, str, str, str], tuple[str, bool]] = {}
+    for sha, text in contents.items():
+        path = blobs.get(sha, "?")
+        for key, _title, rules in sections:
+            for desc, m in _iter_hits(text, rules):
+                frag = m.group(0)
+                ident = (key, desc, path, frag)
+                line = (f"{path}{_tag(path, frag, head_index)} :: "
+                        f"{_snippet(text, m.start(), m.end(), verbose)}")
+                in_head = frag in head_index
+                if ident in hits:               # 同一片段可能出现在多个 blob 里
+                    in_head = in_head or hits[ident][1]
+                hits[ident] = (line, in_head)
+    return hits
+
+
 def _dirty_note(status_porcelain: str) -> str | None:
     """工作区有未提交改动时给一句提示 —— 本工具扫的是**已提交**的内容。
 
@@ -363,48 +401,48 @@ def main() -> int:
     if note:
         print(note)
 
-    secrets: dict[str, list[tuple[str, bool]]] = defaultdict(list)
-    privacy: dict[str, list[tuple[str, bool]]] = defaultdict(list)
-    materials: dict[str, list[tuple[str, bool]]] = defaultdict(list)
+    sections = _section_rules(mat_rules)
+    hits = _collect_hits(contents, blobs, head_index, sections, args.verbose)
+    key_of = {title: key for key, title, _rules in sections}
+
     big: list[tuple[str, int]] = []
-    need_edit: set[str] = set()        # HEAD 里还含命中的文件 —— 这才是"要动手改"的清单
-
-    groups = ((SECRET_RULES, secrets), (PRIVACY_RULES, privacy), (mat_rules, materials))
     for sha, text in contents.items():
-        path = blobs.get(sha, "?")
         if len(text) > BIG_BLOB_BYTES:
-            big.append((path, len(text)))
-        for rules, table in groups:
-            for desc, m in _iter_hits(text, rules):
-                frag = m.group(0)
-                table[desc].append((
-                    f"{path}{_tag(path, frag, head_index)} :: "
-                    f"{_snippet(text, m.start(), m.end(), args.verbose)}",
-                    frag in head_index,
-                ))
-                need_edit.update(head_index.get(frag, ()))
+            big.append((blobs.get(sha, "?"), len(text)))
+    need_edit: set[str] = set()        # HEAD 里还含命中的文件 —— 这才是"要动手改"的清单
+    for (_key, _desc, _path, frag), (_line, in_head) in hits.items():
+        if in_head:
+            need_edit.update(head_index.get(frag, ()))
 
-    def dump(title: str, table: dict[str, list[tuple[str, bool]]]) -> tuple[int, int]:
-        """打印一节，返回（唯一命中数, 其中「HEAD 仍含」的处数）。"""
+    def dump(title: str) -> tuple[int, int]:
+        """打印一节，返回（唯一命中数, 其中「HEAD 仍含」的处数）。
+
+        计数按**去重键**（与 `--verbose` 无关）；打印时对展示行再取一次 `set` ——
+        只有"同一行里命中同一规则多次"才会让两者不等，那种情况展示行本来也一样。
+        """
+        rows = {k: v for k, v in hits.items() if k[0] == key_of[title]}
         print(f"\n========== {title} ==========")
-        if not table:
+        if not rows:
             print("  ✅ 无")
             return 0, 0
+        by_desc: dict[str, list[tuple[str, bool]]] = defaultdict(list)
+        for (_key, desc, _path, _frag), val in rows.items():
+            by_desc[desc].append(val)
         total = head_total = 0
-        for desc, hits in table.items():
-            uniq = sorted(set(hits))
-            total += len(uniq)
-            head_total += sum(1 for _line, in_head in uniq if in_head)
-            print(f"\n  [{desc}] {len(uniq)} 处")
+        for desc, items in by_desc.items():
+            total += len(items)
+            head_total += sum(1 for _line, in_head in items if in_head)
+            uniq = sorted(set(items))
+            print(f"\n  [{desc}] {len(items)} 处")
             for line, _in_head in uniq[:15]:
                 print(f"    - {line}")
             if len(uniq) > 15:
                 print(f"    … 另有 {len(uniq) - 15} 处")
         return total, head_total
 
-    n_secret, h_secret = dump("1. 凭据类命中", secrets)
-    n_privacy, h_privacy = dump("2. 机器指纹 / 隐私命中", privacy)
-    n_material, h_material = dump("3. 第三方素材名命中", materials)
+    n_secret, h_secret = dump("1. 凭据类命中")
+    n_privacy, h_privacy = dump("2. 机器指纹 / 隐私命中")
+    n_material, h_material = dump("3. 第三方素材名命中")
 
     print("\n========== 4. 历史大文件（>1MB） ==========")
     if not big:

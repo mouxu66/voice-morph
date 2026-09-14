@@ -226,6 +226,39 @@ def test_old_sha_equality_judgement_would_have_misjudged(ah):
     assert "HEAD 另处仍含" in ah._tag(hit_path, "TOKEN-9", idx)   # 新判据：→「仍含」（对）
 
 
+# ---------------- _collect_hits：计数与显示模式无关 ----------------
+
+def test_hit_count_is_independent_of_verbose(ah):
+    """`--verbose` 只该改变**展示**，不该改变**条数**。
+
+    早先按整行文本去重，verbose 一开上下文变长、条数就跟着变 —— 同一份仓库能给出
+    110 处 / 74 处两个数，文档里写"基线 N 处"根本没法对账（2026-09-14 修）。
+
+    计数单位是「**文件 × 命中片段**」，不是出现次数：`f1.py` 里同一片段出现两次算一处
+    （要看逐行出现次数就上 `--verbose`）。这个口径是为了让"要动的文件"精确、且与展示模式无关。
+    """
+    contents = {"s1": "a TOKEN-9 b\nc TOKEN-9 d", "s2": "TOKEN-9"}
+    blobs = {"s1": "f1.py", "s2": "f2.py"}
+    sections = [("x", "测试节", RULE)]
+    brief = ah._collect_hits(contents, blobs, {}, sections, verbose=False)
+    loud = ah._collect_hits(contents, blobs, {}, sections, verbose=True)
+    assert set(brief) == set(loud), "去重键不该随 --verbose 变"
+    assert len(brief) == len(loud) == 2            # f1.py 一处（同行两次折叠）+ f2.py 一处
+    key = ("x", "测试规则", "f1.py", "TOKEN-9")
+    assert brief[key][0] != loud[key][0], "展示行确实应该不同（否则 verbose 没生效）"
+
+
+def test_collect_hits_merges_same_fragment_across_blobs(ah):
+    """同一 (路径, 片段) 来自多个 blob 时算**一处**，「HEAD 仍含」按"或"合并。"""
+    contents = {"s1": "TOKEN-9", "s2": "TOKEN-9"}
+    blobs = {"s1": "f.py", "s2": "f.py"}
+    sections = [("x", "测试节", RULE)]
+    key = ("x", "测试规则", "f.py", "TOKEN-9")
+    assert len(ah._collect_hits(contents, blobs, {}, sections, False)) == 1
+    assert ah._collect_hits(contents, blobs, {}, sections, False)[key][1] is False
+    assert ah._collect_hits(contents, blobs, {"TOKEN-9": ["f.py"]}, sections, False)[key][1] is True
+
+
 # ---------------- 非对称降级 ----------------
 
 @pytest.mark.parametrize("n_secret,n_head,expected", [
