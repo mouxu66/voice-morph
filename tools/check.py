@@ -243,6 +243,56 @@ def _check_web() -> tuple[bool, str]:
     return _run("tsc", cmd + ["tsc", "-b", "--pretty", "false"], web)
 
 
+#: `tools/test-*.cjs` 里**已被专属步骤跑过**的两个，别在 nodetest 里重复一遍
+NODE_TESTS_OWNED_BY_OTHER_STEPS = {
+    "test-check-require.cjs",   # → requires 步
+    "test-electron-load.cjs",   # → electron 步
+}
+
+#: 不属于 tools/test-*.cjs、但同样该由本步守护的独立冒烟脚本
+NODE_SMOKES = ["web/electron/smoke-loadpath.cjs"]
+
+
+def _check_node_tests() -> tuple[bool, str]:
+    """跑 `tools/test-*.cjs` 全部主进程/工具层单元测试（外加 smoke-loadpath）。
+
+    为什么必须补这一步：这些脚本 2026-09-14 之前**没有任何入口跑它们** ——
+    它们看起来像存在着，其实一直是死的。首次接入时当场发现
+    `tools/test-setup-ipc.cjs` 已经红了 3 条（上一轮改首启引导时改坏了契约，
+    没人知道）。**没人跑的门禁比没有门禁更糟**：它会让人以为有保护。
+
+    用 glob 而不是写死列表：以后新加一个 `tools/test-xxx.cjs` 自动进网，
+    不需要有人记得回来改这里。
+
+    约 3.5s（8 个 node 进程的启动开销占大头），所以**不进 --fast** ——
+    pre-commit 要保持 8s 量级，全量/pre-push/CI 才跑它。
+
+    没有 node 时跳过而非失败：跳过是诚实的，假装通过不是。
+    """
+    node = shutil.which("node")
+    if node is None:
+        return True, "跳过（未找到 node）"
+    scripts = sorted(
+        p for p in (ROOT / "tools").glob("test-*.cjs")
+        if p.name not in NODE_TESTS_OWNED_BY_OTHER_STEPS
+    )
+    scripts += [ROOT / rel for rel in NODE_SMOKES]
+    if not scripts:
+        return False, "一个 node 测试都没找到（glob 写错了？）"
+
+    failed: list[str] = []
+    for path in scripts:
+        if not path.exists():
+            failed.append(f"{path.name}（文件不存在）")
+            continue
+        ok, _note = _run(path.stem, [node, str(path)], ROOT)
+        if not ok:
+            failed.append(path.name)
+    if failed:
+        return False, f"{len(failed)}/{len(scripts)} 个失败：{', '.join(failed)}"
+    return True, f"{len(scripts)} 个脚本全绿"
+
+
 def _check_licenses() -> tuple[bool, str]:
     """第三方许可登记门禁：`THIRD_PARTY_NOTICES.md` 的覆盖性必须对得上当前依赖集。
 
@@ -296,11 +346,12 @@ def _check_electron_load() -> tuple[bool, str]:
 
 STEPS = {
     "licenses": lambda fast: _check_licenses(),
+    "requires": lambda fast: _check_requires(),
+    "electron": lambda fast: _check_electron_load(),
+    "nodetest": lambda fast: _check_node_tests(),
     "ruff": lambda fast: _check_ruff(),
     "pytest": lambda fast: _check_pytest(fast),
     "web": lambda fast: _check_web(),
-    "requires": lambda fast: _check_requires(),
-    "electron": lambda fast: _check_electron_load(),
 }
 
 
@@ -518,15 +569,17 @@ def main(argv: list[str] | None = None) -> int:
         return _check_ci_fidelity(recreate=args.recreate)
 
     # 顺序按「快 → 慢」：licenses/requires/electron/ruff 都是毫秒级静态或直接加载检查，
-    # 放前面先拦低级错误；pytest 居中；web（tsc）最慢，只在非 --fast 时跑。
+    # 放前面先拦低级错误；nodetest（约 3.5s）与 pytest 居中；web（tsc）最慢，只在非 --fast 时跑。
     # requires + electron 都进 fast：合计约 0.25s，专治「拆文件漏 require」
     # 这类启动即崩、编译器又不报的 bug（2026-09-12 事故）。
     # licenses 进 fast：许可漏登记只有"加依赖那一次提交"能拦，且只要 0.05s。
+    # nodetest 不进 fast：8 个 node 进程的启动开销就 3.5s，而 pre-commit 只有 8s 预算 ——
+    # 让钩子变慢，人就该开始绕过它了。全量 / pre-push / CI 都会跑。
     names = [n.strip() for n in args.only.split(",") if n.strip()] or [
-        "licenses", "requires", "electron", "ruff", "pytest", "web"
+        "licenses", "requires", "electron", "ruff", "nodetest", "pytest", "web"
     ]
     if args.fast:
-        names = [n for n in names if n != "web"]
+        names = [n for n in names if n not in ("web", "nodetest")]
     if args.no_web:
         names = [n for n in names if n != "web"]
     unknown = [n for n in names if n not in STEPS]

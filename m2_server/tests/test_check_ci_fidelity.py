@@ -120,7 +120,9 @@ def test_ci_fidelity_is_not_a_default_step(check):
     而不是把它排除在外。改这个集合时**两边都要动**，别只改一边做成假绿。
     """
     assert "ci-fidelity" not in check.STEPS
-    assert set(check.STEPS) == {"licenses", "requires", "electron", "ruff", "pytest", "web"}
+    assert set(check.STEPS) == {
+        "licenses", "requires", "electron", "nodetest", "ruff", "pytest", "web",
+    }
 
 
 # ---------------- 5. 裸 runner 环境（"本机资源"那根轴，2026-09-13 补） ----------------
