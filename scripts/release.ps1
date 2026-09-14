@@ -23,6 +23,7 @@ param(
   [switch]$SkipPrune,           # 不清理 release2 里的历史安装包（默认保留最近 2 个版本）
   [switch]$SkipBump,            # 跳过 npm version patch
   [switch]$SkipBuild,           # 跳过前端构建（electron:build 已含 build，通常无需单跑）
+  [switch]$SkipSign,            # 不签名（手头没有 pfx 密码时的本地自测；禁止用于正式分发）
   [switch]$DryRun               # 只做前置检查，不实际构建
 )
 
