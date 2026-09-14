@@ -8,11 +8,13 @@ import numpy as np, soundfile as sf
 # 2026-09-13 开源前脱敏：不再写死 C:\Users\<作者名>\Downloads
 DOWNLOADS = Path.home() / "Downloads"
 
+# 2026-09-14 开源前脱敏（issue #3）：片名换成中性编号 —— 素材本体没入库，名字也不该留。
+# 自己跑的时候把下面换成手头的视频文件名即可；标签只是打印时的简称。
 VIDEOS = [
-    (DOWNLOADS / "老板的胆子真是肥嘟嘟的_哔哩哔哩_bilibili.mp4", "老板的胆子..."),
-    (DOWNLOADS / "神人の外卖（5）_哔哩哔哩_bilibili-20260827-ne4zlou33r.mp4", "神人の外卖5"),
+    (DOWNLOADS / "第三方素材 01.mp4", "素材01"),
+    (DOWNLOADS / "第三方素材 02.mp4", "素材02"),
     (DOWNLOADS / "video_260828_110637.mp4", "video_110637"),
-    (DOWNLOADS / "《美团袋鼠视频合集》_哔哩哔哩_bilibili.mp4", "袋鼠合集"),
+    (DOWNLOADS / "第三方素材 03.mp4", "素材03"),
     (DOWNLOADS / "video_260828_105338.mp4", "video_105338"),
 ]
 TMP = "D:/变声/m1_workshop/_tmp_audio"

@@ -7,7 +7,7 @@ from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
 
 BASE="D:/变声/tts_models/qwen3-tts-1.7b-base"
 REFS={
- "kangaroo":"D:/变声/media/voicebank/kangaroo_110637_ref_24k.wav",  # 美团袋鼠(男)
+ "kangaroo":"D:/变声/media/voicebank/kangaroo_110637_ref_24k.wav",  # 第三方素材（男）
  "me":      "D:/变声/media/voicebank/my_voice_1/reference.wav",     # 你自己的声音(男)
 }
 DEFAULT_TEXTS=[

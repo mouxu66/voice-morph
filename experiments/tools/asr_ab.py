@@ -3,7 +3,7 @@ from faster_whisper import WhisperModel
 
 m = WhisperModel("small", device="cuda", compute_type="float16")
 files = [
-    ("A原声", r"D:\变声\media\clips\神人の外卖（5）_哔哩哔_042.wav"),
+    ("A原声", r"D:\变声\media\clips\第三方素材_042.wav"),
     ("B1_meituan", r"D:\变声\outputs\offlinevc_1787995813849.wav"),
     ("B2_kangaroo", r"D:\变声\outputs\offlinevc_1787998535897.wav"),
 ]

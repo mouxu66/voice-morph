@@ -20,7 +20,7 @@ OUT = os.path.join(HERE, "sim_out.txt")
 WORKER = "http://127.0.0.1:8001"
 
 REF = r"D:\变声\media\vocals\feidudu_merged.wav"          # 用户 19.4s 样本
-CROSS = r"D:\变声\media\vocals\神人の外卖（5）_哔哩哔哩_bilibili.wav"  # 异说话人负样本
+CROSS = r"D:\变声\media\vocals\第三方素材_neg.wav"          # 异说话人负样本（片名已脱敏，issue #3）
 SELF_A = os.path.join(HERE, "sim_ref_a.wav")
 SELF_B = os.path.join(HERE, "sim_ref_b.wav")
 GEN1 = os.path.join(HERE, "sim_gen_1.wav")

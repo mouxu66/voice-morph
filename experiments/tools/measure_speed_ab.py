@@ -17,7 +17,7 @@ def envelope(path):
     peaks, _ = find_peaks(env, height=0.15, distance=int(sr * 0.12))
     return active, len(peaks), sr, len(d) / sr
 
-a = envelope(r"D:\变声\media\clips\神人の外卖（5）_哔哩哔_042.wav")
+a = envelope(r"D:\变声\media\clips\第三方素材_042.wav")
 b = envelope(r"D:\变声\outputs\offlinevc_1787995813849.wav")
 c = envelope(r"D:\变声\outputs\offlinevc_1787998535897.wav")
 print(f"A 原声: 有效语音 {a[0]:.2f}s / 文件 {a[3]:.2f}s, 音节峰 {a[1]}")

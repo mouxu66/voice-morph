@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
-"""搬运新素材：Downloads 的两个文件 -> media/raw_videos；清理旧素材。结果写 move_out.txt。"""
+"""搬运新素材：Downloads 的素材文件夹 -> media/raw_videos；清理旧素材。结果写 move_out.txt。
+
+2026-09-14 开源前脱敏（issue #3）：片名换成中性名 —— 自己跑的时候改回本机实际名字即可。
+"""
 import os
 import shutil
 
-SRC_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "我胆子就是肥嘟嘟的")
+SRC_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "第三方素材")
+# 被否决的旧素材（用于清理 raw_videos 里的残留）
+OLD_MATERIAL = "第三方素材 02"
 RAW = r"D:\变声\media\raw_videos"
 CLIPS = r"D:\变声\media\clips"
 OUT = r"D:\变声\tts_trial\move_out.txt"
@@ -33,7 +38,7 @@ try:
     # 清理被否决的旧素材：旧视频与 55 个旧切片
     removed = []
     for n in os.listdir(RAW):
-        if "神人の外卖" in n:
+        if OLD_MATERIAL in n:
             os.remove(os.path.join(RAW, n))
             removed.append(n)
     if os.path.isdir(CLIPS):
