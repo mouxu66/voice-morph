@@ -106,3 +106,15 @@ web/dist_old_bak*/
 scripts/vm-test.config.ps1
 .freebuff/
 .trae/
+
+# ===== 审计工具的本地素材清单（含第三方片名，不入库）=====
+# tools/audit_git_history.py 从这里读"要盯哪些第三方素材名"。清单本身必须留在本机：
+# 把片名写进仓库（哪怕只写进那个防泄漏的工具）等于泄漏源换了个位置、还更隐蔽。
+.audit-materials.txt
+
+# ===== m1_workshop 的原始数据产物（含第三方片名，不入库；issue #3）=====
+# _clip_picks.txt（切片挑选）与 _f0.json（f0 测量）是当时那次实验的原始输出：
+# 没有任何脚本引用它们，对克隆者也没有意义，但**改名会破坏可复现性**。
+# 所以按 issue #3 的结论整类移出仓库 —— 文件仍留在本机，只是不再入库。
+m1_workshop/_*.txt
+m1_workshop/_*.json
