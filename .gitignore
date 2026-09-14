@@ -95,6 +95,8 @@ tts_trial/ft_samples/
 
 # ===== 工作记录 =====
 .workbuddy/
+# 项目数据目录（非缓存）：任务总览等产出，含本机路径与私有结论，不入库
+.workbuddy-ai/
 m2_server/data/
 
 # ===== 代码签名证书（含私钥，绝不入库）=====
