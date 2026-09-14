@@ -167,8 +167,8 @@ export function UpdateDialog({ open, onClose, initialCheck }: {
             </div>
           ) : notConfigured ? (
             <div className="space-y-2 text-xs leading-5 text-muted-foreground">
-              <p className="text-sm font-medium text-card-foreground">未配置更新源</p>
-              <p>当前是纯本地模式，不会发起任何网络请求。若你是分发方，把 <code className="rounded bg-background px-1 font-mono">latest.json</code> 放到任意静态地址，再设置环境变量 <code className="rounded bg-background px-1 font-mono">VM_UPDATE_URL</code> 指向它即可启用自动更新。</p>
+              <p className="text-sm font-medium text-card-foreground">更新源已关闭</p>
+              <p>当前是纯本地模式，不会发起任何网络请求（更新源被环境变量 <code className="rounded bg-background px-1 font-mono">VM_UPDATE_URL=off</code> 关掉了）。安装版默认从 GitHub Releases 检查更新；若你要用自建源，把 <code className="rounded bg-background px-1 font-mono">VM_UPDATE_URL</code> 指向自己的 <code className="rounded bg-background px-1 font-mono">latest.json</code> 即可。</p>
             </div>
           ) : upToDate ? (
             <div className="flex items-start gap-2.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2.5">

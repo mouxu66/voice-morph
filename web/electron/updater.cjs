@@ -2,11 +2,13 @@
 //
 // 设计要点：
 //   1. 托管无关：更新源就是一个静态清单 latest.json，放 GitHub Releases、对象存储、
-//      网盘直链、甚至局域网共享目录都行 —— 地址由环境变量 VM_UPDATE_URL 指定。
+//      网盘直链、甚至局域网共享目录都行 —— 地址见下面的 DEFAULT_MANIFEST_URL，
+//      运行时可用环境变量 VM_UPDATE_URL 覆盖。
 //   2. 零新依赖：只用 Node 内置 http/https/fs/crypto，不需要 electron-updater，
 //      也就不用联网装包、不用管签名工具链。
-//   3. 纯本地默认：没配 VM_UPDATE_URL 就不发任何网络请求（默认行为完全离线），
-//      检查更新按钮会明确提示"未配置更新源"。
+//   3. 默认指向 GitHub Releases（2026-09-14 起）。别名形如
+//      `/releases/latest/download/latest.json` —— 永远指向最新 Release，发版不用改代码。
+//      想要完全离线的机器可显式关掉：`VM_UPDATE_URL=off`（见 DISABLED_VALUES）。
 //   4. 安全：清单里必须给 sha256，下载完校验通过才允许安装，防止下载损坏或被劫持。
 //
 // 清单 latest.json 格式：
@@ -39,6 +41,16 @@ function skipFile() {
 }
 
 /**
+ * 「已把安装包交给安装程序」的标记文件。
+ * 它的唯一用途是让**下一次启动**知道：updates/ 里那些缓存包已经完成使命、可以删了。
+ * 为什么不在 installUpdate 里直接删：安装包正被 NSIS 进程占用，Windows 不允许删除
+ * （删了还会让安装中途失败）；而安装成功后应用已经退出，只能由新版本启动时来收尾。
+ */
+function pendingInstallFile() {
+  return path.join(app.getPath("userData"), "update-install-pending.json");
+}
+
+/**
  * 更新检查结果落盘路径。
  * 默认写到 userData/update-check-result.json（供测试断言「收到更新提示」）。
  * 测试钩子 VM_UPDATE_TEST_AUTO 场景下，允许用 VM_UPDATE_TEST_RESULT 环境变量
@@ -55,13 +67,24 @@ function currentVersion() {
   return app.getVersion();
 }
 
-// 更新源地址：发新版前填一次即可（留空 = 纯本地，不检查更新）。
-// 运行时可用环境变量 VM_UPDATE_URL 覆盖（调试 / 内网分发时方便改指向）。
-const DEFAULT_MANIFEST_URL = "";
+// 更新源地址：默认走 GitHub Releases 的「最新版永久别名」。
+//
+// 为什么用 `/releases/latest/download/<asset>` 而不是指向某个具体 tag：
+// 这条路径由 GitHub 动态解析到**最新**那个 Release 的同名 asset，所以发新版时
+// 只要把 latest.json 和安装包挂到新 Release 上，客户端不用改任何配置就能拿到。
+// 发版流程见 docs/release-sop.md（scripts\release.ps1 -Publish 一条命令完成）。
+const DEFAULT_MANIFEST_URL =
+  "https://github.com/mouxu66/voice-morph/releases/latest/download/latest.json";
 
-/** 更新源地址；空串 = 未配置，保持纯本地（不发任何网络请求） */
+// 显式关闭更新（回到"纯本地、零网络请求"）：VM_UPDATE_URL 设成这些值之一即可。
+// 之所以需要它：默认源是非空的，光把环境变量留空已无法表达"我要离线"。
+const DISABLED_VALUES = new Set(["0", "off", "none", "false", "disable", "disabled"]);
+
+/** 更新源地址；返回空串 = 不检查更新（纯本地，不发任何网络请求） */
 function manifestUrl() {
-  return String(process.env.VM_UPDATE_URL || DEFAULT_MANIFEST_URL || "").trim();
+  const raw = String(process.env.VM_UPDATE_URL || DEFAULT_MANIFEST_URL || "").trim();
+  if (DISABLED_VALUES.has(raw.toLowerCase())) return "";
+  return raw;
 }
 
 /** 简易语义化版本比较：按数字段逐段比，忽略前缀 v 与后缀（如 -beta） */
@@ -164,10 +187,57 @@ function downloadedFile(manifest) {
   return fs.existsSync(p) ? p : null;
 }
 
+/** updates/ 下的文件列表（只列文件，忽略子目录） */
+function listCached() {
+  const dir = updateDir();
+  try {
+    return fs.readdirSync(dir)
+      .map((n) => path.join(dir, n))
+      .filter((p) => {
+        try { return fs.statSync(p).isFile(); } catch { return false; }
+      });
+  } catch {
+    return [];   // 目录还不存在
+  }
+}
+
+/**
+ * 清理 updates/ 里的下载缓存。调用时机 = 应用启动（见 update-ipc.cjs 的 registerUpdateIpc）。
+ *
+ * 规则（保守，绝不误删还没安装的包）：
+ *   · 存在「待安装标记」→ 说明这份缓存已经交给安装程序了 → 清空整个目录 + 标记。
+ *   · 没有标记 → 只清 `.part` 残片（下载中断留下的），其余保留，仍可复用缓存。
+ * 删除失败（安装程序还占着文件）不算错：标记留着，下次启动再试。
+ */
+function sweepDownloadedPackages() {
+  const removed = [];
+  const failed = [];
+  let handedOff = false;
+  try {
+    handedOff = fs.existsSync(pendingInstallFile());
+  } catch { /* 读不到标记就当没有 */ }
+
+  for (const p of listCached()) {
+    const isPart = /\.part$/i.test(p);
+    if (!handedOff && !isPart) continue;
+    try {
+      fs.unlinkSync(p);
+      removed.push(path.basename(p));
+    } catch {
+      failed.push(path.basename(p));
+    }
+  }
+  // 只有确认清干净了才摘掉标记，否则下次启动接着收拾
+  if (handedOff && failed.length === 0) {
+    try { fs.unlinkSync(pendingInstallFile()); } catch { /* 下次再来 */ }
+  }
+  return { removed, failed, handedOff };
+}
+
 /**
  * 检查更新。
  * 返回 { ok, configured, hasUpdate, current, latest, reason }
- *  - configured=false：没配更新源（保持离线），不算错误
+ *  - configured=false：更新源被显式关闭（VM_UPDATE_URL=off），不算错误
  *  - hasUpdate：有新版本且未被"跳过此版本"
  */
 async function checkForUpdates() {
@@ -176,7 +246,7 @@ async function checkForUpdates() {
   if (!url) {
     return {
       ok: true, configured: false, hasUpdate: false, current, latest: null,
-      reason: "未配置更新源（VM_UPDATE_URL），当前为纯本地模式",
+      reason: "更新源已关闭（VM_UPDATE_URL=off），当前为纯本地模式",
     };
   }
   let res;
@@ -351,6 +421,15 @@ function installArgs() {
 function installUpdate(file) {
   const p = String(file || "");
   if (!p || !fs.existsSync(p)) return { ok: false, reason: "安装包不存在，请重新下载" };
+  // 先落标记再拉起安装程序：标记 = "这份缓存已交出去过"，下次启动据此清理（约 100MB）。
+  // 写失败也不影响安装，只是缓存会多留一份，不值得因此中断更新。
+  try {
+    fs.writeFileSync(
+      pendingInstallFile(),
+      JSON.stringify({ file: p, at: new Date().toISOString() }),
+      "utf-8",
+    );
+  } catch { /* ignore */ }
   try {
     spawn(p, installArgs(), { detached: true, stdio: "ignore" }).unref();
   } catch (e) {
@@ -380,6 +459,8 @@ module.exports = {
   installArgs,
   skipVersion,
   downloadedFile,
+  sweepDownloadedPackages,
   updateDir,
+  pendingInstallFile,
   updateCheckResultPath,
 };

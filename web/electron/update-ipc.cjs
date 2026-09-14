@@ -1,12 +1,25 @@
 // 应用自动更新 IPC + 启动静默检查 —— 从 main.cjs 拆出，行为保持一致。
-// 更新源是静态清单 latest.json，地址由环境变量 VM_UPDATE_URL 指定；未配置则完全离线
-// （纯本地默认，不发任何网络请求）。详见 web/electron/UPDATE.md。
+// 更新源是静态清单 latest.json，默认指向 GitHub Releases 的最新版永久别名
+// （见 updater.cjs 的 DEFAULT_MANIFEST_URL），可用 VM_UPDATE_URL 覆盖；
+// 设成 off 则完全不联网（纯本地）。详见 web/electron/UPDATE.md。
 const { app, ipcMain } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const updater = require("./updater.cjs");
 
 function registerUpdateIpc() {
+  // 先把上次更新留下的缓存包收掉（installUpdate 写过"待安装"标记才会动手）。
+  // 放在启动时做，是因为安装包被 NSIS 占用期间删不掉（Windows 文件锁）。
+  try {
+    const swept = updater.sweepDownloadedPackages();
+    if (swept.removed.length) {
+      console.log(`[update] 已清理更新缓存：${swept.removed.join(", ")}`);
+    }
+    if (swept.failed.length) {
+      console.log(`[update] 更新缓存待下次重试（文件被占用）：${swept.failed.join(", ")}`);
+    }
+  } catch { /* 清理失败绝不影响启动 */ }
+
   ipcMain.handle("app:version", () => updater.currentVersion());
 
   ipcMain.handle("update:check", async () => {

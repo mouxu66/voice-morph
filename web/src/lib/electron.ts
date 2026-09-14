@@ -38,7 +38,7 @@ export type UpdateManifest = {
 /** 检查结果 */
 export type UpdateCheck = {
   ok: boolean;
-  /** false = 没配 VM_UPDATE_URL，当前是纯本地模式（不算错误） */
+  /** false = 更新源被显式关闭（VM_UPDATE_URL=off），当前是纯本地模式（不算错误） */
   configured: boolean;
   hasUpdate: boolean;
   current: string;
