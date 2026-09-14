@@ -65,6 +65,7 @@ powershell -ExecutionPolicy Bypass -File scripts\release.ps1 `
 2/7 前端构建        cd web && npm run build （tsc -b && vite build）
 3/7 版本号 +1       npm version patch --no-git-tag-version（不自动 git commit）
 4/7 签名打包        npm run electron:build（electron-builder --win，实为 build + pack）
+                    └─ -SkipSign 时改跑 npm run build + electron-builder -c.win.certificateFile=（跳过签名）
 4.5 签名校验        Get-AuthenticodeSignature，Valid / NotSigned 明确提示
 5/7 生成清单        node electron/make-update-manifest.cjs --dir release2 --version <新版本>
                     └─ -Publish 且未给 -BaseUrl 时，自动推导 GitHub asset 直链作为 base-url
@@ -95,6 +96,28 @@ powershell -ExecutionPolicy Bypass -File scripts\release.ps1 `
 > 现在默认只留最近 2 个版本（回滚够用）。删除前先 `SetLength(0)` 截断再删 ——
 > 本机的「安全删除」会把文件挪进回收站、空间不会立刻归还，截断过再删即使进回收站也只是空壳
 > （约定见 `tools/hard_delete.py`）。要留全量就加 `-SkipPrune`。
+
+### 安装行为：升级 = 原地替换
+
+客户端装过一次后，再装新版**不会**产生第二份安装，也不会多一个桌面图标。
+这不是靠约定，是靠三处机制（2026-09-14 逐行核对 electron-builder 的 NSIS 模板确认）：
+
+| 机制 | 落点 | 作用 |
+|---|---|---|
+| 安装路径 | `HKCU\Software\<GUID>` → `InstallLocation` | 安装器每次先读它，装回原处 |
+| 快捷方式名 | 同键 → `ShortcutName` | 名字不变则同名覆盖；变了则 `Rename` 迁移旧图标 |
+| 旧版本 | `installSection.nsh` → `uninstallOldVersion` | 装之前先卸旧版（`KeepShortcuts=true` 时保留快捷方式） |
+
+`web/package.json` 的 `nsis` 段刻意做了三件事，改动前先看 `tools/test-packaging.cjs` 的守卫：
+
+- `allowToChangeInstallationDirectory: false` —— 不显示目录选择页。**这是"升级绝不并存"的关键**：
+  开着的时候安装向导那页路径可编辑，手滑改到别的目录就会装出第二份。
+- `shortcutName: "变声工坊"` —— 钉死快捷方式名，不再从 `productName` 推导。
+- `deleteAppDataOnUninstall: false` —— 卸载保留 `userData`（模型路径 / 声卡设置 / 更新源）。
+
+> **要自定义安装目录**（例如装到 D 盘）：命令行传 NSIS 标准开关 ——
+> `"VoiceMorph-Setup-0.2.3.exe" /D=D:\Apps\VoiceMorph`。
+> `/D` 必须是**最后一个参数**，且路径**不能加引号**。
 
 
 ## 三、更新源怎么配
@@ -181,7 +204,14 @@ https://github.com/mouxu66/voice-morph/releases/latest/download/latest.json
 
 - `CSC_KEY_PASSWORD` 没设或设错 → 重新设（具体值见证书管理处，**不落盘、不入库**）。
 - 证书文件缺失 → 确认 `certs/black-seraph.pfx` 存在。
-- 只想本地测：不加签名也能跑，只是用户会看到「未知发布者」。
+- 只想本地测：加 **`-SkipSign`**。脚本会改用 `web/electron-builder.nosign.cjs`
+  把 `win.certificateFile` 置成 `null` 跳过签名；包能用，只是用户会看到「未知发布者」。
+  **正式分发禁止加这个开关。**
+- ⚠️ **别试图用 CLI 覆盖证书路径，走不通**。electron-builder 判断"要不要签名"用的是
+  `certificateFile != null`（只看是不是 null、不看真假），于是：
+  `-c.win.certificateFile=` → 空串被当成证书路径 → `ENOENT: open ''`；
+  `-c.win.certificateFile=null` → CLI 不做 JSON 解析 → 被当成文件名 → `open '...\web\null'`。
+  **只有在配置文件里给真正的 `null` 才生效** —— 这就是 `-SkipSign` 走 `--config` 的原因。
 
 ### E6 · 用户安装时弹「Windows 已保护你的电脑」（SmartScreen）
 

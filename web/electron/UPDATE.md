@@ -81,6 +81,9 @@ powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -Publish -Notes "�
 - 只支持 Windows NSIS 安装包（`.exe`）。
 - 不做增量更新，每次下载完整安装包。
 - 不做代码签名校验（安装包本身的 SmartScreen 提示仍在，与更新机制无关）。
-- GPL-3.0 的 Seed-VC 链路**不在发行物里**：`seed_vc_repo/` 与 `seed_vc/` 均被 `.gitignore` 忽略
-  （入库文件数 0），且 `extraResources` 只收 `dist` / `m2_server` / `tools` / `requirements.txt`。
-  所以公开分发这个安装包不带该组件；只有本机自己启用该链路时才涉及它的许可（2026-09-14 核实）。
+- GPL-3.0 的 Seed-VC **本体不在发行物里**：`seed_vc_repo/` 与 `seed_vc/` 均被 `.gitignore` 忽略
+  （入库文件数 0）。
+- ⚠️ 但发行物**含调用它的适配模块** `m2_server/seed_vc.py` —— 那是本项目自有的 MIT 代码，经
+  子进程调用外部仓库的 `inference_v2.py`（`ab_chain.py` / `offline_vc.py` 也会用到它）。
+  用户要用该链路须自行 clone Seed-VC、GPL 义务自负。该模块**尚未**登记进
+  `THIRD_PARTY_NOTICES.md`，评估挂在 `docs/ROADMAP.md` P1-2 的残余项里（2026-09-14 核实）。
