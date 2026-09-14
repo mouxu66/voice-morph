@@ -88,6 +88,57 @@ export type SetupStatus = {
 /** 目录选择结果；ok=false 表示用户强行选了校验不过的路径 */
 export type SetupPickResult = { canceled: boolean; path?: string; ok?: boolean; reason?: string };
 
+// ---- 自动扫描与下载指引 ----
+
+/** 指引里的一段操作步骤（command 可直接复制粘贴） */
+export type GuideStep = { title: string; detail?: string; command?: string };
+/** 指引里的一个官方链接（由主进程按 kind+序号 解析，渲染层拿不到任意 URL 的能力） */
+export type GuideLink = { label: string; url: string; note?: string };
+
+/** 某一项外部资源的「去哪下 / 下完长什么样」说明 */
+export type ResourceGuide = {
+  key: SetupKind;
+  label: string;
+  /** 体积（下载前就该知道，不该点下去才发现是 20 GB） */
+  sizeText: string;
+  why: string;
+  /** 目标目录结构（等宽字体展示） */
+  layout: string[];
+  steps: GuideStep[];
+  links: GuideLink[];
+  /** 易踩的坑（如「--local-dir 不能省」） */
+  notes: string[];
+};
+
+export type GuidesPayload = { verifiedAt: string; guides: ResourceGuide[] };
+
+/** 扫描到的一个候选位置 */
+export type ScanCandidate = {
+  kind: SetupKind;
+  /** 对 kind 为 tts_venv 时是 python.exe 路径，其余是目录 */
+  path: string;
+  score: number;
+  reasons: string[];
+  /** 同 kind 里得分最高者 */
+  recommended?: boolean;
+};
+
+export type ScanStats = {
+  dirsVisited: number;
+  /** 是否触到目录数/时间预算上限（结果可能不全） */
+  truncated: boolean;
+  elapsedMs: number;
+  maxDirs: number;
+  roots: number;
+};
+
+export type ScanResult = {
+  ok: boolean;
+  reason?: string;
+  candidates: Partial<Record<SetupKind, ScanCandidate[]>>;
+  stats: ScanStats | null;
+};
+
 interface ElectronBridge {
   startBackend?: () => Promise<StartResult>;
   stopBackend?: () => Promise<{ ok: boolean }>;
@@ -97,6 +148,9 @@ interface ElectronBridge {
   petGuide?: (payload: PetGuidePayload) => void;
   // ---- 模型配置 / 首启引导 ----
   setupStatus?: () => Promise<SetupStatus>;
+  setupGuides?: () => Promise<GuidesPayload>;
+  setupOpenGuideLink?: (kind: SetupKind, index: number) => Promise<{ ok: boolean; url?: string; reason?: string }>;
+  setupScan?: (opts?: { kinds?: SetupKind[] }) => Promise<ScanResult>;
   setupPickDir?: (kind: SetupKind) => Promise<SetupPickResult>;
   setupSave?: (patch: Partial<SetupStatus["config"]>) => Promise<{ ok: boolean } & SetupStatus>;
   setupDismiss?: () => Promise<{ ok: boolean } & SetupStatus>;
@@ -253,5 +307,47 @@ export async function showSetupConfig(): Promise<void> {
     await electron.setupShowConfig();
   } catch {
     /* 忽略 */
+  }
+}
+
+// ---------------- 自动扫描 / 下载指引 ----------------
+
+/** 是否能自动扫描本机（桌面壳内才有；网页模式返回 false，UI 隐藏扫描入口） */
+export const hasSetupScan = Boolean(electron?.setupScan);
+
+/** 下载指引；非桌面端返回 null */
+export async function getSetupGuides(): Promise<GuidesPayload | null> {
+  if (!electron?.setupGuides) return null;
+  try {
+    return await electron.setupGuides();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 扫描本机找可用资源。
+ * `kinds` 留空 = 三项都找。扫描全程在主进程里异步进行，不冻结界面。
+ */
+export async function scanSetup(kinds?: SetupKind[]): Promise<ScanResult | null> {
+  if (!electron?.setupScan) return null;
+  try {
+    return await electron.setupScan(kinds && kinds.length ? { kinds } : undefined);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 打开指引里的某条链接。
+ * 只传 kind + 序号：URL 由主进程从常量里查，渲染层没有打开任意地址的能力。
+ */
+export async function openGuideLink(kind: SetupKind, index: number): Promise<boolean> {
+  if (!electron?.setupOpenGuideLink) return false;
+  try {
+    const r = await electron.setupOpenGuideLink(kind, index);
+    return Boolean(r?.ok);
+  } catch {
+    return false;
   }
 }

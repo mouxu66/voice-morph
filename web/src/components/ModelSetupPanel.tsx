@@ -1,16 +1,25 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { AlertTriangle, Check, FolderOpen, Info, Loader2, RefreshCw, RotateCcw, X } from "lucide-react"
 import {
-  hasSetup,
+  getSetupGuides,
   getSetupStatus,
+  hasSetup,
+  hasSetupScan,
+  openGuideLink,
   pickSetupDir,
   restartBackend,
   saveSetup,
+  scanSetup,
   showSetupConfig,
+  type ResourceGuide,
+  type ScanCandidate,
+  type ScanResult,
   type SetupItem,
   type SetupKind,
   type SetupStatus,
 } from "@/lib/electron"
+import { DiscoveryList, GuideBlock, GuideFooter, ScanHub } from "@/components/ModelDiscovery"
+import { notify } from "@/lib/notify"
 import { cn } from "@/lib/utils"
 
 /** 每一项给用户的说明与"没配会怎样" */
@@ -36,14 +45,33 @@ const SOURCE_LABEL: Record<SetupItem["source"], string> = {
   none: "未配置",
 }
 
+/** 检测项 key → app-config 字段名（与主进程 setup-ipc.cjs 的 CONFIG_KEY 保持一致） */
+const PATCH_KEY: Record<SetupKind, "ttsModelsDir" | "ttsVenvPy" | "rvcRoot"> = {
+  tts_models: "ttsModelsDir",
+  tts_venv: "ttsVenvPy",
+  rvc_root: "rvcRoot",
+}
+
+/** 扫描结果 → 可直接落盘的配置 patch */
+function candidatesToPatch(cands: Partial<Record<SetupKind, ScanCandidate[]>>): Partial<SetupStatus["config"]> {
+  const pick: Partial<SetupStatus["config"]> = {}
+  for (const kind of Object.keys(PATCH_KEY) as SetupKind[]) {
+    const top = (cands[kind] || [])[0]
+    if (top) pick[PATCH_KEY[kind]] = top.path
+  }
+  return pick
+}
+
 function StatusRow({
   item,
   busy,
   onPick,
+  footer,
 }: {
   item: SetupItem
   busy: boolean
   onPick: (kind: SetupKind) => void
+  footer?: ReactNode
 }) {
   const meta = KIND_META[item.key]
   return (
@@ -93,6 +121,7 @@ function StatusRow({
         </button>
       </div>
       <p className="mt-2 text-[11px] leading-4 text-muted-foreground/80">{meta.hint}</p>
+      {footer}
     </div>
   )
 }
@@ -108,6 +137,17 @@ export function ModelSetupPanel({ open, onClose }: { open: boolean; onClose: () 
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState("")
   const [dirty, setDirty] = useState(false)
+  // ---- 自动扫描 / 下载指引 ----
+  const [guides, setGuides] = useState<ResourceGuide[]>([])
+  const [guideVerifiedAt, setGuideVerifiedAt] = useState<string>("")
+  const [scanning, setScanning] = useState(false)
+  const [scanResult, setScanResult] = useState<ScanResult | null>(null)
+  const [scanError, setScanError] = useState("")
+  const [applying, setApplying] = useState(false)
+  const [applied, setApplied] = useState(false)
+  const [openGuide, setOpenGuide] = useState<SetupKind | null>(null)
+  // 只在面板「打开」时自动扫一次；用户手动点「重新扫描」不受此限
+  const autoScannedRef = useRef(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -118,9 +158,116 @@ export function ModelSetupPanel({ open, onClose }: { open: boolean; onClose: () 
     }
   }, [])
 
+  const runScan = useCallback(async (kinds?: SetupKind[]) => {
+    setScanning(true)
+    setScanError("")
+    try {
+      const r = await scanSetup(kinds)
+      if (!r) {
+        setScanError("当前环境不支持自动扫描")
+        setScanResult(null)
+        return
+      }
+      if (!r.ok) {
+        setScanError(r.reason || "扫描失败")
+        setScanResult(r)
+        return
+      }
+      setScanResult(r)
+    } finally {
+      setScanning(false)
+    }
+  }, [])
+
   useEffect(() => {
-    if (open) { setMsg(""); setDirty(false); void load() }
+    if (!open) {
+      autoScannedRef.current = false
+      setOpenGuide(null)
+      setApplied(false)
+      return
+    }
+    setMsg("")
+    setDirty(false)
+    autoScannedRef.current = false
+    void load()
+    if (hasSetupScan) {
+      void (async () => {
+        const g = await getSetupGuides()
+        if (g) {
+          setGuides(g.guides)
+          setGuideVerifiedAt(g.verifiedAt)
+        }
+      })()
+    }
   }, [open, load])
+
+  // 自动扫描：打开面板且「有缺失项」时自动跑一次。
+  // 这是本面板存在的第一性问题 —— 用户打不开功能时，最需要的是"你机器上其实有，
+  // 就在这儿"，而不是一个空的目录选择器。
+  useEffect(() => {
+    if (!open || !status || autoScannedRef.current || !hasSetupScan) return
+    if (status.missing.length === 0) return
+    autoScannedRef.current = true
+    void runScan(status.missing)
+  }, [open, status, runScan])
+
+  const candidatesOf = useCallback(
+    (kind: SetupKind): ScanCandidate[] => scanResult?.candidates?.[kind] || [],
+    [scanResult],
+  )
+
+  /** 采用某个候选（单个） */
+  const handleUseCandidate = useCallback(async (kind: SetupKind, cand: ScanCandidate) => {
+    setBusy(true)
+    setMsg("")
+    setApplied(false)
+    try {
+      const next = await saveSetup({ [PATCH_KEY[kind]]: cand.path })
+      if (next) {
+        setStatus(next)
+        setDirty(true)
+        setApplied(true)
+        notify.success("已采用该位置", "重启后端后生效")
+        window.dispatchEvent(new CustomEvent("vm-setup-changed"))
+      } else {
+        notify.error("保存失败", "配置文件可能不可写")
+      }
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  /** 一键采用所有推荐位置（每项取扫描得分最高的那个） */
+  const handleApplyRecommended = useCallback(async () => {
+    const patch = candidatesToPatch(scanResult?.candidates || {})
+    if (!Object.keys(patch).length) {
+      notify.warn("没有可采用的推荐位置")
+      return
+    }
+    setApplying(true)
+    setMsg("")
+    try {
+      const next = await saveSetup(patch)
+      if (next) {
+        setStatus(next)
+        setDirty(true)
+        setApplied(true)
+        notify.success(`已写入 ${Object.keys(patch).length} 项推荐位置`, "重启后端后生效")
+        window.dispatchEvent(new CustomEvent("vm-setup-changed"))
+      } else {
+        notify.error("保存失败", "配置文件可能不可写")
+      }
+    } finally {
+      setApplying(false)
+    }
+  }, [scanResult])
+
+  const handleOpenLink = useCallback((kind: SetupKind, index: number) => {
+    void (async () => {
+      const ok = await openGuideLink(kind, index)
+      if (!ok) notify.error("打开链接失败", "可手动复制上面的地址到浏览器")
+    })()
+  }, [])
 
   const handlePick = useCallback(async (kind: SetupKind) => {
     setBusy(true)
@@ -232,28 +379,66 @@ export function ModelSetupPanel({ open, onClose }: { open: boolean; onClose: () 
                   : `⚠ 有 ${missingCount} 项未就绪，对应功能暂不可用（其余功能不受影响）`}
               </div>
 
+              {hasSetupScan && (
+                <ScanHub
+                  missing={status.items.filter((i) => !i.ok).map((i) => i.key)}
+                  scanning={scanning}
+                  scanResult={scanResult}
+                  scanError={scanError}
+                  onScan={() => void runScan(status.items.filter((i) => !i.ok).map((i) => i.key))}
+                  onApplyAll={() => void handleApplyRecommended()}
+                  applying={applying}
+                  applied={applied}
+                />
+              )}
+
               <div className="space-y-2">
-                {status.items.map((item) => (
-                  <StatusRow key={item.key} item={item} busy={busy} onPick={(k) => void handlePick(k)} />
-                ))}
+                {status.items.map((item) => {
+                  const guide = guides.find((g) => g.key === item.key)
+                  return (
+                    <StatusRow
+                      key={item.key}
+                      item={item}
+                      busy={busy}
+                      onPick={(k) => void handlePick(k)}
+                      footer={
+                        // 已就绪的项不再劝：它不需要"换个位置"或"下载指引"
+                        item.ok || !hasSetupScan ? null : (
+                          <DiscoveryList
+                            kind={item.key}
+                            candidates={candidatesOf(item.key)}
+                            scanning={scanning}
+                            scanned={scanResult !== null && !scanning}
+                            busy={busy}
+                            onUse={(c) => void handleUseCandidate(item.key, c)}
+                            onOpenGuide={() =>
+                              setOpenGuide((k) => (k === item.key ? null : item.key))
+                            }
+                            guideOpen={openGuide === item.key}
+                          >
+                            {openGuide === item.key && guide && (
+                              <GuideBlock
+                                guide={guide}
+                                verifiedAt={guideVerifiedAt}
+                                onOpenLink={(i) => handleOpenLink(item.key, i)}
+                              />
+                            )}
+                          </DiscoveryList>
+                        )
+                      }
+                    />
+                  )
+                })}
               </div>
 
-              <div className="rounded-lg border border-border bg-background/60 p-3">
-                <p className="flex items-start gap-2 text-[11px] leading-4 text-muted-foreground">
-                  <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
-                  <span>
-                    模型文件体积较大，不随安装包分发，需单独下载或从原机器拷贝目录。
-                    配置文件位置：<span className="font-mono">{status.configPath}</span>
-                  </span>
-                </p>
-                <button
-                  type="button"
-                  onClick={() => void showSetupConfig()}
-                  className="mt-2 rounded-md border border-border bg-background px-2.5 py-1.5 text-[11px] text-muted-foreground transition hover:text-foreground"
-                >
-                  打开配置文件位置
-                </button>
-              </div>
+              <GuideFooter configPath={status.configPath} />
+              <button
+                type="button"
+                onClick={() => void showSetupConfig()}
+                className="rounded-md border border-border bg-background px-2.5 py-1.5 text-[11px] text-muted-foreground transition hover:text-foreground"
+              >
+                打开配置文件位置
+              </button>
 
               {msg && (
                 <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
