@@ -113,9 +113,14 @@ def test_venv_python_path_matches_platform(check):
 # ---------------- 4. 别把慢模式混进默认检查 ----------------
 
 def test_ci_fidelity_is_not_a_default_step(check):
-    """它是独立模式：跑几分钟且会建 venv，绝不能混进 pre-commit 的默认流程。"""
+    """它是独立模式：跑几分钟且会建 venv，绝不能混进 pre-commit 的默认流程。
+
+    2026-09-14 起默认清单多了 `licenses`（第三方许可登记门禁）：它只要 0.05s 且纯本地，
+    进 pre-commit 才拦得住"加依赖却没登记许可"那一次提交 —— 所以这里同步改，
+    而不是把它排除在外。改这个集合时**两边都要动**，别只改一边做成假绿。
+    """
     assert "ci-fidelity" not in check.STEPS
-    assert set(check.STEPS) == {"requires", "electron", "ruff", "pytest", "web"}
+    assert set(check.STEPS) == {"licenses", "requires", "electron", "ruff", "pytest", "web"}
 
 
 # ---------------- 5. 裸 runner 环境（"本机资源"那根轴，2026-09-13 补） ----------------

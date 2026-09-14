@@ -4,25 +4,29 @@
 检查入口**：跑不跑、跑哪些、环境变量设没设，全靠人记得。2026-09-11 的代码审查
 就撞上两次「文档写着全绿、实际已过期」（GBK 编码失败的用例、随机挂的队列用例）。
 
-本脚本把五个检查串起来，顺序按「快 → 慢」，失败即停并返回非零：
+本脚本把六个检查串起来，顺序按「快 → 慢」，失败即停并返回非零：
 
-    1. requires    —— 静态检查 electron/*.cjs 里「用了 Node 内建模块标识符但没 require」。
+    1. licenses    —— 第三方许可登记门禁：`THIRD_PARTY_NOTICES.md` 的机器块必须与
+                      当前依赖集严格相等（漏登记 / 残留条目 / 缺义务行都判红）。
+                      许可漏了是**事后补不回来**的（包已发出去就违规），而症状是零，
+                      只有"加依赖那一次提交"能拦。纯本地文本解析，约 0.05s。
+    2. requires    —— 静态检查 electron/*.cjs 里「用了 Node 内建模块标识符但没 require」。
                       2026-09-12 事故：alt-hint.cjs 拆文件时漏 require("fs")，打包后
                       主进程 require 阶段即崩，用户装了打不开。零依赖、约 0.1s。
-    2. electron    —— 用 electron 桩 require 全部 electron/*.cjs，require 阶段崩即 FAIL。
+    3. electron    —— 用 electron 桩 require 全部 electron/*.cjs，require 阶段崩即 FAIL。
                       requires 的上位替代：还能抓 require 了不存在的路径、
                       顶层求值期访问 undefined 等。约 0.15s。
-    3. ruff        —— 静态扫描，专抓真 bug 类规则（F/E9：未定义名、未用变量、
+    4. ruff        —— 静态扫描，专抓真 bug 类规则（F/E9：未定义名、未用变量、
                       f-string 缺占位符、语法错误）。实测抓到过 rvc_common 的
                       未定义 logger（生产代码 NameError）。
-    4. pytest      —— m2_server 全量（默认）或快速子集（--fast）。
-    5. tsc -b      —— web 前端类型检查（不产出 dist）。
+    5. pytest      —— m2_server 全量（默认）或快速子集（--fast）。
+    6. tsc -b      —— web 前端类型检查（不产出 dist）。
 
 用法：
 
     python tools/check.py                 # 全量（= 交付前 / CI 跑的那条）
-    python tools/check.py --fast          # 提交前（pre-commit）：requires + electron
-                                          #                       + ruff + 快速子集
+    python tools/check.py --fast          # 提交前（pre-commit）：licenses + requires
+                                          #          + electron + ruff + 快速子集
     python tools/check.py --no-web        # 没有 Node 环境时
     python tools/check.py --only pytest   # 只跑某一项（逗号分隔）
     python tools/check.py --list          # 只看会跑什么，不执行
@@ -239,6 +243,21 @@ def _check_web() -> tuple[bool, str]:
     return _run("tsc", cmd + ["tsc", "-b", "--pretty", "false"], web)
 
 
+def _check_licenses() -> tuple[bool, str]:
+    """第三方许可登记门禁：`THIRD_PARTY_NOTICES.md` 的覆盖性必须对得上当前依赖集。
+
+    为什么进这个入口：许可漏登记是**事后补不回来**的 —— 安装包一旦发出去就已经违规，
+    而症状是零（没人会报错）。唯一能拦的地方就是"加依赖的那一次提交"。
+
+    纯本地文本解析、零依赖、约 0.05s，所以也进 --fast（pre-commit）。
+    只判"有没有漏"，不判"许可填得对不对"：后者要人回溯一手来源，机器判断不了。
+    """
+    script = ROOT / "tools" / "audit_licenses.py"
+    if not script.exists():
+        return False, "未找到 tools/audit_licenses.py"
+    return _run("licenses", [sys.executable, str(script)], ROOT)
+
+
 def _check_requires() -> tuple[bool, str]:
     """静态检查 electron/*.cjs 里「用了内建模块标识符但没 require」。
 
@@ -276,6 +295,7 @@ def _check_electron_load() -> tuple[bool, str]:
 
 
 STEPS = {
+    "licenses": lambda fast: _check_licenses(),
     "ruff": lambda fast: _check_ruff(),
     "pytest": lambda fast: _check_pytest(fast),
     "web": lambda fast: _check_web(),
@@ -497,12 +517,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.ci_fidelity:
         return _check_ci_fidelity(recreate=args.recreate)
 
-    # 顺序按「快 → 慢」：requires/electron/ruff 都是毫秒级静态或直接加载检查，
+    # 顺序按「快 → 慢」：licenses/requires/electron/ruff 都是毫秒级静态或直接加载检查，
     # 放前面先拦低级错误；pytest 居中；web（tsc）最慢，只在非 --fast 时跑。
     # requires + electron 都进 fast：合计约 0.25s，专治「拆文件漏 require」
     # 这类启动即崩、编译器又不报的 bug（2026-09-12 事故）。
+    # licenses 进 fast：许可漏登记只有"加依赖那一次提交"能拦，且只要 0.05s。
     names = [n.strip() for n in args.only.split(",") if n.strip()] or [
-        "requires", "electron", "ruff", "pytest", "web"
+        "licenses", "requires", "electron", "ruff", "pytest", "web"
     ]
     if args.fast:
         names = [n for n in names if n != "web"]
