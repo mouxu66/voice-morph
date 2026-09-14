@@ -2,3 +2,7 @@ node_modules/
 dist/
 release/
 *.local
+
+# 裸 runner 复刻期间 node_modules 被临时改名的落点（见 tools/check.py 的 _hide_node_modules）。
+# 正常情况下跑完就还原；这里兜底，防止被强杀后残留物被误提交。
+__node_modules_hidden_for_bare_runner__/

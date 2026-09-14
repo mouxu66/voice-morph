@@ -252,6 +252,31 @@ NODE_TESTS_OWNED_BY_OTHER_STEPS = {
 #: 不属于 tools/test-*.cjs、但同样该由本步守护的独立冒烟脚本
 NODE_SMOKES = ["web/electron/smoke-loadpath.cjs"]
 
+#: 入口脚本里"直接解析 electron"的写法（含 `require.resolve("electron", …)`）
+_STRAY_ELECTRON_RE = re.compile(r"""require(?:\.resolve)?\s*\(\s*['"]electron['"]""")
+
+
+def _stray_electron_requires(path: Path) -> list[int]:
+    """返回入口脚本里"直接解析 electron"的行号（忽略注释行）。
+
+    为什么是硬错误（2026-09-14 CI 事故）：本步在 CI 的 backend job 里跑，而那个 job
+    **不装 npm 依赖**。于是任何 `require("electron")` / `require.resolve("electron")`
+    都会 `MODULE_NOT_FOUND` —— 脚本只能在装了 `web/node_modules` 的本机跑，又回到
+    "测试存在却从不在门禁里跑"的老坑（犯错指南 §3.15）。
+    正确写法：先 `installElectronStub(...)`，再 require 受测模块。
+
+    本机有 node_modules，所以**本地跑是绿的**，光看结果发现不了 —— 只能静态拦。
+    """
+    bad: list[int] = []
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for lineno, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith("//") or stripped.startswith("*"):
+            continue
+        if _STRAY_ELECTRON_RE.search(line):
+            bad.append(lineno)
+    return bad
+
 
 def _check_node_tests() -> tuple[bool, str]:
     """跑 `tools/test-*.cjs` 全部主进程/工具层单元测试（外加 smoke-loadpath）。
@@ -268,6 +293,14 @@ def _check_node_tests() -> tuple[bool, str]:
     pre-commit 要保持 8s 量级，全量/pre-push/CI 才跑它。
 
     没有 node 时跳过而非失败：跳过是诚实的，假装通过不是。
+
+    **裸 runner 复刻（第三根轴）**：CI 的 backend job **从不 `npm install`**，
+    所以入口脚本必须能在没有 `web/node_modules` 时跑。本机装了 node_modules，
+    动态跑永远绿 —— 2026-09-14 就是这样让 CI 当场红了 2/7。做法是
+    `--ci-fidelity`（`VM_BARE_RUNNER=1`）期间把 `web/node_modules` 临时改名挪开，
+    跑完在 finally 里挪回来（同一分区 rename，O(1)，不动数据）。
+    静态守卫（`_stray_electron_requires`）仍然保留：它拦的是**写法**，
+    挪目录只能拦 electron 这一种 npm 依赖。
     """
     node = shutil.which("node")
     if node is None:
@@ -280,17 +313,75 @@ def _check_node_tests() -> tuple[bool, str]:
     if not scripts:
         return False, "一个 node 测试都没找到（glob 写错了？）"
 
-    failed: list[str] = []
-    for path in scripts:
-        if not path.exists():
-            failed.append(f"{path.name}（文件不存在）")
-            continue
-        ok, _note = _run(path.stem, [node, str(path)], ROOT)
-        if not ok:
-            failed.append(path.name)
+    hidden = _hide_node_modules()
+    if hidden is False:
+        return False, "无法临时移开 web/node_modules（裸 runner 复刻失败，未跑任何脚本）"
+    try:
+        failed: list[str] = []
+        for path in scripts:
+            if not path.exists():
+                failed.append(f"{path.name}（文件不存在）")
+                continue
+            stray = _stray_electron_requires(path)
+            if stray:
+                where = ", ".join(str(n) for n in stray)
+                failed.append(f"{path.name}（第 {where} 行直接解析 electron：CI 不装 npm 依赖，"
+                              f"须改用 electron-stub）")
+                continue
+            ok, _note = _run(path.stem, [node, str(path)], ROOT)
+            if not ok:
+                failed.append(path.name)
+    finally:
+        _unhide_node_modules(hidden)
     if failed:
         return False, f"{len(failed)}/{len(scripts)} 个失败：{', '.join(failed)}"
-    return True, f"{len(scripts)} 个脚本全绿"
+    suffix = "（裸 runner：node_modules 已临时移开）" if hidden else ""
+    return True, f"{len(scripts)} 个脚本全绿{suffix}"
+
+
+#: `web/node_modules` 在裸 runner 复刻期间被挪到的名字（与源目录同分区，rename 即可）
+NODE_MODULES_HIDDEN = "web/__node_modules_hidden_for_bare_runner__"
+
+
+def _hide_node_modules():
+    """裸 runner 复刻：临时移开 `web/node_modules`。
+
+    返回 True（已移开）/ False（就是本次调用留下的残留，不该发生）/ None（未启用或没有目录）。
+    只在 `VM_BARE_RUNNER=1`（即 `--ci-fidelity`）时启用：日常全量跑要保持本机原样，
+    否则每次跑都动一次 node_modules 太容易出意外。
+    """
+    if os.environ.get("VM_BARE_RUNNER") != "1":
+        return None
+    nm = ROOT / "web" / "node_modules"
+    dst = ROOT / NODE_MODULES_HIDDEN
+    if dst.exists():
+        # 上一次被强杀留下的残留：这次先还原，绝不删
+        _say(f"[nodetest] 发现上次残留 {NODE_MODULES_HIDDEN}，先还原")
+        _unhide_node_modules(True)
+    if not nm.is_dir():
+        return None                      # 本机本来就没装，等价于裸 runner
+    try:
+        nm.rename(dst)
+    except OSError as exc:
+        _say(f"[nodetest] 移开 web/node_modules 失败：{exc}")
+        return False
+    _say(f"[nodetest] 裸 runner 复刻：web/node_modules → {NODE_MODULES_HIDDEN}")
+    return True
+
+
+def _unhide_node_modules(hidden) -> None:
+    """把 `web/node_modules` 挪回来。`hidden` 为真时无条件尝试（失败也不抛）。"""
+    if not hidden:
+        return
+    nm = ROOT / "web" / "node_modules"
+    dst = ROOT / NODE_MODULES_HIDDEN
+    if dst.is_dir() and not nm.exists():
+        try:
+            dst.rename(nm)
+            _say("[nodetest] 已还原 web/node_modules")
+        except OSError as exc:                      # 还原失败必须吼出来，别静默
+            _say(f"[nodetest] ✗ 还原 web/node_modules 失败：{exc}")
+            _say(f"[nodetest] ✗ 手工执行：mv {NODE_MODULES_HIDDEN} web/node_modules")
 
 
 def _check_licenses() -> tuple[bool, str]:
