@@ -7,6 +7,7 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -SkipBump        # 不升版本，只重打包当前版本
 #   powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -DryRun          # 只检查前置条件，不构建
 #   powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -Publish         # 打完后直接发 GitHub Release（推荐）
+#   powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -SkipSign        # 不签名（本地自测；用户装时会看到"未知发布者"）
 #
 # 与 build-and-publish.ps1 的关系：本脚本是面向发版的正式入口，多了前置检查、
 # 版本号一致性校验、清单校验（sha256 回读比对）、GitHub Release 发布、历史产物清理、
@@ -42,26 +43,34 @@ Write-Host "================ 变声工坊发版 ================"
 Write-Host "仓库根：$RepoRoot"
 
 # ---------- 1. 前置检查 ----------
-Step "1/6 前置检查"
+Step "1/7 前置检查"
 
 if (-not (Test-Path $PkgJson)) { Die "找不到 $PkgJson" }
 $pkgBefore = Get-Content $PkgJson -Raw | ConvertFrom-Json
 Ok "当前版本：$($pkgBefore.version)"
 
 # 证书密码：签名必需，缺了打出来的包会被 SmartScreen 拦
-if (-not $env:CSC_KEY_PASSWORD) {
+if ($SkipSign) {
+  Warn "已指定 -SkipSign：本次不签名（仅供本地自测，禁止用于正式分发）"
+} elseif (-not $env:CSC_KEY_PASSWORD) {
   Warn "未设置 CSC_KEY_PASSWORD —— 安装包将不带签名，Windows 会拦。"
   # 密码绝不写进仓库：这里只给用法，具体值从证书管理处取（2026-09-13 前这里写死过明文，
   # 会随发布日志一起落盘；改后由 tools/check_secrets.py 机器拦截）
   Warn "  设法：`$env:CSC_KEY_PASSWORD = '<你的 pfx 密码>'（自签证书可用 scripts\gen-selfsigned-cert.ps1 重建）"
-  Warn "  仅本地测试可忽略；正式发版必须设置。"
+  Warn "  仅本地测试可忽略；正式发版必须设置（或显式加 -SkipSign 表明是自测）。"
 } else {
   Ok "CSC_KEY_PASSWORD 已设置（签名将启用）"
 }
 
 # 证书文件
 $certPath = Join-Path $RepoRoot "certs\black-seraph.pfx"
-if (-not (Test-Path $certPath)) { Warn "找不到自签证书 $certPath，打包可能失败" } else { Ok "证书文件存在" }
+if ($SkipSign) {
+  Ok "已跳过证书检查（-SkipSign）"
+} elseif (-not (Test-Path $certPath)) {
+  Warn "找不到自签证书 $certPath，打包可能失败"
+} else {
+  Ok "证书文件存在"
+}
 
 # 产物目录
 if (-not (Test-Path $Release2Dir)) { New-Item -ItemType Directory -Force -Path $Release2Dir | Out-Null }
@@ -152,11 +161,21 @@ $NewVersion = $pkgAfter.version
 Ok "本次发版版本：$NewVersion"
 
 # ---------- 4. 签名打包 ----------
-Step "4/7 签名打包（electron-builder --win）"
+if ($SkipSign) { Step "4/7 打包（electron-builder --win，-SkipSign 不签名）" }
+else           { Step "4/7 签名打包（electron-builder --win）" }
 Push-Location $WebDir
 try {
-  npm run electron:build
-  if ($LASTEXITCODE -ne 0) { Die "electron-builder 打包失败（退出码 $LASTEXITCODE）" }
+  if ($SkipSign) {
+    # 用 CLI 覆盖掉 win.certificateFile。certificateFile 为空串时 electron-builder 会判定
+    # 「无签名信息」而跳过签名；否则它会拿空密码去调 signtool，重试 3 次后打包失败。
+    npm run build
+    if ($LASTEXITCODE -ne 0) { Die "前端构建失败（退出码 $LASTEXITCODE）" }
+    npx electron-builder --win "-c.win.certificateFile="
+    if ($LASTEXITCODE -ne 0) { Die "electron-builder 打包失败（退出码 $LASTEXITCODE）" }
+  } else {
+    npm run electron:build
+    if ($LASTEXITCODE -ne 0) { Die "electron-builder 打包失败（退出码 $LASTEXITCODE）" }
+  }
 } finally { Pop-Location }
 Ok "打包完成"
 
