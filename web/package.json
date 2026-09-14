@@ -83,7 +83,9 @@
     "nsis": {
       "artifactName": "VoiceMorph-Setup-${version}.${ext}",
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": false,
+      "shortcutName": "变声工坊",
+      "deleteAppDataOnUninstall": false
     }
   }
 }
