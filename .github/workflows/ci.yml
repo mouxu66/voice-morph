@@ -15,6 +15,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# 关于 actions 版本（2026-09-14 升，全为 Node 24 原生）：
+#   Node 20 已于 2026-06-02 起被强制跑在 Node 24 上，2026-09-16 从 runner 里移除。
+#   旧的 checkout@v4 / setup-python@v5 / setup-node@v4 都是 Node 20 时代的产物，
+#   继续留着届时会以"注解警告 → 某天直接不可用"的方式变红。升到当前 major：
+#   checkout@v7 / setup-python@v7 / setup-node@v7（各自 releases API 实读，2026-09-14）。
+#   官方建议进一步把 uses 钉到 commit SHA（供应链加固）—— 本项目暂未做，
+#   要做就统一做，别一半 SHA 一半 tag。
+
 jobs:
   # 后端：Windows runner 不是随手选的——wechat_voice / loopback_capture 顶层
   # 依赖 sounddevice / pyaudiowpatch（Windows WASAPI 内录），Linux 上装不起来。
@@ -22,9 +30,9 @@ jobs:
     name: 后端（ruff + pytest）
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -35,7 +43,7 @@ jobs:
       # 2026-09-12「装了打不开」事故的机器门禁，**不能因为这里没 node 就跳过**。
       # 镜像里其实预装了 Node，但那是镜像的隐式行为：显式钉一版，
       # 否则哪天镜像变了就变成"未找到 node（需要 Node.js）"的假红。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -65,9 +73,9 @@ jobs:
     name: 前端（tsc -b）
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
