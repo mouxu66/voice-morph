@@ -3,6 +3,7 @@ import type {
   DiagnoseInfo,
   HealthInfo,
   SendChainInfo,
+  TtsChainInfo,
   VideoItem,
   VoiceInfo,
   VoiceQc,
@@ -515,6 +516,11 @@ export async function sendChainCheck(): Promise<SendChainInfo> {
   return jsonFetch<SendChainInfo>("/audio/send_chain");
 }
 
+/** 输字变声链路自检：只读检查引擎模型/引擎进程/当前音色参考音/输出目录。 */
+export async function ttsChainCheck(): Promise<TtsChainInfo> {
+  return jsonFetch<TtsChainInfo>("/tts/send_chain");
+}
+
 // ---- RVC 袋鼠训练集（Qwen3-TTS 批量生成） ----
 
 export type RvcDatasetItem = {
@@ -628,6 +634,8 @@ export type RvcLiveStatus = {
   /** 性能档位：balanced=均衡·音质优先 / game=游戏低占用 */
   perf_profile?: string;
   perf_profile_desc?: string;
+  /** 推理子进程的线程上限；0 = 不注入（交系统默认，会按逻辑核数开池） */
+  omp_threads?: number;
   /** GPU 显存（MB）；无 GPU 或 nvidia-smi 不可用时为 null */
   gpu_total_mb?: number | null;
   gpu_used_mb?: number | null;

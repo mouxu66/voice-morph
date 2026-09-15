@@ -35,7 +35,7 @@ from pydantic import BaseModel
 import config as cfg
 import prosody_relay
 from rvc_common import (ensure_infer_pth, find_index, _find_pids_by_cmdline, _kill_pids)
-from rvc_live import _audio, _reset_audio
+from rvc_live import _audio, _reset_audio, _thread_env
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,10 @@ def cascade_start(req: CascadeStartReq | None = None):
     try:
         proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=logf,
                                 stderr=subprocess.STDOUT,
-                                creationflags=_NO_WINDOW)
+                                creationflags=_NO_WINDOW,
+                                # 限线程：级联链路里 RVC + whisper + TTS 三段同样会
+                                # 各自按逻辑核数开线程池，不限制会瞬时拉满整机 CPU。
+                                env={**os.environ, **_thread_env()})
         _pid_cache["ts"] = None
     except Exception as e:
         logf.close()

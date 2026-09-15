@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleAlert,
+  Cpu,
   Database,
   Download,
   Gauge,
@@ -24,7 +25,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useLive } from "@/pages/Live/useLive"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { EffectLadderCard } from "@/components/EffectLadderCard"
-import type { SendChainInfo } from "@/types"
+import { ChainResultList } from "@/components/ChainResultList"
 import { LiveLevelMeter } from "@/components/voice-studio/LiveLevelMeter"
 import { RvcChainDiagram } from "@/components/voice-studio/RvcChainDiagram"
 import { RvcVoicePicker } from "@/components/voice-studio/RvcVoicePicker"
@@ -46,57 +47,6 @@ function StatusBadge({ ok, tone = "auto", children }: { ok: boolean; tone?: "aut
       {ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <CircleAlert className="h-3.5 w-3.5" />}
       {children}
     </span>
-  )
-}
-
-/** 发送链路自检结果：全绿一行收拢；有红/黄问题逐条列出并给修复入口 */
-function ChainResultList(p: {
-  chain: SendChainInfo
-  micMissing: boolean
-  fixingKey: string | null
-  onFix: (key: string) => void
-}) {
-  const issues = p.chain.items.filter((it) => !it.ok)
-  const allOk = issues.length === 0 && !p.micMissing
-  if (allOk) {
-    return (
-      <p className="mt-4 flex items-center gap-2 text-xs text-emerald-600">
-        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-        链路已就绪：虚拟声卡、默认录音、播放设备、麦克风都正常，可以放心开麦。
-      </p>
-    )
-  }
-  return (
-    <ul className="mt-4 space-y-2">
-      {issues.map((it) => (
-        <li key={it.key}
-          className={cn("flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2.5 text-xs",
-            it.warn ? "border-amber-500/40 bg-amber-500/10" : "border-destructive/40 bg-destructive/10")}>
-          <CircleAlert className={cn("h-3.5 w-3.5 shrink-0", it.warn ? "text-amber-500" : "text-destructive")} />
-          <span className="min-w-0 flex-1">
-            <span className="font-medium text-card-foreground">{it.label}：</span>
-            {it.detail}
-            {it.hint && <span className="mt-0.5 block leading-4 text-muted-foreground">{it.hint}</span>}
-          </span>
-          {(it.key === "default_capture" || it.key === "stale_backup") && (
-            <button type="button" onClick={() => p.onFix(it.key)} disabled={p.fixingKey !== null}
-              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1.5 font-medium text-primary transition hover:bg-primary/20 disabled:pointer-events-none disabled:opacity-50">
-              {p.fixingKey === it.key ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
-              {p.fixingKey === it.key ? "修复中…" : it.key === "default_capture" ? "一键最优" : "恢复默认设备"}
-            </button>
-          )}
-        </li>
-      ))}
-      {p.micMissing && (
-        <li className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs">
-          <CircleAlert className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-          <span className="min-w-0 flex-1">
-            <span className="font-medium text-card-foreground">麦克风：</span>没检测到录音设备
-            <span className="mt-0.5 block leading-4 text-muted-foreground">插上麦克风 / 手机后，点下方「刷新设备列表」，再等自检复检。</span>
-          </span>
-        </li>
-      )}
-    </ul>
   )
 }
 
@@ -378,6 +328,17 @@ export function LivePage(p: ReturnType<typeof useLive>) {
               正按新档位重启实时变声（约 3 秒）…
             </p>
           )}
+
+          {/* CPU 侧优化：RVC 默认按逻辑核数开线程池，实测瞬时拉满 14~17 核 */}
+          {p.ompThreads != null && p.ompThreads > 0 && (
+            <p className="mt-3 flex items-start gap-2 text-[11px] leading-4 text-muted-foreground">
+              <Cpu className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
+              <span>
+                推理线程已限到 <span className="font-mono text-card-foreground">{p.ompThreads}</span> 个
+                —— 变声进程不会再抢满 CPU 核心，打游戏时更少掉帧（音质与延迟不受影响）。
+              </span>
+            </p>
+          )}
         </section>
 
         {/* 音频发送链路自检：进页面自动跑一遍；有问题就地给修复入口 */}
@@ -412,8 +373,18 @@ export function LivePage(p: ReturnType<typeof useLive>) {
               </p>
             ) : p.chain ? (
               <ChainResultList
-                chain={p.chain}
-                micMissing={p.audioDevices !== null && p.audioDevices.items.length === 0}
+                items={p.chain.items}
+                allOk={p.chain.all_ok}
+                allOkText="链路已就绪：虚拟声卡、默认录音、播放设备、麦克风都正常，可以放心开麦。"
+                extraIssue={
+                  p.audioDevices !== null && p.audioDevices.items.length === 0
+                    ? {
+                        label: "麦克风",
+                        detail: "没检测到录音设备",
+                        hint: "插上麦克风 / 手机后，点下方「刷新设备列表」，再等自检复检。",
+                      }
+                    : null
+                }
                 fixingKey={p.fixingKey}
                 onFix={(k) => void p.runChainFix(k)}
               />

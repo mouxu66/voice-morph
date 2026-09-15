@@ -119,6 +119,42 @@ TTS_WORKER_VRAM_MB = 4800
 # 低于此线直接拒绝启动并给出可操作提示，而不是让进程跑到一半崩。
 MIN_LIVE_FREE_VRAM_MB = int(os.environ.get("VM_LIVE_MIN_FREE_VRAM_MB", "2048"))
 
+# ---- RVC 子进程线程数上限（CPU 三轴账的落地点，2026-09-16）----
+# 背景：RVC 的 worker 只是 1 线程壳，真正推理在**上百线程的子进程**里（实测 119 线程），
+# 根源是 OMP/MKL/OPENBLAS_NUM_THREADS **全为 None** → OpenMP 默认取逻辑核数，
+# 再加上 FAISS index 搜索本身多线程。后果是变声一开就瞬时拉满 14~17 个核。
+#
+# 实测（tools/rvc_cpu_cost*.py，2026-09-14 三轴资源账）限 OMP_NUM_THREADS=2 是**纯赚**：
+#   CPU 秒/音频秒 1.355 → 0.209（6.5× 改善）、等效核数 14.4 → 2.3
+#   而 RTF 0.094 → 0.091 **基本不变**（音频实时率不受影响 → 音质/流畅度零代价）
+# 对无畏契约 / CS2 这类 CPU 敏感游戏，这就是「掉帧」与「无感」的差别。
+#
+# 为什么设 2 而不是 1：留一个伴随线程，避免单线程下 FAISS 搜索成为延迟瓶颈。
+# 想关掉恢复旧行为：VM_LIVE_OMP_THREADS=0（或不设，设 0 表示不注入、交给系统默认）。
+OMP_THREADS = int(os.environ.get("VM_LIVE_OMP_THREADS", "2"))
+
+
+def _thread_env() -> dict:
+    """构造注入 RVC 子进程的线程数环境变量（OMP/MKL/OPENBLAS 三件套）。
+
+    三个变量必须一起设：只设 OMP 时，某些 BLAS 后端（MKL/OpenBLAS）仍会各自
+    按逻辑核数开线程池，实测漏设 MKL 时等效核数只从 14.4 降到 9 左右，收益减半。
+
+    VM_LIVE_OMP_THREADS=0 表示不注入（保留历史行为，便于对照复测）。
+    返回**待合并**的字典，调用方在 env 上覆盖，不污染本进程环境
+    （本进程设了会连带影响 FastAPI 自己的线程池）。
+    """
+    if OMP_THREADS <= 0:
+        return {}
+    v = str(OMP_THREADS)
+    return {
+        "OMP_NUM_THREADS": v,
+        "MKL_NUM_THREADS": v,
+        "OPENBLAS_NUM_THREADS": v,
+        # 抑制 OpenMP 在每轮推理反复调整线程池带来的抖动
+        "OMP_WAIT_POLICY": "PASSIVE",
+    }
+
 
 def _sync_worker_for_profile(profile: str) -> bool:
     """按性能档位同步 Qwen3-TTS worker（游戏档卸载，其余档位不动）。
@@ -736,6 +772,7 @@ def _start_monitor(gain: float) -> bool:
              "--gain", str(gain), "--wait", "3.0"],
             cwd=str(RVC_ROOT), creationflags=CREATE_NO_WINDOW,
             stdout=log, stderr=subprocess.STDOUT,
+            env={**os.environ, **_thread_env()},
         )
         log.close()
         return True
@@ -813,6 +850,8 @@ def rvc_live_status(exp_name: str | None = None):
         # 性能档位 + GPU 显存占用（无 GPU/nvidia-smi 不可用时 gpu_* 为 null）
         "perf_profile": live_settings.get()["perf_profile"],
         "perf_profile_desc": PROFILE_DESC.get(live_settings.get()["perf_profile"], ""),
+        # 推理子进程的线程上限（0 = 不注入，交系统默认；见 _thread_env）
+        "omp_threads": OMP_THREADS,
         **_gpu_snapshot(),
         # 语音合成引擎（Qwen3-TTS worker）是否驻留显存：game 档卸载后为 False
         "tts_worker_alive": qwen3_tts.worker_alive(),
@@ -1099,6 +1138,9 @@ def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
         proc = subprocess.Popen(
             cmd, cwd=str(RVC_ROOT), creationflags=flags,
             stdout=gui_log, stderr=subprocess.STDOUT,
+            # 限线程：RVC 默认拿逻辑核数开 OpenMP/BLAS 线程池（实测拉满 14~17 核），
+            # 限到 2 后 CPU 成本降 6.5× 而 RTF 不变。详见 _thread_env() 注释。
+            env={**os.environ, **_thread_env()},
         )
         _pid_cache["ts"] = None  # 清缓存，确保秒退检测能探到新进程
     except Exception as e:
@@ -1143,6 +1185,8 @@ def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
                 [str(VENV_PY), str(STREAM_PY), "--asr-only",
                  "--state-path", str(ASR_STATE_FILE), "--out-dir", str(cfg.OUTPUTS_DIR)],
                 stdout=asr_log, stderr=subprocess.STDOUT,
+                # whisper 是最吃 CPU 的伴随进程，限线程收益最直接
+                env={**os.environ, **_thread_env()},
             )
             asr_log.close()
             asr_started = True

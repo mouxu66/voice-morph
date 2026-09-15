@@ -455,6 +455,8 @@ export function useLive() {
     liveProcVramMb: liveStatus?.live_proc_vram_mb ?? null,
     /** 语音合成引擎是否驻留显存（game 档卸载后为 false） */
     ttsWorkerAlive: liveStatus?.tts_worker_alive ?? null,
+    /** 推理子进程线程上限；null = 后端未上报（旧版后端） */
+    ompThreads: liveStatus?.omp_threads ?? null,
     start,
     stop,
     setProfile,
