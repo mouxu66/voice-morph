@@ -1,5 +1,6 @@
 import {
   ArrowDown,
+  AudioLines,
   CheckCircle2,
   ChevronDown,
   CircleAlert,
@@ -17,11 +18,13 @@ import {
   Terminal,
   Upload,
   WandSparkles,
+  Wrench,
 } from "lucide-react"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useLive } from "@/pages/Live/useLive"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { EffectLadderCard } from "@/components/EffectLadderCard"
+import type { SendChainInfo } from "@/types"
 import { LiveLevelMeter } from "@/components/voice-studio/LiveLevelMeter"
 import { RvcChainDiagram } from "@/components/voice-studio/RvcChainDiagram"
 import { RvcVoicePicker } from "@/components/voice-studio/RvcVoicePicker"
@@ -43,6 +46,57 @@ function StatusBadge({ ok, tone = "auto", children }: { ok: boolean; tone?: "aut
       {ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <CircleAlert className="h-3.5 w-3.5" />}
       {children}
     </span>
+  )
+}
+
+/** 发送链路自检结果：全绿一行收拢；有红/黄问题逐条列出并给修复入口 */
+function ChainResultList(p: {
+  chain: SendChainInfo
+  micMissing: boolean
+  fixingKey: string | null
+  onFix: (key: string) => void
+}) {
+  const issues = p.chain.items.filter((it) => !it.ok)
+  const allOk = issues.length === 0 && !p.micMissing
+  if (allOk) {
+    return (
+      <p className="mt-4 flex items-center gap-2 text-xs text-emerald-600">
+        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+        链路已就绪：虚拟声卡、默认录音、播放设备、麦克风都正常，可以放心开麦。
+      </p>
+    )
+  }
+  return (
+    <ul className="mt-4 space-y-2">
+      {issues.map((it) => (
+        <li key={it.key}
+          className={cn("flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2.5 text-xs",
+            it.warn ? "border-amber-500/40 bg-amber-500/10" : "border-destructive/40 bg-destructive/10")}>
+          <CircleAlert className={cn("h-3.5 w-3.5 shrink-0", it.warn ? "text-amber-500" : "text-destructive")} />
+          <span className="min-w-0 flex-1">
+            <span className="font-medium text-card-foreground">{it.label}：</span>
+            {it.detail}
+            {it.hint && <span className="mt-0.5 block leading-4 text-muted-foreground">{it.hint}</span>}
+          </span>
+          {(it.key === "default_capture" || it.key === "stale_backup") && (
+            <button type="button" onClick={() => p.onFix(it.key)} disabled={p.fixingKey !== null}
+              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1.5 font-medium text-primary transition hover:bg-primary/20 disabled:pointer-events-none disabled:opacity-50">
+              {p.fixingKey === it.key ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
+              {p.fixingKey === it.key ? "修复中…" : it.key === "default_capture" ? "一键最优" : "恢复默认设备"}
+            </button>
+          )}
+        </li>
+      ))}
+      {p.micMissing && (
+        <li className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs">
+          <CircleAlert className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+          <span className="min-w-0 flex-1">
+            <span className="font-medium text-card-foreground">麦克风：</span>没检测到录音设备
+            <span className="mt-0.5 block leading-4 text-muted-foreground">插上麦克风 / 手机后，点下方「刷新设备列表」，再等自检复检。</span>
+          </span>
+        </li>
+      )}
+    </ul>
   )
 }
 
@@ -289,6 +343,47 @@ export function LivePage(p: ReturnType<typeof useLive>) {
             </p>
           )}
         </section>
+
+        {/* 音频发送链路自检：进页面自动跑一遍；有问题就地给修复入口 */}
+        {!p.liveOn && (p.chain || p.chainLoading) && (
+          <section className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-mono text-xs uppercase tracking-widest text-primary">SEND CHAIN</p>
+                <h3 className="mt-1 flex items-center gap-2 text-lg font-semibold text-card-foreground">
+                  <AudioLines className="h-4 w-4 text-primary" />
+                  音频发送链路自检
+                </h3>
+                <p className="mt-1.5 max-w-xl text-xs leading-5 text-muted-foreground">
+                  进页面自动查一遍：虚拟声卡、默认录音、麦克风、播放设备有没有就位。有问题直接在这里修，修完自动复检。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void p.runChainCheck()}
+                disabled={p.chainLoading}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
+              >
+                {p.chainLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                {p.chainLoading ? "检查中…" : "重新检测"}
+              </button>
+            </div>
+
+            {p.chainLoading && !p.chain ? (
+              <p className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                正在枚举音频设备（首次约 1~2 秒）…
+              </p>
+            ) : p.chain ? (
+              <ChainResultList
+                chain={p.chain}
+                micMissing={p.audioDevices !== null && p.audioDevices.items.length === 0}
+                fixingKey={p.fixingKey}
+                onFix={(k) => void p.runChainFix(k)}
+              />
+            ) : null}
+          </section>
+        )}
 
         {/* 01 选音色 —— 实时页以前没有这一步，导致"选了却不像" */}
         <section>

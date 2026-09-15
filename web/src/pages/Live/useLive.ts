@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import {
+  applyAudioConfig,
   exportRvcDataset,
   generateRvcDataset,
   getLiveAudioDevices,
   getRvcGenStatus,
   listRvcDataset,
   listRvcVoices,
+  restoreAudioConfig,
   rvcLiveMonitor,
   rvcLiveSetProfile,
   rvcLiveStart,
@@ -14,6 +16,7 @@ import {
   rvcLiveStop,
   rvcTrainStart,
   rvcTrainStatus,
+  sendChainCheck,
   setLiveAudioDevices,
   type LiveAudioDevices,
   type RvcGenStatus,
@@ -21,6 +24,7 @@ import {
   type RvcTrainStatus,
   type RvcVoicesInfo,
 } from "@/api/client"
+import type { SendChainInfo } from "@/types"
 
 /**
  * 实时变声页的状态机。
@@ -339,6 +343,52 @@ export function useLive() {
     [refreshAudioDevices],
   )
 
+  // ---- 音频发送链路自检（进页面自动跑一遍；有问题就地给修复入口）----
+
+  const [chain, setChain] = useState<SendChainInfo | null>(null)
+  const [chainLoading, setChainLoading] = useState(false)
+  const [fixingKey, setFixingKey] = useState<string | null>(null)
+
+  const runChainCheck = useCallback(async () => {
+    setChainLoading(true)
+    try {
+      setChain(await sendChainCheck())
+    } catch {
+      /* 后端未启动时静默，与主轮询一致 */
+    } finally {
+      setChainLoading(false)
+    }
+  }, [])
+
+  // 「首次进入页面」自动查一遍；运行中（设备已被切走/备份中）不打扰
+  useEffect(() => {
+    if (liveOn || chain !== null) return
+    void runChainCheck()
+  }, [liveOn, chain, runChainCheck])
+
+  /** 自检项的修复动作：default_capture 用一键最优，残留用恢复默认；修完立刻复检 */
+  const runChainFix = useCallback(
+    async (key: string) => {
+      setFixingKey(key)
+      setFeedback(null)
+      try {
+        const r = key === "default_capture" ? await applyAudioConfig() : await restoreAudioConfig()
+        if (!r.ok) throw new Error((r.error as string) ?? "修复失败")
+        setFeedback({
+          tone: "ok",
+          text: key === "default_capture" ? "已应用「一键最优」设备配置，正在复检…" : "已恢复默认设备，正在复检…",
+        })
+      } catch (error) {
+        setFeedback({ tone: "error", text: msgOf(error, "修复失败") })
+      } finally {
+        setFixingKey(null)
+        void runChainCheck()
+        void refreshAudioDevices()
+      }
+    },
+    [runChainCheck, refreshAudioDevices],
+  )
+
   // ---- 性能档位（balanced/game） + GPU 显存 ----
 
   const perfProfile = liveStatus?.perf_profile
@@ -413,6 +463,11 @@ export function useLive() {
     refreshAudioDevices,
     saveAudioDevice,
     toggleDenoise,
+    chain,
+    chainLoading,
+    fixingKey,
+    runChainCheck,
+    runChainFix,
     train,
     generateCorpus,
     importCorpus,
