@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useSearchParams } from "react-router-dom"
 import {
   exportRvcDataset,
   generateRvcDataset,
@@ -48,6 +49,10 @@ export function useLive() {
       return null
     }
   })
+  const [searchParams] = useSearchParams()
+  // 深链预选：?voice=<exp>（首页「用它开麦说话」/ 效果阶梯跳到实时变声时带上）
+  const voiceParam = searchParams.get("voice")
+  const appliedVoiceParam = useRef<string | null>(null)
   const [liveStatus, setLiveStatus] = useState<RvcLiveStatus | null>(null)
   const [trainStatus, setTrainStatus] = useState<RvcTrainStatus | null>(null)
   const [genStatus, setGenStatus] = useState<RvcGenStatus | null>(null)
@@ -65,6 +70,15 @@ export function useLive() {
 
   // 供按钮点击后立即刷新（不必等下一次轮询）
   const tickRef = useRef<() => void>(() => {})
+
+  // 深链预选优先：?voice=<exp> 已由手动跳转/安装完成触发 → apply 一次
+  useEffect(() => {
+    if (!voiceParam || appliedVoiceParam.current === voiceParam) return
+    if (!voicesInfo) return
+    if (!voicesInfo.voices.some((v) => v.id === voiceParam)) return
+    appliedVoiceParam.current = voiceParam
+    setSelectedExp(voiceParam)
+  }, [voiceParam, voicesInfo])
 
   // 音色清单里没有当前选中项时（首次加载 / 音色被删 / 换机器），自动挑一个最合适的
   useEffect(() => {

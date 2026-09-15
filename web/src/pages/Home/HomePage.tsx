@@ -1,6 +1,6 @@
-import { ArrowRight, AudioLines, Headphones, HelpCircle, Keyboard, Loader2, Mic2, Minus, Plus, Radio, RefreshCw, ShieldCheck, Sparkles, Speech, Users, Volume2, Wrench } from "lucide-react"
-import { useState } from "react"
-import { Link } from "react-router-dom"
+import { ArrowRight, AudioLines, CircleAlert, Headphones, HelpCircle, Loader2, Mic2, Minus, Plus, Radio, RefreshCw, ShieldCheck, Sparkles, Speech, Users, Volume2, Wrench } from "lucide-react"
+import { useCallback, useState } from "react"
+import { Link, useNavigate } from "react-router-dom"
 import { mediaUrl, type MarketItem } from "@/api/client"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { EffectLadderCard } from "@/components/EffectLadderCard"
@@ -22,13 +22,18 @@ const CATEGORY_TONE: Array<[RegExp, string, string]> = [
 ]
 const DEFAULT_TONE = ["from-violet-500/25 to-violet-500/5", "ring-violet-500/30"] as const
 
-/** 首页试听卡：demo 直接播；无 demo 首次生成（下载模型 → 转换），ready 后直播 */
-function HomeDemoCard({ item, previews, onTrigger, isPlayable }: {
+/** 首页试听卡：demo 直接播；无 demo 首次生成（下载模型 → 转换），ready 后直播。
+ *  主动作「用它开麦说话」：已装直接跳实时变声并预选；未装一键安装→装完自动跳。 */
+function HomeDemoCard(props: {
   item: MarketItem
   previews: ReturnType<typeof useHomeDemo>["previews"]
   onTrigger: (item: MarketItem) => void
   isPlayable: (url?: string) => boolean
+  installed: string[]
+  installing: ReturnType<typeof useHomeDemo>["installing"]
+  onUseIt: (item: MarketItem) => void
 }) {
+  const { item, previews, onTrigger, isPlayable, installed, installing, onUseIt } = props
   const voiceId = item.prefs?.voice_id ?? item.voice_id ?? ""
   const prev = previews[voiceId]
   const demoUrl = isPlayable(item.demo) ? mediaUrl(item.demo as string) : null
@@ -37,6 +42,9 @@ function HomeDemoCard({ item, previews, onTrigger, isPlayable }: {
   const [grad, ring] = tone
   const Initial = (item.name || item.repo || "?").trim().charAt(0).toUpperCase()
   const href = readyUrl ?? demoUrl
+  const isInstalled = installed.includes(voiceId)
+  const busyInstall = installing?.voiceId === voiceId
+  const failedInstall = installing?.voiceId === voiceId && (installing.phase === "安装失败" || installing.phase === "启动失败")
   return (
     <div className="flex items-center gap-3 rounded-2xl border border-border bg-card/85 p-3.5 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg">
       <div className={cn("relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br text-lg font-bold text-foreground ring-1", grad, ring)}>
@@ -45,7 +53,13 @@ function HomeDemoCard({ item, previews, onTrigger, isPlayable }: {
       </div>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-semibold text-card-foreground" title={item.desc || item.name}>{item.name}</p>
-        <p className="mt-0.5 text-[10px] text-muted-foreground">{item.category ?? "音色"} · {item.platform}</p>
+        <p className="mt-0.5 text-[10px] text-muted-foreground">
+          {item.category ?? "音色"} · {item.platform}
+          <span className={cn("ml-1.5 rounded-full px-1.5 py-px text-[9px]",
+            isInstalled ? "bg-emerald-500/15 text-emerald-500" : "bg-muted text-muted-foreground")}>
+            {isInstalled ? "已安装" : busyInstall ? "安装中" : "未安装"}
+          </span>
+        </p>
         {href ? (
           <StudioAudioPlayer src={href} label="试听" className="mt-1.5 min-w-0" />
         ) : prev?.status === "generating" ? (
@@ -66,6 +80,25 @@ function HomeDemoCard({ item, previews, onTrigger, isPlayable }: {
             <Headphones className="h-3 w-3" />{demoUrl ? "播放试听" : "点一下即听"}
           </button>
         )}
+        <div className="mt-1.5">
+          {busyInstall ? (
+            <span className="inline-flex w-full items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-[11px] text-primary" title={installing?.error || "正在安装，装完自动跳转实时变声"}>
+              <Loader2 className="h-3 w-3 shrink-0 animate-spin" />{installing?.phase ?? "安装中…"}{installing && installing.percent > 0 ? ` ${installing.percent}%` : ""}
+            </span>
+          ) : failedInstall ? (
+            <span className="inline-flex w-full items-center gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-[11px] text-destructive" title={installing?.error || "安装失败"}>
+              <CircleAlert className="h-3 w-3 shrink-0" />安装失败，点上方试听可重试
+            </span>
+          ) : (
+            <button type="button" onClick={() => onUseIt(item)}
+              className={cn("inline-flex w-full items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition",
+                isInstalled
+                  ? "border border-primary/50 bg-primary text-primary-foreground hover:bg-primary/90"
+                  : "border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20")}>
+              <Mic2 className="h-3 w-3" />{isInstalled ? "用它开麦说话" : `装好用它开麦${item.size_hint_mb ? `（约 ${item.size_hint_mb}M）` : ""}`}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -85,8 +118,8 @@ const ADVANCED_ITEMS = [
     to: "/live?tab=rvc",
     icon: Radio,
     title: "实时变声：开麦就用",
-    desc: "训练完成后，你说话、它出声，实时开麦直接用（游戏 / 会议 / 语音）。",
-    tag: "要先用上面练出模型",
+    desc: "你说话、它出声，游戏 / 会议 / 语音一个键直接用。预置音色装好即可开麦；想要专属嗓子，就按上面的路线练一副。",
+    tag: "装好即开麦",
     tone: "default" as const,
   },
   {
@@ -167,7 +200,18 @@ export function HomePage() {
   const voices = useAppStore((s) => s.voices)
   const [glossaryOpen, setGlossaryOpen] = useState(false)
   const demo = useHomeDemo()
+  const navigate = useNavigate()
   const featured = demo.items?.slice(0, 6) ?? []
+
+  /** 「用它开麦说话」：已装直接跳实时变声并预选；未装先一键安装，装完自动跳 */
+  const handleUseIt = useCallback(
+    async (item: MarketItem) => {
+      const voiceId = item.prefs?.voice_id ?? item.voice_id ?? ""
+      const ok = await demo.installVoice(item) // 已装时内部直接返回 true
+      if (ok && voiceId) navigate(`/live?tab=rvc&voice=${encodeURIComponent(voiceId)}`)
+    },
+    [demo, navigate],
+  )
 
   // 根据全局音色数据算"效果阶梯当前位置"（零后端改动，App 已 5s 轮询填充 voices）
   const hasRef = voices.some((v) => v.has_reference !== false && (v.has_reference === true || v.duration_s >= 3))
@@ -187,8 +231,7 @@ export function HomePage() {
             让任何声音，替你说
           </h2>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-            先挑一个现成音色，免费试听、输字就能让它说话——不找素材、不训练，30
-            秒先玩起来。玩顺了，再往下滑，把它练成你的专属嗓子。
+            先挑一个现成音色，点一下就能听。听中意了，装上开麦就能直接替你说——不找素材、不训练，先玩起来。玩顺了，再往下滑，把它练成你的专属嗓子。
           </p>
         </div>
       </header>
@@ -205,7 +248,7 @@ export function HomePage() {
           {demo.items === null ? (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {Array.from({ length: 6 }, (_, i) => (
-                <div key={i} className="h-[92px] animate-pulse rounded-2xl border border-border bg-card/60" />
+                <div key={i} className="h-[132px] animate-pulse rounded-2xl border border-border bg-card/60" />
               ))}
             </div>
           ) : featured.length === 0 ? (
@@ -225,6 +268,9 @@ export function HomePage() {
                   previews={demo.previews}
                   onTrigger={demo.triggerPreview}
                   isPlayable={demo.isPlayable}
+                  installed={demo.installed}
+                  installing={demo.installing}
+                  onUseIt={handleUseIt}
                 />
               ))}
             </div>
@@ -236,9 +282,9 @@ export function HomePage() {
               预置的都是开源音色，免费、本地运行，不涉及版权问题。
             </p>
             <div className="flex flex-wrap items-center gap-3">
-              <Link to="/tts?tab=single"
+              <Link to="/live?tab=rvc"
                 className="inline-flex items-center gap-1.5 rounded-md border border-primary/50 bg-primary px-3 py-2 text-xs font-medium text-primary-foreground shadow-md transition hover:bg-primary/90">
-                <Keyboard className="h-3.5 w-3.5" />挑好了？输字让它说话
+                <Radio className="h-3.5 w-3.5" />挑好了？开麦说话
               </Link>
               <Link to="/voices?tab=market"
                 className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground transition hover:border-primary hover:text-primary">
