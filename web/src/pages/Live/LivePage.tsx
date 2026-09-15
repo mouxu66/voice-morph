@@ -255,8 +255,44 @@ export function LivePage(p: ReturnType<typeof useLive>) {
                   <li className="flex gap-2"><span className="shrink-0 font-mono text-primary">2.</span>点「开始实时变声」——它会自动把微信/游戏的录音切到虚拟声卡</li>
                   <li className="flex gap-2"><span className="shrink-0 font-mono text-primary">3.</span>去微信/游戏里开麦说话；想先自己听效果，开「自我监听」</li>
                 </ol>
+                {/* 设备自检状态条：接自下方 SEND CHAIN 自检，有问题先修再开麦 */}
+                {(p.chain || p.chainLoading) && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-background/50 px-3 py-2.5 text-xs leading-5">
+                    {p.chainLoading && !p.chain ? (
+                      <span className="flex items-center gap-1.5 text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />设备自检中…
+                      </span>
+                    ) : (() => {
+                      const issues = p.chain?.items.filter((it) => !it.ok) ?? []
+                      const micMissing = p.audioDevices !== null && p.audioDevices.items.length === 0
+                      const pending = issues.length + (micMissing ? 1 : 0)
+                      if (pending === 0) {
+                        return (
+                          <span className="flex items-center gap-1.5 text-emerald-600">
+                            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />设备链路已就绪，可以直接开麦。
+                          </span>
+                        )
+                      }
+                      const shown = [...new Set([...issues.slice(0, 2).map((it) => it.label), ...(micMissing ? ["麦克风"] : [])])].join("、")
+                      return (
+                        <>
+                          <span className="flex items-center gap-1.5 text-amber-500">
+                            <CircleAlert className="h-3.5 w-3.5 shrink-0" />设备链路还有 {pending} 项待修：{shown}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => document.getElementById("live-sendchain")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1 font-medium text-primary transition hover:bg-primary/20"
+                          >
+                            <Wrench className="h-3 w-3" />去修
+                          </button>
+                        </>
+                      )
+                    })()}
+                  </div>
+                )}
                 <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
-                  如果声音不对，随时可在左侧栏点「一键恢复音频」还原声卡设置。
+                  如果变声后声音不对，随时可在左侧栏点「一键恢复音频」还原声卡设置。
                 </p>
               </div>
               <button
@@ -346,7 +382,7 @@ export function LivePage(p: ReturnType<typeof useLive>) {
 
         {/* 音频发送链路自检：进页面自动跑一遍；有问题就地给修复入口 */}
         {!p.liveOn && (p.chain || p.chainLoading) && (
-          <section className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
+          <section id="live-sendchain" className="scroll-mt-6 rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="font-mono text-xs uppercase tracking-widest text-primary">SEND CHAIN</p>
