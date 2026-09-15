@@ -1,4 +1,4 @@
-import { ArrowRight, AudioLines, CircleAlert, Headphones, HelpCircle, Loader2, Mic2, Minus, Plus, Radio, RefreshCw, ShieldCheck, Sparkles, Speech, Users, Volume2, Wrench } from "lucide-react"
+import { ArrowRight, AudioLines, Check, CircleAlert, Headphones, HelpCircle, Loader2, MapPin, Mic2, Minus, Plus, Radio, RefreshCw, ShieldCheck, Sparkles, Speech, Star, Users, Volume2, Wrench } from "lucide-react"
 import { useCallback, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { mediaUrl, type MarketItem } from "@/api/client"
@@ -32,8 +32,13 @@ function HomeDemoCard(props: {
   installed: string[]
   installing: ReturnType<typeof useHomeDemo>["installing"]
   onUseIt: (item: MarketItem) => void
+  fav: boolean
+  onToggleFav: () => void
+  compareOn: boolean
+  picked: boolean
+  onTogglePick: () => void
 }) {
-  const { item, previews, onTrigger, isPlayable, installed, installing, onUseIt } = props
+  const { item, previews, onTrigger, isPlayable, installed, installing, onUseIt, fav, onToggleFav, compareOn, picked, onTogglePick } = props
   const voiceId = item.prefs?.voice_id ?? item.voice_id ?? ""
   const prev = previews[voiceId]
   const demoUrl = isPlayable(item.demo) ? mediaUrl(item.demo as string) : null
@@ -46,7 +51,19 @@ function HomeDemoCard(props: {
   const busyInstall = installing?.voiceId === voiceId
   const failedInstall = installing?.voiceId === voiceId && (installing.phase === "安装失败" || installing.phase === "启动失败")
   return (
-    <div className="flex items-center gap-3 rounded-2xl border border-border bg-card/85 p-3.5 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg">
+    <div className="relative flex items-center gap-3 rounded-2xl border border-border bg-card/85 p-3.5 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg">
+      <button
+        type="button"
+        onClick={onToggleFav}
+        aria-label={fav ? `取消收藏 ${item.name}` : `收藏 ${item.name}`}
+        title={fav ? "取消收藏" : "收藏备用"}
+        className={cn(
+          "absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full transition",
+          fav ? "text-amber-400" : "text-muted-foreground/60 hover:text-amber-400",
+        )}
+      >
+        <Star className={cn("h-3.5 w-3.5", fav && "fill-current")} />
+      </button>
       <div className={cn("relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br text-lg font-bold text-foreground ring-1", grad, ring)}>
         {Initial}
         {item.image && <img src={mediaUrl(item.image)} alt={item.name} className="absolute inset-0 h-full w-full object-cover" loading="lazy" />}
@@ -81,7 +98,15 @@ function HomeDemoCard(props: {
           </button>
         )}
         <div className="mt-1.5">
-          {busyInstall ? (
+          {compareOn ? (
+            <button type="button" onClick={onTogglePick}
+              className={cn("inline-flex w-full items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition",
+                picked
+                  ? "border border-primary bg-primary text-primary-foreground"
+                  : "border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20")}>
+              <Check className="h-3 w-3" />{picked ? "已选，和另一边一起听" : "加入对比"}
+            </button>
+          ) : busyInstall ? (
             <span className="inline-flex w-full items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-[11px] text-primary" title={installing?.error || "正在安装，装完自动跳转实时变声"}>
               <Loader2 className="h-3 w-3 shrink-0 animate-spin" />{installing?.phase ?? "安装中…"}{installing && installing.percent > 0 ? ` ${installing.percent}%` : ""}
             </span>
@@ -202,6 +227,19 @@ export function HomePage() {
   const demo = useHomeDemo()
   const navigate = useNavigate()
   const featured = demo.items?.slice(0, 6) ?? []
+  // 收藏/对比：帮挑音色的小工具，状态只在首页内
+  const [favOnly, setFavOnly] = useState(false)
+  const [compareOn, setCompareOn] = useState(false)
+  const [comparePicks, setComparePicks] = useState<string[]>([])
+  const vidOf = (item: MarketItem) => item.prefs?.voice_id ?? item.voice_id ?? ""
+  const shownItems = favOnly ? featured.filter((it) => demo.favs.includes(vidOf(it))) : featured
+  const togglePick = (vid: string) =>
+    setComparePicks((prev) =>
+      prev.includes(vid) ? prev.filter((x) => x !== vid) : prev.length >= 2 ? [...prev.slice(1), vid] : [...prev, vid],
+    )
+  const pickedItems = comparePicks
+    .map((vid) => featured.find((it) => vidOf(it) === vid))
+    .filter((it): it is MarketItem => Boolean(it))
 
   /** 「用它开麦说话」：已装直接跳实时变声并预选；未装先一键安装，装完自动跳 */
   const handleUseIt = useCallback(
@@ -219,6 +257,17 @@ export function HomePage() {
   const longDataset = voices.some((v) => (v.dataset_count ?? 0) > 0)
   const totalSeconds = voices.reduce((sum, v) => sum + (v.duration_s || 0), 0)
   const currentLevel = modelReady ? 3 : longDataset ? 2 : hasRef ? 1 : 0
+
+  // 「你现在走到哪一步」：五步教程的卡点提示（与阶梯同源，纯前端判断）
+  const stepTip = modelReady
+    ? { text: "专属模型已就绪！最后一步：送进微信 / 游戏里实际用起来。", to: "/tts?tab=wechat", cta: "去微信发送" }
+    : longDataset
+      ? { text: `语料已攒好${totalSeconds >= 60 ? `（共 ${Math.round(totalSeconds)} 秒）` : ""}，下一步训练出模型就能实时开麦。`, to: "/live?tab=rvc", cta: "去实时变声训练" }
+      : hasRef
+        ? { text: "已有参考声音：先输几个字听听像不像；想要实时开麦，再按第 4 步攒到约 1 分钟。", to: "/tts?tab=single", cta: "去输字变声" }
+        : voices.length === 0
+          ? { text: "你还没有任何音色档案，五步就从第 1 步「找 10 秒干净人声」开始。", to: "/workshop", cta: "去音色工坊" }
+          : { text: "还没有参考声音，回到第 1 步采集一段干净人声，再存成「我的音色」。", to: "/workshop", cta: "去音色工坊" }
 
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
@@ -239,10 +288,38 @@ export function HomePage() {
       <main className="mx-auto max-w-7xl space-y-12 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
         {/* 立刻能玩：首屏第一件事 = 预置音色即点即听 */}
         <section>
-          <div className="mb-5">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">STEP 0 · 不花时间</p>
-            <h3 className="mt-2 text-2xl font-semibold text-foreground">先玩起来：点一个音色，马上听到它</h3>
-            <p className="mt-1.5 text-sm text-muted-foreground">下面全是官方预置的开源音色——不用找素材、不用训练，点一下就能听。</p>
+          <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <p className="font-mono text-xs uppercase tracking-widest text-primary">STEP 0 · 不花时间</p>
+              <h3 className="mt-2 text-2xl font-semibold text-foreground">先玩起来：点一个音色，马上听到它</h3>
+              <p className="mt-1.5 text-sm text-muted-foreground">下面全是官方预置的开源音色——不用找素材、不用训练，点一下就能听。</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setFavOnly((v) => !v)}
+                className={cn("inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition",
+                  favOnly
+                    ? "border-amber-400/50 bg-amber-400/10 text-amber-400"
+                    : "border-border bg-card text-muted-foreground hover:border-amber-400/50 hover:text-amber-400")}
+                title="只显示你点过收藏的心形音色"
+              >
+                <Star className={cn("h-3.5 w-3.5", favOnly && "fill-current")} />
+                只看收藏{demo.favs.length > 0 ? `（${demo.favs.length}）` : ""}
+              </button>
+              <button
+                type="button"
+                onClick={() => setCompareOn((v) => !v)}
+                className={cn("inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition",
+                  compareOn
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-border bg-card text-muted-foreground hover:border-primary hover:text-primary")}
+                title="盲听对比：选两个音色，并排一起听再决定"
+              >
+                <AudioLines className="h-3.5 w-3.5" />
+                {compareOn ? "退出对比" : "对比两个音色"}
+              </button>
+            </div>
           </div>
 
           {demo.items === null ? (
@@ -251,17 +328,18 @@ export function HomePage() {
                 <div key={i} className="h-[132px] animate-pulse rounded-2xl border border-border bg-card/60" />
               ))}
             </div>
-          ) : featured.length === 0 ? (
+          ) : shownItems.length === 0 ? (
             <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border bg-card/50 px-6 py-10 text-center">
-              <Users className="h-6 w-6 text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">预置清单还没连上后端，稍后自动刷新；也可以先去音色市场逛逛。</p>
-              <Link to="/voices?tab=market" className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20">
-                去音色市场 <ArrowRight className="h-3.5 w-3.5" />
-              </Link>
+              <Star className="h-6 w-6 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">收藏夹还是空的——点音色卡右上角的心形，把喜欢的先收起来再慢慢挑。</p>
+              <button type="button" onClick={() => setFavOnly(false)}
+                className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20">
+                看全部音色 <ArrowRight className="h-3.5 w-3.5" />
+              </button>
             </div>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {featured.map((item) => (
+              {shownItems.map((item) => (
                 <HomeDemoCard
                   key={item.id ?? item.name}
                   item={item}
@@ -271,8 +349,67 @@ export function HomePage() {
                   installed={demo.installed}
                   installing={demo.installing}
                   onUseIt={handleUseIt}
+                  fav={demo.favs.includes(vidOf(item))}
+                  onToggleFav={() => demo.toggleFav(vidOf(item))}
+                  compareOn={compareOn}
+                  picked={comparePicks.includes(vidOf(item))}
+                  onTogglePick={() => togglePick(vidOf(item))}
                 />
               ))}
+            </div>
+          )}
+
+          {compareOn && pickedItems.length > 0 && (
+            <div className="mt-4 overflow-hidden rounded-2xl border border-primary/40 bg-card/90 shadow-lg backdrop-blur-xl">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2.5">
+                <p className="flex items-center gap-2 text-xs font-medium text-card-foreground">
+                  <AudioLines className="h-3.5 w-3.5 text-primary" />
+                  盲听对比：两个音色说同一句话，点播放慢慢比较
+                </p>
+                <button type="button" onClick={() => setComparePicks([])}
+                  className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition hover:border-primary hover:text-primary">
+                  清空重选
+                </button>
+              </div>
+              <div className="grid gap-3 p-4 md:grid-cols-2">
+                {pickedItems.map((it) => {
+                  const v = vidOf(it)
+                  const pr = demo.previews[v]
+                  const src = pr?.status === "ready" ? mediaUrl(pr.url) : demo.isPlayable(it.demo) ? mediaUrl(it.demo as string) : null
+                  return (
+                    <div key={v} className="flex flex-col gap-2 rounded-xl border border-border bg-background/60 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="truncate text-xs font-semibold text-card-foreground">
+                          {it.name}
+                          <span className="ml-1.5 font-normal text-muted-foreground">{it.category ?? ""}</span>
+                        </p>
+                        <button type="button" title="移除"
+                          onClick={() => togglePick(v)}
+                          className="text-muted-foreground/60 transition hover:text-destructive" aria-label={`移除 ${it.name} 对比`}>
+                          <Minus className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      {src ? (
+                        <StudioAudioPlayer src={src} label="对比试听" className="min-w-0" />
+                      ) : pr?.status === "generating" ? (
+                        <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                          <Loader2 className="h-3 w-3 animate-spin text-primary" />试听准备中…
+                        </span>
+                      ) : (
+                        <button type="button" onClick={() => demo.triggerPreview(it)}
+                          className="inline-flex items-center gap-1.5 self-start rounded-md border border-border px-2.5 py-1 text-[11px] text-foreground transition hover:border-primary hover:text-primary">
+                          <Headphones className="h-3 w-3" />生成这版的试听
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+                {pickedItems.length < 2 && (
+                  <div className="flex items-center justify-center rounded-xl border border-dashed border-border bg-background/40 p-3 text-[11px] text-muted-foreground">
+                    再选一个，并排听更直观
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -329,6 +466,18 @@ export function HomePage() {
             <h3 className="mt-2 text-2xl font-semibold text-foreground">想做专属嗓子？五步走完</h3>
             <p className="mt-1.5 text-sm text-muted-foreground">下面是完整教程。每一屏顶部都有导览小助手，不懂的词随时点开下面的白话解释。</p>
           </div>
+          {stepTip && (
+            <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-4 py-3 text-xs leading-5 text-card-foreground">
+              <MapPin className="h-4 w-4 shrink-0 text-primary" />
+              <span className="min-w-0 flex-1">
+                <span className="mr-1.5 font-semibold text-primary">你现在走到：</span>
+                {stepTip.text}
+              </span>
+              <Link to={stepTip.to} className="inline-flex shrink-0 items-center gap-1 font-medium text-primary transition hover:opacity-80">
+                {stepTip.cta} <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
+          )}
           <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-md sm:p-6">
             <ol className="flex flex-col gap-1">
               {STEPS.map(({ icon: Icon, title, todo, why, to, cta }, i) => (

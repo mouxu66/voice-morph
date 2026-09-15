@@ -32,6 +32,30 @@ export function useHomeDemo() {
   const [previews, setPreviews] = useState<Record<string, MarketPreview>>({})
   const previewLocks = useRef(new Set<string>())
 
+  // ---- 收藏（本地持久化：只在挑音色时用，不进后端）----
+  const readFavs = (): string[] => {
+    try {
+      const raw = localStorage.getItem("vm_home_favs")
+      if (!raw) return []
+      const v = JSON.parse(raw)
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []
+    } catch {
+      return []
+    }
+  }
+  const [favs, setFavs] = useState<string[]>(readFavs)
+  const toggleFav = useCallback((voiceId: string) => {
+    setFavs((prev) => {
+      const next = prev.includes(voiceId) ? prev.filter((x) => x !== voiceId) : [...prev, voiceId]
+      try {
+        localStorage.setItem("vm_home_favs", JSON.stringify(next))
+      } catch {
+        /* 隐私模式写不了，忽略 */
+      }
+      return next
+    })
+  }, [])
+
   const refreshInstalled = useCallback(async () => {
     try {
       setInstalled(await marketInstalled())
@@ -220,5 +244,5 @@ export function useHomeDemo() {
     [installed, installDl, flatInstall, refreshInstalled],
   )
 
-  return { items, installed, previews, ensurePreview, triggerPreview, isPlayable, installing, installVoice }
+  return { items, installed, previews, ensurePreview, triggerPreview, isPlayable, installing, installVoice, favs, toggleFav }
 }
