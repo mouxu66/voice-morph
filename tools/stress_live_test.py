@@ -80,9 +80,39 @@ if mode == "cpu":
     while True:
         hashlib.sha256(buf * 4).digest()
 elif mode == "vram":
-    import torch
-    n = int(sys.argv[2])
-    x = torch.ones(n, dtype=torch.float32, device="cuda")
+    import torch, json, os
+    # argv[2] = "目标MB|档位标签|状态文件目录"；目标一次申请失败（如 8GB 卡上 extreme
+    # 请求 6656MB 余量吃紧）时降级为「能占多少占多少」，并把实际占用落盘上报，
+    # 避免「档位名不副实」静默发生（2026-09-15 实测 extreme 曾 23/25 压力进程静默退出）。
+    # ⚠️ 分隔符不能用 ":" —— Windows 盘符路径里自带冒号，会把目录切碎。
+    mb, tag, report_dir = sys.argv[2].split("|")
+    target_n = int(int(mb) * 1024 * 1024 / 4)
+    RESERVE_BYTES = 384 * 1024 * 1024        # 给系统/其他进程留 ≤384MB
+    status_path = os.path.join(report_dir, f"stress_vram_{tag}.json")
+    info = {"status": "failed", "reason": "unknown", "target_mb": int(mb)}
+    try:
+        torch.cuda.init()
+        free0, _ = torch.cuda.mem_get_info()
+        x = torch.ones(target_n, dtype=torch.float32, device="cuda")
+        info = {"status": "ok", "target_mb": int(mb),
+                "alloc_mb": x.numel() * 4 // (1024 * 1024),
+                "free_mb_at_start": free0 // (1024 * 1024)}
+    except Exception as e:                   # CUDA OOM → 降级为尽量多占
+        info["reason"] = type(e).__name__
+        try:
+            free, _ = torch.cuda.mem_get_info()
+            n2 = max(0, (free - RESERVE_BYTES)) // 4
+            if n2 > 0:
+                x = torch.ones(n2, dtype=torch.float32, device="cuda")
+                info = {"status": "degraded", "target_mb": int(mb),
+                        "alloc_mb": x.numel() * 4 // (1024 * 1024),
+                        "reason": "CUDA OOM -> 实占",
+                        "free_mb_at_start": free0 // (1024 * 1024)}
+        except Exception as e2:
+            info = {"status": "failed", "reason": type(e2).__name__, "target_mb": int(mb)}
+    os.makedirs(report_dir, exist_ok=True)
+    with open(status_path, "w", encoding="utf-8") as f:
+        json.dump(info, f, ensure_ascii=False)
     while True:
         time.sleep(3600)
 elif mode == "gpu":
@@ -104,16 +134,33 @@ elif mode == "gpu":
         self.procs.append(p)
         return p
 
-    def start(self, cpu: int, vram_mb: int | None, gpu_burn: bool, wait_vram: float = 15.0):
+    def start(self, cpu: int, vram_mb: int | None, gpu_burn: bool, wait_vram: float = 90.0,
+              tag: str = "hot"):
         self.stop()
+        # 清掉上一轮/旧档遗留的状态文件，summary() 只反映当前档实际载荷
+        for f in REPORT_DIR.glob("stress_vram_*.json"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
         for _ in range(cpu):
             self._spawn("cpu")
+        if vram_mb:
+            # 先占显存、后起 GPU 算力：算力进程自带的 torch 上下文会挤掉大张量分配余量
+            self._spawn("vram", f"{vram_mb}|{tag}|{REPORT_DIR}")
         if gpu_burn:
             self._spawn("gpu")
         if vram_mb:
-            self._spawn("vram", str(int(vram_mb * 1024 * 1024 / 4)))
-            time.sleep(wait_vram)          # 等张量申请完再测，避免稀松期误判
-        elif gpu_burn:
+            # 轮询等状态文件落盘（vram 子进程 import torch 在 23 核满载下实测 ~24s，
+            # 文件落盘 = 分配已定局，之后 phase_a 的启动判定才可信）。一旦生成立即返回。
+            deadline = time.time() + wait_vram
+            status_file = REPORT_DIR / f"stress_vram_{tag}.json"
+            while time.time() < deadline and not status_file.exists():
+                time.sleep(0.2)
+            if not status_file.exists():
+                print(f"⚠️ [stress] vram 压力源 {tag} 在 {wait_vram:.0f}s 内未落盘状态文件，"
+                      f"档位载荷未知", flush=True)
+        else:
             time.sleep(2)
 
     def stop(self):
@@ -126,7 +173,15 @@ elif mode == "gpu":
 
     def summary(self) -> dict:
         alive = sum(1 for p in self.procs if p.poll() is None)
-        return {"spawned": len(self.procs), "alive": alive}
+        s = {"spawned": len(self.procs), "alive": alive}
+        # 携带每档 vram 压力源的实际占用（ok=达标 / degraded=实占<目标 / failed=没占上）
+        for f in sorted(REPORT_DIR.glob("stress_vram_*.json")):
+            tag = f.stem[len("stress_vram_"):]
+            try:
+                s[f"vram_{tag}"] = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return s
 
 
 # ---------------------------------------------------------------- Phase A
@@ -510,8 +565,17 @@ def run_ramp(exp: str):
         stress = Stressors()
         for profile, p in PROFILES.items():
             print(f"\n=== 压力档: {profile} ({p['label']}) ===", flush=True)
-            stress.start(cpu=p["cpu"], vram_mb=p["vram_mb"], gpu_burn=p["gpu_burn"])
+            stress.start(cpu=p["cpu"], vram_mb=p["vram_mb"], gpu_burn=p["gpu_burn"],
+                         tag=profile)
             gather["stressors"][profile] = stress.summary()
+            vram_stat = gather["stressors"][profile].get(f"vram_{profile}")
+            if vram_stat:
+                if vram_stat.get("status") == "ok":
+                    print(f"[stress] {profile} 显存压力占用 {vram_stat.get('alloc_mb')}MB"
+                          f" (目标 {vram_stat.get('target_mb')}MB)", flush=True)
+                else:
+                    print(f"⚠️ [stress] {profile} 显存压力{('未达标' if vram_stat.get('status') == 'degraded' else '启动失败')}: "
+                          f"{vram_stat} —— 结果请按实际载荷解读", flush=True)
             time.sleep(1)
             try:
                 a = phase_a(profile, exp, gather)
