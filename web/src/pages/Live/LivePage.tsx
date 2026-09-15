@@ -12,6 +12,7 @@ import {
   Play,
   Radio,
   RefreshCw,
+  Sparkles,
   Square,
   Terminal,
   Upload,
@@ -184,6 +185,35 @@ export function LivePage(p: ReturnType<typeof useLive>) {
             <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
             未检测到 RVC 整合包（{p.voicesInfo.rvc_root}）。实时变声依赖它，请先用环境变量 VM_RVC_ROOT 指向你的 RVC 目录，或把整合包放到该路径。
           </p>
+        )}
+
+        {/* 首页「用它开麦说话」落地引导：第一次来不知道点什么，三步讲完 */}
+        {p.deepLinkGuide && !p.liveOn && (
+          <section className="rounded-2xl border border-primary/40 bg-primary/10 p-5 shadow-lg backdrop-blur-xl">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="flex items-center gap-2 text-sm font-semibold text-card-foreground">
+                  <Sparkles className="h-4 w-4 shrink-0 text-primary" />
+                  已为你选好「{voiceName ?? p.selectedExp ?? "这个音色"}」，照下面三步开麦
+                </p>
+                <ol className="mt-2.5 space-y-1.5 text-xs leading-5 text-muted-foreground">
+                  <li className="flex gap-2"><span className="shrink-0 font-mono text-primary">1.</span>确认麦克风就是「输入麦克风」里那一个（下方可以换）</li>
+                  <li className="flex gap-2"><span className="shrink-0 font-mono text-primary">2.</span>点「开始实时变声」——它会自动把微信/游戏的录音切到虚拟声卡</li>
+                  <li className="flex gap-2"><span className="shrink-0 font-mono text-primary">3.</span>去微信/游戏里开麦说话；想先自己听效果，开「自我监听」</li>
+                </ol>
+                <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
+                  如果声音不对，随时可在左侧栏点「一键恢复音频」还原声卡设置。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={p.dismissDeepLinkGuide}
+                className="shrink-0 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition hover:border-primary hover:text-primary"
+              >
+                知道了
+              </button>
+            </div>
+          </section>
         )}
 
         {/* 性能模式：两档切换 + GPU 显存占用（面向边打游戏边变声的用户） */}
