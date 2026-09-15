@@ -46,6 +46,14 @@ export interface SendChainInfo {
   items: DiagnoseItem[];
 }
 
+// 输字变声链路自检（/api/tts/send_chain）；items 同上，便于复用同一套渲染。
+// 故障面与实时变声不同（引擎/参考音/磁盘 vs 声卡），故检查项完全不同。
+export interface TtsChainInfo {
+  ok: boolean;
+  all_ok: boolean;
+  items: DiagnoseItem[];
+}
+
 export interface VoiceInfo {
   id: string;
   display_name?: string;

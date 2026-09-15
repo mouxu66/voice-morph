@@ -1,5 +1,6 @@
-import { useCallback, useState } from "react"
-import { mediaUrl, sendTts } from "@/api/client"
+import { useCallback, useEffect, useState } from "react"
+import { mediaUrl, sendTts, ttsChainCheck } from "@/api/client"
+import type { TtsChainInfo } from "@/types"
 import { useAppStore } from "@/store/useAppStore"
 import { friendlyError } from "@/lib/errors"
 import { loadHistory, prependHistory, STORAGE_KEYS } from "@/lib/history"
@@ -77,6 +78,36 @@ export function useTts() {
   const canGenerate = backendUp && !synthesizing && text.trim().length > 0 && !overLimit && Boolean(selectedVoiceId)
   const latestResult = ttsHistory[0] ?? null
 
+  // ---- 输字变声链路自检（进页面自动跑一遍）----
+  // 首页 STEP 0 首推就是这条链路，但此前没有任何自检兜底 —— 用户被推荐去的那条路，
+  // 反而是故障时最没指引的那条。这里对齐实时变声页的 SEND CHAIN 形态。
+  const [chain, setChain] = useState<TtsChainInfo | null>(null)
+  const [chainLoading, setChainLoading] = useState(false)
+
+  const runChainCheck = useCallback(async () => {
+    setChainLoading(true)
+    try {
+      setChain(await ttsChainCheck())
+    } catch {
+      /* 后端未启动时静默，与全局轮询一致 */
+    } finally {
+      setChainLoading(false)
+    }
+  }, [])
+
+  // 挂载后自动查一次；合成过程中不打扰（合成本身就在验证链路）。
+  // 注意别做成高频轮询：本接口每次要枚举模型目录 + 真写一次探针，不是零成本。
+  useEffect(() => {
+    if (synthesizing || chain !== null) return
+    void runChainCheck()
+  }, [synthesizing, chain, runChainCheck])
+
+  // 合成成功后链路显然已通，把陈旧的红项清掉（否则修好了卡片还挂着旧问题）
+  useEffect(() => {
+    if (latestResult) void runChainCheck()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latestResult?.id])
+
   return {
     backendUp,
     text,
@@ -99,5 +130,8 @@ export function useTts() {
     voices,
     selectedVoiceId,
     selectVoice,
+    chain,
+    chainLoading,
+    runChainCheck,
   }
 }
