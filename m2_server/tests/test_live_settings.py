@@ -313,6 +313,69 @@ def test_profile_get_exposes_tts_worker_alive(fake_tts_worker, monkeypatch):
     assert rvc_live.rvc_live_profile_get()["tts_worker_alive"] is False
 
 
+# ---------------- 启动前显存余量预检（2026-09-15，压测 OOM 崩溃的预防） ----------------
+# 压测实测：余量不足 ~2GB 时 RVC 推理进程高负载下 OOM 崩溃。与其跑到一半崩，
+# 不如启动前预检拒绝并指路（game 档先卸载 worker 释放 4.8GB 再判余量）。
+
+
+def _patch_gpu_payload(monkeypatch, total, used, profile="balanced"):
+    live_settings.update(perf_profile=profile)
+    monkeypatch.setattr(
+        rvc_live, "_gpu_snapshot",
+        lambda: {"gpu_total_mb": total, "gpu_used_mb": used, "live_proc_vram_mb": None})
+
+
+def test_vram_precheck_blocks_when_free_too_low(monkeypatch):
+    """余量不足安全线 → 返回提示文案（start 会以 409 拒绝启动）。"""
+    _patch_gpu_payload(monkeypatch, 8192, 7400)   # free 792 < 2048
+    msg = rvc_live._vram_precheck()
+    assert msg is not None
+    assert "显存余量" in msg and "游戏低占用" in msg
+
+
+def test_vram_precheck_game_profile_message(monkeypatch):
+    """game 档文案走「已卸载后仍不足」分支，不再让用户回头切档。"""
+    _patch_gpu_payload(monkeypatch, 8192, 7400, profile="game")
+    msg = rvc_live._vram_precheck()
+    assert msg is not None
+    assert "游戏低占用" not in msg
+
+
+def test_vram_precheck_passes_when_enough_free(monkeypatch):
+    _patch_gpu_payload(monkeypatch, 8192, 3000)   # free 5192 达标
+    assert rvc_live._vram_precheck() is None
+
+
+def test_vram_precheck_skips_when_no_gpu(monkeypatch):
+    """nvidia-smi 不可用（无 total）→ 跳过预检，不阻断启动。"""
+    _patch_gpu_payload(monkeypatch, None, None)
+    assert rvc_live._vram_precheck() is None
+
+
+def test_start_blocked_by_vram_precheck(monkeypatch, fake_tts_worker):
+    """预检不过 → 409 拒绝启动（不切声卡、不拉起进程）。"""
+    import sys as _sys
+    import cascade
+    from pathlib import Path as _Path
+    calls = {"applied": 0, "audio": 0}
+    monkeypatch.setattr(rvc_live, "_sync_worker_for_profile", lambda p: None)
+    monkeypatch.setattr(rvc_live, "_vram_precheck", lambda: "显存余量仅 792 MB，低于安全阈值")
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: False)
+    monkeypatch.setattr(cascade, "_cascade_alive", lambda: False)
+    monkeypatch.setattr(rvc_live, "_model_status", lambda exp=None: True)
+    monkeypatch.setattr(rvc_live, "RUNTIME_PY", _Path(_sys.executable))
+    monkeypatch.setattr(rvc_live, "_apply_model_config",
+                        lambda: calls.__setitem__("applied", 1) or True)
+    monkeypatch.setattr(rvc_live, "_audio",
+                        lambda action: calls.__setitem__("audio", calls["audio"] + 1) or {"ok": True})
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as ei:
+        rvc_live.rvc_live_start(exp_name="kangaroo", monitor=False)
+    assert ei.value.status_code == 409
+    assert "显存余量" in str(ei.value.detail)
+    assert calls["applied"] == 0 and calls["audio"] == 0
+
+
 # ---------------- 游戏档降低显存探测频率（2026-09-14） ----------------
 # _gpu_snapshot 一次要 spawn 3 个 nvidia-smi，status 被前端与桌宠同时轮询时
 # 相当于游戏中每秒 1~2 次进程创建（抢 GPU 驱动 → 掉帧）。游戏档把 TTL 拉到 10s。

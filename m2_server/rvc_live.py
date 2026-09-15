@@ -114,6 +114,11 @@ PROFILE_DESC = {"balanced": "均衡·音质优先", "game": "游戏低占用"}
 # game 档会把 worker 杀卸载，给游戏腾出这块显存；切回均衡/用时按需懒加载。
 TTS_WORKER_VRAM_MB = 4800
 
+# RVC 实时推理的安全显存余量：压测实测余量不足 ~2GB 时，推理进程在高负载下
+# 会被 OOM 杀死（RVC 崩溃 → 变声无声 + 后续连贯故障）。启动前显存预检的阈值，
+# 低于此线直接拒绝启动并给出可操作提示，而不是让进程跑到一半崩。
+MIN_LIVE_FREE_VRAM_MB = int(os.environ.get("VM_LIVE_MIN_FREE_VRAM_MB", "2048"))
+
 
 def _sync_worker_for_profile(profile: str) -> bool:
     """按性能档位同步 Qwen3-TTS worker（游戏档卸载，其余档位不动）。
@@ -216,6 +221,31 @@ def _gpu_snapshot() -> dict:
                           proc=_live_proc_vram_mb())
     return {"gpu_total_mb": _gpu_cache["total"], "gpu_used_mb": _gpu_cache["used"],
             "live_proc_vram_mb": _gpu_cache["proc"]}
+
+
+def _vram_precheck() -> str | None:
+    """启动实时变声前的显存余量预检：余量低于安全线返回提示文案，达标返回 None。
+
+    压测结论（2026-09-15）：余量不足 ~2GB 时 RVC 推理进程高负载下会被 OOM 杀死，
+    与其让变声跑到一半崩（无声 + 声卡残留），不如启动前就明确拒绝并指路。
+    复用 _gpu_snapshot 的 TTL 缓存，不额外 spawn nvidia-smi；
+    nvidia-smi 不可用（无 NVIDIA GPU / 驱动缺失）时跳过预检，不阻断启动。
+    """
+    snap = _gpu_snapshot()
+    total, used = snap.get("gpu_total_mb"), snap.get("gpu_used_mb")
+    if not total or used is None:
+        return None
+    free = total - used
+    if free >= MIN_LIVE_FREE_VRAM_MB:
+        return None
+    if live_settings.get()["perf_profile"] == live_settings.PERF_GAME:
+        return (f"GPU 显存余量仅 {free} MB（语音合成引擎已卸载后仍低于 "
+                f"{MIN_LIVE_FREE_VRAM_MB} MB）。请关闭占用显存的程序"
+                f"（游戏/浏览器/直播等）后重试。")
+    return (f"GPU 显存余量仅 {free} MB，低于实时变声安全阈值"
+            f"{MIN_LIVE_FREE_VRAM_MB} MB（余量不足时 RVC 推理进程高负载下会崩溃）。"
+            f"建议：① 切换到「游戏低占用」档——自动卸载语音合成引擎释放约 4.8GB；"
+            f"② 关闭其他占用显存的程序后重试。")
 
 
 def _active_exp() -> str:
@@ -1032,6 +1062,10 @@ def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
         raise HTTPException(status_code=400, detail=model)
     if not RUNTIME_PY.exists():
         raise HTTPException(status_code=500, detail=f"未找到 RVC 运行时: {RUNTIME_PY}")
+    # 显存余量预检：避免在余量不足时启动 → 高负载下 OOM 崩溃（压测证实会崩）
+    hint = _vram_precheck()
+    if hint:
+        raise HTTPException(status_code=409, detail=hint)
     if not _apply_model_config():
         raise HTTPException(status_code=500, detail="RVC 音色索引缺失")
 
