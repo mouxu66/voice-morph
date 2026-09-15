@@ -236,9 +236,15 @@ function sweepDownloadedPackages() {
 
 /**
  * 检查更新。
- * 返回 { ok, configured, hasUpdate, current, latest, reason }
+ * 返回 { ok, configured, hasUpdate, current, latest, reason, hint }
  *  - configured=false：更新源被显式关闭（VM_UPDATE_URL=off），不算错误
  *  - hasUpdate：有新版本且未被"跳过此版本"
+ *  - hint：reason 的可操作补充（能说清"接下来该做什么"时才有值）
+ *
+ * 关于 reason/hint 的分工（2026-09-16 补）：此前一切失败都只给 reason 一句
+ * 「更新源返回 HTTP 404」，用户完全分不清是"还没发版"还是"网络断了"——
+ * 而这两种情况的应对完全不同（等发版 vs 查网络/代理）。下面把可判定的
+ * 情况拆开说清楚，判不出来的老实说"无法确定"。
  */
 async function checkForUpdates() {
   const current = currentVersion();
@@ -247,25 +253,54 @@ async function checkForUpdates() {
     return {
       ok: true, configured: false, hasUpdate: false, current, latest: null,
       reason: "更新源已关闭（VM_UPDATE_URL=off），当前为纯本地模式",
+      hint: "",
     };
   }
+  const isGithubAlias = /github\.com\/.+\/releases\/latest\/download\//i.test(url);
   let res;
   try {
     res = await request(url);
   } catch (e) {
-    return { ok: false, configured: true, hasUpdate: false, current, latest: null,
-      reason: `无法连接更新源：${e.message}` };
+    return {
+      ok: false, configured: true, hasUpdate: false, current, latest: null,
+      reason: `无法连接更新源：${e.message}`,
+      hint: "检查网络是否可用；若在用代理/VPN，确认它能访问 github.com（本应用不走系统代理时需要手动放行）。",
+    };
   }
   if (res.status !== 200) {
-    return { ok: false, configured: true, hasUpdate: false, current, latest: null,
-      reason: `更新源返回 HTTP ${res.status}` };
+    // GitHub 的 releases/latest 别名在「一个 Release 都没发过」时返回 404。
+    // 这是当前（0.2.3 只在本机打过、从未发布）最可能的原因，直接说明白。
+    if (res.status === 404 && isGithubAlias) {
+      return {
+        ok: false, configured: true, hasUpdate: false, current, latest: null,
+        reason: "更新源还没有可用的版本（该 Release 尚未发布）",
+        hint: "说明开发方还没发布过正式版本，当前已是最新。等发了 Release 再点检查即可。",
+      };
+    }
+    if (res.status === 403 || res.status === 429) {
+      return {
+        ok: false, configured: true, hasUpdate: false, current, latest: null,
+        reason: `更新源拒绝了请求（HTTP ${res.status}，通常是请求过于频繁）`,
+        hint: "稍等几分钟再试。",
+      };
+    }
+    return {
+      ok: false, configured: true, hasUpdate: false, current, latest: null,
+      reason: `更新源返回 HTTP ${res.status}`,
+      hint: res.status >= 500
+        ? "更新服务器暂时不可用，稍后再试。"
+        : "确认更新地址是否正确（设置里的更新源，或环境变量 VM_UPDATE_URL）。",
+    };
   }
   let m;
   try {
     m = JSON.parse(res.buffer.toString("utf-8"));
   } catch {
-    return { ok: false, configured: true, hasUpdate: false, current, latest: null,
-      reason: "更新清单不是合法 JSON" };
+    return {
+      ok: false, configured: true, hasUpdate: false, current, latest: null,
+      reason: "更新清单不是合法 JSON",
+      hint: "更新源返回了内容但格式不对，可能是被网络劫持或有登录页拦截，检查该地址在浏览器里能否直接打开。",
+    };
   }
   const latest = {
     version: String(m.version || ""),
@@ -277,19 +312,22 @@ async function checkForUpdates() {
     mandatory: Boolean(m.mandatory),
   };
   if (!latest.version || !latest.url) {
-    return { ok: false, configured: true, hasUpdate: false, current, latest: null,
-      reason: "更新清单缺少 version 或 url 字段" };
+    return {
+      ok: false, configured: true, hasUpdate: false, current, latest: null,
+      reason: "更新清单缺少 version 或 url 字段",
+      hint: "更新清单文件不完整，请联系开发方或检查自建源的发布脚本。",
+    };
   }
   if (compareVersion(latest.version, current) <= 0) {
     return { ok: true, configured: true, hasUpdate: false, current, latest,
-      reason: "已是最新版本" };
+      reason: "已是最新版本", hint: "" };
   }
   const skipped = loadSkipped();
   if (!latest.mandatory && skipped.latest === latest.version) {
     return { ok: true, configured: true, hasUpdate: false, current, latest,
-      reason: `已跳过版本 ${latest.version}` };
+      reason: `已跳过版本 ${latest.version}`, hint: "" };
   }
-  return { ok: true, configured: true, hasUpdate: true, current, latest, reason: "" };
+  return { ok: true, configured: true, hasUpdate: true, current, latest, reason: "", hint: "" };
 }
 
 /**

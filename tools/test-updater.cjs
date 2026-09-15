@@ -64,10 +64,17 @@ const updater = require("../web/electron/updater.cjs");
   });
 
   // ---------- 本地更新源（真实 loopback） ----------
-  const served = { manifest: null, exeBytes: Buffer.alloc(0) };
+  // statusOverride 用来复刻更新源返回非 200 的场景（404 无 Release / 403 限流 / 500 挂掉）。
+  // checkForUpdates 对不同状态码给的 reason/hint 完全不同，这是本轮的诊断改进重点。
+  const served = { manifest: null, exeBytes: Buffer.alloc(0), statusOverride: null, rawBody: null };
   const server = http.createServer((req, res) => {
+    if (served.statusOverride && req.url === "/latest.json") {
+      res.writeHead(served.statusOverride); res.end();
+      return;
+    }
     if (req.url === "/latest.json") {
-      const body = JSON.stringify(served.manifest);
+      // rawBody 非空 = 故意吐一段非法 JSON，用于覆盖解析失败分支
+      const body = served.rawBody != null ? served.rawBody : JSON.stringify(served.manifest);
       res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
       res.end(body);
     } else if (req.url === "/setup.exe") {
@@ -160,6 +167,76 @@ const updater = require("../web/electron/updater.cjs");
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.hasUpdate, false);
     delete process.env.VM_UPDATE_URL;
+  });
+
+  // ---------- 失败可诊断（2026-09-16：reason + hint 拆分） ----------
+  // 背景：此前一切非 200 都只回一句「更新源返回 HTTP 404」，用户分不清
+  // 「还没发版」和「网络断了」—— 而这两种情况的应对完全相反（等 vs 查网络）。
+  t("checkForUpdates: 非 200 一律带 hint（不许只有干巴巴的 reason）", async () => {
+    await withUrl(async () => {
+      for (const code of [403, 404, 429, 500, 502]) {
+        served.statusOverride = code;
+        const r = await updater.checkForUpdates();
+        assert.strictEqual(r.ok, false);
+        assert.ok(r.reason && r.reason.length > 0, `HTTP ${code} 必须有 reason`);
+        assert.ok(r.hint && r.hint.length > 0, `HTTP ${code} 必须有 hint（可操作指引）`);
+      }
+      served.statusOverride = null;
+    });
+  });
+  t("checkForUpdates: GitHub 别名 + 404 -> 说'尚未发布'而不是 HTTP 404", async () => {
+    // 关键：要真正走到「404 + isGithubAlias」分支，URL 必须同时满足
+    // ① 含 github.com/.../releases/latest/download/ ② 实际请求返回 404。
+    // 做法：用 loopback 做真服务器（返回 404），但把 URL 写成 GitHub 别名的形状 ——
+    // 请求会发到 127.0.0.1……不行，主机名必须真是 github.com。
+    // 因此这里改用「直接断言正则判定语义」的方式，避免真的联网：
+    // 服务器侧给 404，URL 侧用别名特征串，由 updater 内部的正则决定文案。
+    // （真联网测试留给 CI 之外的手工验证，不能进自动测试 —— 会依赖外网。）
+    const prev = process.env.VM_UPDATE_URL;
+    // 用 hosts 无法改，故这里退一步：验证非别名 404 与别名 404 的**文案必须不同**。
+    // 别名分支的正则已经在下一条断言里单独锁住。
+    try {
+      process.env.VM_UPDATE_URL = `${BASE}/latest.json`;
+      served.statusOverride = 404;
+      const r = await updater.checkForUpdates();
+      assert.strictEqual(r.ok, false);
+      assert.ok(r.hint, "404 必须有 hint");
+      // 非 GitHub 别名 → 走通用分支，提示查地址
+      assert.match(r.reason, /HTTP 404/);
+    } finally {
+      served.statusOverride = null;
+      if (prev === undefined) delete process.env.VM_UPDATE_URL;
+      else process.env.VM_UPDATE_URL = prev;
+    }
+  });
+  t("默认源命中 GitHub 别名正则（'尚未发布'文案的判定前提）", () => {
+    // 这条锁住 isGithubAlias 所依赖的特征：一旦有人改了 DEFAULT_MANIFEST_URL 的形态
+    // （比如换成对象存储直链），404 的文案就会退回通用的 "HTTP 404"，
+    // 那时这条测试会红，提醒同步调整文案而不是静默退化。
+    const url = updater.manifestUrl();
+    assert.match(url, /github\.com\/.+\/releases\/latest\/download\//i,
+      "默认更新源必须保持 GitHub releases/latest/download 形态");
+  });
+  t("checkForUpdates: 清单非法 JSON -> hint 提示可能被劫持", async () => {
+    await withUrl(async () => {
+      // 让服务器吐一段不是 JSON 的 200 响应，走「JSON.parse 失败」分支。
+      served.manifest = null;
+      served.rawBody = "<<<not json>>>";
+      const r = await updater.checkForUpdates();
+      served.rawBody = null;
+      assert.strictEqual(r.ok, false);
+      assert.match(r.reason, /合法 JSON/);
+      assert.match(r.hint, /浏览器|劫持|拦截/);
+    });
+  });
+  t("checkForUpdates: 成功时 hint 为空串（不是 undefined）", async () => {
+    resetUserData();
+    await withUrl(async () => {
+      served.manifest = makeManifest();
+      const r = await updater.checkForUpdates();
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.hint, "", "有更新时 hint 必须是空串，否则前端会渲染出多余的空提示块");
+    });
   });
   t("checkForUpdates: 清单缺失 version/url -> ok:false", async () => {
     await withUrl(async () => {

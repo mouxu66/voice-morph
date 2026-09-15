@@ -223,9 +223,18 @@ export function UpdateDialog({ open, onClose, initialCheck }: {
               )}
             </div>
           ) : (
-            <div className="flex items-start gap-2.5 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-destructive">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <p className="text-xs leading-5">{result?.reason || "检查更新失败"}</p>
+            <div className="space-y-2">
+              <div className="flex items-start gap-2.5 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-destructive">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <p className="text-xs leading-5">{result?.reason || "检查更新失败"}</p>
+              </div>
+              {/* hint：把"为什么失败"变成"接下来做什么"。
+                  没有它时用户看到「HTTP 404」完全不知道该干嘛。 */}
+              {result?.hint && (
+                <p className="rounded-lg border border-border bg-background/60 px-3 py-2.5 text-xs leading-5 text-muted-foreground">
+                  {result.hint}
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -233,6 +242,12 @@ export function UpdateDialog({ open, onClose, initialCheck }: {
         {/* 底部操作 */}
         <div className="flex items-center justify-between gap-2 border-t border-border px-5 py-3">
           <div className="flex items-center gap-2">
+            {/* 当前版本常驻显示：用户点「检查更新」十次有八次是想知道"我是哪版" */}
+            {result?.current && (
+              <span className="rounded-md bg-muted px-2 py-1 font-mono text-[11px] text-muted-foreground">
+                当前 v{result.current}
+              </span>
+            )}
             {hasUpdate && latest && !latest.mandatory && phase === "idle" && (
               <button
                 type="button"

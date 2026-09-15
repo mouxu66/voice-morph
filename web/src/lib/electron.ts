@@ -44,6 +44,8 @@ export type UpdateCheck = {
   current: string;
   latest: UpdateManifest | null;
   reason?: string;
+  /** reason 的可操作补充：能说清"接下来该做什么"时才有值 */
+  hint?: string;
 };
 
 export type UpdateDownload = { ok: boolean; file?: string; cached?: boolean; reason?: string };
