@@ -219,6 +219,10 @@ const GLOSSARY = [
     term: "质检 A / B / C / D",
     plain: "像买菜挑水果：A、B 等级干净直接要，C 谨慎，D 别用。“响度达标”只代表音量合适，纯不纯以听感为准。",
   },
+  {
+    term: "零炼丹",
+    plain: "炼丹是圈内对'训练模型'的戏称，听起来要懂参数、会配环境。这里指的是：你只要丢一段素材进来，去伴奏、切片、打分、剔除脏片段、挑主说话人全是自动的——你唯一要做的是听一遍并点保存。",
+  },
 ]
 
 export function HomePage() {
@@ -427,6 +431,33 @@ export function HomePage() {
                 className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground transition hover:border-primary hover:text-primary">
                 更多音色 <ArrowRight className="h-3.5 w-3.5" />
               </Link>
+            </div>
+          </div>
+        </section>
+
+        {/* 零炼丹信任条：打消"要自己炼模型"的顾虑。
+            这块刻意放在 WANT MORE 之前 —— 用户看到"训练"两个字的第一反应是
+            "我不会炼丹/要配环境/要洗数据"，不先破这个，下面三条路他根本不会点。 */}
+        <section className="rounded-2xl border border-primary/30 bg-primary/5 p-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-primary/40 bg-background text-primary">
+              <Sparkles className="h-5 w-5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-base font-semibold text-foreground">零炼丹：你只管丢素材，剩下的我们挑</h3>
+              <p className="mt-1.5 text-sm leading-6 text-muted-foreground">
+                不用标注、不用洗数据、不用懂参数。系统会自动去伴奏、切片，
+                再给每一条按<span className="text-card-foreground">时长 / 响度 / 削波 / 底噪 / 信噪比 / 说话人一致性</span>打 A–D 分，
+                把混进来的他人声和音乐残响挑出去，只把干净的留下来做音色。
+              </p>
+              <ul className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                {["不用标注文字", "不用手动切片段", "不用逐条试听", "自动挑主说话人", "自动剔除脏片段"].map((t) => (
+                  <li key={t} className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-muted-foreground">
+                    <Check className="h-3 w-3 text-primary" />
+                    {t}
+                  </li>
+                ))}
+              </ul>
             </div>
           </div>
         </section>
