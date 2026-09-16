@@ -20,6 +20,7 @@
     audio_api.py         /audio/*（设备配置/诊断看板/残留巡检）
     media_api.py         /media/{kind}/{name}（静态音频）
     rvc_dataset_api.py   /rvc/dataset/* /rvc/model
+    openai_compat.py     /v1/*（OpenAI 兼容：audio/speech、models；供既有 SDK 零改动接入）
     qwen3_tts.py         Qwen3-TTS 客户端（懒启动子进程 worker）
     qwen3_tts_service.py Qwen3-TTS 常驻 worker（venv312，端口 8001）
 
@@ -48,6 +49,7 @@ from media_api import router as media_router
 from mine_api import router as mine_router
 from market_api import router as market_router
 from offline_vc import router as offlinevc_router
+from openai_compat import router as openai_router
 from pet_market_api import router as pet_market_router
 from pipeline_api import router as pipeline_router
 from raw_media_api import router as raw_media_router
@@ -202,6 +204,9 @@ except Exception:
     pass
 app.include_router(media_router)
 app.include_router(rvc_dataset_router)
+# OpenAI 兼容层：prefix=/v1（**不是** /api/v1）——SDK 的 base_url="…/v1" 语义要求如此，
+# 挂到 /api/v1 会让用户按官方文档写反而打不通。详见 openai_compat.py 模块注释。
+app.include_router(openai_router)
 
 # ---------------- 局域网访问：托管前端静态资源（手机浏览器打开 http://<本机IP>:8000） ----------------
 # 安装版前端在 app.asar 里不可读，打包时额外放一份到 backend/web_dist；开发态直接用 web/dist。
