@@ -1,12 +1,29 @@
-# 变声 · 音色克隆工作台
+# 变声工坊 · VoiceMorph
 
-开源本地 AI 变声项目。目标：从任意视频/音频克隆音色 → 在你的录音里用这个音色说话，或实时把麦克风声音变成目标音色。
+**把变好的声音直接送进微信和游戏的本地实时变声器。**
 
-当前已演进为 **三端一体** 的本地产品：
+不打字生成音频文件，而是改造你正在说的话；不上云，全程本机。
 
-- **桌面端**（主力）：Electron + React，自带 Python 推理后端，开箱即用。
-- **移动端**：Expo App，手机打字/遥控，PC 在局域网内推理并（可选）自动发到微信。
-- **Web 端**：同一套 React 前端，可浏览器直连局域网后端，或打包进安装包由桌面壳托管。
+```
+你的麦克风 ──▶ 本机 GPU 推理（RVC，p50 50ms）──▶ 目标音色 ──▶ 微信 / 游戏 / 会议
+```
+
+和「本地语音工作站」类工具（如 VoiceStudio）的区别一句话：**它们交付一个音频文件，我们交付一句已经发出去的话。**
+
+| | 本地语音工作站 | **变声工坊** |
+|---|---|---|
+| 你给它 | 一段文字 / 一个视频 | **你的麦克风** |
+| 它给你 | 一个音频/视频文件 | **你已发出去的语音条** |
+| 等待 | 秒到分钟 | **50ms** |
+| 场景 | 配音、有声书、转录 | **开黑、微信语音、直播** |
+
+三条主路径：
+
+- **开麦说话**（实时变声）：RVC via 虚拟声卡 → 注入微信/游戏/Discord/OBS 的麦克风。
+- **打字让它说**（TTS）：输入文字 → 用你选的音色（含真声克隆）合成 → **一键发进微信**。
+- **训练变声**（自建音色）：丢一段素材 → 自动切片质检、挑出干净片段 → 训练成你自己的音色。
+
+三端一体：**桌面端**（主力，Electron + React，自带 Python 推理后端）· **移动端**（Expo App，手机打字/遥控，PC 在局域网内推理并自动发到微信）· **Web 端**（同一套 React 前端，浏览器直连或由桌面壳托管）。
 
 > 所有推理都在**本机/局域网**完成，不上云，隐私安全。PC 端需 NVIDIA 显卡（本机 RTX 5060 8GB）。
 
@@ -140,6 +157,39 @@
 接口清单（节选）：`GET /api/health`、`/api/diagnose`、`/api/voices`、`/api/raw_videos`、`POST /api/pipeline/run`、`/api/clips`、`POST /api/voicebank`、`POST /api/tts`、`POST /api/mine/run`、`POST /api/capture/loopback`、`POST /api/ab/run`、`/api/rvc/live/*`、`/api/wechat/*`、`/api/audio/*`。
 
 > 注意：当前环境的 FastAPI 对 `include_router` 采用惰性挂载（路由不展开进 `app.routes`），不要用「枚举路由表」的方式做断言，用 TestClient 真实请求验证（见 `tests/test_server.py`）。
+
+---
+
+## OpenAI 兼容 API（给开发者）
+
+**已经写好的 OpenAI SDK 代码，把 `base_url` 指到本机就能用**（`m2_server/openai_compat.py`，挂 `/v1` 前缀）。
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="example")
+resp = client.audio.speech.create(
+    model="tts-1",
+    voice="kangaroo",      # 本机音色 id；写 "default" 表示用当前选中的音色
+    input="你好，这是我本机跑出来的声音。",
+    response_format="mp3",  # wav / mp3 / opus / aac / flac / pcm
+)
+resp.stream_to_file("out.mp3")
+```
+
+| 端点 | 说明 |
+|---|---|
+| `POST /v1/audio/speech` | 文字转语音，返回音频字节流 |
+| `GET /v1/models` | 返回 `tts-1` / `tts-1-hd`（本机不区分模型，但列出来避免客户端探测失败） |
+| `GET /v1/audio/voices` | 本项目扩展：列出本机可选音色 id |
+
+两点与官方不同的地方，先说清楚免得踩坑：
+
+- **`voice` 只认本机音色 id**。官方的 `alloy`/`echo`/`nova` 等内置音色本机没有，传了会**明确报 400**（而不是悄悄换一个声音——静默替换会让你以为生效了）。不确定用什么就写 `"default"`。
+- **错误体是 OpenAI 形状**（`{"error": {"message", "type", "code"}}`），所以 SDK 的异常处理能正常拿到我们的中文提示。
+
+> `base_url` 写 `http://127.0.0.1:8000/v1` —— 前缀是 `/v1` 不是 `/api/v1`，这是 OpenAI SDK 的语义要求（SDK 会自动拼 `/audio/speech`）。
+> 未提供 `/v1/audio/transcriptions`：本项目有 ASR 能力但走的是 RVC 子进程链路，未做稳定的文件转写端点，宁可 404 也不给一个「有时能用」的假接口。
 
 ---
 
