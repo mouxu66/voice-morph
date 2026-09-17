@@ -60,7 +60,14 @@
   - **安装版**（`变声工坊.exe`，`app.isPackaged === true`）：`resolveProjectRoot()` **直接 early-return 包内 `resources/backend`**，`frontendHtmlCandidates()` 也只返回 `resources/backend/web_dist/index.html` —— **绝不回退 `D:\变声` 源码根**（防止自动更新装了新包却仍读旧源码）。改 `m2_server`/`web` 仍会生效，因为后端启动时 `backend_autosync.py` 会把 `D:\变声` 的 `m2_server`/`tools`/`web/dist` 镜像进包内副本。
   - **但 `web/electron/*.cjs`（主进程）不在镜像范围内**——它只活在 app.asar 里。改主进程（`pet.cjs`/`backend.cjs`/`alt-hint.cjs`/`setup-ipc.cjs` 等）**必须 `npm run electron:build` 重打 asar 再装新包/换 exe**；重启旧包无效，且会留下"前端文案已更新、主进程行为还是旧的"的半新半旧状态。
 - `tools/sync_backend.ps1` 与 `resources/backend/m2_server` 副本、`resources/backend/web_dist`：对**安装版**而言这是 `resolveProjectRoot()` 的**唯一**路径（见上），对源码模式而言才是兜底副本。**分发副本现在无需手动同步**：后端启动（= 每次打开桌面端）会自动把 `m2_server`/`tools`/`web/dist` 镜像到副本（`m2_server/backend_autosync.py`，`VM_BACKEND_AUTOSYNC=0` 可关）；sync_backend.ps1 仅剩手动应急用途。
+- **桌宠的 `web/electron/pet/pet.html`（+ `preload.cjs`）是渲染侧文件，不在 asar 里，安装版从磁盘读**：`pet.cjs:27` 的 `PET_DIR` 先试 `resolveProjectRoot()/web/electron/pet`，命中就用它，否则才回退 asar 内置副本。安装版 `resolveProjectRoot()` = `resources/backend`，所以**只要 `resources/backend/web/electron/pet/pet.html` 存在就优先读它 → 改完直接拷一份即热替，不必重打 asar**。⚠️ 但它**不在** `backend_autosync.py` 的镜像范围（只有 `m2_server`/`tools`/`web/dist`），且本机 `D:\变声\voice-morph-desktop\` 为空（无 staging 副本，autosync 恒跳过），所以**每次改 pet.html 都要手动拷**：
+  ```bash
+  cp D:/变声/web/electron/pet/pet.html \
+     "C:/Users/mouxu/AppData/Local/Programs/voice-morph-desktop/resources/backend/web/electron/pet/pet.html"
+  md5sum 两边比对   # 必须一致
+  ```
+  需要重打包的只有 `web/electron/*.cjs` 这类**主进程**文件 —— 别把两者混为一谈（`docs/犯错指南.md` 速查表第 25/31 条）。
 - Electron 主进程源码在 `web/electron/*.cjs`（模块化），现役 app.asar 由 `npm run electron:build`（electron-builder）从 web/ 构建；**`.asar_tmp/` + `repack_asar.cjs`/`extract_asar.cjs`/`probe_asar.cjs`/`tools/verify_asar_repack.cjs` 是 2026-09-03 模块化重构之前的过时流程，已于 2026-09-13 全部删除**（它们会拿 46KB 旧单体主进程覆盖现役装配层）。`web/electron` 里剩余的 `smoke-loadpath.cjs` 是现役的加载自检。
 - 常见误判（2026-09-14 实测澄清）：
-  - "重启就生效" —— **只对 `m2_server`/`web` 成立**。主进程改动不重打包就永远不生效。
+  - "重启就生效" —— **只对 `m2_server`/`web` 成立**（外加 `web/electron/pet/pet.html` 这类渲染侧磁盘文件，但需手动拷进安装版，见上一条）。主进程改动不重打包就永远不生效。
   - 判断某份构建到底含不含某改动，**不要猜，直接验指纹**：`grep -c "<新符号>" <安装目录>/resources/app.asar`（asar 内文件内容为原文，可直接 grep）。本次即靠 `shouldShowPet` 计数 0 vs 8 区分出「安装版 0.2.2 未含改动」与「打包版 0.2.3 已含改动」。同理可查包内 `resources/backend/m2_server/*.py` 与 `web_dist/assets/*.js`。
