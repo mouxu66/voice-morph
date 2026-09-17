@@ -58,7 +58,24 @@
 - 桌面端有**两种运行形态，生效路径完全不同**（2026-09-14 读 `web/electron/backend.cjs` 实测确认；此前本文写的"一律优先命中 `D:\变声` 源码根"**只对源码模式成立**）：
   - **源码模式**（`npm run electron`，`app.isPackaged === false`）：`resolveProjectRoot()` 候选第一项是 `__dirname/../..` = `D:\变声` → 后端跑 `D:\变声\m2_server\server.py`，前端加载 `D:\变声\web\dist\index.html`。**改完重启即生效。**
   - **安装版**（`变声工坊.exe`，`app.isPackaged === true`）：`resolveProjectRoot()` **直接 early-return 包内 `resources/backend`**，`frontendHtmlCandidates()` 也只返回 `resources/backend/web_dist/index.html` —— **绝不回退 `D:\变声` 源码根**（防止自动更新装了新包却仍读旧源码）。改 `m2_server`/`web` 仍会生效，因为后端启动时 `backend_autosync.py` 会把 `D:\变声` 的 `m2_server`/`tools`/`web/dist` 镜像进包内副本。
-  - **但 `web/electron/*.cjs`（主进程）不在镜像范围内**——它只活在 app.asar 里。改主进程（`pet.cjs`/`backend.cjs`/`alt-hint.cjs`/`setup-ipc.cjs` 等）**必须 `npm run electron:build` 重打 asar 再装新包/换 exe**；重启旧包无效，且会留下"前端文案已更新、主进程行为还是旧的"的半新半旧状态。
+  - **但 `web/electron/*.cjs`（主进程）不在镜像范围内**——它只活在 app.asar 里。改主进程（`pet.cjs`/`backend.cjs`/`alt-hint.cjs`/`setup-ipc.cjs` 等）**必须重打 asar**；重启旧包无效，且会留下"前端文案已更新、主进程行为还是旧的"的半新半旧状态。
+    - **发版**走 `npm run electron:build`（electron-builder，重跑 tsc+vite+打包+安装器）。
+    - **只想让用户立刻用上**则走**定向重打**（2026-09-17 实测，约 1 分钟，不必重装）：
+      ```bash
+      # 前提：应用必须已完全退出（asar 被占用时替换会失败）
+      ASAR="C:/Users/mouxu/AppData/Local/Programs/voice-morph-desktop/resources/app.asar"
+      cp "$ASAR" "$ASAR.bak-$(date +%Y%m%d-%H%M%S)"        # ① 一定要先备份
+      cd web && mkdir -p D:/tmp/asar && \
+        node node_modules/@electron/asar/bin/asar.js extract "$ASAR" D:/tmp/asar/x
+      cp ../web/electron/{main,alt-hint,pet-actions}.cjs D:/tmp/asar/x/electron/   # ② 只换改动的
+      node node_modules/@electron/asar/bin/asar.js pack D:/tmp/asar/x D:/tmp/asar/new.asar
+      # ③ 换前必须验：list 条目数与原包一致 + diff 无差异 + 解包复核内容
+      cp D:/tmp/asar/new.asar "$ASAR" && md5sum "$ASAR" D:/tmp/asar/new.asar       # ④ 必须一致
+      ```
+      坑：① `asar extract-file` 在本沙箱取不到输出（0 字节），要验就整包解出来看；
+      ② **别用 `/tmp`**（MSYS 会解析成 `D:\tmp`，路径对不上就白解一场），用显式 `D:/tmp`；
+      ③ 包内主进程路径是 `\electron\*.cjs`（不是 `web/electron`）；
+      ④ 这一步**只换主进程 .cjs**，前端 `dist/` 与 `resources/backend/` 不受影响，别顺手覆盖。
 - `tools/sync_backend.ps1` 与 `resources/backend/m2_server` 副本、`resources/backend/web_dist`：对**安装版**而言这是 `resolveProjectRoot()` 的**唯一**路径（见上），对源码模式而言才是兜底副本。**分发副本现在无需手动同步**：后端启动（= 每次打开桌面端）会自动把 `m2_server`/`tools`/`web/dist` 镜像到副本（`m2_server/backend_autosync.py`，`VM_BACKEND_AUTOSYNC=0` 可关）；sync_backend.ps1 仅剩手动应急用途。
 - **桌宠的 `web/electron/pet/pet.html`（+ `preload.cjs`）是渲染侧文件，不在 asar 里，安装版从磁盘读**：`pet.cjs:27` 的 `PET_DIR` 先试 `resolveProjectRoot()/web/electron/pet`，命中就用它，否则才回退 asar 内置副本。安装版 `resolveProjectRoot()` = `resources/backend`，所以**只要 `resources/backend/web/electron/pet/pet.html` 存在就优先读它 → 改完直接拷一份即热替，不必重打 asar**。⚠️ 但它**不在** `backend_autosync.py` 的镜像范围（只有 `m2_server`/`tools`/`web/dist`），且本机 `D:\变声\voice-morph-desktop\` 为空（无 staging 副本，autosync 恒跳过），所以**每次改 pet.html 都要手动拷**：
   ```bash
