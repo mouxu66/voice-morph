@@ -103,46 +103,22 @@ function hideAltHint() {
 }
 
 /**
- * 启动「按住 Alt → 松开」倒计时引导。knownDurationS 未知时先转圈等待，响应返回后收尾。
- * @param {number|null} knownDurationS 本次播放的音频时长（已知则做精确倒计时）
- * @param {number} leadS              静音头秒数（后端实际值，默认 2.0）
- * @param {Function} onFinish         播放结束回调（收到响应时调用，先于 release 展示）
+ * 彻底销毁提示窗口（主窗关闭 / 应用退出时调用）。
+ *
+ * 为什么必须有它：hideAltHint 只是 hide()，窗口对象仍然活着。而 Electron 的
+ * window-all-closed 要"一个窗口都不剩"才触发，于是那个隐藏的置顶横幅会把整个应用
+ * 钉在后台 —— 主窗关了、桌宠也销毁了（右下角看不到任何东西），进程却退不掉，
+ * 用户只能开任务管理器杀。横幅本身还可能糊在屏幕上（2026-09-17 用户实测）。
  */
-function runAltHintCountdown(knownDurationS, leadS, onFinish) {
-  armCancelKey();   // 录音引导期间允许 Esc 退出
+function destroyAltHint() {
+  disarmCancelKey();
   if (altHintTimer) { clearInterval(altHintTimer); altHintTimer = null; }
-  const APPLY_EST_S = 1.2;            // 后端切声卡估算耗时
-  const prepMs = Math.max(600, APPLY_EST_S * 1000);
-  const durationS = Number(knownDurationS) || 0;
-  const pressTotalS = leadS + durationS;
-  // 阶段1：准备（先给 1.2s，让用户意识到"要开始录了"）
-  showAltHint({ stage: "prep", sub: "音频马上开始，请先切到微信聊天窗口", remainS: Math.ceil(prepMs / 1000) });
-  const prepTimer = setTimeout(() => {
-    if (!knownDurationS) {
-      // 不知道时长：无精确倒计时，进入"按住 Alt"，进度条转圈（-1 表示不确定）
-      showAltHint({ stage: "press", sub: "听到声音就说明在录了，说完松开 <b>Alt</b>", remainS: null, progress: -1 });
-      return;
-    }
-    // 阶段2：按住 Alt（精确倒计时 = 静音头 + 音频时长）
-    const pressStart = Date.now();
-    altHintTimer = setInterval(() => {
-      const el = (Date.now() - pressStart) / 1000;
-      const remain = Math.max(0, Math.ceil(pressTotalS - el));
-      const progress = Math.min(1, el / pressTotalS);
-      showAltHint({ stage: "press", sub: "录音中… 说完松开 <b>Alt</b> 即发送", remainS: remain, progress });
-      if (el >= pressTotalS) { clearInterval(altHintTimer); altHintTimer = null; }
-    }, 100);
-    showAltHint({ stage: "press", sub: "录音中… 说完松开 <b>Alt</b> 即发送", remainS: Math.ceil(pressTotalS), progress: 0 });
-  }, prepMs);
-  // 播放结束（响应返回）：无论倒计时走到哪，直接收尾"松开 Alt"
-  const finish = () => {
-    clearTimeout(prepTimer);
-    if (altHintTimer) { clearInterval(altHintTimer); altHintTimer = null; }
-    showAltHint({ stage: "release", sub: "语音已发送到微信，去确认一下吧", progress: 1 });
-    setTimeout(() => hideAltHint(), 4000);
-    if (onFinish) onFinish();
-  };
-  return finish;
+  altHintPending = null;
+  try {
+    if (altHintWin && !altHintWin.isDestroyed()) altHintWin.destroy();
+  } catch {}
+  altHintWin = null;
+  altHintReady = false;
 }
 
 /**
@@ -167,9 +143,13 @@ function runManualPressGuide(totalS = 15) {
   }, 1000);
 }
 
+// 注：原 runAltHintCountdown（"合成音频要用户按住 Alt 录"的倒计时）已于 2026-09-17 删除。
+// 合成语音发送统一走全自动 /api/wechat/send_voice，不再需要人工按 Alt。
+// 仍保留 runManualPressGuide —— 那是「真人实时说话走 RVC」的流程，用户本人就是音源，
+// 必须自己按 Alt，不属于废弃范围。
 module.exports = {
   showAltHint,
   hideAltHint,
-  runAltHintCountdown,
+  destroyAltHint,
   runManualPressGuide,
 };

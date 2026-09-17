@@ -10,7 +10,8 @@ const {
 const {
   showAltHint,
   hideAltHint,
-  runAltHintCountdown,
+  // runAltHintCountdown 已移除：那是"合成音频要用户按住 Alt 录"的倒计时，
+  // 合成语音发送已统一走全自动（/api/wechat/send_voice），不再需要它。
   runManualPressGuide,
 } = require("./alt-hint.cjs");
 const {
@@ -21,43 +22,64 @@ const {
 } = require("./pet.cjs");
 
 /**
- * 发送微信语音消息的公共尾部：调 /api/wechat/play_to_cable（切麦克风→CABLE Output、
- * 播放 wav 到 CABLE Input、还原声卡）。不模拟 Alt 键 —— 由用户自己在微信里按 Alt 录。
- * 旧 send_voice 会自动模拟 Alt，但软件模拟的 Alt 在很多微信版本/环境下不触发录音，
- * 导致静默"成功"而微信什么也没收到。现在老老实实告诉用户"音频已放到 CABLE，请自己按 Alt"。
- * @param {string|null} wavName       要播放的 wav 文件名（null=最近合成）
- * @param {number|null} knownDurationS 已知音频时长（发送前已合成则传，精确倒计时）
+ * 发送一段**已合成**的微信语音（指定 wav 或"最近一次合成"）：全自动，不需要人按 Alt。
+ *
+ * 为什么改成自动（2026-09-17 用户实测）：旧实现走 /api/wechat/play_to_cable
+ * （播到 CABLE + 用户自己按住 Alt 录）。但主路径「合成并发送」早就改用
+ * /api/wechat/send_text 全自动了（见 doSendTextToWechat 注释），唯独这里还留着
+ * 手动版 —— 结果同一条音频"第一次发是自动、重发却要人按 Alt"，自相矛盾。
+ *
+ * 现在统一走 /api/wechat/send_voice，它与 send_text 共用同一个 _do_send：
+ * 自动点微信语音按钮 → 录 → 点绿钮发送。万一自动不成功，后端会自己降级成
+ * "引导式手动"（outcome=manual_fallback，音频已播到 CABLE 并给出提示），
+ * 所以不会比原来更差。
+ *
+ * @param {string|null} wavName         要发送的 wav 文件名（null=最近一次合成）
+ * @param {number|null} knownDurationS  已不再需要（自动链路自己算），保留参数以免改调用点
  */
 function sendWechatWav(wavName, knownDurationS) {
-  const LEAD_S = 1.5;   // 静音头：给用户足够时间切到微信并按住 Alt（太长会录进大段空白）
-  // 立即启动置顶提示横幅（准备→按住 Alt→松开），无需等后端响应
-  const finishAltHint = runAltHintCountdown(
-    Number.isFinite(knownDurationS) ? knownDurationS : null,
-    LEAD_S,
-    null,
-  );
-  backendPost("/api/wechat/play_to_cable", { wav: wavName, lead_s: LEAD_S }, (data, code) => {
+  showAltHint({
+    stage: "prep",
+    sub: "正在自动录进微信… 全程不用按 Alt，<b>别动键鼠</b>",
+    remainS: null, progress: -1,
+  });
+  backendPost("/api/wechat/send_voice", { wav: wavName || null }, (data, code) => {
     const err = data.error || data.detail || `HTTP ${code}`;
-    if (data.ok) {
-      // 播放已完成 → 立即收尾提示「松开 Alt，已发送」
-      if (finishAltHint) finishAltHint();
+    hideAltHint();
+    const outcome = data.ok ? (data.outcome || "ok") : "failed";
+    if (data.ok && outcome === "ok") {
       showPetGuide({
-        title: "已发送",
+        title: "已发送到微信 ✓",
         lines: [
-          `音频已播放到 CABLE（${data.duration_s || "?"}s，含 ${data.lead_s || LEAD_S}s 静音头）`,
-          "如果微信没收到，请确认按住 Alt 录音时微信是前台",
-        ],
+          `音频 ${data.duration_s || "?"}s（${data.wav || wavName || ""}）`,
+          "去微信看最新那条语音",
+        ].concat((data.steps || []).slice(-3)),
         action: "play", motion: "work", duration: 9000,
       });
+    } else if (data.ok && outcome === "manual_fallback") {
+      // 自动没成功，后端已把音频播到 CABLE 并降级为引导式手动 —— 如实告诉用户
+      showPetGuide({
+        title: "需要你按一下 Alt",
+        lines: [
+          "自动录制没成功，已把音频放到微信麦克风",
+          String((data.fallback && data.fallback.hint) || "到微信按住 Alt 录完松开"),
+        ],
+        action: "listen", motion: "work", duration: 15000,
+      });
+    } else if (data.ok) {
+      showPetGuide({
+        title: outcome === "cancelled" ? "已取消" : "发送未成功",
+        lines: [`结果：${outcome}`, "去微信确认一下最新那条语音"],
+        action: "error", motion: "work", duration: 9000,
+      });
     } else {
-      hideAltHint();
       petGuideFail(err);
     }
     const petWin = getPetWin();
     if (petWin) {
       petWin.webContents.send("pet:send-result",
         data.ok
-          ? { ok: true, duration_s: data.duration_s, hint: data.hint }
+          ? { ok: outcome === "ok", duration_s: data.duration_s, hint: data.hint, outcome }
           : { ok: false, error: String(err) });
     }
   }, 180000);
@@ -97,7 +119,7 @@ function sendWechatVoiceFromPet() {
   if (!getPetWin()) return;
   showPetGuide({
     title: "微信语音",
-    lines: ["我把最近的合成语音录进微信～", "会按住 Alt 录、松开就发，这几秒别动键鼠"],
+    lines: ["我把最近的合成语音录进微信～", "全自动发送，不用按 Alt，这几秒别动键鼠"],
     action: "think", motion: "work", duration: 8000,
   });
   sendWechatWav(null);

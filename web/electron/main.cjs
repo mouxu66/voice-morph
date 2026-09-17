@@ -10,6 +10,7 @@ const fs = require("fs");
 const backend = require("./backend.cjs");
 const pet = require("./pet.cjs");
 const petActions = require("./pet-actions.cjs");
+const altHint = require("./alt-hint.cjs");
 const setup = require("./setup-ipc.cjs");
 const { registerUpdateIpc, scheduleStartupUpdateCheck } = require("./update-ipc.cjs");
 
@@ -43,6 +44,15 @@ async function createWindow(root) {
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
     pet.destroyPet();
+    // 置顶提示横幅也必须销毁：它只要还活着（哪怕 hide 了）就算"还有窗口"，
+    // window-all-closed 永不触发 → app.quit() 永不执行 → 应用无声无息留在后台
+    // （桌宠已销毁、任务栏也没图标，只能靠任务管理器杀）。
+    altHint.destroyAltHint();
+    // 兜底：万一还有漏网的窗口（历史上就是这么漏掉的），直接退。
+    // 绝不留"看不见关不掉"的后台幽灵进程 —— 用户只能开任务管理器杀，体验极差。
+    if (process.platform !== "darwin" && BrowserWindow.getAllWindows().length === 0) {
+      app.quit();
+    }
   });
 
   // 加载规则（2026-09-12 修坑：生产版绝不能读 D:\变声 源码构建）：
@@ -186,6 +196,7 @@ app.on("before-quit", () => {
   } catch {
     /* 忽略 */
   }
+  altHint.destroyAltHint();       // 兜底：任何退出路径都不留置顶横幅
   globalShortcut.unregisterAll(); // 全局热键随应用退出释放
   backend.stopBackend(); // 关闭后端，绝不残留
 });
