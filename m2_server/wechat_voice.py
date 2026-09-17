@@ -20,8 +20,9 @@
     发出去的语音听着是静音，而 CABLE 驱动本身完全无辜（三种 API × 六种采样率全通）。
     所以「切卡」与「录音」之间必须夹一次微信重启，顺序是硬约束：
         **杀微信 → 切卡 → 拉起微信 → 录音**
-    是否重启由 VM_WECHAT_RESTART 决定（auto 时按微信自己的遥测证据判断，
-    见 _need_wechat_restart）；重启要 10~30s，故与 TTS 合成并行（_PendingRecordingEnv）。
+    是否重启由 VM_WECHAT_RESTART 决定（**2026-09-17 起默认 0 = 绝不重启微信**，
+    用户拍板：强杀会退回登录界面；auto 需显式设置才启用，见 _need_wechat_restart）；
+    重启要 10~30s，故与 TTS 合成并行（_PendingRecordingEnv）。
 
 依赖：主环境零新增（ctypes + subprocess，psutil 可选）；播放走 D:/RVC/.venv 的
 sounddevice，与 cascade_stream/offline_vc 同一约定。进程/窗口操作用 wechat_proc。
@@ -66,8 +67,13 @@ RVC_VENV_PY = cfg.RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 # 弹出的 PowerShell/Python 蓝窗会短暂遮挡微信右下角，让 _find_green_send
 # 截图截到控制台 → 浮层检测误判 → 自动发送整体降级（2026-09-09 实测事故）。
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
-# 输出目标（cascade_stream 同款关键词）：wav 播进 CABLE Input，微信从 CABLE Output 录
-OUTPUT_DEVICE_KEYWORD = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "CABLE Input")
+# 输出目标（cascade_stream 同款关键词）：wav 播进 CABLE 的「渲染端」，微信从 CABLE 的
+# 「采集端」录到这段声音。注意：VB-Audio Virtual Cable 的渲染端在不同系统叫法不同——
+# 英文 Windows 是 "CABLE Input (VB-Audio Virtual Cable)"，中文 Windows 被本地化成
+# "扬声器 (VB-Audio Virtual Cable)"。两者都含 "VB-Audio Virtual Cable" 这个常量串，
+# 且都带输出通道（采集端 "CABLE Output (...)" 输出通道为 0 会被 max_output_channels>0 过滤掉），
+# 故用这个常量串做关键字可中英文通吃，避免写死 "CABLE Input" 在本机匹配不到设备。
+OUTPUT_DEVICE_KEYWORD = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "VB-Audio Virtual Cable")
 # 发语音方式：mic=鼠标长按输入框右下角话筒图标（默认，官方交互）
 #             alt=按住键盘快捷键（微信默认 Alt；VM_WECHAT_RECORD_KEY 可改键）
 RECORD_METHOD = os.environ.get("VM_WECHAT_RECORD_METHOD", "mic").strip().lower()
@@ -86,12 +92,13 @@ PLAY_LEAD_S = float(os.environ.get("VM_WECHAT_PLAY_LEAD_S", "0.8"))
 # 自动按键流程失败时是否自动降级为「引导式手动发送」（播放到 CABLE + 用户自己按住说话）
 AUTO_FALLBACK = os.environ.get("VM_WECHAT_AUTO_FALLBACK", "1") == "1"
 
-# ---- 录音前的微信重启（2026-09-11）----
+# ---- 录音前的微信重启（2026-09-11 引入，2026-09-17 起默认关闭）----
 # 微信绑定采集设备是在**进程启动时**，改默认麦克风对它不热生效 → 必须重启它才会
-# 重新枚举到 CABLE Output。取值（**调用时**读，便于测试 monkeypatch）：
-#   auto(默认) = 按微信自己的遥测证据判断，只在确实需要时才重启（省 10~30s）
-#   1          = 每次发送都重启（最稳，最慢）
-#   0          = 从不重启（旧行为；除非你确定微信已绑在 CABLE 上，否则会录到物理麦）
+# 重新枚举到 CABLE Output。但强杀微信（taskkill /F）副作用是退回登录界面要求重新登录，
+# 用户 2026-09-17 拍板：**绝不杀微信**，故默认值改为 0。取值（**调用时**读，便于测试 monkeypatch）：
+#   0(默认) = 从不重启（旧行为；微信已绑在 CABLE 上时录音正常，否则可能录到物理麦）
+#   auto    = 按微信自己的遥测证据判断，只在确实需要时才重启（省 10~30s）
+#   1       = 每次发送都重启（最稳，最慢，会强杀微信）
 RESTART_MODE_ENV = "VM_WECHAT_RESTART"
 # 等微信主窗口就绪的上限（含用户手动扫码登录的时间）
 RESTART_WAIT_S = float(os.environ.get("VM_WECHAT_RESTART_WAIT_S", "90"))
@@ -367,8 +374,13 @@ class _PendingApply:
 
 
 def _restart_mode() -> str:
-    """当前的重启策略（**每次调用时**读环境变量，便于测试与运行时切换）。"""
-    return os.environ.get(RESTART_MODE_ENV, "auto").strip().lower()
+    """当前的重启策略（**每次调用时**读环境变量，便于测试与运行时切换）。
+
+    2026-09-17 起默认 "0"（用户拍板：绝不杀微信）——此前默认 auto 会按遥测保守
+    重启微信（杀进程 → 切卡 → 拉起），强杀副作用是微信退回登录界面要求重新登录，
+    用户强烈不满。环境变量 VM_WECHAT_RESTART 仍可覆盖（"1"/"auto" 可恢复旧行为）。
+    """
+    return os.environ.get(RESTART_MODE_ENV, "0").strip().lower()
 
 
 def _device_keyword() -> str:

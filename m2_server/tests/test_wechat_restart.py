@@ -173,11 +173,12 @@ def test_resolve_wechat_exe_none_when_nothing_found(monkeypatch):
     assert wp.resolve_wechat_exe() is None
 
 
-# ---------------- 重启判据（auto 模式） ----------------
+# ---------------- 重启判据（默认关闭） ----------------
 
-def test_restart_mode_default_auto(monkeypatch):
+def test_restart_mode_default_off(monkeypatch):
+    """2026-09-17 用户拍板默认不重启微信（强杀会退回登录界面），故缺省即 0。"""
     monkeypatch.delenv(wv.RESTART_MODE_ENV, raising=False)
-    assert wv._restart_mode() == "auto"
+    assert wv._restart_mode() == "0"
 
 
 def test_device_keyword_takes_first_token():
