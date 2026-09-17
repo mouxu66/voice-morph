@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "electron:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
     "electron:build": "npm run build && electron-builder --win",
-    "test:smoke": "node electron/smoke-loadpath.cjs"
+    "test:smoke": "node electron/smoke-loadpath.cjs",
+    "test:pet-render": "electron electron/smoke-pet-render.cjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

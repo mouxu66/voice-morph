@@ -340,16 +340,25 @@ function sheetUrl(key, st) {
   return `${SKIN_SHEET_API}/sheet/${encodeURIComponent(petSkin.id)}/${encodeURIComponent(st.sheet)}`;
 }
 
-/** 应用皮肤到 DOM：按 frameW/frameH 计算整数倍放大与显示尺寸。 */
+/**
+ * 应用皮肤到 DOM：按 frameW/frameH 计算整数倍放大与显示尺寸。
+ * ⚠️ 调用时机：必须在下方「DOM 引用」段取到 petBox / sprite 之后。
+ *    本函数读写这两个 const 绑定，提前调用会撞上暂时性死区（TDZ）抛
+ *    ReferenceError，把整个脚本打断——桌宠就只剩 CSS ::before 那圈光晕。
+ */
 function applySkin() {
   const fw = petSkin.frameW || 150, fh = petSkin.frameH || 150;
   // 目标显示高度 ≈150px；比它小的像素素材按整数倍放大（32→160），大的保持原尺寸
   skinScale = fh >= 150 ? 1 : Math.max(1, Math.ceil(150 / fh));
   const dw = fw * skinScale, dh = fh * skinScale;
+  // 精灵图自身尺寸：--fw/--fh 既当宽高，也是 pet-steps 每一步的位移基准
   sprite.style.setProperty("--fw", dw + "px");
   sprite.style.setProperty("--fh", dh + "px");
-  sprite.style.setProperty("--dw", dw + "px");
-  sprite.style.setProperty("--dh", dh + "px");
+  // 外框尺寸给 #pet（它才是 var(--dw/--dh) 的消费方）：
+  // 这两条以前写在 sprite 上，而 #pet 是父元素、自定义属性不会向上继承，
+  // 于是 #pet 永远退回 150px——换非 150 帧尺寸的皮肤时，::before 光晕会比角色小一圈。
+  petBox.style.setProperty("--dw", dw + "px");
+  petBox.style.setProperty("--dh", dh + "px");
   // 像素素材放大时锁锐利，矢量风格保持平滑
   sprite.style.imageRendering = skinScale > 1 ? "pixelated" : "auto";
 }
@@ -373,8 +382,7 @@ async function loadSkin() {
   lastKey = null;   // 强制下一帧重画
 }
 
-// 内置空气皮肤初始化：150×150
-applySkin();
+// 内置皮肤初始化（150×150）挪到下方「DOM 引用」段之后调用，见 applySkin 上的说明。
 const BUBBLE = {
   // 桌宠现在默认常驻，待机时只留角色安静待着，别把「待机中」一直糊在屏幕上
   idle:   { cls: "",          title: "待机",     text: "待机中", hidden: true },
@@ -396,6 +404,13 @@ const bubble = document.getElementById("bubble");
 const titleEl = document.getElementById("title");
 const textEl = document.getElementById("text");
 const stepsEl = document.getElementById("steps");
+
+// DOM 引用齐了才能初始化皮肤尺寸：applySkin() 会往 petBox/sprite 写内联自定义属性。
+// 2026-09-10 b91707b 把这次调用放在了 DOM 引用之前（且 sprite 是 const），
+// 触发「Cannot access 'sprite' before initialization」→ 整个脚本中断，
+// 精灵图永远拿不到 background-image，桌宠只剩 CSS ::before 那圈光晕、且不再全窗穿透。
+// 回归防护见 tools/test-pet-renderer-script.cjs。
+applySkin();
 
 let lastKey = null;       // 上次渲染的状态 key
 let lastText = "";        // 当前句识别文字（出现=识别完成，清空=播出结束）
