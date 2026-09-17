@@ -152,6 +152,8 @@ function mkEl(id) {
     value: "",
     offsetWidth: 0,
     children: [],
+    // 引擎分段的按钮靠 data-eng 认自己是哪一个（b.dataset.eng）
+    dataset: {},
     appendChild() {},
     add() {},
     focus() {},
@@ -223,18 +225,41 @@ global.window = {
 };
 global.location = { search: "" };
 global.Image = class { set src(v) { loadedImages.push(v); } };
-global.localStorage = { getItem: () => null, setItem() {} };
+// localStorage 用真实现（Map 兜底）：引擎选择要持久化，桩成 no-op 就断言不了「有没有写进去」。
+const localStorageStore = new Map();
+global.localStorage = {
+  getItem: (k) => (localStorageStore.has(k) ? localStorageStore.get(k) : null),
+  setItem: (k, v) => localStorageStore.set(k, String(v)),
+  removeItem: (k) => localStorageStore.delete(k),
+};
 global.Audio = class { pause() {} play() { return Promise.resolve(); } };
 global.Option = class { constructor(t, v) { this.text = t; this.value = v; } };
 global.setInterval = (fn, ms) => { intervals.push({ fn, ms }); return 0; };   // 桩掉轮询定时器，进程才能自然退出
 global.self = global;
 
 // 后端桩：状态接口返回「什么都没跑」，皮肤接口返回内置芙宁娜
-global.fetch = async (url) => {
+const fetchCalls = [];        // { url, method } —— 引擎启停必须按「先停再开」的顺序断言
+let cascadeRunning = false;   // 模拟「主界面把千问开起来了」
+let liveRunning = false;      // 模拟「主界面把 RVC 开起来了」
+global.fetch = async (url, opts) => {
   const u = String(url);
+  const method = String((opts && opts.method) || "GET").toUpperCase();
+  fetchCalls.push({ url: u, method });
   // 离线模式：两个状态接口都失败 → 走 pet.html 自己的「后端离线」分支
   if (OFFLINE && (u.includes("/api/cascade/status") || u.includes("/api/rvc/live/status"))) {
     return { ok: false, status: 503, json: async () => ({}) };
+  }
+  // 启停请求（桌宠直连后端）：一律回 ok，状态由上面的开关决定
+  if (method === "POST") return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  if (u.includes("/api/cascade/status")) {
+    // 要带上 stage/last_text/queued_s：只回 {running:true} 会落进 render() 的 default
+    // 分支（setState("build") → 气泡标题「准备中」），断言就测不到引擎名了。
+    return { ok: true, status: 200, json: async () => (cascadeRunning
+      ? { running: true, stage: "capturing", last_text: "今天天气不错", queued_s: 0, child_error: "" }
+      : { running: false }) };
+  }
+  if (u.includes("/api/rvc/live/status")) {
+    return { ok: true, status: 200, json: async () => ({ live_running: liveRunning }) };
   }
   let body = {};
   if (u.includes("/pet-market/applied")) {
@@ -256,8 +281,11 @@ global.fetch = async (url) => {
 // ---------------- 执行真实脚本 ----------------
 // 末尾追加一行把内部函数导出来：间接 eval 的函数声明**不会**挂到 globalThis
 // （实测 `globalThis.setState === undefined`，别指望直接拿），所以在同一个 eval 作用域里
-// 显式挂一份。追加在末尾不影响上面按行号做的错误定位。
-const EXPORT_HOOK = "\n;globalThis.__petFns = { setState, playGuide, endGuide, setBubbleVisible };\n";
+// 显式挂一份。`engine` / `runningEngine` 是 let，只能用 getter 闭包读（对象字面量存不住活绑定）。
+// 追加在末尾不影响上面按行号做的错误定位。
+const EXPORT_HOOK = "\n;globalThis.__petFns = { setState, setEngine, playGuide, endGuide, setBubbleVisible,"
+  + " getEngine: function () { return engine; },"
+  + " getRunningEngine: function () { return runningEngine; } };\n";
 let thrown = null;
 try {
   (0, eval)(code + EXPORT_HOOK);
@@ -265,6 +293,14 @@ try {
   thrown = e;
 }
 const petFns = globalThis.__petFns || {};
+
+// 引擎分段的按钮在真实页面里靠 HTML 的 data-eng 认自己（b.dataset.eng）。
+// DOM 桩不是解析器，所以从 HTML 里把这对属性抠出来灌进桩 —— 比在测试里硬编码 "rvc"/"qwen"
+// 更忠实：HTML 改了 data-eng，测试会跟着走，而不是继续用旧值假通过。
+for (const mm of html.matchAll(/id="(eng[A-Za-z]+)"\s+data-eng="([a-z]+)"/g)) {
+  els[mm[1]] = els[mm[1]] || mkEl(mm[1]);
+  els[mm[1]].dataset = { eng: mm[2] };
+}
 
 // tick()/loadSkin() 是 async，用真 setTimeout 让 await 链推进完
 const flush = () => new Promise((r) => setTimeout(r, 20));
@@ -495,6 +531,115 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
         "导览结束后 .compact 还挂着 —— 面板会一直停在精简态");
       assert.strictEqual(els.bubble.style.display, "none",
         "导览结束后气泡应收起（状态机此时是 idle）");
+    });
+  }
+
+  // ---------- 实时变声引擎：RVC 实时 / 千问变声（回归点 13）----------
+  // 用户反馈：「这两个用户不确定到底用哪一种」「就没体现 rvc 的」「我感觉这个可以来回切换」。
+  // 这里钉住四件事：① 两个引擎的端点各自独立；② 启停不走主进程 IPC（否则只能开 RVC）；
+  // ③ 「选中」与「运行中」分开表达；④ 切换时先停再开（后端对同时开直接 409）。
+
+  check("两个引擎的启停端点各自独立，没有都指向 RVC", () => {
+    const map = codeStripped.match(/const ENGINES = \{[\s\S]*?\n\};/);
+    assert.ok(map, "找不到 ENGINES 定义");
+    const body = map[0];
+    for (const s of ['start: "/api/rvc/live/start"', 'stop: "/api/rvc/live/stop"',
+                     'start: "/api/cascade/start"', 'stop: "/api/cascade/stop"']) {
+      assert.ok(body.includes(s), "ENGINES 里缺少 " + s + " —— 点千问会打到 RVC 的接口上");
+    }
+  });
+
+  check("引擎启停不再走主进程 IPC，而是桌宠直连后端", () => {
+    assert.ok(!/window\.pet\.liveToggle/.test(codeStripped),
+      "还在用 window.pet.liveToggle —— 那条路只能开 RVC、开不了千问，" +
+      "而且改主进程要重打 asar 才生效；桌宠直连后端才能只改 pet.html 就热替换");
+    assert.ok(/method:\s*"POST"/.test(codeStripped), "找不到 POST 调用");
+  });
+
+  check("引擎选择持久化，默认 rvc；初始高亮跟着选中走", () => {
+    assert.strictEqual(petFns.getEngine(), "rvc", "默认引擎应为 rvc");
+    assert.ok(els.engRvc.classList.contains("on"), "默认应高亮 RVC 分段");
+    assert.ok(!els.engQwen.classList.contains("on"), "默认不该高亮千问分段");
+    assert.strictEqual(els.liveLabel.textContent, "开 RVC", "按钮应写出引擎名，而不是光「变声」");
+  });
+
+  if (!OFFLINE) {
+    // 都没在跑时点千问分段：只改选择，不发启停请求
+    const beforePick = fetchCalls.length;
+    (els.engQwen._on.click || [])[0]();
+    await flush();
+
+    check("没引擎在跑时点另一个引擎：只改选择 + 持久化，不发启停请求", () => {
+      assert.strictEqual(petFns.getEngine(), "qwen", "选中态没切到千问");
+      assert.ok(els.engQwen.classList.contains("on"), "千问分段没高亮");
+      assert.ok(!els.engRvc.classList.contains("on"), "RVC 分段应取消高亮");
+      assert.strictEqual(localStorageStore.get("pet_engine"), "qwen", "没写进 localStorage");
+      assert.strictEqual(els.liveLabel.textContent, "开 千问", "按钮文案没跟着引擎变");
+      const posts = fetchCalls.slice(beforePick).filter((c) => c.method === "POST");
+      assert.deepStrictEqual(posts, [],
+        "没在跑的时候点引擎不该发启停请求（免得点错一下就占 GPU 和 CABLE），实际发了：" +
+        JSON.stringify(posts.map((p) => p.url)));
+    });
+
+    // 点「开 千问」→ POST /api/cascade/start
+    const beforeStart = fetchCalls.length;
+    (els.live._on.click || [])[0]();
+    await flush();
+
+    check("「变声」按钮 = 启停当前选中的引擎（选中千问 → /api/cascade/start）", () => {
+      const posts = fetchCalls.slice(beforeStart).filter((c) => c.method === "POST").map((c) => c.url);
+      assert.strictEqual(posts.length, 1, "应恰好一个 POST，实际 " + JSON.stringify(posts));
+      assert.ok(posts[0].includes("/api/cascade/start"),
+        "应打 /api/cascade/start，实际 " + posts[0]);
+    });
+
+    // 模拟「主界面把千问开起来了」：状态接口回 running=true
+    cascadeRunning = true;
+    await tickInterval()();
+    await flush();
+
+    check("引擎在跑时：药丸点名 + 分段亮呼吸点 + 按钮变「停 X」+ 气泡标题写出引擎名", () => {
+      assert.strictEqual(els.pillText.textContent, "千问变声中",
+        "药丸没写出引擎名 —— 这正是用户「不确定用的是哪一种」的根源");
+      assert.ok(els.engQwen.classList.contains("running"), "运行中的千问分段没有呼吸点");
+      assert.ok(!els.engRvc.classList.contains("running"), "RVC 没在跑却亮了呼吸点");
+      assert.strictEqual(els.liveLabel.textContent, "停 千问", "按钮应变成「停 千问」");
+      assert.strictEqual(els.title.textContent, "千问变声",
+        "气泡标题没写出引擎名 —— 不悬停面板时，气泡是唯一能看出「用的哪一种」的地方");
+    });
+
+    // 关键场景：选中 RVC、但跑的是千问。药丸必须说真话，不能跟着选中态走。
+    // 用 setEngine()（纯改选择、不碰引擎）构造这个状态 —— 点分段做不到，
+    // 点分段会触发 pickEngine 的「先停再开」。
+    petFns.setEngine("rvc");
+    await tickInterval()();
+    await flush();
+
+    check("选中态与运行态分开表达：选中 RVC 但千问在跑时，药丸仍说「千问变声中」", () => {
+      assert.strictEqual(petFns.getEngine(), "rvc", "前置状态没构造出来：选中应为 rvc");
+      assert.strictEqual(petFns.getRunningEngine(), "qwen", "前置状态没构造出来：在跑的应为 qwen");
+      assert.strictEqual(els.pillText.textContent, "千问变声中",
+        "药丸跟着「选中」走了 —— 用户选了 RVC 但实际跑的是千问时会被告知错的引擎");
+      assert.ok(els.engRvc.classList.contains("on"), "RVC 应是选中态");
+      assert.ok(!els.engRvc.classList.contains("running"), "RVC 没在跑，不该有呼吸点");
+      assert.ok(els.engQwen.classList.contains("running"), "千问在跑，应有呼吸点");
+      assert.strictEqual(els.liveLabel.textContent, "开 RVC", "按钮应回到「开 RVC」");
+    });
+
+    // 回到「选中千问、千问在跑」，再点 RVC 分段 → 必须先停千问再开 RVC（后端对同时开会 409）
+    petFns.setEngine("qwen");
+    const beforeSwitch = fetchCalls.length;
+    (els.engRvc._on.click || [])[0]();
+    await flush();
+
+    check("切到另一个引擎时自动「先停再开」，顺序不能反", () => {
+      const posts = fetchCalls.slice(beforeSwitch)
+        .filter((c) => c.method === "POST")
+        .map((c) => c.url.replace(/^https?:\/\/[^/]+/, ""));
+      assert.deepStrictEqual(posts, ["/api/cascade/stop", "/api/rvc/live/start"],
+        "应先把千问停掉再开 RVC（后端同时开会 409「两者抢 GPU 且都占 CABLE」），实际顺序：" +
+        JSON.stringify(posts));
+      assert.strictEqual(petFns.getEngine(), "rvc", "选中态应切到 RVC");
     });
   }
 

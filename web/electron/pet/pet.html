@@ -228,7 +228,7 @@
   }
 
   /* —— 面板头：品牌标 + 标题 + 状态药丸 —— */
-  #phead { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; }
+  #phead { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
   #plogo {
     width: 17px; height: 17px; flex: 0 0 auto;
     display: flex; align-items: center; justify-content: center;
@@ -267,7 +267,7 @@
   }
 
   /* —— 表单域：自绘前置图标（原生 input/select 放不进图标，用绝对定位的兄弟节点） —— */
-  #panel .field { position: relative; display: block; margin-bottom: 7px; }
+  #panel .field { position: relative; display: block; margin-bottom: 6px; }
   #panel .field .lead {
     position: absolute; left: 9px; top: 50%; transform: translateY(-50%);
     width: 13px; height: 13px; color: rgb(var(--c-t-500));
@@ -360,13 +360,24 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* —— 状态行：带图标的提示条（图标三选一，由 .ok/.err 决定显示哪个） —— */
+  /* —— 状态行：带图标的提示条（图标三选一，由 .ok/.err 决定显示哪个） ——
+     max-height 是**必需**的，不是美化：状态文案里有一条是 `合成失败：${后端 detail}`，
+     长度完全由后端决定。不封顶的话，一条长报错就能把面板撑到 300px 以上、
+     把「最近发送」挤出去（量测里 ok-dark 已经只剩 3px 余量）。
+     封到 42px（= 两行）后内容固定，更长的报错在状态行内部滚动，不再影响整体高度。 */
   #status {
     display: none; align-items: flex-start; gap: 6px;
-    margin-top: 9px; padding-top: 8px;
+    box-sizing: border-box;
+    max-height: 42px; overflow-y: auto; overscroll-behavior: contain;
+    margin-top: 7px; padding-top: 8px;
     border-top: 1px solid rgb(var(--c-border) / 0.85);
     font-size: 10.5px; line-height: 1.5;
     color: rgb(var(--c-t-400)); overflow-wrap: anywhere;
+  }
+  #status::-webkit-scrollbar { width: 4px; }
+  #status::-webkit-scrollbar-track { background: transparent; }
+  #status::-webkit-scrollbar-thumb {
+    background: rgb(var(--c-border-2) / 0.8); border-radius: 999px;
   }
   #status.show { display: flex; }
   #status .sic { display: none; flex: 0 0 auto; width: 12px; height: 12px; margin-top: 1.5px; }
@@ -378,8 +389,21 @@
   #status.err .ic-info { display: none; }
   #status.err .ic-err  { display: block; color: rgb(var(--c-err)); }
 
-  /* —— 最近发送：胶囊 chip，点一下重发 —— */
-  #panel #recent { margin-top: 9px; display: flex; flex-wrap: wrap; gap: 5px; }
+  /* —— 最近发送：胶囊 chip，点一下重发 ——
+     固定单行 + 横向滚动，而不是 flex-wrap 换行。
+     理由：换行时高度随 chip 文案浮动（3 条就占两行 50px），而面板纵向预算是死的，
+     加一行「实时变声」后已经只剩几 px 余量。单行把这块钉死成 25px，宽度不够就横向滚。
+     padding-right 留给右侧渐隐遮罩：内容没溢出时那 14px 是空的、渐隐看不出；
+     溢出了才把被切的那半颗 chip 柔化掉，充当「还有更多」的提示。 */
+  #panel #recent {
+    margin-top: 8px; padding-right: 14px;
+    display: flex; flex-wrap: nowrap; gap: 5px;
+    overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 14px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 14px), transparent);
+  }
+  #panel #recent::-webkit-scrollbar { display: none; }
   #panel #recent:empty { display: none; }
   #panel .hitem {
     display: inline-flex; align-items: center;
@@ -397,6 +421,50 @@
     color: rgb(var(--c-accent-h));
   }
   #panel .hempty { font-size: 10.5px; color: rgb(var(--c-t-500)); }
+
+  /* —— 实时变声引擎：RVC 实时 / 千问变声 二选一 ——
+     两个引擎在后端是**互斥**的（互相 409：「两者抢 GPU 且都占 CABLE」），
+     所以这里做成「选一个」的分段控件，而不是两个独立开关 —— 独立开关会让人以为能同时开。
+     行内小标签「麦克风」是必需的：它点明这一行管的是**麦克风实时链路**，
+     跟下面「输入文字 → 合成 → 发微信」那条完全不是一回事（用户反馈过的混淆点）。
+     标签用「麦克风」而不是「实时变声」：后者 4 个字要多占 10px，
+     而分段按钮的文字宽度是硬预算（实测 204px 下每个按钮只有 ~69px）。 */
+  #engRow { display: flex; align-items: center; gap: 5px; margin-bottom: 5px; }
+  #engLabel { flex: 0 0 auto; font-size: 10px; letter-spacing: .2px; color: rgb(var(--c-t-500)); }
+  #engineSeg {
+    flex: 1 1 auto; min-width: 0;
+    display: flex; gap: 2px; padding: 2px;
+    border-radius: 9px;
+    border: 1px solid rgb(var(--c-border) / 0.9);
+    background: rgb(var(--c-surface-2) / 0.55);
+  }
+  /* 覆盖 #panel button 的通用外观：分段按钮要矮、要平、不要阴影和 translate */
+  #panel #engineSeg button {
+    box-sizing: border-box;
+    flex: 1 1 0; min-width: 0; height: 18px; padding: 0 3px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 0; border-radius: 7px; background: transparent;
+    box-shadow: none; transform: none;
+    font-size: 10px; font-weight: 600; line-height: 1;
+    color: rgb(var(--c-t-400));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #panel #engineSeg button:hover { background: rgb(var(--c-surface-3) / 0.75); color: rgb(var(--c-t-200)); }
+  /* 选中 = 品牌紫底；运行中 = 绿底 + 绿描边（放在 .on 之后，运行时绿盖紫）。
+     运行态**不用**额外的小圆点元素：分段按钮宽度实测只剩几 px 余量，
+     再插一个 5px 圆点 + 4px gap 会把它挤到省略号（而且 justify-content: center 的
+     溢出还会让 scrollWidth 测不准）。整块变色同样一眼可辨，且零布局开销。 */
+  #panel #engineSeg button.on {
+    background: rgb(var(--c-accent) / 0.20);
+    color: rgb(var(--c-accent-h));
+    box-shadow: inset 0 0 0 1px rgb(var(--c-accent) / 0.34);
+  }
+  #panel #engineSeg button.running {
+    background: rgb(var(--c-ok) / 0.18);
+    color: rgb(var(--c-ok));
+    box-shadow: inset 0 0 0 1px rgb(var(--c-ok) / 0.45);
+    animation: pulse 1.6s infinite;
+  }
 
   /* —— 气泡在屏时的「让位」规则 ——
      气泡与面板共用同一个 480px 高的窗口，可用高是：
@@ -536,11 +604,35 @@
       <span id="pill" class="pill t-idle"><i></i><b id="pillText">待机</b></span>
     </div>
 
+    <!-- 实时变声引擎（麦克风链路）：RVC 实时 / 千问变声 二选一。
+         两者互斥（后端互相 409：抢 GPU 且都占 CABLE），所以是「选一个」而不是两个开关。
+         点另一个 = 自动停掉在跑的那个再开新的；都没在跑时只改选择、不自动启动。
+         行内标签「麦克风」点明这行管的是麦克风实时链路，
+         跟下面「输入文字 → 合成 → 发微信」那条不是一回事。
+         运行态靠整块变绿表达（不是加小圆点）—— 按钮宽度只有几 px 余量，见 CSS 注释。 -->
+    <div id="engRow">
+      <span id="engLabel">麦克风</span>
+      <div id="engineSeg" role="group" aria-label="实时变声引擎">
+        <button type="button" id="engRvc" data-eng="rvc"
+                title="RVC 实时：逐帧套音色，保留你的说话习惯，适合真人音色 / 低延迟">
+          RVC 实时
+        </button>
+        <button type="button" id="engQwen" data-eng="qwen"
+                title="千问变声：先识别成文字再合成换嗓，适合卡通 / 角色音色，比 RVC 慢一点">
+          千问变声
+        </button>
+      </div>
+    </div>
+
     <label class="field" for="say">
       <svg class="lead" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
       </svg>
-      <input id="say" placeholder="输入文字，回车发微信语音" maxlength="200" />
+      <!-- 文案写「自动合成发微信」而不是「发微信语音」：把这条链路跟上面的实时变声分开。
+          完整解释（文字 → TTS 合成 → RVC 换声 → 自动录进微信，不是实时变声）放在 title 里，
+          204px 宽塞不下，但鼠标悬停能看全。 -->
+      <input id="say" placeholder="输入文字，自动合成发微信" maxlength="200"
+             title="文字 → TTS 合成 → RVC 换声 → 自动录进微信。这条不是实时变声，用的是主界面选中的音色。" />
     </label>
 
     <div class="field sel">
@@ -568,9 +660,9 @@
         </svg>
         <span>试听</span>
       </button>
-      <button id="live" type="button" title="开关 RVC 实时变声（微信把 CABLE Output 当麦克风）">
+      <button id="live" type="button" title="开关上面选中的实时变声引擎（微信把 CABLE Output 当麦克风）">
         <span class="spin"></span>
-        <span id="liveLabel">变声</span>
+        <span id="liveLabel">开 RVC</span>
       </button>
     </div>
 
@@ -792,7 +884,13 @@ function setBubbleVisible(show) {
   rootEl.classList.toggle("compact", !!show);
 }
 
-function setState(key, text) {
+/**
+ * @param {string} key  状态 key（对应 BUBBLE / PILL / STATE_MOTION）
+ * @param {string} [text]  覆盖文案（识别到的文字等）
+ * @param {string} [title] 覆盖标题。实时变声运行时用它把「我在听」换成引擎名，
+ *                         这样不悬停也能从气泡上看出「现在是 RVC 还是千问」。
+ */
+function setState(key, text, title) {
   if (guide) return;                       // 导览播放中，状态轮询不抢气泡
   if (key === lastKey && text === textEl.textContent) return;
   lastKey = key;
@@ -805,7 +903,7 @@ function setState(key, text) {
   if (!info || (info.hidden && !text)) { setBubbleVisible(false); return; }
   bubble.className = info.cls;
   setBubbleVisible(true);
-  titleEl.textContent = info.title;
+  titleEl.textContent = title || info.title;
   textEl.classList.remove("typing");
   textEl.textContent = text || info.text;
 }
@@ -906,7 +1004,7 @@ function render(s) {
         setState("play", lastText ? `「${lastText}」` : "正在播…");
       } else {
         lastText = "";                          // 队列空了 = 播完，回到「我在听」
-        setState("listen", "我在听 · 你继续说");
+        setState("listen", "我在听 · 你继续说", "千问变声");
       }
       return;
     default:
@@ -915,16 +1013,18 @@ function render(s) {
 }
 
 function renderLive(l) {
-  // 实时变声模式：基础「我在听」动画 + 实时字幕（转写子进程挂在 asr_* 字段）
+  // 实时变声模式：基础「我在听」动画 + 实时字幕（转写子进程挂在 asr_* 字段）。
+  // 标题固定写「RVC 实时」：气泡是唯一不悬停也能看到的地方，
+  // 用户反馈「不知道现在用的是哪一种变身」，所以引擎名必须出现在这里。
   if (l.asr_running) {
     if (l.asr_stage === "transcribing") {
-      setState("think", "听懂啦…");
+      setState("think", "听懂啦…", "RVC 实时");
     } else {
-      setState("listen", l.asr_last_text ? `「${l.asr_last_text}」` : "变声中 · 我听着");
+      setState("listen", l.asr_last_text ? `「${l.asr_last_text}」` : "变声中 · 我听着", "RVC 实时");
     }
   } else {
     lastText = "";
-    setState("listen", "变声中 · 我听着");   // 转写子进程未启动：只挂身份牌，不影响变声
+    setState("listen", "变声中 · 我听着", "RVC 实时");   // 转写子进程未启动：只挂身份牌，不影响变声
   }
 }
 
@@ -1007,26 +1107,24 @@ async function tick() {
     setPill("在线", "play");
     setTimeout(() => { if (!backendOffline && !guide) { lastKey = null; void tick(); } }, 3000);
   }
-  statusBusy = Boolean((cascadeData && cascadeData.running) || (live && live.live_running));
+  // 谁在跑：级联优先（两者互斥，真同时出现也只可能是切换的那一瞬间）
+  runningEngine = (cascadeData && cascadeData.running) ? "qwen"
+                : (live && live.live_running) ? "rvc" : null;
+  statusBusy = Boolean(runningEngine);
   // 空闲计时：任何变声在跑就归零，否则记连续空闲起点（供「打盹」演出用）
   idleSince = statusBusy ? 0 : (idleSince || Date.now());
-  // 快捷面板上的实时变声开关随真实状态走（面板隐藏时改了也不影响）。
-  // ⚠️ 只能写 #liveLabel，不能写 liveBtn.textContent —— 按钮里还有 <span class="spin">
-  //    和图标 <svg>，直接赋 textContent 会把它们整个抹掉（旧版按钮是纯文本，所以没暴露）。
-  if (live && typeof live.live_running === "boolean") {
-    liveLabel.textContent = live.live_running ? "变声中" : "变声";
-    liveBtn.classList.toggle("live-on", live.live_running);
-    liveBtn.title = live.live_running
-      ? "RVC 实时变声运行中，点一下关闭"
-      : "开关 RVC 实时变声（微信把 CABLE Output 当麦克风）";
-  }
-  if (cascadeData && cascadeData.running) {
+  // 引擎分段与「变声」按钮随真实状态走（面板隐藏时改了也不影响）。
+  // ⚠️ 按钮文案只能写 #liveLabel，不能写 liveBtn.textContent —— 按钮里还有
+  //    <span class="spin"> 与图标 <svg>，直接赋 textContent 会把它们整个抹掉。
+  refreshEngineSeg();
+  if (runningEngine === "qwen") {
     render(cascadeData);
-  } else if (live && live.live_running) {
+    // 引擎名是「头条状态」，盖过 render() 内部 setState 写的「我在听」。
+    // 必须放在 render 之后 —— setState 会重写药丸。
+    setPill("千问变声中", "listen");
+  } else if (runningEngine === "rvc") {
     renderLive(live);
-    // 实时变声是「头条状态」，盖过 renderLive 内部 setState("listen") 的「我在听」。
-    // 必须放在 renderLive 之后 —— setState 会重写药丸。
-    setPill("变声中", "listen");
+    setPill("RVC 变声中", "listen");
   } else {
     lastText = "";
     setState("idle");   // 都没运行 / 后端没起：安静待机，不报错打扰
@@ -1057,6 +1155,8 @@ const sendBtn = document.getElementById("send");
 const sendLabel = document.getElementById("sendLabel");
 const liveBtn = document.getElementById("live");
 const liveLabel = document.getElementById("liveLabel");
+const engRvcBtn = document.getElementById("engRvc");
+const engQwenBtn = document.getElementById("engQwen");
 const voiceSel = document.getElementById("voiceSel");
 const previewBtn = document.getElementById("preview");
 const statusEl = document.getElementById("status");
@@ -1069,6 +1169,128 @@ let panelOpen = false;       // 面板是否可见（Esc 收起、点击穿透�
 // 而 refreshPanel 挂在 mouseenter 上，提前声明可彻底排除 TDZ 隐患。
 let lastPreview = null;      // { wav, url, duration_s } 最近一次试听的合成产物
 let previewAudio = null;
+
+// ---------------- 实时变声引擎：RVC 实时 / 千问变声 ----------------
+/**
+ * 后端有两个**互斥**的实时变声引擎（互相 409：「两者抢 GPU 且都占 CABLE」）：
+ *   rvc  —— 逐帧套音色，保留你的说话习惯，适合真人音色 / 低延迟
+ *   qwen —— 先 ASR 识别成文字、再 TTS 合成换嗓，适合卡通 / 角色音色，慢一点
+ * 所以面板上做成「选一个」的分段控件，而不是两个独立开关（后者会让人以为能同时开）。
+ *
+ * 用户原话：「这两个用户不确定到底用哪一种」「就没体现 rvc 的」「我感觉这个可以来回切换」。
+ * 因此这里做三件事：① 选中项常驻高亮；② 真正在跑的那个亮呼吸点；③ 药丸与气泡都写出引擎名。
+ */
+const ENGINE_KEY = "pet_engine";
+const ENGINES = {
+  rvc:  { label: "RVC 实时", short: "RVC",  start: "/api/rvc/live/start", stop: "/api/rvc/live/stop" },
+  qwen: { label: "千问变声", short: "千问", start: "/api/cascade/start",   stop: "/api/cascade/stop" },
+};
+const savedEngine = localStorage.getItem(ENGINE_KEY);
+let engine = ENGINES[savedEngine] ? savedEngine : "rvc";   // 选中的引擎（持久化）
+let runningEngine = null;   // 实际在跑的那个（都没跑=null）；由 tick() 每帧按两个状态接口刷新
+let engineBusy = false;     // 启停进行中：防连点造成「停一半又启」的交叉状态
+
+/** 刷新引擎分段的两个状态类，以及「变声」按钮的文案。 */
+function refreshEngineSeg() {
+  // ⚠️ 「选中」（engine）与「运行中」（runningEngine）必须分开表达：
+  // 把「选中」当「已开启」会骗人 —— 用户完全可能在主界面开了 RVC，而桌宠上选的是千问。
+  if (engRvcBtn) {
+    engRvcBtn.classList.toggle("on", engine === "rvc");
+    engRvcBtn.classList.toggle("running", runningEngine === "rvc");
+  }
+  if (engQwenBtn) {
+    engQwenBtn.classList.toggle("on", engine === "qwen");
+    engQwenBtn.classList.toggle("running", runningEngine === "qwen");
+  }
+  if (!liveLabel || !liveBtn) return;
+  // 按钮文案把引擎名写进去 —— 原来只写「变声」，用户不知道点下去是哪一种。
+  // 同时表达「点下去会发生什么」：正在跑本引擎→「停 X」，否则→「开 X」。
+  const e = ENGINES[engine];
+  const running = runningEngine === engine;
+  liveLabel.textContent = (running ? "停 " : "开 ") + e.short;
+  liveBtn.classList.toggle("live-on", running);
+  liveBtn.title = running
+    ? `${e.label} 运行中，点一下停止`
+    : `启动${e.label}（麦克风实时换声；微信里把录音设备指向 CABLE Output 当麦克风）`;
+}
+
+function setEngine(next) {
+  if (!ENGINES[next]) return;
+  engine = next;
+  try { localStorage.setItem(ENGINE_KEY, next); } catch {}
+  refreshEngineSeg();
+}
+
+/**
+ * 直连后端（不走主进程 IPC）。这是**设计内**的通道，不是绕过鉴权：
+ * m2_server/server.py 的 _TokenMiddleware 对本机 127.0.0.1 直接放行，
+ * _OriginGuardMiddleware + CORSMiddleware 也显式放行 file:// 页面（Origin: null）。
+ * 走渲染进程的好处：桌宠的启停逻辑全部留在 pet.html 里，不必改 preload/main ——
+ * 改主进程要重打 asar 才能生效，而 pet.html 是热替换就生效的。
+ */
+async function apiPost(path) {
+  try {
+    const r = await fetch("http://127.0.0.1:8000" + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    let data = null;
+    try { data = await r.json(); } catch {}
+    return { ok: r.ok, status: r.status, data };
+  } catch (e) {
+    return { ok: false, status: 0, data: null, error: String((e && e.message) || e) };
+  }
+}
+function apiErr(r) {
+  return (r.data && (r.data.detail || r.data.error)) || r.error || ("HTTP " + r.status);
+}
+
+/** 开关当前选中的引擎。两个互斥，所以启动前先把在跑的另一个停掉。 */
+async function toggleLive() {
+  if (engineBusy) return;
+  const e = ENGINES[engine];
+  engineBusy = true;
+  setBusy(liveBtn, true);
+  try {
+    if (runningEngine === engine) {
+      setStatus(`正在停止${e.label}…`, "");
+      const r = await apiPost(e.stop);
+      setStatus(r.ok ? `${e.label} 已停止` : `停止失败：${apiErr(r)}`, r.ok ? "ok" : "err");
+    } else {
+      if (runningEngine) {
+        // 后端对这种情况直接 409（「两者抢 GPU 且都占 CABLE」）。
+        // 用户点的是另一个引擎，意图很明确，所以替他先停再开，而不是甩一句报错让他自己停。
+        setStatus(`先停掉${ENGINES[runningEngine].label}，再切到${e.label}…`, "");
+        const s = await apiPost(ENGINES[runningEngine].stop);
+        if (!s.ok) { setStatus(`停不掉${ENGINES[runningEngine].label}：${apiErr(s)}`, "err"); return; }
+      }
+      setStatus(`正在启动${e.label}…模型就绪要一会儿`, "");
+      const r = await apiPost(e.start);
+      setStatus(r.ok ? `${e.label} 已开启` : `启动失败：${apiErr(r)}`, r.ok ? "ok" : "err");
+    }
+  } finally {
+    engineBusy = false;
+    setBusy(liveBtn, false);
+    void tick();       // 立刻回读真实状态，不等下一个 1s 轮询
+  }
+}
+
+/**
+ * 点分段里的另一个引擎。
+ * 有引擎在跑 → 停掉它并开新的（用户已确认「自动停掉再开新的」）；
+ * 都没在跑 → 只改选择、不自动启动（免得点错一下就占上 GPU 和 CABLE）。
+ */
+async function pickEngine(next) {
+  if (next === engine) return;
+  const wasRunning = runningEngine;
+  setEngine(next);
+  if (!wasRunning) {
+    setStatus(`引擎已切到「${ENGINES[next].label}」，点「开 ${ENGINES[next].short}」启动`, "");
+    return;
+  }
+  await toggleLive();
+}
 
 function showPanel() {
   if (panelTimer) { clearTimeout(panelTimer); panelTimer = null; }
@@ -1148,7 +1370,7 @@ recentEl.addEventListener("click", (e) => {
   if (it && window.pet && window.pet.sendWav) window.pet.sendWav(it.dataset.wav);
 });
 
-function refreshPanel() { loadVoices(); loadRecent(); refreshSendLabel(); }
+function refreshPanel() { loadVoices(); loadRecent(); refreshSendLabel(); refreshEngineSeg(); }
 
 // ---------------- 试听 / 发送 / 结果反馈 ----------------
 // lastPreview / previewAudio 的声明已前移到「快捷面板」段的 DOM 引用处（排除 TDZ 隐患）。
@@ -1216,8 +1438,10 @@ async function doSendText() {
 previewBtn.addEventListener("click", doPreview);
 sendBtn.addEventListener("click", doSendText);
 sayEl.addEventListener("keydown", (e) => { if (e.key === "Enter") doSendText(); });
-liveBtn.addEventListener("click", () => {
-  if (window.pet && window.pet.liveToggle) window.pet.liveToggle();
+liveBtn.addEventListener("click", () => { void toggleLive(); });
+// 引擎分段：点另一个 = 切过去（有引擎在跑就顺手换掉）。dataset.eng 与 ENGINES 的键一一对应。
+[engRvcBtn, engQwenBtn].forEach((b) => {
+  if (b) b.addEventListener("click", () => { void pickEngine(b.dataset.eng); });
 });
 
 // 主进程回传：合成产物 → 自动播放
@@ -1314,6 +1538,9 @@ setInterval(() => {
   playGuide({ title: dozy ? "打盹" : "闲聊", lines: s.lines, action: s.action, motion: s.motion, duration: dozy ? 9000 : 6000 });
 }, 5000);
 
+// 引擎分段的初始选中态（从 localStorage 恢复）。必须在 void tick() 之前 ——
+// tick 会调 refreshEngineSeg()，但那时 runningEngine 还是 null，先渲染一次选中态。
+setEngine(engine);
 void tick();
 setInterval(tick, 1000);
 // 皮肤轮询：应用新皮肤后 5s 内热切换（无需重启桌宠）。

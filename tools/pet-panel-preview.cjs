@@ -17,12 +17,15 @@
  *   4. headless shell 截图（2x 缩放，便于看清 1px 边框与圆角）或量测（--measure）
  *
  * 用法：
- *   node tools/pet-panel-preview.cjs                  # 出全部场景到 outputs/pet-preview/
- *   node tools/pet-panel-preview.cjs --scene ok-dark  # 只出一个
- *   node tools/pet-panel-preview.cjs --measure        # 只打布局数字，不存图
- *   VM_CHROME=/path/to/chrome.exe node tools/...      # 手动指定 Chromium
+ *   node tools/pet-panel-preview.cjs                        # 出全部场景到 outputs/pet-preview/
+ *   node tools/pet-panel-preview.cjs --scene ok-dark        # 只出一个
+ *   node tools/pet-panel-preview.cjs --scene a --scene b    # 可重复，也支持 --scene a,b
+ *   node tools/pet-panel-preview.cjs --measure              # 只打布局数字，不存图
+ *   VM_CHROME=/path/to/chrome.exe node tools/...            # 手动指定 Chromium
+ *   VM_PET_HTML=/tmp/patched.html node tools/... --measure  # 换一份 pet.html（变异测试）
  *
- * 场景命名：<state>-<theme>，state ∈ ok|err|live|guide|busy，theme ∈ dark|light
+ * 场景命名：<state>-<theme>，state 只能是小写字母（qwenidle 而不是 qwen-idle ——
+ * 带连字符会被 split("-") 切成两段，theme 拿到 "idle" 从而静默不套暗色）。
  *
  * 作为模块：`require("./pet-panel-preview.cjs").measureScenes(["guide-dark"])`，
  * 供 tools/test-pet-panel-layout.cjs 复用（同一个渲染路径，避免两套实现漂移）。
@@ -36,7 +39,8 @@ const { spawnSync } = require("node:child_process");
 const ROOT = path.join(__dirname, "..");
 const PET_DIR = path.join(ROOT, "web", "electron", "pet");
 const OUT_DIR = path.join(ROOT, "outputs", "pet-preview");
-const SCENES = ["ok-dark", "ok-light", "offline-dark", "live-dark", "think-dark", "guide-dark", "busy-dark"];
+const SCENES = ["ok-dark", "ok-light", "offline-dark", "live-dark", "qwen-dark", "qwenidle-dark",
+                "think-dark", "guide-dark", "busy-dark"];
 
 /** 找 Playwright 缓存里的 chromium-headless-shell。找不到返回 null（调用方负责报错/跳过）。 */
 function findChrome() {
@@ -87,18 +91,27 @@ function preScript(state) {
     ] },
     "/api/health": { ok: true }
   };
-  window.fetch = async (url) => {
+  window.fetch = async (url, opts) => {
     const u = String(url);
+    const method = String((opts && opts.method) || "GET").toUpperCase();
     // offline 场景：两个状态接口都失败 → 走 pet.html 自己的「后端离线」分支
     // （药丸/精灵图/气泡全由产品代码接管，不在预览台里 setPill 硬塞 ——
     //   硬塞会被 tick() 覆盖，之前 err 场景截出来药丸还是「待机」就是这么来的）
     if (SCEN === "offline" && (u.includes("/api/cascade/status") || u.includes("/api/rvc/live/status"))) {
       return { ok: false, status: 503, json: async () => ({}) };
     }
-    // 默认「什么都没跑」= 待机：面板本身才是这几张图的主角，
-    // 气泡/精灵图的状态另由 live / think / guide 三个场景覆盖。
+    // 启停请求（桌宠直接 POST 后端，见 pet.html 的 apiPost）：一律回 ok，
+    // 预览台不需要真启停 —— 状态由下面的 status 桩决定。
+    if (method === "POST") return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    // 两个引擎互斥，所以一次只会有一个 running=true：
+    //   live  → RVC 实时在跑（分段里 RVC 亮呼吸点、药丸「RVC 变声中」）
+    //   qwen  → 千问变声在跑（分段里千问亮呼吸点、药丸「千问变声中」）
+    //   qwen-idle → 千问被选中但没启动（只高亮、不亮呼吸点；验证「选中 ≠ 已开启」）
     if (u.includes("/api/cascade/status")) {
-      return { ok: true, status: 200, json: async () => ({ running: false }) };
+      return { ok: true, status: 200,
+        json: async () => (SCEN === "qwen"
+          ? { running: true, stage: "capturing", last_text: "今天天气不错", queued_s: 0, child_error: "" }
+          : { running: false }) };
     }
     if (u.includes("/api/rvc/live/status")) {
       return { ok: true, status: 200, json: async () => ({ live_running: SCEN === "live" }) };
@@ -120,7 +133,13 @@ window.addEventListener("load", function () {
   showPanel();
   if (SCEN === "ok")   setStatus("已合成 3.2s，试听中…满意就点「发送试听」", "ok");
   if (SCEN === "offline") setStatus("后端没起来，先开主程序", "err");
-  if (SCEN === "live") setStatus("变声已开启，微信把 CABLE Output 当麦克风", "ok");
+  if (SCEN === "live") setStatus("RVC 实时 已开启，微信把 CABLE Output 当麦克风", "ok");
+  if (SCEN === "qwen") setStatus("千问变声 已开启，识别→合成→换嗓", "ok");
+  // 只切选中、不启动：验证「选中 ≠ 已开启」（分段高亮但没有呼吸点）
+  if (SCEN === "qwenidle") {
+    setEngine("qwen");
+    setStatus("引擎已切到「千问变声」，点「开 千问」启动", "");
+  }
   if (SCEN === "busy") { setStatus("合成中… 完成后自动发到微信，全程别动键鼠", "ok");
                          setBusy(sendBtn, true); }
   if (SCEN === "think") { setState("think", "「你好呀」");
@@ -145,6 +164,9 @@ window.addEventListener("load", function () {
   if (SCEN === "busy") setBusy(sendBtn, true);
   if (SCEN === "offline") setStatus("后端没起来，先开主程序", "err");
   if (SCEN === "ok")   setStatus("已合成 3.2s，试听中…满意就点「发送试听」", "ok");
+  if (SCEN === "live") setStatus("RVC 实时 已开启，微信把 CABLE Output 当麦克风", "ok");
+  if (SCEN === "qwen") setStatus("千问变声 已开启，识别→合成→换嗓", "ok");
+  if (SCEN === "qwenidle") { setEngine("qwen"); setStatus("引擎已切到「千问变声」，点「开 千问」启动", ""); }
   if (SCEN === "think") { setState("think", "「你好呀」"); setStatus("听懂啦，正在合成…", ""); }
   if (SCEN === "guide") playGuide({ title: "音色工坊",
     lines: ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"],
@@ -172,6 +194,17 @@ window.addEventListener("load", function () {
                  disp: cs.display, mb: cs.marginBottom };
       }),
       pill: { txt: pillText.textContent, w: R(pillEl).w, cls: pillEl.className },
+      // 引擎分段的状态：选中（.on）与运行中（.running）必须分开 ——
+      // 把「选中」当「已开启」是这次要防的核心错误。
+      engine: {
+        sel: engine,
+        running: runningEngine,
+        on: [engRvcBtn, engQwenBtn].filter(function (b) { return b && b.classList.contains("on"); })
+              .map(function (b) { return b.dataset.eng; }),
+        runningMark: [engRvcBtn, engQwenBtn].filter(function (b) { return b && b.classList.contains("running"); })
+              .map(function (b) { return b.dataset.eng; }),
+        liveLabel: liveLabel ? liveLabel.textContent : null,
+      },
       bubbleVisible: getComputedStyle(bubble).display !== "none",
       bubble: bubble.offsetHeight,
       petTop: Math.round(petBox.getBoundingClientRect().top),
@@ -184,10 +217,33 @@ window.addEventListener("load", function () {
       stepsDots: steps ? steps.children.length : 0,
       stepsOnIdx: steps ? Array.prototype.findIndex.call(steps.children, function (el) {
         return el.className.indexOf("on") >= 0; }) : -1,
-      buttons: [["send", sendBtn], ["preview", previewBtn], ["live", liveBtn]].map(function (p) {
+      // 引擎分段的两个按钮也要进这个列表：它们有 text-overflow: ellipsis，
+      // 被挤窄时会静默变成「RVC 实…」。
+      //
+      // 判据不能用 scrollWidth > clientWidth —— 对带 overflow:hidden 的元素，
+      // scrollWidth 被钳到 clientWidth，溢出再多也报「正好」。而 overflow:hidden
+      // 恰恰是 ellipsis 生效的前提，所以这个判据对**所有会省略号的按钮**都是瞎的。
+      // 改用 Range.getClientRects() 取文字的自然宽度：Range 给的是**布局矩形**，
+      // 裁剪只发生在绘制阶段，不影响它；再跟内容盒宽度（clientWidth 去掉左右 padding）比。
+      buttons: [["send", sendBtn], ["preview", previewBtn], ["live", liveBtn],
+                ["engRvc", engRvcBtn], ["engQwen", engQwenBtn]].map(function (p) {
         var b = p[1];
+        var cs2 = getComputedStyle(b);
+        var padL = parseFloat(cs2.paddingLeft) || 0;
+        var padR = parseFloat(cs2.paddingRight) || 0;
+        var avail = b.clientWidth - padL - padR;
+        var natural = 0;
+        try {
+          var rng = document.createRange();
+          rng.selectNodeContents(b);
+          var rects = rng.getClientRects();
+          for (var ri = 0; ri < rects.length; ri++) {
+            if (rects[ri].width > natural) natural = rects[ri].width;
+          }
+        } catch (e) { natural = -1; }
         return { id: p[0], w: R(b).w, scrollW: b.scrollWidth, clientW: b.clientWidth,
-                 clipped: b.scrollWidth > b.clientWidth + 1, txt: b.textContent.trim() };
+                 textW: Math.round(natural * 100) / 100, availW: Math.round(avail * 100) / 100,
+                 clipped: natural > avail + 1, txt: b.textContent.trim() };
       }),
     };
     console.log("MEASURE " + JSON.stringify(M));
@@ -251,8 +307,19 @@ function freezeStyle() {
 }
 
 function buildPage(scene, mode, keepAnim) {
+  // 场景名必须严格是 <state>-<theme>。加这条校验是因为真踩过：
+  // 取名叫 `qwen-idle-dark`，split("-") 得到 state="qwen"、theme="idle" →
+  // theme 判不出 "dark" → forceDark() 不生效 → 静默出成亮色图，
+  // 而量测里的 theme 字段又只打令牌值，看起来一切正常。宁可当场报错。
   const [state, theme] = scene.split("-");
-  let html = fs.readFileSync(path.join(PET_DIR, "pet.html"), "utf-8");
+  if (!/^[a-z]+$/.test(state) || (theme !== "dark" && theme !== "light")) {
+    throw new Error("场景名必须形如 <state>-<dark|light>（state 只能是小写字母、不能含连字符），收到："
+      + JSON.stringify(scene));
+  }
+  // VM_PET_HTML 指向别处的 pet.html：给变异测试用（把按钮改窄、确认 clipped 判据真的会报警），
+  // 这样不必去动仓库里的真文件，也就不存在「测完忘了改回来」的风险。
+  const htmlPath = process.env.VM_PET_HTML || path.join(PET_DIR, "pet.html");
+  let html = fs.readFileSync(htmlPath, "utf-8");
   if (theme === "dark") html = forceDark(html);
   const head = headInjection(theme) + (keepAnim ? "" : "\n" + freezeStyle());
   html = html.replace("</head>", head + "\n</head>");
@@ -359,8 +426,27 @@ function measureScenes(scenes, opts) {
 }
 
 function main() {
-  const i = process.argv.indexOf("--scene");
-  const wanted = i > -1 ? [process.argv[i + 1]] : SCENES;
+  // --scene 可重复出现，也支持逗号分隔：早先只读 argv[i+1]，
+  // 写 `--scene a --scene b` 只会量到 a，另外几个被静默丢掉（"1/1 个场景量测成功"
+  // 看着还挺成功）。现在全都收进来，并对未知场景名直接报错，不再静默。
+  const wanted = [];
+  for (let i = 0; i < process.argv.length; i++) {
+    if (process.argv[i] === "--scene" || process.argv[i] === "--scenes") {
+      const v = process.argv[i + 1];
+      if (!v || v.startsWith("--")) {
+        console.error("--scene 后面要跟场景名（可逗号分隔，也可重复多次）");
+        process.exit(2);
+      }
+      for (const s of v.split(",")) if (s.trim()) wanted.push(s.trim());
+      i += 1;
+    }
+  }
+  const unknown = wanted.filter((s) => !SCENES.includes(s));
+  if (unknown.length) {
+    console.error("未知场景：" + unknown.join(", ") + "\n可选：" + SCENES.join(", "));
+    process.exit(2);
+  }
+  const list = wanted.length ? wanted : SCENES;
   const measure = process.argv.includes("--measure");
   const keepAnim = process.argv.includes("--anim");
   const chrome = findChrome();
@@ -376,7 +462,7 @@ function main() {
   console.log("tmp: " + tmp);
 
   let ok = 0;
-  for (const scene of wanted) {
+  for (const scene of list) {
     const r = runScene(scene, { mode: measure ? "measure" : "shot", chrome, tmp, keepAnim });
     if (r.ok) {
       ok += 1;
@@ -389,7 +475,7 @@ function main() {
     }
   }
   fs.rmSync(tmp, { recursive: true, force: true });
-  console.log("\n" + ok + "/" + wanted.length + (measure ? " 个场景量测成功" : " 张 -> " + path.relative(ROOT, OUT_DIR)));
+  console.log("\n" + ok + "/" + list.length + (measure ? " 个场景量测成功" : " 张 -> " + path.relative(ROOT, OUT_DIR)));
   if (!ok) process.exit(1);
 }
 
