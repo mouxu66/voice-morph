@@ -49,6 +49,11 @@
  *      —— 原 `if (backendOffline && !wasOffline) { … return }` 只拦住「刚离线」那一帧，
  *         1s 后就被状态机的 setState("idle") 覆盖，提示一闪而过。
  *         本条用 VM_PET_OFFLINE=1 子进程复跑本文件来验（见文件末尾）。
+ *  12. 【2026-09-17 面板让位新增】气泡显隐只能有一个写入口（setBubbleVisible）
+ *      —— 气泡与面板共用同一个 480px 窗口，气泡一起来面板就被压扁、底部「最近发送」
+ *         被切掉（实测 guide 切 6px / think 16px / offline 34px）。让位规则靠
+ *         #root.compact 生效，而它必须与气泡显隐严格同步；散着写 bubble.style.display
+ *         漏掉一处，那一处就会带着多余的 #recent 去抢高度。所以：写入口唯一 + 运行期验证。
  */
 "use strict";
 const assert = require("node:assert");
@@ -121,15 +126,23 @@ const cssStripped = stripCssComments(styleM[1]);
 const htmlLines = html.split("\n");
 
 // ---------------- 最小 DOM 桩（记录所有写入，供断言） ----------------
+/**
+ * classList 必须是**真**实现，不能是 no-op 桩。
+ *
+ * 原来的桩 `classList: { add(){}, remove(){}, toggle(){}, contains(){ return false } }`
+ * 会让「#root 有没有挂 .compact」这类断言永远拿到 false —— 也就是说
+ * 面板让位规则（回归点 12）根本没法在无 GUI 环境下验证。className 与 classList
+ * 共享同一个 Set，避免两套状态各说各话。
+ */
 function mkEl(id) {
   const el = {
     id,
+    _cls: new Set(),
     style: {
       _props: {},
       setProperty(k, v) { this._props[k] = String(v); },
       removeProperty(k) { delete this._props[k]; },
     },
-    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     // 记录监听器：这样才能在脚本跑完后「点一下按钮」，对事件驱动的行为做真实断言
     _on: {},
     addEventListener(type, fn) { (this._on[type] = this._on[type] || []).push(fn); },
@@ -144,6 +157,20 @@ function mkEl(id) {
     focus() {},
     closest() { return null; },
     querySelectorAll() { return []; },
+  };
+  Object.defineProperty(el, "className", {
+    get() { return [...el._cls].join(" "); },
+    set(v) { el._cls = new Set(String(v).split(/\s+/).filter(Boolean)); },
+  });
+  el.classList = {
+    add(...c) { c.forEach((x) => el._cls.add(x)); },
+    remove(...c) { c.forEach((x) => el._cls.delete(x)); },
+    toggle(c, on) {
+      const want = on === undefined ? !el._cls.has(c) : !!on;
+      if (want) el._cls.add(c); else el._cls.delete(c);
+      return want;
+    },
+    contains: (c) => el._cls.has(c),
   };
   return el;
 }
@@ -227,12 +254,17 @@ global.fetch = async (url) => {
 };
 
 // ---------------- 执行真实脚本 ----------------
+// 末尾追加一行把内部函数导出来：间接 eval 的函数声明**不会**挂到 globalThis
+// （实测 `globalThis.setState === undefined`，别指望直接拿），所以在同一个 eval 作用域里
+// 显式挂一份。追加在末尾不影响上面按行号做的错误定位。
+const EXPORT_HOOK = "\n;globalThis.__petFns = { setState, playGuide, endGuide, setBubbleVisible };\n";
 let thrown = null;
 try {
-  (0, eval)(code);
+  (0, eval)(code + EXPORT_HOOK);
 } catch (e) {
   thrown = e;
 }
+const petFns = globalThis.__petFns || {};
 
 // tick()/loadSkin() 是 async，用真 setTimeout 让 await 链推进完
 const flush = () => new Promise((r) => setTimeout(r, 20));
@@ -403,6 +435,69 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     assert.match(els.statusText.textContent, /合成失败：微信没开/);
   });
 
+  // ---------- 面板让位规则（回归点 12） ----------
+
+  check("气泡显隐只有一个写入口：bubble.style.display 只出现在 setBubbleVisible 里", () => {
+    const writes = [...codeStripped.matchAll(/bubble\.style\.display\s*=/g)];
+    assert.strictEqual(writes.length, 1,
+      "bubble.style.display 被写了 " + writes.length + " 次，应恰好 1 次（都在 setBubbleVisible 内）；" +
+      "散着写的地方不会同步 #root.compact，那一处就会带着多余的 #recent 去和气泡抢高度");
+    const fnIdx = codeStripped.indexOf("function setBubbleVisible");
+    assert.ok(fnIdx > -1, "找不到 setBubbleVisible() —— 气泡显隐与让位标记没有统一入口");
+    const body = cssBlockBody(codeStripped, codeStripped.indexOf("{", fnIdx));
+    assert.ok(/bubble\.style\.display\s*=/.test(body),
+      "唯一那处 bubble.style.display 不在 setBubbleVisible() 里");
+    assert.ok(/classList\.(toggle|add|remove)\(\s*"compact"/.test(body),
+      "setBubbleVisible() 没有同步 #root 上的 .compact —— 让位规则永远不会生效");
+  });
+
+  check("CSS 里有 #root.compact 收起 #recent 的规则（气泡在屏时面板让位）", () => {
+    const hits = [...cssStripped.matchAll(/#root\.compact[^{]*\{([^}]*)\}/g)];
+    assert.ok(hits.length > 0, "找不到任何 #root.compact 规则");
+    const hidesRecent = hits.some((h) =>
+      h[0].includes("#recent") && /display\s*:\s*none/.test(h[1]));
+    assert.ok(hidesRecent,
+      "没有「#root.compact 下 #recent 隐藏」的规则 —— 面板省不出高度，气泡一起来底部那行就会被切");
+  });
+
+  // ⚠️ 这一组只在在线模式跑：它会 setState/playGuide，把「离线」场景的既有状态冲掉
+  // （药丸被改成「待机」），导致下面 OFFLINE 分支的断言误报。离线模式另有一组断言。
+  if (!OFFLINE) {
+    check("气泡上屏时 #root 挂 .compact，气泡收起时摘掉（setState 路径）", () => {
+      assert.strictEqual(typeof petFns.setState, "function",
+        "没从内联脚本里导出 setState（EXPORT_HOOK 可能没生效）");
+      petFns.setState("think", "「你好」");
+      assert.strictEqual(els.bubble.style.display, "block", "setState(think) 没把气泡放上屏");
+      assert.ok(els.root.classList.contains("compact"),
+        "气泡已上屏但 #root 没有 .compact → 面板不会让位，底部「最近发送」会被切");
+      petFns.setState("idle");
+      assert.strictEqual(els.bubble.style.display, "none", "setState(idle) 没把气泡收起来");
+      assert.ok(!els.root.classList.contains("compact"),
+        "气泡已收起但 .compact 还挂着 → 面板被白白精简，待机时看不到「最近发送」");
+    });
+
+    check("导览气泡走同一入口：playGuide 后 #root 挂上 .compact", () => {
+      assert.strictEqual(typeof petFns.playGuide, "function", "没从内联脚本里导出 playGuide");
+      petFns.playGuide({ title: "音色工坊", lines: ["一切从这里开始。", "丢进视频，我自动切片质检。"] });
+      assert.strictEqual(els.bubble.className, "guide", "导览气泡的类名应为 guide");
+      assert.strictEqual(els.bubble.style.display, "block", "导览气泡没上屏");
+      assert.ok(els.root.classList.contains("compact"),
+        "导览气泡在屏但面板没让位 —— guide 场景面板会被切 6px 并冒出内部滚动条");
+    });
+
+    // endGuide() 只负责清定时器并 `void tick()`，真正的重画在 tick 的 await 之后才发生，
+    // 所以必须让出一轮事件循环再断言 —— 同步断言会读到「还没摘掉」的中间态。
+    petFns.endGuide();
+    await flush();
+
+    check("导览结束后 .compact 被摘掉（面板恢复常态：行距复原、#recent 回来）", () => {
+      assert.ok(!els.root.classList.contains("compact"),
+        "导览结束后 .compact 还挂着 —— 面板会一直停在精简态");
+      assert.strictEqual(els.bubble.style.display, "none",
+        "导览结束后气泡应收起（状态机此时是 idle）");
+    });
+  }
+
   if (OFFLINE) {
     // ---------- 回归点 11：后端离线提示必须常驻 ----------
     check("离线：药丸切到「后端离线」(t-err)、气泡上屏、精灵图切 error", () => {
@@ -414,6 +509,8 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       assert.strictEqual(els.title.textContent, "后端离线");
       assert.match(String(els.sprite.style.backgroundImage), /error\.webp/,
         "离线时精灵图应切到 error.webp");
+      assert.ok(els.root.classList.contains("compact"),
+        "离线气泡在屏但面板没让位 —— offline 场景面板会被切 34px（实测）");
     });
 
     // 再驱动两轮轮询 —— 这正是原缺陷暴露的地方：
@@ -429,6 +526,8 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       assert.strictEqual(els.pill.className, "pill t-err");
       assert.strictEqual(els.bubble.style.display, "block", "离线气泡被藏掉了");
       assert.match(String(els.sprite.style.backgroundImage), /error\.webp/);
+      assert.ok(els.root.classList.contains("compact"),
+        "离线期间 .compact 被摘掉了 —— 面板会带着多余的 #recent 去和气泡抢高度");
     });
   } else {
     // 用子进程复跑本文件（VM_PET_OFFLINE=1）验证离线路径，

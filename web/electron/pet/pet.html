@@ -398,6 +398,27 @@
   }
   #panel .hempty { font-size: 10.5px; color: rgb(var(--c-t-500)); }
 
+  /* —— 气泡在屏时的「让位」规则 ——
+     气泡与面板共用同一个 480px 高的窗口，可用高是：
+       480(窗高) - 18(#root 上下留白) - 150(角色) - 6(面板下边距) - 气泡 - 6(气泡下边距)。
+     实测（tools/pet-panel-preview.cjs --measure）气泡一起来面板就被压扁，
+     底部「最近发送」那行被切掉一截并冒出内部滚动条：
+       guide   气泡 82 → 面板只剩 217.8，自然高 224 → 切 6px
+       think   气泡 60 → 面板只剩 240，  自然高 256 → 切 16px
+       offline 气泡 78 → 面板只剩 222，  自然高 256 → 切 34px
+     修法不是把面板整体做小（常态下那会牺牲呼吸感，而且最坏情况要砍掉 80px 才够），
+     而是让它在【气泡占着地方】时主动让位：
+       · 隐藏「最近发送」：气泡正在报当前状态时，重发上一条既不是重点、又恰好最占地方
+         （50px 高 + 9px 上边距 = 59px，一让就够）。#recent 本来就会随数据在「有/无」
+         之间切换（#panel #recent:empty 也是 display:none），所以它的出现/消失不是新行为。
+         组合起来正好：待机时（无气泡）面板完整，一有活动就精简 —— 而活动期间本来也不重发。
+       · 头部与字段的行距各收 2~3px，给更长的状态/导览文案留余量。
+     让位后 guide 场景面板自然高降到 156，余量 60px（够再长 60px 的气泡）。
+     JS 侧由 setBubbleVisible() 统一挂/摘 #root 上的 .compact —— 见那里的注释。 */
+  #root.compact #panel #recent { display: none; }
+  #root.compact #panel #phead { margin-bottom: 6px; }
+  #root.compact #panel .field { margin-bottom: 5px; }
+
   /* ---------------- 角色 ---------------- */
   /* 尺寸由 JS 按皮肤 frameW/frameH 注入（--dw/--dh 显示尺寸，含整数倍放大），
      默认回退 150×150（芙宁娜内置）。像素素材放大时 image-rendering: pixelated 保持锐利。 */
@@ -703,6 +724,7 @@ const MOTIONS = ["pop", "wave", "lean", "nod", "sway", "jump", "twirl",
 const petBox = document.getElementById("pet");
 const sprite = document.getElementById("sprite");
 const bubble = document.getElementById("bubble");
+const rootEl = document.getElementById("root");   // 气泡在屏时挂 .compact，让面板主动让位
 const titleEl = document.getElementById("title");
 const textEl = document.getElementById("text");
 const stepsEl = document.getElementById("steps");
@@ -757,6 +779,19 @@ function setPill(text, tone) {
   pillEl.className = "pill t-" + (tone || "idle");
 }
 
+/**
+ * 气泡显隐的唯一入口，同时把「气泡占了地方」这件事同步给 #root。
+ *
+ * 为什么必须收敛到一个入口：气泡与面板共用同一个 480px 窗口，气泡一起来面板就被压扁，
+ * 底部「最近发送」会被切掉一截（实测 guide 切 6px / think 16px / offline 34px）。
+ * 让位规则（#root.compact，见 CSS）只在气泡真的在屏时生效，所以这里必须与 display 同步。
+ * 以前各处直接写 bubble.style.display，漏掉任何一处都会让面板带着多余的 #recent 去抢高度。
+ */
+function setBubbleVisible(show) {
+  bubble.style.display = show ? "block" : "none";
+  rootEl.classList.toggle("compact", !!show);
+}
+
 function setState(key, text) {
   if (guide) return;                       // 导览播放中，状态轮询不抢气泡
   if (key === lastKey && text === textEl.textContent) return;
@@ -767,9 +802,9 @@ function setState(key, text) {
   setPill(pill[0], pill[1]);
   setSprite(key, STATE_MOTION[key] || null);
   const info = BUBBLE[key];
-  if (!info || (info.hidden && !text)) { bubble.style.display = "none"; return; }
+  if (!info || (info.hidden && !text)) { setBubbleVisible(false); return; }
   bubble.className = info.cls;
-  bubble.style.display = "block";
+  setBubbleVisible(true);
   titleEl.textContent = info.title;
   textEl.classList.remove("typing");
   textEl.textContent = text || info.text;
@@ -793,6 +828,8 @@ function clearGuide() {
   clearInterval(typingTimer);
   typingTimer = null;
   guide = null;
+  // 这里不碰气泡显隐/让位标记：endGuide() 紧接着会 void tick() → setState() 重画，
+  // 由 setBubbleVisible() 统一决定气泡与 .compact。中途先动一次只会闪一下。
 }
 
 function endGuide() {
@@ -812,7 +849,7 @@ function playGuide(g) {
   setSprite(g.action || "idle", g.motion || "pop");
 
   bubble.className = "guide";
-  bubble.style.display = "block";
+  setBubbleVisible(true);          // 导览气泡同样会占高度 → 面板让位（见 #root.compact 注释）
   titleEl.textContent = g.title || "这一页";
   stepsEl.innerHTML = lines.map(() => "<i></i>").join("");
 
@@ -940,8 +977,6 @@ async function tick() {
   // （不刷屏：离线只提示一次，恢复在线时再提示一次「回来啦」）——
   const wasOffline = backendOffline;
   backendOffline = !anyOk;
-  // —— 后端健康：两个状态接口全挂 = 后端失联。离线时切 error 精灵 + 气泡提示
-  // （不刷屏：离线只提示一次，恢复在线时再提示一次「回来啦」）——
   if (backendOffline) {
     // ⚠️ 离线期间必须**每帧**都 return，不能只 return「刚离线」那一帧。
     // 原来写成 `if (backendOffline && !wasOffline) { … return; }`，于是 1s 后的下一帧
@@ -952,7 +987,7 @@ async function tick() {
       lastKey = null;                 // 强制重画气泡，让「离线」立刻上屏
       setSprite("error", "shake");
       bubble.className = "s-error";
-      bubble.style.display = "block";
+      setBubbleVisible(true);
       titleEl.textContent = "后端离线";
       textEl.textContent = "后端没起来，先开主程序（点此看日志）";
       setPill("后端离线", "err");
@@ -966,7 +1001,7 @@ async function tick() {
     offlineHintedAt = Date.now();
     setState("idle");
     bubble.className = "s-play";
-    bubble.style.display = "block";
+    setBubbleVisible(true);
     titleEl.textContent = "后端在线";
     textEl.textContent = "回来啦，随时可以用～";
     setPill("在线", "play");

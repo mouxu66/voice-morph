@@ -8,17 +8,24 @@
  * 于是可以离线把 pet.html 渲染出来做视觉验收 —— 不必让用户反复重启桌面端来当我的眼睛。
  *
  * 做法：
- *   1. 把 pet.html 与 svg/ 复制到临时目录（保持 svg/*.webp 的相对路径）
+ *   1. 用 `<base href="file:///…/web/electron/pet/">` 让 svg/*.webp 指回源目录
+ *      （曾经是 fs.cpSync 拷一份，但本机沙箱里拷大目录会被静默杀掉：node 退出码 127、零输出）
  *   2. 在主脚本【之前】注入 fetch 桩，喂假的音色/历史/状态数据（后端没起也能出真实内容）
+ *      —— 以及一个 no-op 的 window.pet 桥，否则普通浏览器里 `id="pet"` 的具名元素访问
+ *      会让 `window.pet` 变成那个 div，页面脚本一调 setIgnoreMouse 就整段死掉
  *   3. 在主脚本【之后】注入一小段，强制展开面板并写入状态行文案
- *   4. headless shell 截图（2x 缩放，便于看清 1px 边框与圆角）
+ *   4. headless shell 截图（2x 缩放，便于看清 1px 边框与圆角）或量测（--measure）
  *
  * 用法：
  *   node tools/pet-panel-preview.cjs                  # 出全部场景到 outputs/pet-preview/
  *   node tools/pet-panel-preview.cjs --scene ok-dark  # 只出一个
+ *   node tools/pet-panel-preview.cjs --measure        # 只打布局数字，不存图
  *   VM_CHROME=/path/to/chrome.exe node tools/...      # 手动指定 Chromium
  *
  * 场景命名：<state>-<theme>，state ∈ ok|err|live|guide|busy，theme ∈ dark|light
+ *
+ * 作为模块：`require("./pet-panel-preview.cjs").measureScenes(["guide-dark"])`，
+ * 供 tools/test-pet-panel-layout.cjs 复用（同一个渲染路径，避免两套实现漂移）。
  */
 "use strict";
 const fs = require("node:fs");
@@ -31,7 +38,7 @@ const PET_DIR = path.join(ROOT, "web", "electron", "pet");
 const OUT_DIR = path.join(ROOT, "outputs", "pet-preview");
 const SCENES = ["ok-dark", "ok-light", "offline-dark", "live-dark", "think-dark", "guide-dark", "busy-dark"];
 
-/** 找 Playwright 缓存里的 chromium-headless-shell。 */
+/** 找 Playwright 缓存里的 chromium-headless-shell。找不到返回 null（调用方负责报错/跳过）。 */
 function findChrome() {
   if (process.env.VM_CHROME && fs.existsSync(process.env.VM_CHROME)) return process.env.VM_CHROME;
   const base = path.join(os.homedir(), "AppData", "Local", "ms-playwright");
@@ -155,6 +162,15 @@ window.addEventListener("load", function () {
       rootScrollH: document.getElementById("root").scrollHeight,
       panel: R(panel),
       panelOverflow: panel.scrollHeight > panel.clientHeight,
+      // 面板被 flex 压扁时，光看 panelOverflow 只知道「在滚」，不知道「差多少、谁占的」。
+      // 把 scrollHeight / clientHeight 与每个直接子块的高度都打出来，才能定出该精简谁。
+      panelScrollH: panel.scrollHeight,
+      panelClientH: panel.clientHeight,
+      blocks: Array.prototype.map.call(panel.children, function (el) {
+        var cs = getComputedStyle(el);
+        return { id: el.id || el.className, h: el.offsetHeight,
+                 disp: cs.display, mb: cs.marginBottom };
+      }),
       pill: { txt: pillText.textContent, w: R(pillEl).w, cls: pillEl.className },
       bubbleVisible: getComputedStyle(bubble).display !== "none",
       bubble: bubble.offsetHeight,
@@ -247,6 +263,101 @@ function buildPage(scene, mode, keepAnim) {
   return html;
 }
 
+/**
+ * 从 Chromium 的 CONSOLE 日志行里抠出 MEASURE 后面的 JSON 对象。
+ *
+ * 不能简单 `slice(indexOf("MEASURE ") + 8)` —— 那行实际长这样：
+ *   [0917/191657.455:INFO:CONSOLE:1366] "MEASURE {...}", source: file:///… (1366)
+ * 尾巴上的 `", source: …` 会让 JSON.parse 直接抛。所以做花括号配对扫描，
+ * 并且要跳过字符串内部的花括号（文案里将来出现 `{}` 也不会误判）。
+ */
+function extractMeasureJson(line) {
+  const at = line.indexOf("MEASURE ");
+  if (at < 0) return null;
+  const start = line.indexOf("{", at);
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < line.length; i += 1) {
+    const c = line[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === "{") depth += 1;
+    else if (c === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try { return JSON.parse(line.slice(start, i + 1)); } catch (_) { return null; }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 渲染一个场景。
+ * @returns {{ok:boolean, json:object|null, png:string, status:number|null, signal:string|null, err:string}}
+ *   mode="measure" 时 json 为页面里 MEASURE 那行解析出来的对象。
+ */
+function runScene(scene, opts) {
+  const mode = opts.mode || "shot";
+  const chrome = opts.chrome || findChrome();
+  const tmp = opts.tmp || fs.mkdtempSync(path.join(os.tmpdir(), "pet-preview-"));
+  const file = path.join(tmp, "pet-" + scene + ".html");
+  fs.writeFileSync(file, buildPage(scene, mode, !!opts.keepAnim), "utf-8");
+  const png = opts.pngDir === null ? path.join(tmp, "_" + scene + ".png")
+                                   : path.join(opts.pngDir || OUT_DIR, "panel-" + scene + ".png");
+  if (fs.existsSync(png)) fs.rmSync(png);
+  // 每次给独立 profile 目录：同一个 user-data-dir 被并发/连续复用会让 Chromium 抢锁失败
+  const profile = path.join(tmp, "profile-" + scene);
+  const args = [
+    "--no-sandbox",              // 本机沙箱里 Chromium 再开自己的沙箱会起不来
+    "--disable-gpu",
+    "--disable-dev-shm-usage",
+    "--user-data-dir=" + profile,
+    "--hide-scrollbars",
+    "--allow-file-access-from-files",
+    "--force-device-scale-factor=2",
+    "--window-size=220,480",
+    "--virtual-time-budget=6000",
+    "--enable-logging=stderr",
+    "--log-level=0",
+    "--screenshot=" + png,
+    "file:///" + file.replace(/\\/g, "/"),
+  ];
+  const r = spawnSync(chrome, args, { encoding: "utf-8", timeout: 120000 });
+  const err = String(r.stderr || "");
+  let json = null;
+  if (mode === "measure") {
+    const lines = err.split("\n").filter((l) => l.includes("MEASURE "));
+    if (lines.length) json = extractMeasureJson(lines[lines.length - 1]);
+  }
+  return { ok: mode === "measure" ? !!json : fs.existsSync(png), json, png,
+           status: r.status, signal: r.signal, err };
+}
+
+/**
+ * 量测若干场景（供测试复用）。
+ * @returns {{chrome:string|null, scenes:Object<string, object>, raw:Object<string, object>}}
+ */
+function measureScenes(scenes, opts) {
+  const chrome = findChrome();
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pet-measure-"));
+  const out = {};
+  try {
+    for (const s of scenes) {
+      const r = runScene(s, { mode: "measure", chrome, tmp, pngDir: null, keepAnim: (opts || {}).keepAnim });
+      out[s] = r.json;
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  return { chrome, scenes: out };
+}
+
 function main() {
   const i = process.argv.indexOf("--scene");
   const wanted = i > -1 ? [process.argv[i + 1]] : SCENES;
@@ -266,54 +377,22 @@ function main() {
 
   let ok = 0;
   for (const scene of wanted) {
-    const file = path.join(tmp, "pet-" + scene + ".html");
-    fs.writeFileSync(file, buildPage(scene, measure ? "measure" : "shot", keepAnim), "utf-8");
-    const png = path.join(OUT_DIR, "panel-" + scene + ".png");
-    if (fs.existsSync(png)) fs.rmSync(png);
-    // 每次给独立 profile 目录：同一个 user-data-dir 被并发/连续复用会让 Chromium 抢锁失败
-    const profile = path.join(tmp, "profile-" + scene);
-    const args = [
-      "--no-sandbox",              // 本机沙箱里 Chromium 再开自己的沙箱会起不来
-      "--disable-gpu",
-      "--disable-dev-shm-usage",
-      "--user-data-dir=" + profile,
-      "--hide-scrollbars",
-      "--allow-file-access-from-files",
-      "--force-device-scale-factor=2",
-      "--window-size=220,480",
-      "--virtual-time-budget=6000",
-      "--enable-logging=stderr",
-      "--log-level=0",
-    ];
-    if (measure) args.push("--screenshot=" + path.join(tmp, "_measure.png"));
-    else args.push("--screenshot=" + png);
-    args.push("file:///" + file.replace(/\\/g, "/"));
-
-    const r = spawnSync(chrome, args, { encoding: "utf-8", timeout: 120000 });
-    const err = String(r.stderr || "");
-    if (measure) {
-      const lines = err.split("\n").filter((l) => l.includes("MEASURE "));
-      if (lines.length) {
-        ok += 1;
-        const json = lines[lines.length - 1].slice(lines[lines.length - 1].indexOf("MEASURE ") + 8);
-        console.log("  " + scene + "  " + json.trim());
-      } else {
-        console.log("  FAIL " + scene + " 没拿到量测输出");
-      }
-    } else if (fs.existsSync(png)) {
+    const r = runScene(scene, { mode: measure ? "measure" : "shot", chrome, tmp, keepAnim });
+    if (r.ok) {
       ok += 1;
-      console.log("  ok  " + scene + " -> " + path.relative(ROOT, png) +
-        "  (" + Math.round(fs.statSync(png).size / 1024) + " KB)");
+      if (measure) console.log("  " + scene + "  " + JSON.stringify(r.json));
+      else console.log("  ok  " + scene + " -> " + path.relative(ROOT, r.png) +
+        "  (" + Math.round(fs.statSync(r.png).size / 1024) + " KB)");
     } else {
-      console.log("  FAIL " + scene +
-        "  status=" + r.status + " signal=" + r.signal +
-        " error=" + (r.error && r.error.message));
-      console.log("        " + err.split("\n").slice(-6).join("\n        "));
+      console.log("  FAIL " + scene + "  status=" + r.status + " signal=" + r.signal);
+      console.log("        " + r.err.split("\n").slice(-6).join("\n        "));
     }
   }
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log("\n" + ok + "/" + wanted.length + (measure ? " 个场景量测成功" : " 张 -> " + path.relative(ROOT, OUT_DIR)));
   if (!ok) process.exit(1);
 }
+
+module.exports = { findChrome, measureScenes, runScene, extractMeasureJson, buildPage, SCENES, ROOT, PET_DIR, OUT_DIR };
 
 if (require.main === module) main();
