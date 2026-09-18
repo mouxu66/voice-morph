@@ -142,9 +142,17 @@ function petGuideActive() {
 }
 
 function petGuideFail(detail) {
+  // 2026-09-18：不再一刀切「确认后端已启动、微信开着聊天窗口」，
+  // 也不再把 40 字截断——后端 400/409 的 detail 现在已分好因，原样带进气泡。
+  const raw = String(detail || "未知错误");
+  const advice = raw.includes("进行中")
+    ? "等上一次发送结束再点"
+    : raw.includes("微信")
+      ? "按上面的提示把微信弄好后再点一次"
+      : "检查变声后端是否在运行（打开主界面可自动拉起）";
   showPetGuide({
     title: "出错了",
-    lines: [String(detail || "未知错误").slice(0, 40), "确认后端已启动、微信开着聊天窗口"],
+    lines: [raw, advice],
     action: "error", duration: 9000,
   });
 }

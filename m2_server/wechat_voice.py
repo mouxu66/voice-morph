@@ -4,14 +4,18 @@
     0. **重启微信**（必要时）——理由见下方「为什么必须重启微信」
     1. audio_config.ps1 apply  —— 系统默认麦克风切到 CABLE Output（自动备份原设备）
     2. 前台化微信聊天窗口，触发微信 4.1.9+ 的官方「发送语音消息」开始录音：
-       - RECORD_METHOD=mic（默认）：鼠标移到聊天输入框右下角话筒图标，按住左键
-         （官方交互：长按说话、松开自动发送；鼠标注入接受度高于键盘）
+       - RECORD_METHOD=mic（默认，2026-09-10 真机改版）：**单击**输入框右下角
+         话筒图标即进入持续录音态并弹出浮层（旧文档写"长按说话、松开自动发送"，
+         那个交互在这个版本上不成立——保持按住反而不出浮层）；
+         鼠标注入接受度高于键盘
        - RECORD_METHOD=alt：按住 Alt 键（SendInput 带扫描码，比旧 keybd_event 更真实；
          但实测部分微信版本会忽略软件注入的键盘输入）
        微信从系统默认麦克风采集，此刻即 CABLE Output
     3. 用 RVC venv 的 sounddevice 把 TTS 产物 wav 直接播进 CABLE Input
        （微信同步从 CABLE Output 录到的就是这段声音），首尾各垫静音防掐头去尾
-    4. 松开鼠标左键 / Alt → 微信结束录音并自动发出（单条最长 60s）
+    4. 结束录音并发送：点浮层绿色 ↑ 钮（mic 路径，录制时长 = 实际经过时间，
+       不会 60s 截断）；alt 路径则是抬起 Alt 键。找不到 ↑ 钮一律点 × 取消，
+       绝不留下挂起的录音（单条最长 60s）
     5. audio_config.ps1 restore —— 还原原声卡
 
 为什么必须重启微信（2026-09-11 实测，证据链见 docs/犯错指南.md §2.15）：
@@ -384,14 +388,26 @@ def _restart_mode() -> str:
 
 
 def _device_keyword() -> str:
-    """目标设备关键词。
+    """目标设备关键词（用来判断微信上次录音是不是录的 CABLE）。
 
-    OUTPUT_DEVICE_KEYWORD 是播放端叫法（"CABLE Input"），微信读到的是采集端叫法
-    （"CABLE Output (VB-Audio Virtual Cable)"）——两者只有首词相同，
-    故取首词（"CABLE"）做包含判断，别拿整串去比。
+    播放端叫法与采集端叫法只有**中段**相同，所以不能拿整串去比端点：
+        "CABLE Input (…)" / "扬声器 (…)"（播放端，中文系统被本地化）
+        "CABLE Output (VB-Audio Virtual Cable)"（采集端，微信遥测里读到的）
+    但**也不能只取首词**（2026-09-18 修正）：`OUTPUT_DEVICE_KEYWORD` 现在默认是
+    常量串 "VB-Audio Virtual Cable"，首词是 "VB-Audio"，而本机设备表里还有
+    Voicemeeter 的 `CABLE Output (VB-Audio Point)` / `Input (VB-Audio Point)`——
+    只匹配 "VB-Audio" 会把它们当成 CABLE，于是 auto 模式误判"无需重启"，
+    录到静音再发出去（正是 §2.15 花大力气修掉的症状）。
+    故：剥掉端点词（CABLE Input / 扬声器…）后取剩余部分做包含判断。
     """
-    kw = OUTPUT_DEVICE_KEYWORD.strip()
-    return kw.split()[0].lower() if kw else ""
+    kw = OUTPUT_DEVICE_KEYWORD.strip().lower()
+    if not kw:
+        return ""
+    for tok in ("cable input", "cable output", "speaker", "speakers", "麦克风", "扬声器"):
+        if kw.startswith(tok):
+            kw = kw[len(tok):]
+            break
+    return kw.strip(" ()[]-—")
 
 
 def _need_wechat_restart() -> tuple[bool, str]:
@@ -417,6 +433,29 @@ def _need_wechat_restart() -> tuple[bool, str]:
     return True, f"微信上次录音用的是「{dev}」（不是 {OUTPUT_DEVICE_KEYWORD}），需重启让它重新枚举"
 
 
+def _binding_warning() -> str:
+    """RESTART=0 时的**只读**提醒：这次录音很可能录到错误设备（→ 静音语音）。
+
+    不重启是用户拍板的选择（强杀会把微信退回登录页），但"不重启"不等于
+    "不该告诉用户"：`_need_wechat_restart()` 在 mode=0 时会在读遥测之前就短路，
+    于是"微信绑的不是 CABLE"这个已知的静音成因再也没人过问，用户只会收到一条
+    听起来正常的静音语音（2026-09-18 复核时发现的盲区）。判据与 auto 模式同源，
+    全部是读操作，绝不修改任何状态。返回空串 = 没有值得提醒的问题。
+    """
+    if not wproc.list_wechat_processes():
+        return (f"微信当前没在运行，且 {RESTART_MODE_ENV}=0 不会自动拉起"
+                "（本次会降级为手动发送）")
+    dev = wproc.input_device_probe().get("device")
+    if not dev:
+        return ("读不到微信上次录音用的输入设备，无法确认它会不会录到 CABLE；"
+                "若发出去是静音，需设 VM_WECHAT_RESTART=auto")
+    kw = _device_keyword()
+    if kw and kw in dev.lower():
+        return ""
+    return (f"微信上次录音用的是「{dev}」而不是 {OUTPUT_DEVICE_KEYWORD}，"
+            f"而 {RESTART_MODE_ENV}=0 不会重启它 → 这条语音可能录成静音")
+
+
 def _relaunch_quietly(exe) -> None:
     """兜底拉起微信（失败只记日志，不往上冒——调用方往往正在处理别的异常）。"""
     try:
@@ -437,7 +476,13 @@ def _prepare_recording_env() -> dict:
             "killed": [], "new_pid": None, "hwnd": None, "waited_s": 0.0}
     if not need:
         _run_audio("apply")
+        # 不重启时补一次只读的绑定检查（见 _binding_warning）：把"可能录成静音"
+        # 变成用户看得见的警告，而不是等他听完才发现。
+        warn = _binding_warning() if _restart_mode() == "0" else ""
         info["summary"] = f"麦克风已切到 CABLE Output（未重启微信：{why}）"
+        if warn:
+            info["warning"] = warn
+            info["summary"] += f"；⚠ {warn}"
         return info
 
     exe = wproc.resolve_wechat_exe()
@@ -462,6 +507,23 @@ def _prepare_recording_env() -> dict:
                        f"{ready['waited_s']:.1f}s 窗口就绪）并切麦克风到 CABLE Output"
                        f"；原因：{why}")
     return info
+
+
+def _send_preflight() -> str:
+    """发送前**只读**预检：微信没开=这次发送注定失败，别等用户白等合成。
+
+    只在 VM_WECHAT_RESTART=0（默认，绝不碰微信）下拦截：这种模式没人会替
+    用户开微信，微信没开/收托盘/停登录页全是必败。auto/1 会自己拉起或重启
+    微信，没有可预判的硬失败（登录页由 wait_wechat_ready 的报错兜着）。
+    报错文案直接借用 wechat_proc.find_wechat_hwnd 的分因版本。
+    """
+    if _restart_mode() != "0":
+        return ""
+    try:
+        wproc.find_wechat_hwnd()
+    except RuntimeError as e:
+        return f"{e}（当前 VM_WECHAT_RESTART=0，不会自动帮你打开微信）"
+    return ""
 
 
 class _PendingRecordingEnv(_PendingApply):
@@ -1066,12 +1128,27 @@ def _trigger_record(ui: dict | None = None) -> None:
         # 首选 UIA 点击（2026-09-10 方案 A）：UIA 走 COM 调用，不经系统输入队列，
         # 天然不受 WS_EX_TRANSPARENT 点击穿透影响，也不用摘样式位、不依赖坐标。
         if _uia_ready():
+            clicked = False
             try:
-                if _uia.click_voice_button() and _wait_record_overlay(rect, timeout=5.0):
-                    _record_via = "uia"
-                    return
+                clicked = _uia.click_voice_button()
             except Exception as e:
                 logger.debug("[wechat] UIA 点击语音按钮失败，回退像素链路: %s", e)
+            if clicked:
+                # 点击已经真的发出去了 —— 此后**绝不能再点第二次**：这个话筒是
+                # "单击开始持续录音"，重复点击会把进行中的录音停掉/送出去
+                # （2026-09-18 复核发现的隐患，旧代码把"点击失败"和"没看见浮层"
+                # 当成同一件事，检测超时就又点一次）。
+                if _wait_record_overlay(rect, timeout=5.0):
+                    _record_via = "uia"
+                    return
+                # 检测失败≠没在录音（浮层渲染慢 / 判据受限），再看一眼就够了
+                time.sleep(0.5)
+                if _wait_record_overlay(rect, timeout=2.0):
+                    _record_via = "uia"
+                    return
+                raise RuntimeError(
+                    "UIA 已点击语音按钮但录音浮层未出现；为避免把录音误发出去，"
+                    "本次不重复点击（请稍后重试）")
         # 降级：摘 WS_EX_TRANSPARENT + SendInput 单击语音按钮
         point = cached_mic or (_find_mic_icon(rect) or _mic_point(rect))
         # 摘样式（必做）+ SendInput 单击语音按钮
@@ -1259,6 +1336,8 @@ def send_text(req: SendTextReq):
     并行（_PendingApply），_do_send 用麦克风前只等尾差，端到端省 ~3s。
     2026-09-11：若判断需要重启微信（见 _need_wechat_restart），重启 + 切卡整体
     也在这段并行里做（_PendingRecordingEnv），不额外拖慢端到端。
+    2026-09-18：合成前先做一次只读预检（_send_preflight）——TTS+RVC 要 1~2 分钟，
+    微信没开这种事没理由让用户等完整条合成链才被告知。
     """
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
@@ -1266,6 +1345,11 @@ def send_text(req: SendTextReq):
         raise HTTPException(409, "已有一次微信语音发送在进行中，请等它结束")
     apply_task: _PendingRecordingEnv | None = None
     try:
+        # 只读预检：拦「注定要失败」的发送，别让用户白等合成。
+        # 这里不真启动任何东西；mode=auto 时微信没开会由 _PendingRecordingEnv 拉起，照旧放行。
+        pre_err = _send_preflight()
+        if pre_err:
+            raise HTTPException(status_code=409, detail=pre_err)
         _t0 = time.time()
         # 切卡（必要时还含重启微信）最长几十秒，别串行等在 TTS 后面：
         # 立刻起后台任务与合成并行（见 _PendingRecordingEnv）。
@@ -1592,6 +1676,7 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
             before_msg, before_count = None, -1
 
     restored = False
+    bind_warning = ""    # 录音环境告警（微信绑错设备 → 可能录成静音），随本次落进发送历史
     proc = None          # 后台播放进程（异常路径要能 kill）
     _tw = time.time()
     try:
@@ -1611,6 +1696,11 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
         else:
             env = _prepare_recording_env()
             steps.append(f"[{time.time()-_tw:.1f}s] {env.get('summary', '麦克风已切到 CABLE Output')}")
+
+        # 录音环境告警单独拎出来：除了拼进 steps 给前端，还要落进发送历史。
+        # 2026-09-18 事故复盘：它此前只活在 API 响应里，前端把 summary 尾部那句 ⚠
+        # 当成了"上次残留的旧文案"忽略 → 静音语音被当成成功发出去，事后无从追查。
+        bind_warning = env.get("warning", "") if isinstance(env, dict) else ""
 
         # 3) 起播放（常驻 worker 复用 / 一次性子进程）。冷导入若发生，与下面的 UI 准备并行。
         _t_play = time.time()
@@ -1666,7 +1756,7 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
                 "postmsg": "已点浮层发送按钮，语音已发送",
             }.get(via, "语音已发送"))
             # 发送已成功：先落历史（后台写回校验/还原结果都依赖它）
-            _append_history(wav, duration, "ok")
+            _append_history(wav, duration, "ok", warning=bind_warning)
             _hist_appended = True
             # UIA 校验只是安全网，放后台线程不阻塞返回（省 ~0.5-3s）
             if uia_active:
@@ -1685,7 +1775,8 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
             return {"ok": True, "outcome": "cancelled", "method": RECORD_METHOD,
                     "wav": wav.name, "duration_s": round(duration, 1),
                     "steps": steps, "restored": restored, "restore_error": restore_err,
-                    "_history": _append_history(wav, duration, "cancelled")}
+                    "_history": _append_history(wav, duration, "cancelled",
+                                                warning=bind_warning)}
     except Exception as exc:
         # 失败也要：⓪掐掉后台播放（否则会一直往 CABLE 灌声音）
         #            ①松开录音键/鼠标（防止按住不放卡死）②还原声卡（reset 兜底）
@@ -1708,7 +1799,8 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
                     "restored": restored, "restore_error": restore_err,
                     "auto_error": str(exc),
                     "fallback": fb,
-                    "_history": _append_history(wav, duration, "manual_fallback")}
+                    "_history": _append_history(wav, duration, "manual_fallback",
+                                                warning=bind_warning)}
         return JSONResponse(status_code=500, content={
             "ok": False, "outcome": "failed", "error": str(exc),
             "steps": steps, "restored": restored, "restore_error": restore_err})
@@ -1717,7 +1809,8 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
     #    立即返回的 restored 记为 None（pending），最终结果由后台线程写回发送历史。
     return {"ok": True, "outcome": "ok", "method": RECORD_METHOD, "wav": wav.name, "duration_s": round(duration, 1),
             "steps": steps, "restored": None,
-            "_history": (True if _hist_appended else _append_history(wav, duration, "ok"))}
+            "_history": (True if _hist_appended
+                         else _append_history(wav, duration, "ok", warning=bind_warning))}
 
 
 def _guided_fallback(wav: Path, duration: float, steps: list[str]) -> dict:
@@ -1741,14 +1834,24 @@ HISTORY_FILE = cfg.OUTPUTS_DIR / "wechat_send_history.json"
 HISTORY_MAX = 20
 
 
-def _append_history(wav: Path, duration_s: float, outcome: str = "ok") -> bool:
-    """把一次发送记进历史（最多 HISTORY_MAX 条，覆盖写）。outcome: ok/manual_fallback/failed。"""
+def _append_history(wav: Path, duration_s: float, outcome: str = "ok",
+                    warning: str = "") -> bool:
+    """把一次发送记进历史（最多 HISTORY_MAX 条，覆盖写）。outcome: ok/manual_fallback/failed。
+
+    warning：录音环境告警（典型是 RESTART=0 下微信绑的不是 CABLE → 可能录成静音）。
+    2026-09-18 加入：此前该告警只出现在 API 响应的 steps/summary 里，不落库，于是
+    17:35 那条静音语音事后在发送历史里查不到任何线索 —— 前端把它当成了"残留旧文案"。
+    现在它随记录一起持久化，`GET /history` 与桌宠「最近发送」都能看到。
+    """
     try:
         hist = []
         if HISTORY_FILE.exists():
             hist = json.loads(HISTORY_FILE.read_text("utf-8"))
-        hist.append({"wav": wav.name, "duration_s": round(duration_s, 1),
-                     "ts": int(time.time()), "outcome": outcome})
+        rec = {"wav": wav.name, "duration_s": round(duration_s, 1),
+               "ts": int(time.time()), "outcome": outcome}
+        if warning:
+            rec["warning"] = warning
+        hist.append(rec)
         HISTORY_FILE.write_text(json.dumps(hist[-HISTORY_MAX:], ensure_ascii=False), "utf-8")
         return True
     except Exception:

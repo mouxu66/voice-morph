@@ -26,6 +26,14 @@ def isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(wv, "HISTORY_FILE", tmp_path / "wechat_send_history.json")
     # 绝不能让单测真去点微信 / 真跑 RVC / 真加载 TTS
     monkeypatch.setattr(wv, "_uia_ready", lambda: False)
+    # 2026-09-18：send_text 现在会在锁内做只读预检（_send_preflight），
+    # conftest 把 VM_WECHAT_RESTART 强制成 0 → 预检会真去枚举微信窗口。
+    # 测试机微信开不开都会让结果抖动，这里统一打桩成「微信就绪」；
+    # 预检本身的分因行为在 test_wechat_restart.py 里专门测。
+    monkeypatch.setattr(wv.wproc, "list_wechat_processes",
+                        lambda: [{"pid": 1, "name": "Weixin.exe", "exe": "C:/wx/Weixin.exe"}])
+    monkeypatch.setattr(wv.wproc, "enum_wechat_windows",
+                        lambda: [{"hwnd": 11, "pid": 1, "area": 2_000_000, "exe": "C:/wx/Weixin.exe"}])
     # 切卡预热（_PendingApply）在 _do_send 之前的后台线程就跑 _run_audio，
     # 而本机 audio_config.ps1 真实存在 → 不打桩就会真起 PowerShell 动声卡。
     # 这里默认打桩，需要记录调用的测试自行覆盖。

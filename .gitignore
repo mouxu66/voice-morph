@@ -38,6 +38,12 @@ web/vite.config.ts.timestamp-*.mjs
 
 # ===== TTS 试听音频 / 构建缓存 =====
 tts_trial/*.wav
+
+# ===== 桌面控制工具的运行时产物（全分辨率截图 / UIA 树 JSON）=====
+# 只忽略 .png/.json，*.jpg 预览故意保留“可见”状态：read_files 无法读取被 ignore 的文件，
+# agent 得靠这个 jpg 才能“看到”屏幕（见 tools/desktop-control/dc.ps1 的 -Preview）。
+tools/desktop-control/out/*.png
+tools/desktop-control/out/*.json
 web/tsconfig.tsbuildinfo
 
 # ===== 模型权重（大文件，另行管理/下载） =====

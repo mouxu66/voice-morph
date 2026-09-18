@@ -662,6 +662,51 @@ def test_trigger_falls_back_to_pixel_when_uia_click_fails(monkeypatch):
     assert moves == [(1600 + wv.MIC_OFFSET_X, 900 + wv.MIC_OFFSET_Y)]
 
 
+def test_trigger_never_clicks_twice_when_overlay_missing(monkeypatch):
+    """回归守卫（2026-09-18）：UIA 点击**已经生效**但浮层检测超时，绝不能落到像素分支
+    再点一次话筒——这个话筒是"单击开始持续录音"，重复点击会把进行中的录音停掉/送出去。
+
+    旧实现把"点击失败"与"没看见浮层"当成同一件事（`click_voice_button() and
+    _wait_record_overlay(...)`），检测超时就会再点一次；本用例在旧实现下必红
+    （mouse_calls 会是 [True, False]）。
+    """
+    mouse_calls, moves = [], []
+    monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
+    monkeypatch.setattr(wv, "_uia", FakeUia(voice_click=True))
+    monkeypatch.setattr(wv, "_uia_ready", lambda: True)
+    monkeypatch.setattr(wv, "_foreground_wechat", lambda: 999)
+    monkeypatch.setattr(wv, "_ensure_onscreen", lambda hwnd: None)
+    monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (0, 0, 1600, 900))
+    monkeypatch.setattr(wv, "_find_mic_icon", lambda rect: None)
+    monkeypatch.setattr(wv, "_find_render_hwnd", lambda hwnd: 888)
+    monkeypatch.setattr(wv, "_exstyle_clear_transparent", lambda hwnd: 0x90120)
+    monkeypatch.setattr(wv, "_exstyle_restore_if_needed", lambda: None)
+    monkeypatch.setattr(wv, "_mouse_left", lambda d: mouse_calls.append(d))
+    monkeypatch.setattr(wv, "_mouse_move_abs", lambda x, y: moves.append((x, y)))
+    monkeypatch.setattr(wv, "_wait_record_overlay", lambda rect, timeout=6.0: False)
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match="不重复点击"):
+        wv._trigger_record()
+    assert mouse_calls == [] and moves == []      # 一次鼠标点击都没再发
+    assert wv._record_via is None
+
+
+def test_trigger_retries_detection_after_successful_click(monkeypatch):
+    """点击生效但浮层渲染慢：先多看一眼，不是立刻失败、更不是再点一次。"""
+    results = iter([False, True])
+    monkeypatch.setattr(wv, "RECORD_METHOD", "mic")
+    monkeypatch.setattr(wv, "_uia", FakeUia(voice_click=True))
+    monkeypatch.setattr(wv, "_uia_ready", lambda: True)
+    monkeypatch.setattr(wv, "_foreground_wechat", lambda: 999)
+    monkeypatch.setattr(wv, "_ensure_onscreen", lambda hwnd: None)
+    monkeypatch.setattr(wv, "_window_rect", lambda hwnd: (0, 0, 1600, 900))
+    monkeypatch.setattr(wv, "_mouse_left", lambda d: pytest.fail("不该再用鼠标点话筒"))
+    monkeypatch.setattr(wv, "_wait_record_overlay", lambda rect, timeout=6.0: next(results))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    wv._trigger_record()
+    assert wv._record_via == "uia"
+
+
 def test_finish_prefers_uia_send_button(monkeypatch):
     """发送钮用 UIA 矩形中心（1194,1519,1236,1561 → 1215,1540）。"""
     mouse_calls, moves = [], []

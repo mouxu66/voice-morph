@@ -228,8 +228,14 @@ function sendWechatTextFromPet(text, voiceId) {
   http.get(
     { host: "127.0.0.1", port: BACKEND_PORT, path: "/api/health", timeout: 3000 },
     (res) => { res.resume(); doSendTextToWechat(text, voiceId); },
-  ).on("error", () => petGuideFail("后端没连上（8000 端口未启动？）"))
-   .on("timeout", function () { try { this.destroy(); } catch {} petGuideFail("后端没连上（8000 探活超时）"); });
+  ).on("error", (e) => {
+    // 分因：ECONNREFUSED（没服务在听）/ 超时（在但没应答）/ 其它。以前一律「8000 端口未启动？」。
+    const code = (e && e.code) || "";
+    petGuideFail(code === "ECONNREFUSED"
+      ? "后端没连上：8000 端口没有服务在监听。打开「变声工坊」主界面会自动拉起后端，等它就绪后再试"
+      : `后端探活失败（${code || "网络错误"}）：若反复出现，看日志 %APPDATA%\\voice-morph-desktop\\backend.log`);
+  })
+   .on("timeout", function () { try { this.destroy(); } catch {} petGuideFail("后端探活超时：服务在但 3 秒没应答，多半在加载模型，等几秒再试"); });
 }
 
 /** 探活通过后真正发起「合成并发送」。 */

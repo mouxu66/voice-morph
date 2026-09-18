@@ -162,16 +162,45 @@ def enum_wechat_windows() -> list[dict]:
     return sorted(hits, key=lambda d: d["area"], reverse=True)
 
 
-def find_wechat_hwnd() -> int:
-    """找微信主窗口句柄（面积最大的那个）。找不到/尺寸异常时抛 RuntimeError。
+def _window_is_iconic(hwnd: int) -> bool:
+    """窗口是否最小化（IsIconic）。
 
-    错误文案保持与历史一致，`wechat_voice._find_wechat_hwnd` 直接复用。
+    最小化到任务栏（点一下就能还原）和收进托盘（根本没有主窗口）是两码事：
+    前者 `_foreground_wechat` 的 SW_RESTORE 能自愈，不该在找窗口这一步拦死；
+    后者没有任何东西可恢复，必须报错。
     """
+    if os.name != "nt":
+        return False
+    import ctypes
+    return bool(ctypes.windll.user32.IsIconic(hwnd))
+
+
+def find_wechat_hwnd() -> int:
+    """找微信主窗口句柄（面积最大的那个）。找不到时抛**分了因**的 RuntimeError。
+
+    报错按「用户下一步该干什么」分三种，别再让用户对着一句含糊的
+    「没找到微信窗口」猜（2026-09-18 实测：微信收进托盘后 enum 只剩一个
+    ~9243px² 的残窗，旧判据 area<=0 直接放行，后续点击全部落空）：
+        1. 进程都没有         → 微信没开：去打开并登录；
+        2. 进程在、无可见窗   → 收进托盘了：点开聊天窗口；
+        3. 最大窗 < MIN_CHAT_AREA 且非最小化 → 登录页或无关小窗：先登录/打开聊天窗。
+    最小化（iconic）的小窗**放行**：SW_RESTORE 能拉回来，是历史可用路径。
+    `wechat_voice._find_wechat_hwnd` 直接复用本函数与文案。
+    """
+    procs = list_wechat_processes()
     wins = enum_wechat_windows()
+    if not procs:
+        raise RuntimeError("微信没有在运行：请先打开微信并登录、进入聊天窗口，再重试发送")
     if not wins:
-        raise RuntimeError("没找到微信窗口（请确认微信已登录并打开了聊天）")
-    if wins[0]["area"] <= 0:
-        raise RuntimeError("找到微信进程但窗口尺寸异常，请把微信聊天窗口打开后重试")
+        raise RuntimeError(
+            "微信在运行（pid: %s）但没有任何可见窗口——多半被关进了托盘："
+            "请点开微信主窗口、进入聊天界面后重试"
+            % ", ".join(str(p["pid"]) for p in procs[:3]))
+    if wins[0]["area"] < MIN_CHAT_AREA and not _window_is_iconic(wins[0]["hwnd"]):
+        raise RuntimeError(
+            "微信主窗口没就绪（最大窗口 %dpx²，正常聊天窗口约 2,000,000px²）："
+            "要么还停在登录页（先扫码登录），要么开着的是无关小窗——"
+            "请把微信聊天窗口打开后重试" % wins[0]["area"])
     return wins[0]["hwnd"]
 
 

@@ -388,6 +388,11 @@
   #status.err { color: rgb(var(--c-err)); }
   #status.err .ic-info { display: none; }
   #status.err .ic-err  { display: block; color: rgb(var(--c-err)); }
+  /* 发送成功但录音环境有告警（典型：微信绑的不是 CABLE → 录进去很可能是静音）。
+     2026-09-18 加：此前这种情况显示的是绿勾「已发到微信 ✓」，用户只能靠耳朵发现问题。 */
+  #status.warn { color: rgb(var(--c-warn)); }
+  #status.warn .ic-info { display: none; }
+  #status.warn .ic-err  { display: block; color: rgb(var(--c-warn)); }
 
   /* —— 最近发送：胶囊 chip，点一下重发 ——
      固定单行 + 横向滚动，而不是 flex-wrap 换行。
@@ -1415,10 +1420,17 @@ function doPreview() {
 async function doSendText() {
   const text = sayEl.value.trim();
   if (!window.pet) return;
-  // 发前探活：连不上后端立即提示，不闷头转圈被误判成卡死
-  let alive = false;
-  try { const r = await fetch("http://127.0.0.1:8000/api/health", { cache: "no-store" }); alive = r.ok; } catch {}
-  if (!alive) { setStatus("后端未连接，请先启动变声后端（8000）", "err"); return; }
+  // 发前探活：连不上后端立即提示，不闷头转圈被误判成卡死。
+  // 报错分两种因（2026-09-18）：「没服务在听」该去启动后端，「HTTP 异常」该看日志，
+  // 以前一律一句「后端未连接」，用户分不清。
+  let probeErr = "";
+  try {
+    const r = await fetch("http://127.0.0.1:8000/api/health", { cache: "no-store" });
+    if (!r.ok) probeErr = `后端在但返回异常（HTTP ${r.status}）：看日志 %APPDATA%\\voice-morph-desktop\\backend.log`;
+  } catch {
+    probeErr = "后端没连上：8000 端口没有服务在监听（变声后端未启动或已退出）。打开主界面会自动拉起后端，等就绪后再试";
+  }
+  if (probeErr) { setStatus(probeErr, "err"); return; }
   // 有试听产物就直接发它（试听→发送两步走），否则一步到位「合成并发送」
   if (lastPreview && window.pet.sendWav) {
     setStatus(`发送中… 自动发到微信，全程别动键鼠`, "ok");
@@ -1467,10 +1479,39 @@ if (window.pet && window.pet.onPreviewResult) {
 if (window.pet && window.pet.onSendResult) {
   window.pet.onSendResult((r) => {
     if (!r) return;
-    if (r.ok) setStatus(`已发到微信 ✓（${r.duration_s || "?"}s）`, "ok");
-    else setStatus("发送失败：" + (r.error || "未知错误"), "err");
+    if (r.ok) {
+      setStatus(`已发到微信 ✓（${r.duration_s || "?"}s）`, "ok");
+      void flagSendWarning(r.duration_s);   // 异步补查：有录音环境告警就改写状态栏
+    } else {
+      setStatus("发送失败：" + (r.error || "未知错误"), "err");
+    }
     refreshPanel();
   });
+}
+
+/**
+ * 发送成功后补查最新一条发送历史的录音环境告警，有则把状态栏从绿勾改成警示。
+ *
+ * 为什么绕一圈从 /history 读：主进程 pet-actions.cjs 的 "pet:send-result" 只透传
+ * ok/duration_s/hint/outcome，把后端返回的 warning 丢掉了（改它就得重打 asar）。
+ * 而后端 _append_history 已把 warning 落库，桌宠本来就直连 127.0.0.1:8000，
+ * 所以这里补一次只读查询即可 —— pet.html 是热替换生效的，不必动主进程。
+ *
+ * 背景（2026-09-18 事故）：VM_WECHAT_RESTART=0 下微信绑在物理麦上 → 录进去是静音，
+ * 但这里原先无条件打绿勾「已发到微信 ✓」，用户听到才发现，事后历史里也查不到线索。
+ */
+async function flagSendWarning(durationS) {
+  try {
+    const r = await fetch("http://127.0.0.1:8000/api/wechat/history", { cache: "no-store" });
+    if (!r.ok) return;
+    const j = await r.json();
+    const items = j.items || [];
+    const last = items[items.length - 1];
+    if (!last || !last.warning) return;
+    // 只认刚发出的那条：ts 过旧说明是历史遗留告警，别拿来吓人
+    if (last.ts && Date.now() / 1000 - last.ts > 300) return;
+    setStatus(`已发出（${durationS || last.duration_s || "?"}s）但可能没声音：${last.warning}`, "warn");
+  } catch {}
 }
 
 function overInteractive(e) {

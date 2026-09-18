@@ -171,3 +171,58 @@ def test_send_history_backfills_old_outcome(tmp_path):
         json.dumps([{"wav": "a.wav", "duration_s": 1.0, "ts": 1}]), encoding="utf-8")
     items = wv.send_history()["items"]
     assert items[0]["outcome"] == "ok"
+
+
+# ---------------- 录音环境告警落库（2026-09-18 静音事故） ----------------
+
+def test_append_history_records_binding_warning(tmp_path):
+    """告警必须随记录落库。
+
+    此前它只活在 API 响应的 steps/summary 里，事后翻发送历史查不到任何线索 ——
+    17:35 那条静音语音就是这么被漏掉的（前端把 summary 尾部的 ⚠ 当成了旧文案）。
+    """
+    wav = _make_wav(tmp_path)
+    warn = "微信上次录音用的是「麦克风阵列 (Senary Audio)」而不是 VB-Audio Virtual Cable"
+    wv._append_history(wav, 5.4, "ok", warning=warn)
+    items = wv.send_history()["items"]
+    assert items[-1]["warning"] == warn
+    assert items[-1]["outcome"] == "ok"
+
+
+def test_append_history_omits_warning_when_clean(tmp_path):
+    """无告警时不写 warning 字段，别给旧前端塞空串。"""
+    wav = _make_wav(tmp_path)
+    wv._append_history(wav, 1.0, "ok")
+    assert "warning" not in wv.send_history()["items"][-1]
+
+
+def test_do_send_persists_env_warning(monkeypatch, tmp_path):
+    """端到端复刻：_prepare_recording_env 报出绑定告警 → 发送历史里必须查得到。
+
+    复刻 2026-09-18 17:35 现场：RESTART=0 + 微信绑在物理麦上 → 发出去是静音，
+    当时发送历史里却什么都没有，只能靠用户耳朵发现。
+    """
+    wav = _make_wav(tmp_path, "tts_1789724088659_kangaroo_v2.wav")
+    warn = "微信上次录音用的是「麦克风阵列 (Senary Audio)」而不是 VB-Audio Virtual Cable"
+    monkeypatch.setattr(wv, "_prepare_recording_env", lambda: {
+        "kind": "recording_env", "summary": f"麦克风已切到 CABLE Output；⚠ {warn}",
+        "warning": warn})
+    monkeypatch.setattr(wv, "_wav_duration", lambda p: 5.4)
+    monkeypatch.setattr(wv, "_start_play", lambda p: None)
+    monkeypatch.setattr(wv, "_wait_play_start", lambda p: True)
+    monkeypatch.setattr(wv, "_wait_play_done", lambda p, d: None)
+    monkeypatch.setattr(wv, "_trigger_record", lambda *a, **k: None)
+    monkeypatch.setattr(wv, "_finish_record", lambda: True)
+    monkeypatch.setattr(wv, "_restore_async", lambda: None)
+    monkeypatch.setattr(wv, "_foreground_wechat", lambda: 1)
+    monkeypatch.setattr(wv, "_ensure_onscreen", lambda h: None)
+    monkeypatch.setattr(wv, "_window_rect", lambda h: (0, 0, 100, 100))
+    monkeypatch.setattr(wv, "_find_mic_icon", lambda r: (10, 10))
+    monkeypatch.setattr(wv, "_mic_point", lambda r: (10, 10))
+
+    from wechat_voice import SendVoiceReq
+    res = wv._do_send(SendVoiceReq(wav=wav.name))
+
+    assert res["outcome"] == "ok"
+    assert "⚠" in " ".join(res["steps"])          # 响应里照旧带告警
+    assert wv.send_history()["items"][-1]["warning"] == warn   # 历史里也必须留痕
