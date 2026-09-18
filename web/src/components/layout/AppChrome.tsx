@@ -13,6 +13,7 @@ const pageTitles: Record<string, string> = {
   "/workshop": "训练变声",
   "/voices": "我的音色",
   "/live": "实时变声",
+  "/fitting": "试衣间",
   "/tts": "输字变声",
   "/offlinevc": "工具箱",
   "/pet-market": "桌宠皮肤",

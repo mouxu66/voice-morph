@@ -53,16 +53,27 @@ def resolve_model(voice: str) -> tuple[Path, Path | None]:
     return pth, index
 
 
+def rvc_voice_candidates(voice_id: str) -> list[str]:
+    """voicebank 音色 id → 可能对应的 RVC 实验名（按现役主力优先排序）。
+
+    单独暴露出来是给「反向解析」用：试衣间拿到的是 RVC 实验名，要回头找它对应
+    哪个 voicebank 音色（文字合成需参考音），只能拿候选集合与实验名求交，
+    不能只跑 resolve_rvc_voice 比相等 —— 40k 变体与主模型会同时挂在同一个
+    voicebank 名下，只比相等会把 `kangaroo_v2_40k` 判成"没有参考音"。
+    """
+    if not voice_id:
+        return []
+    return [f"{voice_id}_v2", f"{voice_id}_v2_40k", f"{voice_id}_40k", voice_id]
+
+
 def resolve_rvc_voice(voice_id: str) -> str | None:
     """TTS 音色 id（voicebank/<id>，如 `kangaroo`）→ 可推理的 RVC 实验名（logs/ 下）。
 
     两套命名不一样：voicebank 用 `kangaroo`，RVC 实验是 `kangaroo_v2` / `kangaroo_v2_40k`。
     按现役主力优先的顺序试，都找不到返回 None（调用方据此决定"不换声"还是报错）。
     """
-    if not voice_id:
-        return None
     # 覆盖两种实际命名：kangaroo → kangaroo_v2 / kangaroo_v2_40k
-    for cand in (f"{voice_id}_v2", f"{voice_id}_v2_40k", f"{voice_id}_40k", voice_id):
+    for cand in rvc_voice_candidates(voice_id):
         try:
             resolve_model(cand)
             return cand

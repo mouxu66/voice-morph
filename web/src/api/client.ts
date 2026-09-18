@@ -688,9 +688,17 @@ export async function rvcLiveStatus(expName?: string): Promise<RvcLiveStatus> {
   return jsonFetch<RvcLiveStatus>(`/rvc/live/status${qs}`);
 }
 
-export async function rvcLiveStart(expName?: string): Promise<RvcStartResult> {
-  const qs = expName ? `?exp_name=${encodeURIComponent(expName)}` : "";
-  return jsonFetch<RvcStartResult>(`/rvc/live/start${qs}`, { method: "POST" });
+export async function rvcLiveStart(
+  expName?: string,
+  opts?: { monitor?: boolean; monitorGain?: number },
+): Promise<RvcStartResult> {
+  const q = new URLSearchParams()
+  if (expName) q.set("exp_name", expName)
+  // 试衣间要 "自己说话就听到变声"，必须显式开自我监听（game 档默认关）
+  if (opts?.monitor !== undefined) q.set("monitor", String(opts.monitor))
+  if (opts?.monitorGain !== undefined) q.set("monitor_gain", String(opts.monitorGain))
+  const qs = q.toString()
+  return jsonFetch<RvcStartResult>(`/rvc/live/start${qs ? `?${qs}` : ""}`, { method: "POST" })
 }
 
 export async function rvcLiveStop(): Promise<{ ok: boolean; restored?: boolean; error?: string; note?: string }> {
@@ -1619,4 +1627,116 @@ export async function petDiscovery(): Promise<PetDiscoveryItem[]> {
 
 export async function petDiscoveryRemove(skin_id: string): Promise<{ removed: string }> {
   return jsonFetch(`/pet-market/discovery/${encodeURIComponent(skin_id)}`, { method: "DELETE" });
+}
+
+// ---- 试衣间（一个声音 × 多个音色）----
+
+/** 试穿前的环境态势：谁在占 GPU、显存余量、能不能开跑（前端据此禁用按钮并给原因） */
+export type FittingEnv = {
+  live_running: boolean;
+  live_exp: string;
+  cascade_running: boolean;
+  offline_running: boolean;
+  tts_worker: boolean;
+  gpu_total_mb: number | null;
+  gpu_used_mb: number | null;
+  gpu_free_mb: number | null;
+  min_free_vram_mb: number;
+  low_vram: boolean;
+  /** 非空即表示 GPU 被占用，字符串就是可读原因（直接展示给用户） */
+  busy_reason: string;
+  batch_ready: boolean;
+  text_ready: boolean;
+};
+
+export type FittingSource = {
+  source_id: string;
+  url: string;
+  duration_s: number;
+  builtin?: boolean;
+  created_at?: number;
+};
+
+export type FittingResult = {
+  voice_id: string;
+  display_name: string;
+  status: "running" | "done" | "failed";
+  url: string;
+  /** 音色像度（CAM++ 声纹余弦）；音色无参考音时为 null —— 不是 0，是"算不了" */
+  secs: number | null;
+  /** 自然度（NatScore）；打分器缺失时为 null */
+  nats: number | null;
+  duration_s: number | null;
+  error: string;
+  score_error: string;
+  /** 命中缓存：同样参数之前跑过，秒出没重跑推理 */
+  from_cache: boolean;
+};
+
+export type FittingTask = {
+  task_id: string;
+  /** 推理阶段在跑（打分阶段不影响这个值） */
+  running: boolean;
+  status: "idle" | "running" | "done" | "cancelled" | "error";
+  mode: "audio" | "text" | "";
+  total: number;
+  finished: number;
+  current: string;
+  current_name: string;
+  message: string;
+  error: string;
+  source_name: string;
+  text: string;
+  results: FittingResult[];
+  /** 结果都出来后，客观分还在后台算（不挡结果，也不占独占位） */
+  scoring: boolean;
+  score_finished: number;
+  score_total: number;
+};
+
+export async function fittingEnv(): Promise<FittingEnv> {
+  return jsonFetch("/fitting/env");
+}
+
+export async function fittingSources(): Promise<FittingSource[]> {
+  const data = await jsonFetch<{ sources: FittingSource[] }>("/fitting/sources");
+  return data.sources;
+}
+
+export async function fittingUploadSource(file: Blob, filename = "a.wav"): Promise<FittingSource> {
+  const fd = new FormData();
+  fd.append("file", file, filename);
+  return jsonFetch("/fitting/source", { method: "POST", body: fd });
+}
+
+export async function fittingBuiltinSource(): Promise<FittingSource> {
+  return jsonFetch("/fitting/source/builtin", { method: "POST" });
+}
+
+export async function fittingDeleteSource(sourceId: string): Promise<{ ok: boolean }> {
+  return jsonFetch(`/fitting/source/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
+}
+
+export async function fittingTry(req: {
+  voice_ids: string[];
+  source_id?: string;
+  text?: string;
+  pitch?: number;
+  index_rate?: number;
+  /** 是否计算客观分（音色像度 / 自然度）；关掉省一次打分器加载 */
+  score?: boolean;
+}): Promise<{ ok: boolean; task_id: string; total: number; mode: string; score: boolean }> {
+  return jsonFetch("/fitting/try", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function fittingTask(): Promise<FittingTask> {
+  return jsonFetch("/fitting/task");
+}
+
+export async function fittingCancel(): Promise<{ ok: boolean; cancelled: boolean; message?: string }> {
+  return jsonFetch("/fitting/cancel", { method: "POST" });
 }

@@ -287,6 +287,13 @@ def _gpu_busy() -> str:
             return "离线变声任务正在运行"
     except Exception:
         pass
+    try:
+        from runtime import gpu_holder_reason
+        reason = gpu_holder_reason()
+        if reason:
+            return reason
+    except Exception:
+        pass
     return ""
 
 

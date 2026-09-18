@@ -176,3 +176,100 @@ def test_nats_scorer_missing_dependency_reports_readable_error(client, monkeypat
     monkeypatch.setitem(sys.modules, "natscore_local", None)   # import → ImportError
     with pytest.raises(RuntimeError, match="NatScore 依赖缺失"):
         ac._nats_scorer()
+
+# ---------------- RVC 失败信息的可读性（2026-09-18 试衣间实测）----------------
+
+
+def test_fail_tail_prefers_real_error_over_warning():
+    """回归：torch 的弃用警告曾把真错误挤出 tail，用户看到的是假原因。
+
+    真机现场：RVC 子进程因 cuDNN 崩掉，但 stderr 末尾 3 行是
+    `FutureWarning: torch.nn.utils.weight_norm is deprecated` + 源码片段，
+    报出来的错就成了那条警告，完全指不到问题。
+    """
+    stderr = "\n".join([
+        r"D:\RVC\.venv\Lib\site-packages\torch\nn\utils\weight_norm.py:143: FutureWarning:"
+        r" `torch.nn.utils.weight_norm` is deprecated in favor of"
+        r" `torch.nn.utils.parametrizations.weight_norm`.",
+        "  WeightNorm.apply(module, name, dim)",
+        "Traceback (most recent call last):",
+        "RuntimeError: cuDNN error: CUDNN_STATUS_EXECUTION_FAILED",
+    ])
+    tail = ac._fail_tail(stderr, "")
+    assert "cuDNN" in tail
+    assert "FutureWarning" not in tail
+
+
+def test_fail_tail_drops_warnings_and_caret_lines():
+    """没有 error 字样时，退而求其次：去掉警告/源码片段/caret 再取末尾。"""
+    stdout = "\n".join([
+        "UserWarning: something deprecated",
+        "  some_source_line()",
+        "    ^^^^^^^^",
+        "real problem line one",
+        "real problem line two",
+    ])
+    tail = ac._fail_tail("", stdout, n=2)
+    assert "real problem line two" in tail
+    assert "UserWarning" not in tail
+    assert "^^^^" not in tail
+
+
+def test_fail_tail_handles_empty_output():
+    assert ac._fail_tail("", "") == ""
+
+
+def test_rvc_link_reports_readable_error_on_failure(tmp_path, monkeypatch):
+    """子进程失败 → RuntimeError 里必须带真错误，而不是 torch 警告。"""
+    pth = tmp_path / "v.pth"
+    pth.write_bytes(b"\x00")
+    src = tmp_path / "in.wav"
+    src.write_bytes(b"\x00")
+    out = tmp_path / "out.wav"
+
+    class _R:
+        returncode = 1
+        stdout = ""
+        stderr = ("x.py:1: FutureWarning: deprecated\n  warn()\n"
+                  "RuntimeError: cuDNN error: CUDNN_STATUS_EXECUTION_FAILED")
+
+    monkeypatch.setattr(ac.subprocess, "run", lambda *a, **k: _R())
+    with pytest.raises(RuntimeError) as ei:
+        ac._rvc_link("v1", src, out, pth=pth, index="")
+    msg = str(ei.value)
+    assert "cuDNN" in msg and "FutureWarning" not in msg
+
+
+def test_rvc_link_accepts_weight_override_without_touching_resolver(tmp_path, monkeypatch):
+    """权重覆盖是给「未安装市场音色用暂存权重」用的：不该再去解析本机产物。"""
+    called = {"resolver": 0}
+
+    def _resolver(_v):
+        called["resolver"] += 1
+        return None
+
+    monkeypatch.setattr(ac, "ensure_infer_pth", _resolver)
+    pth = tmp_path / "staged.pth"
+    pth.write_bytes(b"\x00")
+    src = tmp_path / "in.wav"
+    src.write_bytes(b"\x00")
+    out = tmp_path / "out.wav"
+    seen = {}
+
+    class _R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _run(cmd, **_k):
+        seen["cmd"] = cmd
+        out.write_bytes(b"RIFF")
+        return _R()
+
+    monkeypatch.setattr(ac.subprocess, "run", _run)
+    ac._rvc_link("market_voice", src, out, pth=pth, index="", pitch=3, index_rate=0.7)
+    assert called["resolver"] == 0                 # 有覆盖就不碰解析器
+    assert str(pth) in seen["cmd"]
+    assert seen["cmd"][seen["cmd"].index("--index") + 1] == ""
+    assert seen["cmd"][seen["cmd"].index("--pitch") + 1] == "3"
+    assert seen["cmd"][seen["cmd"].index("--index-rate") + 1] == "0.7"

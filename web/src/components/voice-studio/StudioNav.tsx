@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { ChevronDown, Home, Library, Mic2, PawPrint, Radio, Speech, Wrench } from "lucide-react"
+import { ChevronDown, Home, Library, Mic2, PawPrint, Radio, Shirt, Speech, Wrench } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 import { cn } from "@/lib/utils"
 
@@ -14,9 +14,13 @@ type NavItem = {
  * 产品既定信息架构（09-15 平民化改造，勿擅自改动）：
  * 极简模式 = 首页 + 三条主路径（输字变声 / 训练变声 / 工具箱），其余收进「更多功能」。
  * 这里只负责把它表达清楚——分组呈现 + 当前项指示，不改动分组归属。
+ *
+ * 2026-09-18 例外：「试衣间」加进「开始」组。它不是一个新引擎，而是既有能力的统一入口
+ * （挑音色 → 试穿 → 满意了再去精调），所以放在最上层而不是塞进「更多功能」。
  */
 const START_ITEMS: NavItem[] = [
   { path: "/home", label: "首页", icon: Home, exact: true },
+  { path: "/fitting", label: "试衣间", icon: Shirt },
   { path: "/tts", label: "输字变声", icon: Speech },
   { path: "/workshop", label: "训练变声", icon: Mic2 },
   { path: "/offlinevc", label: "工具箱", icon: Wrench },

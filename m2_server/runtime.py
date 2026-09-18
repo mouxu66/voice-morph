@@ -78,3 +78,35 @@ PREVIEW_TEXTS = [
 
 # ---- 桌宠一键内录状态 ----
 CAPTURE_STATE: dict = {"recording": False, "message": "", "file": ""}
+
+# ---- GPU 独占任务登记（跨模块互斥的单一事实来源）----
+# 为什么需要（2026-09-18）：RVC 推理子进程要独占显存，8GB 卡上两个并发必然 OOM。
+# 此前互斥靠各模块互相 import 检查（_live_proc_alive / _cascade_alive /
+# OFFLINEVC_STATE["running"]），新增的批量试穿不在任何人的检查清单里 ——
+# 用户在试衣间开了批量任务、又去离线变声页点一下，两个推理进程就会撞在一起。
+# 这里给「长任务」一个统一登记位：占用方 hold_gpu，其余路径统一查 gpu_holder_reason()。
+_EXCLUSIVE_LOCK = threading.Lock()
+EXCLUSIVE_TASKS: dict = {}          # 任务名 → 可读占用说明
+
+
+def hold_gpu(name: str, reason: str) -> bool:
+    """非阻塞占用 GPU 独占位；已被占用返回 False（调用方据此回 409）。"""
+    with _EXCLUSIVE_LOCK:
+        if EXCLUSIVE_TASKS:
+            return False
+        EXCLUSIVE_TASKS[name] = reason
+        return True
+
+
+def release_gpu(name: str) -> None:
+    """释放独占位（幂等；未占用也当成功）。"""
+    with _EXCLUSIVE_LOCK:
+        EXCLUSIVE_TASKS.pop(name, None)
+
+
+def gpu_holder_reason() -> str:
+    """当前独占位占用说明；空闲返回空串。"""
+    with _EXCLUSIVE_LOCK:
+        for name, reason in EXCLUSIVE_TASKS.items():
+            return reason or f"{name} 正在运行"
+    return ""

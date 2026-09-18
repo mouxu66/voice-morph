@@ -77,6 +77,10 @@ async def offlinevc_run(
         from cascade import _cascade_alive
         if _cascade_alive():
             raise HTTPException(status_code=409, detail="级联变声正在运行，请先停止后再离线转换（避免争抢显卡）")
+        from runtime import gpu_holder_reason
+        _holder = gpu_holder_reason()
+        if _holder:
+            raise HTTPException(status_code=409, detail=f"{_holder}，请先等它结束（避免争抢显卡）")
 
         OFFLINEVC_STATE.update(
             running=True, status="running", message="已提交",

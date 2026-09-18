@@ -49,6 +49,12 @@ export const GUIDES: Record<string, PageGuide> = {
     action: "play",
     motion: "bounce",
   },
+  "/fitting": {
+    title: "试衣间",
+    lines: ["音色就是衣服，", "你的声音是身体。", "点哪件就换哪件。"],
+    action: "wave",
+    motion: "pop",
+  },
   "/offlinevc": {
     title: "离线工坊",
     lines: ["录好的音频交给我。", "先「离线变声」换嗓，", "再「效果器」加混响电音。"],

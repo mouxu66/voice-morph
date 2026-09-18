@@ -17,6 +17,7 @@
 FastAPI 会把它放进线程池执行，浏览器 fetch 保持连接等待即可。
 """
 import shutil
+import re
 import subprocess
 import threading
 import time
@@ -101,22 +102,55 @@ def _preprocess16k(src: Path, dst: Path) -> None:
         raise RuntimeError(f"ffmpeg 预处理失败: {r.stderr.strip()[:1500]}")
 
 
-def _rvc_link(voice_id: str, src16k: Path, out_wav: Path) -> None:
-    """RVC 整段推理（与离线变声同链路：D:\\RVC\\.venv 子进程）。"""
-    pth = ensure_infer_pth(voice_id)
+# RVC 子进程输出里的噪声行：torch 的弃用警告会连带打印源码片段和 caret 行，
+# 直接取末尾几行会把真正的异常挤掉（见 _fail_tail 的注释）。
+_NOISE_RE = re.compile(
+    r"(Warning|warn\(|deprecated|^[\s\^|]+$|^\s*$|UserWarning|FutureWarning|FutureWarning)")
+
+
+def _fail_tail(stderr: str, stdout: str, n: int = 4) -> str:
+    """从 RVC 子进程输出里挑出「真正的错误行」。
+
+    为什么需要挑（2026-09-18 试衣间实测）：offline_vc_infer.py 启动时 torch 会打一条
+    weight_norm 弃用 FutureWarning（两行：警告本身 + 源码片段），此时直接取最后 3 行，
+    报出来的就是那条警告 —— 用户看到「RVC 推理失败: FutureWarning … WeightNorm.apply」，
+    完全不知道真因是 cuDNN 崩了。优先取含 Error/error/Traceback 的行；
+    退而求其次才去掉警告与源码片段取末尾。
+    """
+    lines = [l.rstrip() for l in (stderr or "").splitlines() + (stdout or "").splitlines()]
+    lines = [l for l in lines if l.strip()]
+    hits = [l for l in lines if ("Error" in l or "error" in l or "Traceback" in l)]
+    if hits:
+        return " | ".join(hits[-n:])[-400:]
+    clean = [l for l in lines if not _NOISE_RE.search(l)]
+    return " | ".join((clean or lines)[-n:])[-400:]
+
+
+def _rvc_link(voice_id: str, src16k: Path, out_wav: Path,
+              pth: "Path | None" = None, index: "str | None" = None,
+              pitch: int = 0, index_rate: float = 0.5) -> None:
+    """RVC 整段推理（与离线变声同链路：D:\\RVC\\.venv 子进程）。
+
+    pth / index 覆盖：试衣间对「未安装但已在市场下载缓存里」的音色用暂存权重推理
+    （暂存权重无配套 index，传 index="" 显式跳过特征检索，与市场试听同一策略）。
+    不传时保持原行为：从本机已就绪音色解析权重与 index。
+    """
     if pth is None:
-        raise RuntimeError(f"音色 [{voice_id}] 没有可推理的 RVC 模型（未训练）")
-    index = next(iter((cfg.RVC_ROOT / "logs" / voice_id).glob("added_*.index")), None)
+        pth = ensure_infer_pth(voice_id)
+        if pth is None:
+            raise RuntimeError(f"音色 [{voice_id}] 没有可推理的 RVC 模型（未训练）")
+    if index is None:
+        idx = next(iter((cfg.RVC_ROOT / "logs" / voice_id).glob("added_*.index")), None)
+        index = str(idx) if idx else ""
     cmd = [str(RVC_VENV_PY), str(INFER_PY),
            "--pth", str(pth),
-           "--index", str(index) if index else "",
+           "--index", index,
            "--input", str(src16k), "--output", str(out_wav),
-           "--pitch", "0", "--index-rate", "0.5"]
+           "--pitch", str(pitch), "--index-rate", str(index_rate)]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
                        encoding="utf-8", errors="replace", cwd=str(cfg.RVC_ROOT))
     if r.returncode != 0 or not out_wav.exists():
-        tail = (r.stderr or r.stdout or "").strip().splitlines()[-3:]
-        raise RuntimeError("RVC 推理失败: " + " | ".join(tail)[-400:])
+        raise RuntimeError("RVC 推理失败: " + _fail_tail(r.stderr or "", r.stdout or ""))
 
 
 def _seedvc_link(voice_id: str, src16k: Path, out_wav: Path) -> None:
@@ -165,6 +199,10 @@ async def ab_chain(
         from offline_vc import OFFLINEVC_STATE
         if OFFLINEVC_STATE.get("running"):
             raise HTTPException(status_code=409, detail="离线变声任务正在运行，请先等待完成")
+        from runtime import gpu_holder_reason
+        _holder = gpu_holder_reason()
+        if _holder:
+            raise HTTPException(status_code=409, detail=f"{_holder}，请先等它结束（避免争抢显卡）")
 
         # 目标参考音频合法性/存在性校验（三条链路 + 打分共用）
         ref, _ = voice_ref(voice_id)

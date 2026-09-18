@@ -15,6 +15,7 @@ import { useAppStore } from "@/store/useAppStore"
 import { getStoredSimpleMode, setStoredSimpleMode } from "@/theme"
 import { HomeRoute } from "@/pages/Home/index"
 import { FirstLaunchGuide } from "@/components/FirstLaunchGuide"
+import { FittingRoute } from "@/pages/Fitting/index"
 import { LiveRoute } from "@/pages/Live/index"
 import { TtsRoute } from "@/pages/Tts/index"
 import { VoicesRoute } from "@/pages/Voices/index"
@@ -144,6 +145,7 @@ export default function App() {
           <Route path="/workshop" element={<WorkshopRoute />} />
           <Route path="/voices" element={<VoicesRoute />} />
           <Route path="/live" element={<LiveRoute />} />
+          <Route path="/fitting" element={<FittingRoute />} />
           <Route path="/tts" element={<TtsRoute />} />
           <Route path="/offlinevc" element={<OfflineVcRoute />} />
           <Route path="/pet-market" element={<PetMarketRoute />} />
