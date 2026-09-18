@@ -76,6 +76,11 @@ function EnvBar({ env, onRefresh }: { env: AuditionEnv | null; onRefresh: () => 
       {env.offline_running && <span className="text-yellow-700">离线变声任务在跑</span>}
       {env.busy_reason && <span className="text-yellow-700">{env.busy_reason} → 批量试音暂不可用</span>}
       {!blocked && <span className="text-muted-foreground">可以开跑</span>}
+      <span className="text-muted-foreground">
+        {env.rvc_worker?.alive
+          ? "常驻换声引擎已就绪"
+          : "首次试音会先加载引擎（约 10 秒），之后就快了"}
+      </span>
       <span className="flex-1" />
       <button
         type="button"
@@ -157,15 +162,32 @@ function VoiceRow({
 }
 
 /** 试音结果卡片：一条音频 + 客观分 + 出口动作 */
+const ENGINE_LABEL: Record<string, string> = {
+  worker: "常驻引擎",
+  subprocess: "一次性子进程",
+  cache: "复用上次",
+  tts: "文字合成",
+}
+
+const ENGINE_TITLE: Record<string, string> = {
+  worker: "走常驻换声引擎：换音色只要重载小模型（约 0.6s）",
+  subprocess: "常驻引擎不可用，回退成一次性子进程（每个音色都要重新加载模型，慢）",
+  cache: "同样参数的产物之前跑过，直接复用",
+  tts: "文字合成链路",
+}
+
 function ResultCard({
   r,
   scoring,
   onHandoff,
+  onUseLive,
 }: {
   r: AuditionResult
   /** 打分阶段还在跑（此时"没有分数"是"还没算完"，而不是"算不了"） */
   scoring: boolean
   onHandoff: (url: string, voiceId: string) => Promise<boolean>
+  /** 把这个音色直接挂到实时试音上（本页两条路径之间的闭环） */
+  onUseLive: (voiceId: string) => void
 }) {
   const [dlBusy, setDlBusy] = useState(false)
   const [dlErr, setDlErr] = useState("")
@@ -199,9 +221,12 @@ function ResultCard({
             <Loader2 className="h-3.5 w-3.5 animate-spin" />试音中
           </span>
         )}
-        {r.status === "done" && r.from_cache && (
-          <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-            复用上次
+        {r.status === "done" && r.engine && (
+          <span
+            className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground"
+            title={ENGINE_TITLE[r.engine] ?? ""}
+          >
+            {ENGINE_LABEL[r.engine] ?? r.engine}
           </span>
         )}
       </div>
@@ -259,6 +284,14 @@ function ResultCard({
             >
               {dlBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Volume2 className="h-3.5 w-3.5" />}
               {dlBusy ? "下载中…" : "下载 wav"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onUseLive(r.voice_id)}
+              title="切到实时试音并把麦克风挂上这个音色"
+              className="inline-flex items-center gap-1 font-medium text-primary transition hover:underline"
+            >
+              <Radio className="h-3.5 w-3.5" />开实时试
             </button>
             <Link
               to="/offlinevc"
@@ -527,7 +560,7 @@ export function AuditionPage() {
           <VoiceRow
             key={v.id}
             v={v}
-            picked={witMode === "batch" ? p.selected.includes(v.id) : p.liveExp === v.id}
+            picked={witMode === "batch" ? p.selected.includes(v.id) : p.liveRunning && p.liveExp === v.id}
             disabled={witMode === "live" ? p.batchRunning || !!p.liveBusy : p.batchRunning}
             onClick={() => {
               if (witMode === "live") void p.startLive(v.id)
@@ -541,6 +574,9 @@ export function AuditionPage() {
       </div>
 
       <p className="mt-3 border-t border-border pt-2.5 text-[11px] leading-5 text-muted-foreground">
+        {witMode === "live"
+          ? "实时模式点一个就换成它；同一时刻只挂一个音色，未开麦时衣柜不高亮。"
+          : "批量模式可多选，一次跑完并排听。"}
         「需下载」的音色会在试音时自动取权重（与安装共用同一份缓存）；标「只能换音色」的是市场
         RVC 权重，没有参考音，不能用文字合成。
       </p>
@@ -798,7 +834,16 @@ export function AuditionPage() {
                       {p.results.length > 0 ? (
                         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                           {p.results.map((r) => (
-                            <ResultCard key={r.voice_id} r={r} scoring={p.scoring} onHandoff={p.handoffToOfflineVc} />
+                            <ResultCard
+                              key={r.voice_id}
+                              r={r}
+                              scoring={p.scoring}
+                              onHandoff={p.handoffToOfflineVc}
+                              onUseLive={(id) => {
+                                setWitMode("live")
+                                void p.startLive(id)
+                              }}
+                            />
                           ))}
                         </div>
                       ) : (

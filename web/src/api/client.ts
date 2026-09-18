@@ -1647,6 +1647,8 @@ export type AuditionEnv = {
   busy_reason: string;
   batch_ready: boolean;
   text_ready: boolean;
+  /** 常驻换声引擎：alive 时批量试音快一个数量级（换模型仅 ~0.6s） */
+  rvc_worker: { enabled: boolean; alive: boolean; pid: number | null };
 };
 
 export type AuditionSource = {
@@ -1671,6 +1673,8 @@ export type AuditionResult = {
   score_error: string;
   /** 命中缓存：同样参数之前跑过，秒出没重跑推理 */
   from_cache: boolean;
+  /** 实际走的引擎：cache / tts / worker（常驻，快）/ subprocess（回退，慢） */
+  engine: "cache" | "tts" | "worker" | "subprocess" | "";
 };
 
 export type AuditionTask = {

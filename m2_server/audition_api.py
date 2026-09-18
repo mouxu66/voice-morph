@@ -5,12 +5,16 @@
 + 客观分；想立刻听到效果就用手动轮换的实时试音。
 
 三条路径与复用（不复制任何引擎代码）：
-    - 批量并排（离线）: 本模块串行调 ab_chain._rvc_link
-                        —— 与 /offlinevc、市场试听同一条 RVC 子进程链路
+    - 批量并排（离线）: 优先走**常驻换声引擎**（`rvc_convert.worker_call`），
+                        worker 不可用时回退 `ab_chain._rvc_link` 子进程。
+                        实测同一批 4 个音色：常驻 19.6s / 一次性子进程 ~128s
+                        —— 差别全在"每个音色都要重新 load_vc()"这笔固定开销上
     - 文字试音        : 本模块逐音色调 qwen3_tts.tts —— 与 /tts、/ab/run 同链路
     - 实时轮换（单件）: 前端直接调 rvc_live（/rvc/live/start?exp_name=&monitor=），
                         本模块只负责提供环境态势（/audition/env）与互斥保护
     客观分（secs 音色像度 / nats 自然度）复用 ab_chain 已实现的打分器。
+    ⚠️ 批量跑完必须把常驻引擎**整个收掉**再打分：A/B 实测它与打分子进程在这台机器上
+    不能共存（worker 活着时打分子进程报 os error 1455，甚至直接崩），详见 _worker。
 
 命名坑（务必记住）：voicebank id ≠ RVC 实验名（`kangaroo` ↔ `kangaroo_v2`）。
 音色在**音频路径**下用 RVC 实验名 / 市场 voice_id；**文字路径**需要那套 voicebank
@@ -27,6 +31,7 @@ id（TTS 克隆要参考音），靠 rvc_convert.rvc_voice_candidates 反向求�
 """
 import hashlib
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -47,6 +52,8 @@ from rvc_convert import rvc_voice_candidates
 from runtime import (API_PREFIX, OUT, gpu_holder_reason, hold_gpu, release_gpu)
 
 router = APIRouter(prefix=API_PREFIX)
+
+logger = logging.getLogger(__name__)
 
 AUDITION_DIR = OUT / "audition"
 AUDITION_DIR.mkdir(parents=True, exist_ok=True)
@@ -240,6 +247,37 @@ def _duration_s(out: Path) -> "float | None":
 # ---------------- 单件试音 ----------------
 
 
+def _convert_with_worker(pth: Path, index: str, src: Path, out: Path,
+                         pitch: int, index_rate: float) -> bool:
+    """走常驻 worker 换声；worker 不可用 / 被 `VM_RVC_WORKER=0` 关掉时返回 False。
+
+    为什么必须优先走 worker（2026-09-19 实测，这是本功能最大的一处性能差）：
+        `ab_chain._rvc_link` 是一次性 CLI —— **每个音色都要重新 `load_vc()`**。
+        4.2s 的试音音频实测**墙钟 32s**，而其中推理只占 4.2s，剩下 ~28s 全是
+        进程启动 + torch + hubert + 模型加载。6 个音色的批量试音因此要等 3 分钟，
+        且 90% 的时间在重复付同一笔加载费。项目里 `offline_vc_infer.py --serve`
+        正是为解决这个问题建的（见它的 serve() 注释），试音间没走它属于漏用。
+        改用常驻 worker 后同一批 4 个音色：**首轮 19.6s、第二轮 1.0s**；
+        换模型只要 ~0.6s（hubert 被复用）。
+
+    产物一致性：worker 与 CLI 内部调的是同一个 `load_audio(·,16000)` /
+    `convert_audio()` / `sf.write(·, engine.tgt_sr)`，所以换路径不改音质。
+    """
+    try:
+        from rvc_convert import USE_WORKER, worker_call
+        if not USE_WORKER:
+            return False
+        worker_call({"cmd": "convert", "pth": str(pth), "index": index or "",
+                     "input": str(src), "output": str(out),
+                     "pitch": int(pitch), "index_rate": float(index_rate)},
+                    timeout=1800)
+        return out.exists()
+    except Exception:  # noqa: BLE001
+        # worker 崩了不能把结果吞掉 —— 回退一次性子进程（慢但能出），
+        # 真实用了哪条路会记进结果的 engine 字段，不静默。
+        return False
+
+
 def _cache_path(voice_id: str, mode: str, src: Path | None, text: str,
                 pitch: int, index_rate: float) -> Path:
     """产物路径 = 参数哈希。同样参数重复点不会重跑推理（结果直接复用）。"""
@@ -249,11 +287,17 @@ def _cache_path(voice_id: str, mode: str, src: Path | None, text: str,
 
 
 def _try_one(voice_id: str, mode: str, src: Path | None, text: str,
-             pitch: int, index_rate: float) -> tuple[Path, bool]:
-    """试音一个音色 → (产物路径, 是否命中已有缓存)。异常带可读原因抛出。"""
+             pitch: int, index_rate: float) -> tuple[Path, bool, str]:
+    """试音一个音色 → (产物路径, 是否命中缓存, 实际走的引擎)。
+
+    engine 取值：cache（复用旧产物）/ tts（文字合成）/ worker（常驻引擎）/
+    subprocess（一次性子进程，仅在 worker 不可用时回退）。把它带回去是为了
+    让"这次为什么慢"在 UI 上可见，而不是只能靠猜。
+    异常带可读原因抛出。
+    """
     out = _cache_path(voice_id, mode, src, text, pitch, index_rate)
     if out.exists() and out.stat().st_size > 1024:
-        return out, True
+        return out, True, "cache"
 
     if mode == "text":
         vb = _voicebank_for(voice_id)
@@ -267,16 +311,19 @@ def _try_one(voice_id: str, mode: str, src: Path | None, text: str,
         tmp = out.with_suffix(".tmp")
         tmp.write_bytes(data)
         tmp.replace(out)
-        return out, False
+        return out, False, "tts"
 
     if src is None:
         raise RuntimeError("缺少源音频")
     pth, index, err = _resolve_weight(voice_id)
     if pth is None:
         raise RuntimeError(err)
+    # 常驻引擎优先（快 6 倍，见 _convert_with_worker 的实测数据），失败才回退子进程
+    if _convert_with_worker(pth, index, src, out, pitch, index_rate):
+        return out, False, "worker"
     _rvc_link(voice_id, src, out, pth=pth, index=index,
               pitch=pitch, index_rate=index_rate)
-    return out, False
+    return out, False, "subprocess"
 
 
 # ---------------- 状态更新 ----------------
@@ -356,6 +403,9 @@ def _score_pass(task_id: str) -> None:
 def _worker(task_id: str, voice_ids: list[str], mode: str,
             src: Path | None, text: str, pitch: int, index_rate: float,
             score: bool = True) -> None:
+    # 打分与否、以及"要不要收引擎"，都在 finally 里定下来；
+    # will_score 要在 finally 之后用，所以先声明在函数作用域。
+    will_score = False
     try:
         # 阶段一：只做推理。这里绝不允许加载任何打分模型 —— 一旦占了本进程的
         # CUDA 上下文，后面的 RVC 子进程会 cuDNN 崩（见 audition_score.py）。
@@ -369,13 +419,15 @@ def _worker(task_id: str, voice_ids: list[str], mode: str,
                   message=f"正在试音「{name}」（{idx + 1}/{len(voice_ids)}）…")
             entry = {"voice_id": vid, "display_name": name, "status": "running",
                      "url": "", "secs": None, "nats": None, "duration_s": None,
-                     "error": "", "score_error": "", "from_cache": False}
+                     "error": "", "score_error": "", "from_cache": False,
+                     "engine": ""}
             _set_result(entry)
             try:
-                out, cached = _try_one(vid, mode, src, text, pitch, index_rate)
+                out, cached, engine = _try_one(vid, mode, src, text, pitch, index_rate)
                 entry["status"] = "done"
                 entry["url"] = f"/api/media/outputs/audition/{out.name}"
                 entry["from_cache"] = cached
+                entry["engine"] = engine
                 entry["duration_s"] = _duration_s(out)
                 try:
                     from history import register as history_register
@@ -405,7 +457,35 @@ def _worker(task_id: str, voice_ids: list[str], mode: str,
         _CANCEL.clear()
         release_gpu("audition")
         _TASK_LOCK.release()
-    if score and _snapshot()["status"] == "done":
+        # ★ 要打分就**先把 scoring 立起来**，再去收引擎。
+        # 为什么顺序不能反（2026-09-19 实测踩到）：收引擎要等 worker 退出，
+        # 最长 ~10s。这段窗口里若 running 和 scoring 都是 False，前端轮询会判定
+        # "任务彻底结束"从而停止轮询 —— 等分数真算出来也没人去取，界面会一直停在
+        # 「不可算」，等于对用户说谎（真实状态是"还没开始算"）。
+        snap = _snapshot()
+        will_score = bool(score) and snap["status"] == "done"
+        if will_score:
+            pending = [r for r in snap["results"]
+                       if r.get("status") == "done" and r.get("url")]
+            will_score = bool(pending)
+            if will_score:
+                _mark(scoring=True, score_finished=0, score_total=len(pending))
+        # 把常驻引擎整个收掉（不是"顺手清理"，是必须 —— 2026-09-19 A/B 实测）：
+        #   只卸引擎缓存不够用：worker 进程本身（torch + hubert）就占着 1.5GB+
+        #   提交内存。同一台机器上 A/B：
+        #     worker 不在 → 打分子进程正常（secs 0.547 / nats 3.099）
+        #     worker 活着 → 自然度打分报「页面文件太小，os error 1455」
+        #     只卸引擎、worker 仍在 → 打分子进程直接崩（退出码 0xC0000005）
+        #   即"常驻引擎"和"打分子进程"在这台机器上不能共存。
+        #   收掉的代价只是下一批要重付 ~10.5s 冷启（应用启动时 warmup 还会预热一次），
+        #   相比"每个音色都重新 load_vc"的子进程路径仍然快一个数量级。
+        try:
+            from rvc_convert import stop_worker
+            stop_worker()
+            logger.debug("[audition] 已收掉常驻引擎，给打分子进程让出内存")
+        except Exception:
+            pass
+    if will_score:
         threading.Thread(target=_score_pass, args=(task_id,), daemon=True).start()
 
 
@@ -442,6 +522,13 @@ def audition_env():
         tts_worker = bool(worker_alive())
     except Exception:
         pass
+    # 常驻换声引擎：alive 时批量试音快一个数量级（换模型仅 ~0.6s）
+    rvc_worker = {"enabled": False, "alive": False, "pid": None}
+    try:
+        from rvc_convert import worker_status
+        rvc_worker = worker_status()
+    except Exception:
+        pass
 
     total = used = None
     try:
@@ -471,6 +558,7 @@ def audition_env():
         "live_running": live_running, "live_exp": live_exp,
         "cascade_running": cascade_running, "offline_running": offline_running,
         "tts_worker": tts_worker,
+        "rvc_worker": rvc_worker,
         "gpu_total_mb": total, "gpu_used_mb": used, "gpu_free_mb": free,
         "min_free_vram_mb": min_free, "low_vram": low_vram,
         "busy_reason": holder,

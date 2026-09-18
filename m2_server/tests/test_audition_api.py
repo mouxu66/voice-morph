@@ -12,6 +12,7 @@
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -90,7 +91,7 @@ def _stub_infer(monkeypatch, *, failing: set[str] | None = None,
             raise RuntimeError(f"音色 [{voice_id}] 没有可推理的模型")
         out = fa.AUDITION_DIR / f"aud_{voice_id}_stub.wav"
         _wav(out)
-        return out, cached
+        return out, cached, ("cache" if cached else "worker")
 
     monkeypatch.setattr(fa, "_try_one", _try_one)
 
@@ -731,9 +732,9 @@ def test_text_mode_synthesizes_via_tts(aud_dir, monkeypatch, tmp_path):
     payload = ref.read_bytes()
     monkeypatch.setattr(qwen3_tts, "tts", lambda *a, **k: payload)
 
-    out, cached = fa._try_one("kangaroo_v2", "text", None, "你好", 0, 0.5)
+    out, cached, engine = fa._try_one("kangaroo_v2", "text", None, "你好", 0, 0.5)
     assert out.exists() and out.stat().st_size == len(payload)
-    assert cached is False
+    assert cached is False and engine == "tts"
 
     called = {"n": 0}
 
@@ -742,8 +743,9 @@ def test_text_mode_synthesizes_via_tts(aud_dir, monkeypatch, tmp_path):
         return payload
 
     monkeypatch.setattr(qwen3_tts, "tts", _count)
-    _out2, cached2 = fa._try_one("kangaroo_v2", "text", None, "你好", 0, 0.5)
+    _out2, cached2, engine2 = fa._try_one("kangaroo_v2", "text", None, "你好", 0, 0.5)
     assert cached2 is True and called["n"] == 0
+    assert engine2 == "cache"
 
 
 # ---------------- HTTP 层（路由注册 + 序列化）----------------
@@ -829,3 +831,164 @@ def test_source_builtin_over_http(client, aud_dir):
     assert body["source_id"] == "src_builtin"
     assert body["duration_s"] > 0
     assert (fa.AUDITION_DIR / "src_builtin.wav").exists()
+
+
+# ---------------- 常驻引擎优先 + 回退（2026-09-19 加）----------------
+# 4.2s 试音音频：一次性 CLI 墙钟 32s（推理只占 4.2s），常驻 worker 首轮 19.6s、
+# 第二轮 1.0s。所以"有没有走常驻引擎"直接决定体验，必须有守卫盯着。
+
+
+def _stub_convert_paths(monkeypatch, *, worker_ok: bool, worker_enabled: bool = True):
+    """打桩两条换声路径，返回调用记录。"""
+    calls = {"worker": [], "subprocess": []}
+    import rvc_convert
+
+    monkeypatch.setattr(rvc_convert, "USE_WORKER", worker_enabled)
+
+    def _worker_call(task, timeout=300.0):
+        calls["worker"].append(task)
+        if not worker_ok:
+            raise rvc_convert.RvcError("worker 挂了")
+        Path(task["output"]).write_bytes(b"RIFF")     # 假装产出了文件
+        return {"ok": True}
+
+    def _rvc_link(voice_id, src, out, **kw):
+        calls["subprocess"].append(voice_id)
+        Path(out).write_bytes(b"RIFF")
+
+    monkeypatch.setattr(rvc_convert, "worker_call", _worker_call)
+    monkeypatch.setattr(fa, "_rvc_link", _rvc_link)
+    return calls
+
+
+def _audio_inputs(tmp_path):
+    pth = tmp_path / "v.pth"
+    pth.write_bytes(b"\x00")
+    src = _wav(tmp_path / "src.wav")
+    out = tmp_path / "out.wav"
+    return pth, src, out
+
+
+def test_convert_prefers_resident_worker(tmp_path, monkeypatch, aud_dir):
+    calls = _stub_convert_paths(monkeypatch, worker_ok=True)
+    pth, src, out = _audio_inputs(tmp_path)
+    assert fa._convert_with_worker(pth, "", src, out, 0, 0.5) is True
+    assert len(calls["worker"]) == 1
+    task = calls["worker"][0]
+    assert task["cmd"] == "convert"
+    assert task["pth"] == str(pth)
+    assert calls["subprocess"] == []            # 走了 worker 就不该再起子进程
+
+
+def test_convert_returns_false_when_worker_fails(tmp_path, monkeypatch, aud_dir):
+    calls = _stub_convert_paths(monkeypatch, worker_ok=False)
+    pth, src, out = _audio_inputs(tmp_path)
+    assert fa._convert_with_worker(pth, "", src, out, 0, 0.5) is False
+    assert len(calls["worker"]) == 1            # 试过
+    assert calls["subprocess"] == []            # 但回退决定权在调用方
+
+
+def test_convert_respects_worker_disabled(tmp_path, monkeypatch, aud_dir):
+    calls = _stub_convert_paths(monkeypatch, worker_ok=True, worker_enabled=False)
+    pth, src, out = _audio_inputs(tmp_path)
+    assert fa._convert_with_worker(pth, "", src, out, 0, 0.5) is False
+    assert calls["worker"] == []                # VM_RVC_WORKER=0 时连试都不试
+
+
+def test_try_one_uses_worker_and_reports_engine(tmp_path, monkeypatch, aud_dir):
+    calls = _stub_convert_paths(monkeypatch, worker_ok=True)
+    pth, src, _out = _audio_inputs(tmp_path)
+    monkeypatch.setattr(fa, "_resolve_weight", lambda _v: (pth, "", ""))
+    _out_path, cached, engine = fa._try_one("v1", "audio", src, "", 0, 0.5)
+    assert cached is False and engine == "worker"
+    assert calls["subprocess"] == []
+
+
+def test_try_one_falls_back_to_subprocess(tmp_path, monkeypatch, aud_dir):
+    calls = _stub_convert_paths(monkeypatch, worker_ok=False)
+    pth, src, _out = _audio_inputs(tmp_path)
+    monkeypatch.setattr(fa, "_resolve_weight", lambda _v: (pth, "", ""))
+    _out_path, cached, engine = fa._try_one("v1", "audio", src, "", 0, 0.5)
+    assert cached is False and engine == "subprocess"
+    assert calls["subprocess"] == ["v1"]
+
+
+def test_result_records_engine(aud_dir, monkeypatch):
+    _wav(fa.AUDITION_DIR / "src_1.wav")
+    _stub_infer(monkeypatch)
+    _stub_history(monkeypatch)
+    monkeypatch.setattr("rvc_convert.stop_worker", lambda: None)
+    fa.audition_try(fa.TryRequest(voice_ids=["v1"], source_id="src_1", score=False))
+    st = _wait_idle()
+    assert st["results"][0]["engine"] == "worker"
+
+
+def _stub_engine_lifecycle(monkeypatch, order: list):
+    """记录「收引擎」与「打分」的先后顺序。"""
+    monkeypatch.setattr("rvc_convert.stop_worker",
+                        lambda: order.append("stop_worker"))
+
+    def _score(jobs):
+        order.append("score")
+        return {j["key"]: {"secs": 0.1, "nats": 0.2, "score_error": ""} for j in jobs}
+
+    monkeypatch.setattr(fa, "_score_batch", _score)
+
+
+def test_batch_stops_worker_before_scoring(aud_dir, monkeypatch):
+    """回归（2026-09-19 A/B 实测）：必须**先收掉常驻引擎再打分**。
+
+    常驻 worker 与打分子进程在这台机器上不能共存 —— worker 活着时打分报
+    「页面文件太小 os error 1455」，只卸引擎缓存也救不了（worker 进程本身占着
+    1.5GB+ 提交内存，实测打分子进程直接崩）。所以顺序必须是先 stop 再 score。
+    """
+    _wav(fa.AUDITION_DIR / "src_1.wav")
+    _stub_infer(monkeypatch)
+    _stub_history(monkeypatch)
+    order: list = []
+    _stub_engine_lifecycle(monkeypatch, order)
+    fa.audition_try(fa.TryRequest(voice_ids=["v1"], source_id="src_1", score=True))
+    _wait_idle()
+    for _ in range(200):
+        if not fa._snapshot().get("scoring"):
+            break
+        time.sleep(0.02)
+    assert order == ["stop_worker", "score"], f"顺序错了：{order}"
+    assert fa._snapshot()["results"][0]["secs"] == 0.1
+
+
+def test_stop_worker_called_even_without_scoring(aud_dir, monkeypatch):
+    """打分关掉也要收引擎：不然它会一直占着内存，下一次推理/打分照样受影响。"""
+    _wav(fa.AUDITION_DIR / "src_1.wav")
+    _stub_infer(monkeypatch)
+    _stub_history(monkeypatch)
+    order: list = []
+    _stub_engine_lifecycle(monkeypatch, order)
+    fa.audition_try(fa.TryRequest(voice_ids=["v1"], source_id="src_1", score=False))
+    _wait_idle()
+    for _ in range(100):
+        if order:
+            break
+        time.sleep(0.02)
+    assert order == ["stop_worker"]
+
+
+def test_stop_worker_failure_does_not_break_task(aud_dir, monkeypatch):
+    _wav(fa.AUDITION_DIR / "src_1.wav")
+    _stub_infer(monkeypatch)
+    _stub_history(monkeypatch)
+
+    def _boom():
+        raise RuntimeError("收引擎失败")
+
+    monkeypatch.setattr("rvc_convert.stop_worker", _boom)
+    fa.audition_try(fa.TryRequest(voice_ids=["v1"], source_id="src_1", score=False))
+    st = _wait_idle()
+    assert st["status"] == "done"
+    assert st["results"][0]["status"] == "done"
+
+
+def test_env_reports_rvc_worker(monkeypatch):
+    env = fa.audition_env()
+    assert "rvc_worker" in env
+    assert set(env["rvc_worker"]) >= {"enabled", "alive", "pid"}
