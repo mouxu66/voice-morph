@@ -54,7 +54,17 @@ FRAME_MS = 30    # VAD 帧长（webrtcvad 仅支持 10/20/30ms）
 FRAME_N = SR_IN * FRAME_MS // 1000
 
 INPUT_KEYWORD = os.environ.get("VM_LIVE_INPUT_DEVICE", "麦克风阵列")
-OUTPUT_KEYWORD = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "CABLE Input")
+# 播放端（渲染端）关键词，**`|` 分隔多个候选、按序尝试**。为什么不是单个串：
+#   ① 中文 Windows 下 MME 把它枚举成「扬声器 (VB-Audio Virtual Cable)」——
+#      端点词 "CABLE Input" 根本不出现，只有**驱动名**能命中；
+#   ② 英文 Windows 下叫 `CABLE Input (VB-Audio Virtual Cable)`，但 MME 把名字
+#      **截断到 31 字符**成 `CABLE Input (VB-Audio Virtual C` —— 完整驱动名又匹配不上，
+#      只有**端点词**能命中。
+# 两个候选都要有：驱动名优先（中文系统名字完整），端点词兜底（英文系统被截断）。
+# 2026-09-19 事故：这里写死单个 "CABLE Input"，设备名一漂移级联就"启动即退出"。
+# 改这里必须同步改：cascade.py / rvc_live.py / play_worker.py / wechat_voice.py，
+# 守卫见 tests/test_cable_keyword_consistency.py。
+OUTPUT_KEYWORD = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "VB-Audio Virtual Cable|CABLE Input")
 
 
 def _live_input_keyword() -> str:
@@ -389,17 +399,32 @@ def _resample(x: np.ndarray, sr_from: int, sr_to: int) -> np.ndarray:
 # ---------------- 设备解析 ----------------
 
 def find_device(keyword: str, is_input: bool) -> int:
-    """按关键词在 MME 主机 API 下模糊匹配设备索引。"""
+    """按关键词在 MME 主机 API 下模糊匹配设备索引。
+
+    ``keyword`` 可用 `|` 分隔**多个候选，按序尝试**（见 OUTPUT_KEYWORD 处注释）：
+    中文 Windows 下播放端叫「扬声器 (VB-Audio Virtual Cable)」→ 驱动名候选命中；
+    英文 Windows 下叫 `CABLE Input (VB-Audio Virtual C`（MME 把名字截断到 31 字符）
+    → 完整驱动名匹配不上，靠端点词候选命中。
+    """
     apis = sd.query_hostapis()
     mme = next((i for i, a in enumerate(apis) if a["name"] == "MME"), None)
-    for i, d in enumerate(sd.query_devices()):
-        if d["hostapi"] != mme:
-            continue
-        ch = d["max_input_channels"] if is_input else d["max_output_channels"]
-        if ch > 0 and keyword.lower() in d["name"].lower():
-            return i
+    cands = [k.strip().lower() for k in keyword.split("|") if k.strip()]
+    for kw in cands:
+        for i, d in enumerate(sd.query_devices()):
+            if d["hostapi"] != mme:
+                continue
+            ch = d["max_input_channels"] if is_input else d["max_output_channels"]
+            if ch > 0 and kw in d["name"].lower():
+                return i
     kind = "输入" if is_input else "输出"
-    raise RuntimeError(f"找不到{kind}设备（关键词: {keyword}）")
+    # 报错带上**候选设备清单**：设备名会漂移（见 OUTPUT_KEYWORD 处注释），
+    # 只说"关键词: xxx"会让人去猜是不是驱动没装。2026-09-19 那次事故正是靠
+    # 肉眼比对 MME 枚举名才定性"名字从 CABLE Input 漂成了 扬声器"。
+    avail = [d["name"] for d in sd.query_devices()
+             if d["hostapi"] == mme
+             and (d["max_input_channels"] if is_input else d["max_output_channels"]) > 0]
+    detail = "、".join(repr(c) for c in avail) if avail else "（无）"
+    raise RuntimeError(f"找不到{kind}设备（关键词: {keyword}）；MME 下可用的{kind}设备：{detail}")
 
 
 def resolve_devices() -> tuple[int, int, str, str]:

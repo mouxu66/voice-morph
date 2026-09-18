@@ -65,7 +65,10 @@ _QC_INFLIGHT: set[str] = set()
 
 # 真实麦克风与虚拟声卡（由 audio_config.ps1 list 探测确定）
 INPUT_DEVICE = os.environ.get("VM_LIVE_INPUT_DEVICE", "麦克风阵列")
-OUTPUT_DEVICE = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "CABLE Input")
+# 播放端关键词，`|` 分隔多候选：中文 Windows 下 MME 枚举成「扬声器 (VB-Audio Virtual Cable)」
+# （驱动名命中），英文下是 `CABLE Input (VB-Audio Virtual C`（截断到 31 字符，端点词命中）。
+# 2026-09-19 事故：写死单个端点词 → 实时/级联找不到输出设备。四处默认值必须一致。
+OUTPUT_DEVICE = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "VB-Audio Virtual Cable|CABLE Input")
 
 CREATE_NEW_CONSOLE = 0x00000010
 # 无头模式用：起进程但不分配控制台，避免每次开始变声都弹黑框
@@ -600,15 +603,23 @@ def _train_progress(exp_name: str | None = None) -> dict:
 
 
 def _device_matches(dev_name: str, want: str) -> bool:
-    """设备名模糊匹配。
+    """设备名模糊匹配。``want`` 可用 `|` 分隔**多个候选，任一命中即可**。
 
     MME 会把设备名截断到 31 字符（"CABLE Input (VB-Audio Virtual C"），
     配置里写完整名就永远匹配不上，所以两边都按前缀比较。
+    多候选的必要性见 cascade_stream.py 的 OUTPUT_KEYWORD 处注释：
+    中文系统名字完整、只有驱动名命中；英文系统名字被截断、只有端点词命中。
     """
-    a, b = (dev_name or "").lower(), (want or "").lower()
-    if not a or not b:
+    a = (dev_name or "").lower()
+    if not a:
         return False
-    return b in a or a in b or a[:28] in b or b[:28] in a
+    for cand in (want or "").split("|"):
+        b = cand.strip().lower()
+        if not b:
+            continue
+        if b in a or a in b or a[:28] in b or b[:28] in a:
+            return True
+    return False
 
 
 def _system_default_input() -> str | None:

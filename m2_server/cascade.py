@@ -47,7 +47,12 @@ RUN_LOG = cfg.OUTPUTS_DIR / "cascade_run.log"
 # 兜底参考音（经 config 走 VM_DEFAULT_REF，不再写死作者本机的音色文件）
 DEFAULT_REF = cfg.DEFAULT_REF_AUDIO
 
-OUTPUT_DEVICE = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "CABLE Input")
+# 播放端（渲染端）关键词，`|` 分隔多候选：中文 Windows 下 MME 枚举成
+# 「扬声器 (VB-Audio Virtual Cable)」（驱动名命中），英文下是
+# `CABLE Input (VB-Audio Virtual C`（截断到 31 字符，端点词命中）。
+# 2026-09-19 事故：写死单个 "CABLE Input"，名字一漂移级联就启动即退出（桌宠报"启动失败"）。
+# 四处默认值必须一致，见 cascade_stream.py 同处注释与 tests/test_cable_keyword_consistency.py。
+OUTPUT_DEVICE = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "VB-Audio Virtual Cable|CABLE Input")
 
 _NO_WINDOW = 0x08000000
 

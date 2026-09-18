@@ -27,15 +27,24 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 
-KEYWORD = (sys.argv[1] if len(sys.argv) > 1 else "CABLE Input").lower()
+# 默认值只在调用方没传 argv[1] 时生效（wechat_voice._start_play 会传 OUTPUT_DEVICE_KEYWORD）。
+# **`|` 分隔多候选**：中文 Windows 下播放端叫「扬声器 (VB-Audio Virtual Cable)」（驱动名命中），
+# 英文下叫 `CABLE Input (VB-Audio Virtual C`（MME 截断到 31 字符，端点词命中）。
+# 2026-09-19 事故：写死单个端点词，设备名一漂移就找不到设备（级联启动失败同源）。
+KEYWORD = (sys.argv[1] if len(sys.argv) > 1 else "VB-Audio Virtual Cable|CABLE Input").lower()
 
 
 def _resolve_device():
+    """按 KEYWORD 在 MME 下找播放端设备索引。
+
+    KEYWORD 可用 `|` 分隔**多个候选，按序尝试**（见文件头注释）。
+    """
     apis = sd.query_hostapis()
     mme = next((i for i, a in enumerate(apis) if a["name"] == "MME"), None)
-    for i, d in enumerate(sd.query_devices()):
-        if d["hostapi"] == mme and d["max_output_channels"] > 0 and KEYWORD in d["name"].lower():
-            return i
+    for kw in [k.strip().lower() for k in KEYWORD.split("|") if k.strip()]:
+        for i, d in enumerate(sd.query_devices()):
+            if d["hostapi"] == mme and d["max_output_channels"] > 0 and kw in d["name"].lower():
+                return i
     return None
 
 

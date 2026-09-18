@@ -77,7 +77,10 @@ _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 # "扬声器 (VB-Audio Virtual Cable)"。两者都含 "VB-Audio Virtual Cable" 这个常量串，
 # 且都带输出通道（采集端 "CABLE Output (...)" 输出通道为 0 会被 max_output_channels>0 过滤掉），
 # 故用这个常量串做关键字可中英文通吃，避免写死 "CABLE Input" 在本机匹配不到设备。
-OUTPUT_DEVICE_KEYWORD = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "VB-Audio Virtual Cable")
+# `|` 后面的端点词是**兜底候选**：英文系统下 MME 会把名字截断到 31 字符
+# （"CABLE Input (VB-Audio Virtual C"），完整驱动名反而匹配不上（2026-09-19 级联事故）。
+# 消费方 play_worker._resolve_device 按序尝试两个候选；_device_keyword() 只取第一个。
+OUTPUT_DEVICE_KEYWORD = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "VB-Audio Virtual Cable|CABLE Input")
 # 发语音方式：mic=鼠标长按输入框右下角话筒图标（默认，官方交互）
 #             alt=按住键盘快捷键（微信默认 Alt；VM_WECHAT_RECORD_KEY 可改键）
 RECORD_METHOD = os.environ.get("VM_WECHAT_RECORD_METHOD", "mic").strip().lower()
@@ -419,6 +422,10 @@ def _device_keyword() -> str:
     故：剥掉端点词（CABLE Input / 扬声器…）后取剩余部分做包含判断。
     """
     kw = OUTPUT_DEVICE_KEYWORD.strip().lower()
+    # 多候选（`|` 分隔）时只取**第一个**（驱动名）：本函数产出的是"剥掉端点词的中段串"，
+    # 用来判断微信遥测里的设备名是不是我们的虚拟声卡 —— 拿端点词候选去比会误判
+    # （端点词在中文系统里压根不出现，在英文系统里又是被截断的那半截）。
+    kw = kw.split("|")[0].strip()
     if not kw:
         return ""
     for tok in ("cable input", "cable output", "speaker", "speakers", "麦克风", "扬声器"):
