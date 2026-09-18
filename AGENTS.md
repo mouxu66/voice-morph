@@ -76,6 +76,16 @@
       ② **别用 `/tmp`**（MSYS 会解析成 `D:\tmp`，路径对不上就白解一场），用显式 `D:/tmp`；
       ③ 包内主进程路径是 `\electron\*.cjs`（不是 `web/electron`）；
       ④ 这一步**只换主进程 .cjs**，前端 `dist/` 与 `resources/backend/` 不受影响，别顺手覆盖。
+- **★ 改完前端只想让它「在桌面应用里生效」——一条命令**：
+  ```bash
+  cd web && npm run ship      # 构建 → 同步进安装目录 → 逐字节自检
+  ```
+  然后**完全退出应用再打开**（不是关窗口：桌宠会常驻）。底层是 `tools/ship_frontend.cjs`，
+  只做 `web/dist → 安装目录/web_dist`，**完全不碰主进程**，所以不需要重打 asar。
+  两个别再踩的点：① `tools/sync_backend.ps1` **不含** `web/dist → web_dist`（只拷 m2_server/tools），
+  别指望它同步前端；② **自动更新帮不上**——它查 GitHub Releases，而线上 Releases 为空 →
+  每次 404 静默返回，即便发版也是整套安装包替换。
+  （源码模式 `npm run electron:dev` 改完重启即生效，用不上这条。）
 - `tools/sync_backend.ps1` 与 `resources/backend/{m2_server,web_dist}` 副本：⚠️**这是源码根下的 staging 目录，不是"已安装的那份"**。已安装的桌面端只读 `%LOCALAPPDATA%\Programs\voice-morph-desktop\resources\backend`，而 `backend_autosync.py`（后端启动时自动跑，`VM_BACKEND_AUTOSYNC=0` 可关）**只写 staging、不写它** → 装好的那份会**悄悄过期**（2026-09-18 实测过一次，见 `docs/犯错指南.md` §2.34）。给已安装的那份更新必须**显式指定目标**：
   ```bash
   $dst = "$env:LOCALAPPDATA\Programs\voice-morph-desktop\resources\backend"
