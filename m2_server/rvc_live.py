@@ -602,6 +602,16 @@ def _train_progress(exp_name: str | None = None) -> dict:
     return res
 
 
+def _mentions_16ch(name: str) -> bool:
+    """名字里是否提到 VB-Audio 的 **16 通道变体**（`CABLE In 16 Ch`）。
+
+    MME 与 MMDevice 的枚举名里这一段都是英文（用户实测：
+    `CABLE In 16 Ch (VB-Audio Virtual Cable)`），所以只认英文串。
+    """
+    s = (name or "").lower()
+    return "16 ch" in s or "16ch" in s
+
+
 def _device_matches(dev_name: str, want: str) -> bool:
     """设备名模糊匹配。``want`` 可用 `|` 分隔**多个候选，任一命中即可**。
 
@@ -609,13 +619,30 @@ def _device_matches(dev_name: str, want: str) -> bool:
     配置里写完整名就永远匹配不上，所以两边都按前缀比较。
     多候选的必要性见 cascade_stream.py 的 OUTPUT_KEYWORD 处注释：
     中文系统名字完整、只有驱动名命中；英文系统名字被截断、只有端点词命中。
+
+    **16 通道变体否决**：`CABLE In 16 Ch (...)` 是同一块 VB-Audio 虚拟声卡的
+    *另一个播放端*（和「扬声器 (VB-Audio Virtual Cable)」并列出现在 Windows
+    「输出」列表里），它不在变声链路里 —— 选中它 = 声音灌进没人听的端点，
+    微信侧就是静音。危险在于本函数有 `b in a`（候选被设备名包含）这一支：
+
+    | 设备名来源 | 16Ch 的名字 | 候选 `VB-Audio Virtual Cable` |
+    |---|---|---|
+    | MME（`sd.query_devices()`） | `'CABLE In 16 Ch (VB-Audio Virtua'`（截断到 31 字符） | 匹配不上 ✅ |
+    | MMDevice（`audio_config.ps1 -action list`） | `'CABLE In 16 Ch (VB-Audio Virtual Cable)'`（完整） | **误命中** ❌ |
+
+    当前三个调用点都走 MME，所以**不会触发**；但把设备名来源换成 MMDevice
+    就会静默选错端点。所以这里按名字直接否决：**设备名带 16ch 而候选不带 → 跳过**
+    （真要选 16 通道版，把 "16 ch" 写进关键词即可）。
     """
     a = (dev_name or "").lower()
     if not a:
         return False
+    dev_is_16ch = _mentions_16ch(a)
     for cand in (want or "").split("|"):
         b = cand.strip().lower()
         if not b:
+            continue
+        if dev_is_16ch and not _mentions_16ch(b):
             continue
         if b in a or a in b or a[:28] in b or b[:28] in a:
             return True
