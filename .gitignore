@@ -42,6 +42,13 @@ tts_trial/*.wav
 # ===== 桌面控制工具的运行时产物（全分辨率截图 / UIA 树 JSON）=====
 # 只忽略 .png/.json，*.jpg 预览故意保留“可见”状态：read_files 无法读取被 ignore 的文件，
 # agent 得靠这个 jpg 才能“看到”屏幕（见 tools/desktop-control/dc.ps1 的 -Preview）。
+#
+# ⚠️【2026-09-18 提醒】正因为 jpg / _clip.txt 不受 ignore 保护，
+#   **`git add tools/desktop-control/` 或 `git add .` 会把 38 张桌面截图和剪贴板 dump
+#   一起入库并推到 GitHub**。只 add 工具本体那几个文件：
+#     git add tools/desktop-control/README.md tools/desktop-control/cdp.py \
+#             tools/desktop-control/dc.ps1 tools/desktop-control/pet.py
+#   （截图里可能有微信聊天窗口等私人内容，务必别误传。）
 tools/desktop-control/out/*.png
 tools/desktop-control/out/*.json
 web/tsconfig.tsbuildinfo
