@@ -259,13 +259,18 @@ def _tee_run(cmd: list[str], log_path: Path, cwd: Path | None = None) -> int:
 
 def _find_train_pid(voice_id: str) -> int | None:
     try:
+        # encoding 必须显式指定：PowerShell 输出编码是控制台代码页（中文 Windows =
+        # GBK），`text=True` 默认按 locale 解 —— 在 UTF-8 模式（PYTHONUTF8=1；
+        # PEP 686 计划 3.15 起默认开启）下解码失败使 stdout 变 None，
+        # 随后 `.split()` 抛 AttributeError。见 tests/test_qwen3_tts_shutdown.py 的守卫。
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
              "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
              "Where-Object { $_.CommandLine -match 'sft_8gb' } | "
              "Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, timeout=15)
-        pids = [int(l) for l in out.stdout.split() if l.strip().isdigit()]
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=15).stdout or ""
+        pids = [int(l) for l in out.split() if l.strip().isdigit()]
         return pids[0] if pids else None
     except Exception:
         return None

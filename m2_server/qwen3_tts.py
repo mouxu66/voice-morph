@@ -55,8 +55,18 @@ def _port_bound(host: str = "127.0.0.1", port: int = PORT) -> bool:
 def _pids_on_port(port: int = PORT) -> list:
     """列出正在 LISTEN 该端口的 PID。"""
     try:
+        # ⚠️ 必须显式指定 encoding。netstat 在中文 Windows 上输出 **GBK** 表头
+        # （「活动连接」= BB EE），而 `text=True` 默认按 locale 编码解码 ——
+        # 在 UTF-8 模式（PYTHONUTF8=1；PEP 686 计划 Python 3.15 起默认开启）下
+        # 解码失败 → stdout 变成 **None** → 下面 `out.splitlines()` 抛
+        # AttributeError → 本函数返回空列表 → `shutdown_worker()` 回收不了
+        # 遗留 worker（约 4.8GB 显存泄漏）。2026-09-18 实测：
+        #   cp936 环境 stdout 正常 136 行；utf-8 模式 stdout is None。
+        # 按 utf-8 解 GBK 会把中文表头变成 U+FFFD，但本函数只解析 PID 行（纯 ASCII），
+        # 不受影响；`errors="replace"` 保证任何编码都不会再抛。
         out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
-                             text=True, timeout=10, creationflags=_NO_WINDOW).stdout
+                             text=True, encoding="utf-8", errors="replace",
+                             timeout=10, creationflags=_NO_WINDOW).stdout or ""
     except Exception:
         return []
     pids = []

@@ -154,13 +154,18 @@ def _find_pids_by_cmdline(pattern: str) -> list[int]:
     统一封装 PowerShell 进程枚举，rvc_live / cascade 共用，消除重复实现。
     """
     try:
+        # encoding 必须显式指定：PowerShell 输出编码是控制台代码页（中文 Windows =
+        # GBK），`text=True` 默认按 locale 解 —— 在 UTF-8 模式（PYTHONUTF8=1；
+        # PEP 686 计划 3.15 起默认开启）下解码失败使 stdout 变 None，
+        # 随后 `.splitlines()` 抛 AttributeError，本函数会静默返回 []（找不到进程）。
+        # 见 tests/test_qwen3_tts_shutdown.py 的文本级守卫。
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
              "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
              "Where-Object { $_.CommandLine -match '%s' } | "
              "Select-Object -ExpandProperty ProcessId" % pattern],
-            capture_output=True, text=True, timeout=20,
-        ).stdout
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
+        ).stdout or ""
         return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
     except Exception as e:
         logger.warning("枚举进程失败(pattern=%r): %s", pattern, e)

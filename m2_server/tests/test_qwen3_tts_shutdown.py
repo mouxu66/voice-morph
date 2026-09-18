@@ -53,3 +53,80 @@ def test_shutdown_worker_does_not_kill_foreign_port_owner(monkeypatch):
     monkeypatch.setattr(qwen3_tts, "_kill_pid", lambda pid: killed.append(pid))
     qwen3_tts.shutdown_worker()
     assert killed == []
+
+
+# ---------------- netstat 解码：2026-09-18 实测故障（§2.33） ----------------
+
+def test_pids_on_port_survives_none_stdout(monkeypatch):
+    """netstat 解码失败（stdout 为 None）时不能抛异常，必须返回空列表。
+
+    真实故障链（2026-09-18 实测）：中文 Windows 的 netstat 输出 **GBK** 表头
+    （「活动连接」= ``BB EE``），而 `text=True` 按 locale 编码解码 ——
+    在 UTF-8 模式（``PYTHONUTF8=1``；PEP 686 计划 3.15 起默认开启）下按 utf-8 解
+    → reader 线程抛 UnicodeDecodeError（被 pytest 记成 warning、**测试照样绿**）
+    → ``subprocess.run(...).stdout`` 变成 **None**
+    → ``out.splitlines()`` 抛 AttributeError
+    → 本函数返回空 → ``shutdown_worker()`` 回收不了遗留 worker（~4.8GB 显存泄漏）。
+
+    这条守卫锁的就是最后一环：**stdout 为 None 也不能崩**。
+    """
+    class _R:
+        stdout = None
+
+    monkeypatch.setattr(qwen3_tts.subprocess, "run", lambda *a, **k: _R())
+    assert qwen3_tts._pids_on_port() == []
+
+
+def test_pids_on_port_parses_listening_rows(monkeypatch):
+    """从 netstat 输出里挑出 LISTEN 目标端口的 PID（带中文 GBK 表头也不受影响）。"""
+    sample = (
+        "\r\n活动连接\r\n\r\n"
+        "  协议  本地地址          外部地址        状态           PID\r\n"
+        "  TCP    127.0.0.1:8001         0.0.0.0:0              LISTENING       4540\r\n"
+        "  TCP    127.0.0.1:9999         0.0.0.0:0              LISTENING       1111\r\n"
+        "  TCP    127.0.0.1:8001         127.0.0.1:55000        ESTABLISHED     2222\r\n"
+    )
+
+    class _R:
+        stdout = sample
+
+    monkeypatch.setattr(qwen3_tts.subprocess, "run", lambda *a, **k: _R())
+    # 只认 LISTENING 行：9999 不是目标端口、2222 是 ESTABLISHED，都不该被收进来
+    assert qwen3_tts._pids_on_port() == [4540]
+
+
+_SYSTEM_CMDS = ("netstat", "powershell", "taskkill", "wmic", "nvidia-smi")
+
+
+def test_system_command_calls_specify_encoding():
+    """调用 Windows 系统命令的 subprocess **必须显式指定 encoding**。
+
+    这类命令的输出编码是**控制台代码页**（中文 Windows = GBK），
+    **不受 PYTHONUTF8 影响**；而 `text=True` 默认按
+    ``locale.getpreferredencoding()`` 解码 —— UTF-8 模式下就是 utf-8，于是解不开。
+    实测对照：cp936 环境 stdout 正常 136 行；``PYTHONUTF8=1`` 环境 stdout 变 None。
+
+    这是一条**文本级**守卫（比行为测试脆弱），但它拦的是"新写一处系统命令调用
+    又忘了 encoding" —— 那种改动不会有任何行为测试覆盖到（要等真出故障才发现）。
+    只检查 ``text=True`` 的调用：bytes 模式不解码，本来就不会踩这个坑。
+    """
+    bad: list[str] = []
+    for path in sorted(_ROOT.glob("*.py")):
+        lines = path.read_text("utf-8").splitlines()
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue  # 注释里提到命令名（如本条故障说明）不算
+            if not any(c in line for c in _SYSTEM_CMDS):
+                continue
+            window = "\n".join(lines[max(0, i - 4): i + 5])
+            if "subprocess." not in window:
+                continue  # 不是在起子进程
+            if "text=True" not in window:
+                continue  # bytes 模式，不解码
+            if "encoding=" not in window:
+                bad.append(f"{path.name}:{i + 1}: {stripped}")
+    assert not bad, (
+        "以下调用 Windows 系统命令却没指定 encoding —— 在 UTF-8 模式下会解码失败、"
+        "stdout 变 None，随后 .splitlines() 抛 AttributeError：\n  " + "\n  ".join(bad)
+    )

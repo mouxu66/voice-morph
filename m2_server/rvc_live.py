@@ -204,7 +204,7 @@ def _nvidia_smi(query: str) -> list[str] | None:
     try:
         out = subprocess.run(
             ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3,
         )
         if out.returncode != 0:
             return None
@@ -392,8 +392,8 @@ def _find_realtime_pids() -> list[int]:
              "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
              "Where-Object { $_.CommandLine -match 'realtime_gui|rvc_headless' } | "
              "Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, timeout=20,
-        ).stdout
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
+        ).stdout or ""
         pids = [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
     except Exception as e:
         logger.warning("[realtime] 枚举实时变声进程失败（状态可能失真）: %s", e)
@@ -779,8 +779,8 @@ def _find_monitor_pids() -> list[int]:
              "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
              "Where-Object { $_.CommandLine -match 'rvc_monitor' } | "
              "Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, timeout=20,
-        ).stdout
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
+        ).stdout or ""
         return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
     except Exception as e:
         logger.warning("[monitor] 枚举监听回环进程失败: %s", e)

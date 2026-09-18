@@ -183,6 +183,19 @@ def test_perf_get_endpoint(monkeypatch):
 def test_perf_set_valid_idle(monkeypatch):
     """变声未运行：只落盘，不触发重启。"""
     monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: False)
+    # ⚠️ 必须 mock `_sync_worker_for_profile`：它内部会 `qwen3_tts.worker_alive()`
+    # （HTTP 探 8001），**真的活着就调 `shutdown_worker()` 去杀进程**
+    # （`_pids_on_port` 列出端口 PID → `_is_our_worker` → `_kill_pid`）。
+    # 也就是说：跑这条单测会**杀掉用户真实在跑的 TTS worker** ——
+    # 与 §2.24「跑单测往用户真实历史里塞假记录」同类的测试污染真实环境。
+    # 这里只关心"档位切换是否落盘 / 是否重启变声"，worker 卸载不是它的关注点。
+    monkeypatch.setattr(rvc_live, "_sync_worker_for_profile", lambda p: False)
+    # ⚠️ 也必须 mock `_gpu_snapshot`：`rvc_live_profile_set` 的响应里带显存字段，
+    # 不 mock 就会真跑 `nvidia-smi` × 3 + 一次 PowerShell（`_find_realtime_pids`）——
+    # 慢、依赖机器状态，而且那些系统命令的输出按 GBK 来、父进程在 UTF-8 模式下
+    # 按 UTF-8 解 → daemon 线程里抛 UnicodeDecodeError 被吞掉，测试照样绿（假绿）。
+    # 同文件 `test_perf_get_endpoint` 一直是 mock 的。
+    monkeypatch.setattr(rvc_live, "_gpu_snapshot", lambda: dict(_GPU_SNAP))
     r = rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="game"))
     assert r["ok"] is True
     assert r["profile"] == "game"
@@ -205,6 +218,10 @@ def test_perf_set_running_restarts_with_game_flags(monkeypatch):
     monkeypatch.setattr(rvc_live, "_active_exp", lambda: "kangaroo")
     monkeypatch.setattr(rvc_live, "rvc_live_stop", lambda: calls.append("stop"))
     monkeypatch.setattr(rvc_live, "rvc_live_start", lambda *a, **k: calls.append(k))
+    # 同上：不 mock 会真去探 8001、真活着就 shutdown_worker() 杀进程
+    monkeypatch.setattr(rvc_live, "_sync_worker_for_profile", lambda p: False)
+    # 同上：不 mock 会真跑 nvidia-smi + PowerShell，并在线程里抛解码异常被吞掉
+    monkeypatch.setattr(rvc_live, "_gpu_snapshot", lambda: dict(_GPU_SNAP))
     r = rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="game"))
     assert r["restarted"] is True
     assert live_settings.get()["perf_profile"] == "game"
