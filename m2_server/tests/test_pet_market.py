@@ -11,6 +11,7 @@
 """
 import json
 import time
+import warnings
 import zipfile
 
 import pytest
@@ -19,12 +20,59 @@ import pet_market
 from pet_market import PetMarketError
 
 
+def _drain_install_queue(timeout: float = 10.0) -> None:
+    """等 worker 收尾，然后把模块级安装队列状态**强制归零**（跨用例隔离用）。
+
+    为什么必须显式复位（2026-09-18 实测）：`_TASKS` / `_QUEUE` / `_ALL_IDS` /
+    `_RUNNING` 都是**模块全局**，`monkeypatch` 不会帮你复位。而 `_install_worker`
+    是**先把任务标成终结态、再**在 `finally` 里 `_RUNNING -= 1`，中间还隔着一次
+    `shutil.rmtree`。上一条用例用 `while is_busy()` 收尾时，`is_busy()` 只看任务状态、
+    看不到 `_RUNNING`，于是循环一退出就进下一条用例 —— 此刻 `_RUNNING` 还是 1。
+    下一条用例把 `MAX_CONCURRENT_INSTALLS` 设成 1，`_kick()` 的
+    `_RUNNING < MAX_CONCURRENT_INSTALLS` 直接不成立 → worker 永不启动，任务永远停在
+    `queued`。实测症状：`test_install_queue_two_then_both_done` 报
+    `AssertionError: {'pixel-cat': 'queued', 'pixel-capybara': 'queued'}`，
+    紧随其后的 `test_cancel_queued_task` 再报 `「pixel-cat」已在任务中` ——
+    **一次失败被放大成一串**，而且单跑那两条用例都是绿的（只在同文件连跑时复现）。
+    """
+    deadline = time.time() + timeout
+    # 只等 **worker 线程**收尾（`_RUNNING > 0`），不等任务终结 ——
+    # 本文件有几条用例（如 `test_busy_counts_queued_task`）故意把任务留在
+    # 排队/下载态来断言 `is_busy()`，等"全部终结"会白等满超时。
+    # 残留的**任务记录**下面直接清掉即可，真正会跨用例作乱的是线程和 `_RUNNING`。
+    while time.time() < deadline and pet_market._RUNNING > 0:
+        time.sleep(0.02)
+    if pet_market._RUNNING > 0:
+        # 别静默吞掉：worker 卡住时下一条用例只会以"任务永远 queued"的形式失败，
+        # 完全看不出真因。这里发一条 pytest 警告把 `_RUNNING` 的值和怀疑对象写出来。
+        # 实测触发场景：沙箱/杀软的删除守卫把 worker `finally` 里的 `shutil.rmtree`
+        # 卡住（`[safe-delete] SAFE_DELETE_BULK_CONFIRM_REQUIRED`），线程收不了尾。
+        warnings.warn(
+            f"pet_market 安装 worker 未在 {timeout}s 内收尾"
+            f"（_RUNNING={pet_market._RUNNING}）。多半是上一条用例留下了一个卡住的"
+            " worker 线程（例如 shutil.rmtree 被安全删除守卫拦住）。"
+            "本 fixture 只能清任务表、**不能**改写 `_RUNNING`（强置 0 会被仍在跑的"
+            " worker 收尾时压成负数，让 _kick() 一次放出超并发上限的 worker），"
+            "所以下一条用例可能以「任务永远 queued」的形式失败。",
+            stacklevel=2,
+        )
+    with pet_market._TASK_LOCK:
+        pet_market._TASKS.clear()
+        pet_market._QUEUE.clear()
+        pet_market._ALL_IDS.clear()
+
+
 @pytest.fixture()
 def iso(tmp_path, monkeypatch):
-    """把 pet_market 的输出目录/状态文件切到 tmp，避免碰真实 outputs。"""
+    """把 pet_market 的输出目录/状态文件切到 tmp，避免碰真实 outputs。
+
+    同时保证**两条用例之间安装队列是干净的**（见 `_drain_install_queue`）。
+    """
     monkeypatch.setattr(pet_market, "PET_SKINS_DIR", tmp_path / "pet-skins")
     monkeypatch.setattr(pet_market, "STATE_FILE", tmp_path / "pet-skins" / "state.json")
-    return pet_market
+    _drain_install_queue()
+    yield pet_market
+    _drain_install_queue()
 
 
 def test_manifest_has_licensed_items(iso):
@@ -194,8 +242,16 @@ def test_install_queue_two_then_both_done(iso, tmp_path, monkeypatch, ffmpeg_bin
     try:
         iso.install("pixel-cat")
         iso.install("pixel-capybara")
-        time.sleep(0.2)                        # 等 worker 进入下载/转换态
-        items = {t["skin_id"]: t["status"] for t in iso.progress()["items"]}
+        # 轮询等 worker 真的进入下载/转换态。别用固定 `time.sleep(0.2)`：
+        # 机器一忙（整套用例连跑、CI 上并发）这个窗口就不够，
+        # 而失败形态是"两个都还 queued"——看不出是等得不够还是队列坏了。
+        deadline = time.time() + 10
+        items: dict = {}
+        while time.time() < deadline:
+            items = {t["skin_id"]: t["status"] for t in iso.progress()["items"]}
+            if items.get("pixel-cat") in ("downloading", "installing"):
+                break
+            time.sleep(0.02)
         assert items["pixel-cat"] in ("downloading", "installing"), items
         assert items["pixel-capybara"] == "queued", items    # 第二个在排队
         deadline = time.time() + 60
