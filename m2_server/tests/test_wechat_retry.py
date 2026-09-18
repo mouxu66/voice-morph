@@ -213,7 +213,13 @@ def test_do_send_persists_env_warning(monkeypatch, tmp_path):
     monkeypatch.setattr(wv, "_wait_play_done", lambda p, d: None)
     monkeypatch.setattr(wv, "_trigger_record", lambda *a, **k: None)
     monkeypatch.setattr(wv, "_finish_record", lambda: True)
-    monkeypatch.setattr(wv, "_restore_async", lambda: None)
+    # ⚠️ 必须**带参**：真实签名是 `_restore_async(history_file=None)`，调用点
+    # （wechat_voice.py 的 `Thread(target=_restore_async, args=(HISTORY_FILE,))`）
+    # 会传一个位置参数。写成 `lambda: None` 会让线程里抛
+    # `TypeError: <lambda>() takes 0 positional arguments but 1 was given` ——
+    # 而异常发生在 daemon 线程里，**只产生 warning、测试照样绿**（假绿）。
+    # 2026-09-18 用 `-W error::pytest.PytestUnhandledThreadExceptionWarning` 才把它逼出来。
+    monkeypatch.setattr(wv, "_restore_async", lambda history_file=None: None)
     monkeypatch.setattr(wv, "_foreground_wechat", lambda: 1)
     monkeypatch.setattr(wv, "_ensure_onscreen", lambda h: None)
     monkeypatch.setattr(wv, "_window_rect", lambda h: (0, 0, 100, 100))
