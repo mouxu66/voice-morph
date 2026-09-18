@@ -23,7 +23,7 @@ export function TtsChainCard(p: {
     <section className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">TTS CHAIN</p>
+          <p className="text-xs font-medium text-primary">合成链路</p>
           <h3 className="mt-1 flex items-center gap-2 text-lg font-semibold text-card-foreground">
             <AudioLines className="h-4 w-4 text-primary" />
             输字变声链路自检

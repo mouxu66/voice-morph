@@ -23,6 +23,7 @@ import {
 } from "lucide-react"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useLive } from "@/pages/Live/useLive"
+import { PageShell } from "@/components/layout/PageShell"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { EffectLadderCard } from "@/components/EffectLadderCard"
 import { ChainResultList } from "@/components/ChainResultList"
@@ -164,26 +165,17 @@ export function LivePage(p: ReturnType<typeof useLive>) {
 
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
-      <header className="border-b border-border bg-card/30 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
-        <div className="mx-auto max-w-7xl">
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">REALTIME / VOICE CHANGER</p>
-          <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">实时变声</h2>
-          <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-            选一个音色 → 给它训练 RVC 模型 → 一键开启实时变声。开启后系统录音会自动切到虚拟声卡，
-            微信/游戏里说出来的就是该音色的声音；停止后自动还原设备。
-          </p>
-          <div className="mt-5 flex flex-wrap items-center gap-2">
-            <StatusBadge ok={Boolean(p.voicesInfo?.rvc_ready)} tone="warn">
-              RVC 环境{p.voicesInfo?.rvc_ready ? "已就绪" : "未就绪"}
-            </StatusBadge>
-            <StatusBadge ok={Boolean(voiceName)}>{voiceName ? `当前音色：${voiceName}` : "未选择音色"}</StatusBadge>
-            <StatusBadge ok={p.modelOk}>RVC 模型{p.modelOk ? "已就绪" : "未训练"}</StatusBadge>
-            <StatusBadge ok={p.liveOn}>实时{p.liveOn ? "运行中" : "未启动"}</StatusBadge>
-          </div>
+      <PageShell className="space-y-8">
+        {/* 原页内 hero 的说明文案与 44px 大标题已去掉（顶栏已承载页面名，
+            页面内再写一遍就是三层重复）；只保留四枚有信息量的状态徽章。 */}
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusBadge ok={Boolean(p.voicesInfo?.rvc_ready)} tone="warn">
+            RVC 环境{p.voicesInfo?.rvc_ready ? "已就绪" : "未就绪"}
+          </StatusBadge>
+          <StatusBadge ok={Boolean(voiceName)}>{voiceName ? `当前音色：${voiceName}` : "未选择音色"}</StatusBadge>
+          <StatusBadge ok={p.modelOk}>RVC 模型{p.modelOk ? "已就绪" : "未训练"}</StatusBadge>
+          <StatusBadge ok={p.liveOn}>实时{p.liveOn ? "运行中" : "未启动"}</StatusBadge>
         </div>
-      </header>
-
-      <main className="mx-auto max-w-7xl space-y-8 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
         {p.voicesInfo && !p.voicesInfo.rvc_ready && (
           <p className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs leading-5 text-amber-500">
             <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
@@ -260,7 +252,7 @@ export function LivePage(p: ReturnType<typeof useLive>) {
         <section className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="min-w-0">
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">PERFORMANCE</p>
+              <p className="text-xs font-medium text-primary">性能模式</p>
               <h3 className="mt-1 flex items-center gap-2 text-lg font-semibold text-card-foreground">
                 <Gauge className="h-4 w-4 text-primary" />
                 性能模式
@@ -346,7 +338,7 @@ export function LivePage(p: ReturnType<typeof useLive>) {
           <section id="live-sendchain" className="scroll-mt-6 rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0">
-                <p className="font-mono text-xs uppercase tracking-widest text-primary">SEND CHAIN</p>
+                <p className="text-xs font-medium text-primary">发送链路</p>
                 <h3 className="mt-1 flex items-center gap-2 text-lg font-semibold text-card-foreground">
                   <AudioLines className="h-4 w-4 text-primary" />
                   音频发送链路自检
@@ -396,7 +388,7 @@ export function LivePage(p: ReturnType<typeof useLive>) {
         <section>
           <div className="mb-3 flex items-end justify-between gap-3">
             <div>
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">01 / 选音色</p>
+              <p className="text-xs font-medium text-primary">01 / 选音色</p>
               <h3 className="mt-1 text-lg font-semibold text-card-foreground">用哪个音色变声</h3>
             </div>
             <p className="hidden text-xs text-muted-foreground sm:block">
@@ -415,7 +407,7 @@ export function LivePage(p: ReturnType<typeof useLive>) {
           {/* 02 变声控制台 */}
           <section className="flex flex-col gap-4 rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
             <div>
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">02 / 变声</p>
+              <p className="text-xs font-medium text-primary">02 / 变声</p>
               <h3 className="mt-1 flex items-center gap-2 text-lg font-semibold text-card-foreground">
                 <Radio className={cn("h-4 w-4", p.liveOn ? "animate-pulse text-primary" : "text-primary")} />
                 实时变声控制台
@@ -576,7 +568,7 @@ export function LivePage(p: ReturnType<typeof useLive>) {
 
           {/* 03 训练流水线 */}
           <section className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">03 / 训练</p>
+            <p className="text-xs font-medium text-primary">03 / 训练</p>
             <h3 className="mt-1 flex items-center gap-2 text-lg font-semibold text-card-foreground">
               <Mic2 className="h-4 w-4 text-primary" />
               {voiceName ? `为「${voiceName}」准备模型` : "准备模型"}
@@ -793,7 +785,7 @@ export function LivePage(p: ReturnType<typeof useLive>) {
                 p.feedback.tone === "ok" && "border-emerald-500/30 bg-emerald-500/10 text-emerald-600",
                 p.feedback.tone === "info" && "border-border bg-card/70 text-card-foreground")}>{p.feedback.text}</p>
         )}
-      </main>
+      </PageShell>
     </div>
   )
 }

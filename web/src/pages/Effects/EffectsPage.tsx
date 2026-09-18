@@ -148,7 +148,7 @@ export function EffectsPage(p: ReturnType<typeof useEffects>) {
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
       <header className="border-b border-border bg-card/30 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
         <div className="mx-auto max-w-7xl">
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">EFFECTS / DSP STUDIO</p>
+          <p className="text-xs font-medium text-primary">特效工坊</p>
           <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
             效果器工坊
           </h2>
@@ -162,7 +162,7 @@ export function EffectsPage(p: ReturnType<typeof useEffects>) {
       <main className="mx-auto max-w-7xl space-y-8 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
         {/* 01 音频源 */}
         <section>
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">01 / 音频源</p>
+          <p className="text-xs font-medium text-primary">01 / 音频源</p>
           <div className="mt-3 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
             <label className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border bg-card/50 px-6 py-10 text-center transition hover:border-primary/60">
               <AudioWaveform className="h-8 w-8 text-primary" />
@@ -193,7 +193,7 @@ export function EffectsPage(p: ReturnType<typeof useEffects>) {
         <section>
           <div className="flex items-end justify-between gap-3">
             <div>
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">02 / 效果链</p>
+              <p className="text-xs font-medium text-primary">02 / 效果链</p>
               <h3 className="mt-1 text-lg font-semibold text-card-foreground">按顺序叠加效果</h3>
             </div>
             {p.chain.length > 0 && (
@@ -273,7 +273,7 @@ export function EffectsPage(p: ReturnType<typeof useEffects>) {
         <section className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">03 / 应用与对比</p>
+              <p className="text-xs font-medium text-primary">03 / 应用与对比</p>
               <h3 className="mt-1 text-lg font-semibold text-card-foreground">生成并试听</h3>
             </div>
             <button
@@ -313,7 +313,7 @@ export function EffectsPage(p: ReturnType<typeof useEffects>) {
 
         {/* 04 预设 */}
         <section>
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">04 / 效果预设</p>
+          <p className="text-xs font-medium text-primary">04 / 效果预设</p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <input
               type="text"

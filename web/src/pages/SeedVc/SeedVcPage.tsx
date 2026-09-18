@@ -22,7 +22,7 @@ export function SeedVcPage(p: ReturnType<typeof useSeedVc>) {
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
       <header className="border-b border-border bg-card/30 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
         <div className="mx-auto max-w-7xl">
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">STAGE 07 / EXPRESSIVE VOICE CHANGE</p>
+          <p className="text-xs font-medium text-primary">表现力变声</p>
           <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">表达力变声（Seed-VC）</h2>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
             零样本换声：给一段目标参考音即可变声，无需训练。相比 RVC 只保音高，Seed-VC 能
@@ -34,7 +34,7 @@ export function SeedVcPage(p: ReturnType<typeof useSeedVc>) {
       <main className="mx-auto grid max-w-7xl gap-10 px-5 py-10 sm:px-8 lg:grid-cols-[minmax(0,1.6fr)_360px] lg:px-12 lg:py-14">
         <section className="space-y-8">
           <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">第一步 · 准备音频</p>
+            <p className="text-xs font-medium text-primary">第一步 · 准备音频</p>
             <h3 className="mt-2 text-lg font-semibold text-card-foreground">录音或导入要变声的音频</h3>
 
             <div className="mt-5 flex flex-wrap items-center gap-3">
@@ -72,7 +72,7 @@ export function SeedVcPage(p: ReturnType<typeof useSeedVc>) {
             )}
 
             <div className="mt-8 border-t border-border pt-6">
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">第二步 · 目标音色</p>
+              <p className="text-xs font-medium text-primary">第二步 · 目标音色</p>
               <h3 className="mt-2 text-lg font-semibold text-card-foreground">零样本，给参考音即可</h3>
 
               <div className="mt-4 flex flex-wrap items-center gap-4 text-xs">
@@ -124,7 +124,7 @@ export function SeedVcPage(p: ReturnType<typeof useSeedVc>) {
             </div>
 
             <div className="mt-8 border-t border-border pt-6">
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">第三步 · 表达力</p>
+              <p className="text-xs font-medium text-primary">第三步 · 表达力</p>
               <h3 className="mt-2 text-lg font-semibold text-card-foreground">情绪与相似度</h3>
 
               <label className="mt-4 flex cursor-pointer items-start gap-2 text-sm text-card-foreground">
@@ -222,7 +222,7 @@ export function SeedVcPage(p: ReturnType<typeof useSeedVc>) {
             <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <p className="font-mono text-xs uppercase tracking-widest text-primary">转换结果</p>
+                  <p className="text-xs font-medium text-primary">转换结果</p>
                   <h3 className="mt-2 text-lg font-semibold text-card-foreground">变声完成 · 全长 {st.duration_s}s</h3>
                 </div>
                 <a href={p.resultUrl} download={`seedvc-${st.target}.wav`}
@@ -236,8 +236,8 @@ export function SeedVcPage(p: ReturnType<typeof useSeedVc>) {
         </section>
 
         <section>
-          <div className="sticky top-24 rounded-2xl border border-border bg-card p-5 shadow-lg sm:p-6">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">使用提示</p>
+          <div className="sticky top-[116px] lg:top-24 rounded-2xl border border-border bg-card p-5 shadow-lg sm:p-6">
+            <p className="text-xs font-medium text-primary">使用提示</p>
             <h3 className="mt-2 text-xl font-semibold text-card-foreground">小贴士</h3>
             <ul className="mt-5 space-y-3 text-xs leading-6 text-muted-foreground">
               <li className="rounded-lg border border-border bg-background/60 p-3">零样本：目标参考音 5–25s 即可，不需要像 RVC 那样先训练。</li>

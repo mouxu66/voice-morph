@@ -38,7 +38,7 @@ export function RvcDatasetCard() {
     <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">RVC MODEL</p>
+          <p className="text-xs font-medium text-primary">RVC 模型</p>
           <h3 className="mt-2 text-lg font-semibold text-card-foreground">实时变声模型</h3>
         </div>
         <div className="text-right">

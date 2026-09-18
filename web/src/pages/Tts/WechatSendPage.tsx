@@ -12,6 +12,7 @@ import {
   Wand2,
 } from "lucide-react"
 import { Link } from "react-router-dom"
+import { PageShell } from "@/components/layout/PageShell"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { mediaUrl } from "@/api/client"
@@ -35,26 +36,15 @@ export function WechatSendPage(p: ReturnType<typeof useWechatSend>) {
 
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
-      <header className="border-b border-border bg-card/30 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
-        <div className="mx-auto max-w-7xl">
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">STAGE 06 / WECHAT SEND</p>
-          <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
-            微信语音发送
-          </h2>
-          <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-            把合成好的变声语音直接灌进 PC 微信的语音条（微信 4.1.9+）。三档路径：全自动模拟按键发送、
-            半自动虚拟声卡播放、手动实时变声。发送前请先打开微信的目标聊天窗口。
-          </p>
-        </div>
-      </header>
+      
 
-      <main className="mx-auto grid max-w-7xl gap-10 px-5 py-10 sm:px-8 lg:grid-cols-[minmax(0,1.6fr)_360px] lg:px-12 lg:py-14">
+      <PageShell className="grid gap-10 lg:grid-cols-[minmax(0,1.6fr)_360px]">
         <section className="space-y-8">
           {/* 发送内容 */}
           <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <p className="font-mono text-xs uppercase tracking-widest text-primary">发送内容</p>
+                <p className="text-xs font-medium text-primary">发送内容</p>
                 <h3 className="mt-2 text-lg font-semibold text-card-foreground">最近一次合成产物</h3>
               </div>
               <button
@@ -90,7 +80,7 @@ export function WechatSendPage(p: ReturnType<typeof useWechatSend>) {
 
           {/* 发送方式 */}
           <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">发送方式</p>
+            <p className="text-xs font-medium text-primary">发送方式</p>
             <h3 className="mt-2 text-lg font-semibold text-card-foreground">三档路径，按需选择</h3>
 
             {/* 预热进度：模型常驻化后才能快，讲清楚「第一次为什么慢」 */}
@@ -245,8 +235,8 @@ export function WechatSendPage(p: ReturnType<typeof useWechatSend>) {
 
         {/* 发送历史 */}
         <section>
-          <div className="sticky top-24 rounded-2xl border border-border bg-card p-5 shadow-lg sm:p-6">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">发送历史</p>
+          <div className="sticky top-[116px] lg:top-24 rounded-2xl border border-border bg-card p-5 shadow-lg sm:p-6">
+            <p className="text-xs font-medium text-primary">发送历史</p>
             <h3 className="mt-2 flex items-center gap-2 text-xl font-semibold text-card-foreground">
               <MessageCircle className="h-4 w-4 text-primary" />
               {p.history.length ? `${p.history.length} 条` : "待发送"}
@@ -288,7 +278,7 @@ export function WechatSendPage(p: ReturnType<typeof useWechatSend>) {
             )}
           </div>
         </section>
-      </main>
+      </PageShell>
     </div>
   )
 }

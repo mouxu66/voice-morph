@@ -711,7 +711,7 @@ function RepoFilePanel({ p }: { p: VoiceMarket }) {
               </div>
             )}
             <div>
-              <p className="mb-2 font-mono text-xs uppercase tracking-widest text-primary">权重文件（.pth，必选）</p>
+              <p className="mb-2 text-xs font-medium text-primary">权重文件（.pth，必选）</p>
               {pthFiles.length === 0 ? (
                 <p className="text-xs text-muted-foreground">仓库顶层没有 .pth 文件，可能放在子目录（尚未递归展开）或需要 zip 解压。</p>
               ) : (
@@ -723,7 +723,7 @@ function RepoFilePanel({ p }: { p: VoiceMarket }) {
               )}
             </div>
             <div>
-              <p className="mb-2 font-mono text-xs uppercase tracking-widest text-primary">索引文件（.index，可选 · 实时变声更稳）</p>
+              <p className="mb-2 text-xs font-medium text-primary">索引文件（.index，可选 · 实时变声更稳）</p>
               {idxFiles.length === 0 ? (
                 <p className="text-xs text-muted-foreground">仓库顶层没有 .index 文件，可跳过（仅影响实时变声检索精度）。</p>
               ) : (
@@ -743,7 +743,7 @@ function RepoFilePanel({ p }: { p: VoiceMarket }) {
 
           <aside className="space-y-4">
             <div className="rounded-xl border border-border bg-gradient-to-br from-primary/10 via-card to-card p-4">
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">一键安装</p>
+              <p className="text-xs font-medium text-primary">一键安装</p>
               {finalId ? (
                 <>
                   <label className="mt-2 block text-[11px] font-medium text-muted-foreground" htmlFor="voice-id-input">

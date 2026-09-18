@@ -45,7 +45,7 @@ export function FtPage(props: ReturnType<typeof useFt>) {
     <div className="mx-auto max-w-4xl px-5 py-8 sm:px-8">
       <div className="flex items-end justify-between gap-4">
         <div>
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">FINETUNE STUDIO</p>
+          <p className="text-xs font-medium text-primary">微调工坊</p>
           <h2 className="mt-1 font-display text-xl font-semibold">音色微调工坊</h2>
           <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
             朗读一篇短句（约 12~15 分钟），训练出「音色 + 说话习惯」都属于你的专属音色——比 3 秒克隆更像本人。全程本地训练，约 20~40 分钟。

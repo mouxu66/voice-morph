@@ -25,7 +25,7 @@ export function AudiobookPage(p: ReturnType<typeof useAudiobook>) {
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
       <header className="border-b border-border bg-card/30 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
         <div className="mx-auto max-w-7xl">
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">STAGE 05 / AUDIOBOOK</p>
+          <p className="text-xs font-medium text-primary">有声书</p>
           <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">有声书工作台</h2>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
             粘贴长文或导入 SRT 字幕，选一个音色逐句合成并自动拼接成完整音频；SRT 会按时间轴保留原节奏，支持逐句试听。
@@ -38,7 +38,7 @@ export function AudiobookPage(p: ReturnType<typeof useAudiobook>) {
           <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <p className="font-mono text-xs uppercase tracking-widest text-primary">任务输入</p>
+                <p className="text-xs font-medium text-primary">任务输入</p>
                 <h3 className="mt-2 text-lg font-semibold text-card-foreground">长文 / SRT → 有声书</h3>
               </div>
               {p.text.trim() && (
@@ -172,7 +172,7 @@ export function AudiobookPage(p: ReturnType<typeof useAudiobook>) {
             <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <p className="font-mono text-xs uppercase tracking-widest text-primary">成品</p>
+                  <p className="text-xs font-medium text-primary">成品</p>
                   <h3 className="mt-2 text-lg font-semibold text-card-foreground">拼接完成 · 全长 {st.duration_s}s</h3>
                 </div>
                 <a
@@ -189,8 +189,8 @@ export function AudiobookPage(p: ReturnType<typeof useAudiobook>) {
         </section>
 
         <section>
-          <div className="sticky top-24 rounded-2xl border border-border bg-card p-5 shadow-lg sm:p-6">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">逐句明细</p>
+          <div className="sticky top-[116px] lg:top-24 rounded-2xl border border-border bg-card p-5 shadow-lg sm:p-6">
+            <p className="text-xs font-medium text-primary">逐句明细</p>
             <h3 className="mt-2 flex items-center gap-2 text-xl font-semibold text-card-foreground">
               <ListMusic className="h-4 w-4 text-primary" />{st?.segments.length ? `${st.segments.length} 句` : "待合成"}
             </h3>

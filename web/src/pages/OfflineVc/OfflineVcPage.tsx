@@ -15,6 +15,7 @@ import { useState } from "react"
 import { Link } from "react-router-dom"
 import { mediaUrl } from "@/api/client"
 import { downloadUrl } from "@/lib/download"
+import { PageShell } from "@/components/layout/PageShell"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import type { useOfflineVc } from "@/pages/OfflineVc/useOfflineVc"
@@ -56,20 +57,12 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
 
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
-      <header className="border-b border-border bg-card/30 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
-        <div className="mx-auto max-w-7xl">
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">STAGE 06 / OFFLINE VOICE CHANGE</p>
-          <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">离线变声工作台</h2>
-          <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-            录一段音或导入音频文件，选好目标音色，整段离线转换后导出 48kHz wav——质量比实时变声更稳，适合后期配音。
-          </p>
-        </div>
-      </header>
+      
 
-      <main className="mx-auto grid max-w-7xl gap-10 px-5 py-10 sm:px-8 lg:grid-cols-[minmax(0,1.6fr)_360px] lg:px-12 lg:py-14">
+      <PageShell className="grid gap-10 lg:grid-cols-[minmax(0,1.6fr)_360px]">
         <section className="space-y-8">
           <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">第一步 · 准备音频</p>
+            <p className="text-xs font-medium text-primary">第一步 · 准备音频</p>
             <h3 className="mt-2 text-lg font-semibold text-card-foreground">录音或导入文件</h3>
 
             <div className="mt-5 flex flex-wrap items-center gap-3">
@@ -107,7 +100,7 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
             )}
 
             <div className="mt-8 border-t border-border pt-6">
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">第二步 · 转换设置</p>
+              <p className="text-xs font-medium text-primary">第二步 · 转换设置</p>
               <h3 className="mt-2 text-lg font-semibold text-card-foreground">目标音色与参数</h3>
 
               <div className="mt-4 flex flex-wrap items-center gap-2 rounded-md border border-border bg-background/50 px-3 py-2.5">
@@ -303,7 +296,7 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
             <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="font-mono text-xs uppercase tracking-widest text-primary">批量队列</p>
+                  <p className="text-xs font-medium text-primary">批量队列</p>
                   <h3 className="mt-2 text-lg font-semibold text-card-foreground">
                     {p.queue.filter((it) => it.status === "done").length}/{p.queue.length} 已完成
                     <span className="ml-2 text-xs font-normal text-muted-foreground">统一使用上方音色与参数，逐个转换</span>
@@ -374,7 +367,7 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
             <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <p className="font-mono text-xs uppercase tracking-widest text-primary">转换结果</p>
+                  <p className="text-xs font-medium text-primary">转换结果</p>
                   <h3 className="mt-2 text-lg font-semibold text-card-foreground">变声完成 · 全长 {st.duration_s}s</h3>
                 </div>
                 <a href={p.resultUrl} download={`offlinevc-${st.voice_id}.wav`}
@@ -393,8 +386,8 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
         </section>
 
         <section>
-          <div className="sticky top-24 rounded-2xl border border-border bg-card p-5 shadow-lg sm:p-6">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">使用提示</p>
+          <div className="sticky top-[116px] lg:top-24 rounded-2xl border border-border bg-card p-5 shadow-lg sm:p-6">
+            <p className="text-xs font-medium text-primary">使用提示</p>
             <h3 className="mt-2 text-xl font-semibold text-card-foreground">小贴士</h3>
             <ul className="mt-5 space-y-3 text-xs leading-6 text-muted-foreground">
               <li className="rounded-lg border border-border bg-background/60 p-3">录音时离麦克风 20–30cm，环境噪音大就开着「输入降噪」。</li>
@@ -404,7 +397,7 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
             </ul>
           </div>
         </section>
-      </main>
+      </PageShell>
     </div>
   )
 }

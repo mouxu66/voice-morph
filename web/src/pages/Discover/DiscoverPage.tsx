@@ -49,10 +49,10 @@ export function DiscoverPage() {
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
       <header className="border-b border-border bg-card/30 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
         <div className="mx-auto max-w-7xl">
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">STAGE 01.5 / VOICE DISCOVERY</p>
+          <p className="text-xs font-medium text-primary">STAGE 01.5 / VOICE DISCOVERY</p>
           <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
             发掘音色
-            <span className="ml-3 rounded-full border border-primary/40 bg-primary/10 px-3 py-1 align-middle font-mono text-xs font-medium text-primary">AUTO</span>
+            <span className="ml-3 rounded-full border border-primary/40 bg-primary/10 px-3 py-1 align-middle font-mono text-xs font-medium text-primary">自动</span>
           </h2>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
             声音无处不在：一段视频、一首歌的间隙、刷到的短视频。发掘音色把「听到 → 拥有」压缩成一次点击：
@@ -66,7 +66,7 @@ export function DiscoverPage() {
         <section>
           <div className="mb-5 flex items-end justify-between">
             <div>
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">SOURCES</p>
+              <p className="text-xs font-medium text-primary">音源</p>
               <h3 className="mt-2 text-2xl font-semibold text-foreground">四种音源，殊途同归</h3>
             </div>
           </div>
@@ -97,7 +97,7 @@ export function DiscoverPage() {
         {/* 自动链路 */}
         <section>
           <div className="mb-5">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">PIPELINE</p>
+            <p className="text-xs font-medium text-primary">流水线</p>
             <h3 className="mt-2 text-2xl font-semibold text-foreground">抓来之后，交给流水线</h3>
             <p className="mt-1.5 text-sm text-muted-foreground">从原始声音到候选音色，四步全自动，全程本地处理。</p>
           </div>
@@ -131,7 +131,7 @@ export function DiscoverPage() {
         {/* 质量说明 */}
         <section className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
           <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-md sm:p-6">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">QUALITY</p>
+            <p className="text-xs font-medium text-primary">音质</p>
             <h3 className="mt-2 text-lg font-semibold text-card-foreground">为什么内录比麦克风更值得用？</h3>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/5 p-4">
@@ -162,7 +162,7 @@ export function DiscoverPage() {
           </div>
           <div className="space-y-4">
             <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-md">
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">TIPS</p>
+              <p className="text-xs font-medium text-primary">小贴士</p>
               <h4 className="mt-2 text-sm font-semibold text-card-foreground">挖得准的三个习惯</h4>
               <ol className="mt-3 space-y-2 text-xs leading-5 text-muted-foreground">
                 <li className="flex gap-2"><span className="font-mono text-primary">1</span>素材里只有一个人说话时效果最好；多人视频挖完记得筛掉别人的候选。</li>
@@ -171,7 +171,7 @@ export function DiscoverPage() {
               </ol>
             </div>
             <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-md">
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">PRIVACY</p>
+              <p className="text-xs font-medium text-primary">隐私</p>
               <h4 className="mt-2 text-sm font-semibold text-card-foreground">全程本地</h4>
               <p className="mt-2 text-xs leading-5 text-muted-foreground">
                 录音、解析、挖掘都在这台电脑上完成，不上传任何云端。请继续遵守项目红线：只克隆自己或已授权的声音。

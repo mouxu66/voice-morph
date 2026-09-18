@@ -132,7 +132,7 @@ export function CascadePage(p: ReturnType<typeof useCascade>) {
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
       <header className="border-b border-border bg-card/30 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
         <div className="mx-auto max-w-7xl">
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">CASCADE / TEXT-RELAY VOICE</p>
+          <p className="text-xs font-medium text-primary">级联变声</p>
           <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">级联变声</h2>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
             说话 → 识别成文字 → 用目标音色重新合成 → 虚拟声卡。走文字中转，你的口音与发音习惯完全不进入输出，
@@ -162,7 +162,7 @@ export function CascadePage(p: ReturnType<typeof useCascade>) {
         <section>
           <div className="mb-3 flex items-end justify-between gap-3">
             <div>
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">01 / 选音色</p>
+              <p className="text-xs font-medium text-primary">01 / 选音色</p>
               <h3 className="mt-1 text-lg font-semibold text-card-foreground">用哪个音色说话</h3>
             </div>
             <p className="hidden text-xs text-muted-foreground sm:block">
@@ -275,7 +275,7 @@ export function CascadePage(p: ReturnType<typeof useCascade>) {
           {/* 02 控制台 */}
           <section className="flex flex-col gap-5 rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
             <div>
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">02 / 变声</p>
+              <p className="text-xs font-medium text-primary">02 / 变声</p>
               <h3 className="mt-1 flex items-center gap-2 text-lg font-semibold text-card-foreground">
                 <Waves className={cn("h-4 w-4 text-primary", running && "animate-pulse")} />
                 级联变声控制台
@@ -387,7 +387,7 @@ export function CascadePage(p: ReturnType<typeof useCascade>) {
           {/* 03 实时状态 */}
           <section className="flex flex-col gap-4 rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
             <div>
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">03 / 实时状态</p>
+              <p className="text-xs font-medium text-primary">03 / 实时状态</p>
               <h3 className="mt-1 text-lg font-semibold text-card-foreground">端到端滞后与耗时</h3>
               <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
                 滞后口径：说完一句话 → 开始听到目标音色。连续说话不积压就不会增长。

@@ -16,6 +16,7 @@ import {
   XCircle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { PageShell } from "@/components/layout/PageShell"
 import { mediaUrl } from "@/api/client"
 import type { PetDiscoveryItem, PetInstalledItem, PetSkinDetail, PetSkinItem, PetTaskItem } from "@/api/client"
 import type { PetMarket } from "@/pages/PetMarket/usePetMarket"
@@ -274,13 +275,15 @@ export function PetMarketPage(p: PetMarket) {
 
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
-      <header className="sticky top-0 z-30 border-b border-border bg-card/80 px-5 py-4 backdrop-blur-xl sm:px-8 lg:px-12">
-        <div className="mx-auto max-w-7xl">
+      <header className="sticky top-[100px] z-10 border-b border-border bg-card/80 backdrop-blur-xl lg:top-14">
+        {/* 只做限宽居中就够了：App 的 <main> 已经让开了侧栏，
+            这里再让一次会让 sticky 内容比页面内容额外内缩一个侧栏宽度。 */}
+        <div className="mx-auto max-w-[1240px] px-6 py-3 lg:px-10">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h1 className="flex items-center gap-2 text-lg font-semibold tracking-tight text-foreground">
                 <PawPrint className="h-5 w-5 text-primary" />
-                人偶市场
+                桌宠皮肤
               </h1>
               <p className="mt-0.5 text-xs text-muted-foreground">
                 给桌面人偶换个外观：全部素材来自开源社区、许可可分发，一键安装即时换肤。
@@ -344,7 +347,7 @@ export function PetMarketPage(p: PetMarket) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-5 py-6 sm:px-8 lg:px-12 lg:py-8">
+      <PageShell>
         {tab === "market" ? (
           <>
             {p.manifest === null ? (
@@ -379,7 +382,7 @@ export function PetMarketPage(p: PetMarket) {
         ) : (
           <DiscoveryTab p={p} />
         )}
-      </main>
+      </PageShell>
 
       <PetDetailDrawer p={p} />
     </div>
