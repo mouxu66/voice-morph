@@ -1,6 +1,9 @@
 /* ===== 主题变量：暗色(默认) / 亮色(跟随系统或手动) ===== */
 :root {
   color-scheme: dark;
+  /* 侧栏宽度单点定义：顶栏左偏移与主内容左内边距都读这个变量，
+     改宽度只需改这一处（AppChrome / App 的布局都引用它） */
+  --sidebar-w: 240px;
   --c-bg: 11 14 20;        /* #0b0e14 */
   --c-bg-1: 17 21 29;      /* #11151d */
   --c-surface: 22 27 38;   /* #161b26 */
@@ -212,6 +215,12 @@ main .rounded-2xl.border:hover {
 @keyframes shimmer {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
+}
+
+/* 首页 Hero 的声音可视化：竖条做等比缩放，只动 transform（GPU 合成层） */
+@keyframes eq {
+  0%, 100% { transform: scaleY(0.45); }
+  50% { transform: scaleY(1); }
 }
 
 /* ===== 页面内导览桌宠动画（PetGuide.tsx）====== */

@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom"
 import { mediaUrl, type MarketItem } from "@/api/client"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { EffectLadderCard } from "@/components/EffectLadderCard"
+import { PageShell, Section } from "@/components/layout/PageShell"
 import { cn } from "@/lib/utils"
 import { useAppStore } from "@/store/useAppStore"
 import { useHomeDemo } from "@/pages/Home/useHomeDemo"
@@ -125,6 +126,30 @@ function HomeDemoCard(props: {
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * Hero 里的声音可视化。
+ * 纯 CSS 竖条（高度按钟形包络给定，逐条错开相位），呼应"变声"这件事本身。
+ * 刻意不用图片/视频：零网络请求、零版权负担，且自动跟随明暗主题。
+ */
+const WAVE_BARS = [16, 28, 20, 38, 30, 52, 40, 66, 48, 82, 58, 96, 72, 100, 84, 92, 62, 86, 50, 70, 38, 56, 30, 44, 24, 34, 18, 26]
+
+function WaveBars() {
+  return (
+    <div className="flex h-24 items-center justify-center gap-1 lg:h-48" aria-hidden="true">
+      {WAVE_BARS.map((height, i) => (
+        <span
+          key={i}
+          className="w-1.5 rounded-full bg-gradient-to-t from-primary/20 via-primary/70 to-primary"
+          style={{
+            height: `${height}%`,
+            animation: `eq ${1.1 + (i % 6) * 0.17}s ease-in-out ${(i % 9) * 0.07}s infinite`,
+          }}
+        />
+      ))}
     </div>
   )
 }
@@ -274,31 +299,49 @@ export function HomePage() {
           : { text: "还没有参考声音，回到第 1 步采集一段干净人声，再存成「我的音色」。", to: "/workshop", cta: "去音色工坊" }
 
   return (
-    <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
-      {/* Hero：先玩——零门槛第一条"立刻能玩"的路 */}
-      <header className="relative overflow-hidden border-b border-border px-5 py-12 sm:px-8 lg:px-12 lg:py-16">
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/10 via-background to-card" aria-hidden="true" />
-        <div className="relative mx-auto max-w-7xl">
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">HOME / 先玩，再定制</p>
-          <h2 className="mt-4 max-w-3xl font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
-            让任何声音，替你说
-          </h2>
-          <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-            先挑一个现成音色，点一下就能听。听中意了，装上开麦就能直接替你说——不找素材、不训练，先玩起来。玩顺了，再往下滑，把它练成你的专属嗓子。
-          </p>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-7xl space-y-12 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
-        {/* 立刻能玩：首屏第一件事 = 预置音色即点即听 */}
-        <section>
-          <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">STEP 0 · 不花时间</p>
-              <h3 className="mt-2 text-2xl font-semibold text-foreground">先玩起来：点一个音色，马上听到它</h3>
-              <p className="mt-1.5 text-sm text-muted-foreground">下面全是官方预置的开源音色——不用找素材、不用训练，点一下就能听。</p>
+    <div className="min-h-full">
+      {/* Hero —— 全页唯一的大标题。
+          此前顶栏写着「首页」、页内 hero 又贴一个 `HOME / 先玩，再定制`、往下还有七个
+          等重的节标题，同一个词被砸了三次。这里收敛成一处，并把「先听一个」提到首屏。 */}
+      <section className="relative overflow-hidden border-b border-border">
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/[0.12] via-background to-card" aria-hidden="true" />
+        <PageShell padded={false} className="relative py-10 lg:py-12">
+          {/* grid-cols-1 不能省：不写的话窄屏是 auto 轨道，会被 h1 的 max-w-3xl 撑到 768px
+              并把整页顶出视口（中文长句的 max-content 很宽，这正是窄屏横向溢出的来源）。 */}
+          <div className="grid grid-cols-1 items-center gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,400px)] lg:gap-12">
+            <div className="min-w-0">
+              <h1 className="max-w-3xl font-display text-3xl font-bold tracking-tight text-foreground sm:text-4xl lg:text-5xl">
+                让任何声音，<span className="text-gradient">替你说</span>
+              </h1>
+              <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
+                先挑一个现成音色，点一下就能听。听中意了，装上开麦就能直接替你说——不找素材、不训练，先玩起来。玩顺了，再往下滑，把它练成你的专属嗓子。
+              </p>
+              <div className="mt-6 flex flex-wrap items-center gap-3">
+                <a href="#play" className="btn-primary">
+                  <Headphones className="h-4 w-4" />
+                  先听一个
+                </a>
+                <Link to="/workshop" className="btn-ghost">
+                  <Mic2 className="h-4 w-4" />
+                  我想做自己的
+                </Link>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
+            <WaveBars />
+          </div>
+        </PageShell>
+      </section>
+
+      <PageShell className="pt-10">
+        <div className="space-y-14">
+        {/* 立刻能玩：首屏第一件事 = 预置音色即点即听 */}
+        <Section
+          id="play"
+          eyebrow="第 0 步 · 不花时间"
+          title="点一个音色，马上听到它"
+          desc="下面全是官方预置的开源音色——不用找素材、不用训练，点一下就能听。"
+          actions={
+            <>
               <button
                 type="button"
                 onClick={() => setFavOnly((v) => !v)}
@@ -323,26 +366,42 @@ export function HomePage() {
                 <AudioLines className="h-3.5 w-3.5" />
                 {compareOn ? "退出对比" : "对比两个音色"}
               </button>
-            </div>
-          </div>
+            </>
+          }
+        >
 
           {demo.items === null ? (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {Array.from({ length: 6 }, (_, i) => (
                 <div key={i} className="h-[132px] animate-pulse rounded-2xl border border-border bg-card/60" />
               ))}
             </div>
           ) : shownItems.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border bg-card/50 px-6 py-10 text-center">
-              <Star className="h-6 w-6 text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">收藏夹还是空的——点音色卡右上角的心形，把喜欢的先收起来再慢慢挑。</p>
-              <button type="button" onClick={() => setFavOnly(false)}
-                className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20">
-                看全部音色 <ArrowRight className="h-3.5 w-3.5" />
-              </button>
-            </div>
+            /* 两种"空"含义不同：此前共用一句"收藏夹还是空的"，
+               而后端没连上、音色列表读不出来时也会走到这里，那句话是错的。 */
+            favOnly ? (
+              <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border bg-card/40 px-6 py-8 text-center">
+                <Star className="h-5 w-5 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground">收藏夹还是空的——点音色卡右上角的心形，把喜欢的先收起来再慢慢挑。</p>
+                <button type="button" onClick={() => setFavOnly(false)}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20">
+                  看全部音色 <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border bg-card/40 px-6 py-8 text-center">
+                <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                <p className="max-w-md text-sm leading-6 text-muted-foreground">
+                  音色列表还没读出来。本地服务刚启动要等一会儿（首次会加载模型）；一直没动静就点右上角的状态胶囊做一次环境体检。
+                </p>
+                <Link to="/voices?tab=market"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20">
+                  去音色市场看看 <ArrowRight className="h-3.5 w-3.5" />
+                </Link>
+              </div>
+            )
           ) : (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {shownItems.map((item) => (
                 <HomeDemoCard
                   key={item.id ?? item.name}
@@ -375,7 +434,7 @@ export function HomePage() {
                   清空重选
                 </button>
               </div>
-              <div className="grid gap-3 p-4 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2">
                 {pickedItems.map((it) => {
                   const v = vidOf(it)
                   const pr = demo.previews[v]
@@ -433,7 +492,7 @@ export function HomePage() {
               </Link>
             </div>
           </div>
-        </section>
+        </Section>
 
         {/* 零炼丹信任条：打消"要自己炼模型"的顾虑。
             这块刻意放在 WANT MORE 之前 —— 用户看到"训练"两个字的第一反应是
@@ -463,13 +522,12 @@ export function HomePage() {
         </section>
 
         {/* 玩出兴趣后，再谈定制 */}
-        <section>
-          <div className="mb-5">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">WANT MORE</p>
-            <h3 className="mt-2 text-2xl font-semibold text-foreground">玩过了？三条路把你带向"专属"</h3>
-            <p className="mt-1.5 text-sm text-muted-foreground">想要"不撞声音"、开麦就能用的专属嗓子？往下是正经玩法，随时可以回来。</p>
-          </div>
-          <div className="grid gap-4 md:grid-cols-3">
+        <Section
+          eyebrow="想要更多"
+          title="玩过了？三条路把你带向「专属」"
+          desc="想要不撞声音、开麦就能用的专属嗓子？往下是正经玩法，随时可以回来。"
+        >
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             {ADVANCED_ITEMS.map(({ to, icon: Icon, title, desc, tag, tone }) => (
               <Link
                 key={title}
@@ -488,15 +546,14 @@ export function HomePage() {
               </Link>
             ))}
           </div>
-        </section>
+        </Section>
 
         {/* 定制闭环：给想要专属音色的人 */}
-        <section>
-          <div className="mb-5">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">FIRST VOICE</p>
-            <h3 className="mt-2 text-2xl font-semibold text-foreground">想做专属嗓子？五步走完</h3>
-            <p className="mt-1.5 text-sm text-muted-foreground">下面是完整教程。每一屏顶部都有导览小助手，不懂的词随时点开下面的白话解释。</p>
-          </div>
+        <Section
+          eyebrow="第一条音色"
+          title="想做专属嗓子？五步走完"
+          desc="下面是完整教程。页面边角有导览小助手，不懂的词随时到最下面看白话解释。"
+        >
           {stepTip && (
             <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-4 py-3 text-xs leading-5 text-card-foreground">
               <MapPin className="h-4 w-4 shrink-0 text-primary" />
@@ -536,25 +593,22 @@ export function HomePage() {
               ))}
             </ol>
           </div>
-        </section>
+        </Section>
 
         {/* 效果阶梯：为什么要继续采集 / 训练 */}
-        <section>
-          <div className="mb-5">
-            <p className="font-mono text-xs uppercase tracking-widest text-primary">WHY CONTINUE</p>
-            <h3 className="mt-2 text-2xl font-semibold text-foreground">为什么还要继续攒素材？</h3>
-            <p className="mt-1.5 text-sm text-muted-foreground">这条阶梯就是答案：同样一段字，素材越足，越像是"那个人"亲口说的。</p>
-          </div>
+        <Section
+          eyebrow="为什么继续"
+          title="为什么还要继续攒素材？"
+          desc="这条阶梯就是答案：同样一段字，素材越足，越像是「那个人」亲口说的。"
+        >
           <EffectLadderCard currentLevel={currentLevel} collectedSeconds={totalSeconds} modelReady={modelReady} />
-        </section>
+        </Section>
 
-        {/* 术语科普：进阶名词大白话 */}
-        <section>
-          <div className="mb-5 flex items-center justify-between">
-            <div>
-              <p className="font-mono text-xs uppercase tracking-widest text-primary">GLOSSARY</p>
-              <h3 className="mt-2 text-2xl font-semibold text-foreground">听不懂的词，点开看白话</h3>
-            </div>
+        {/* 术语科普：进阶名词大白话（默认收起，需要时再展开） */}
+        <Section
+          eyebrow="术语表"
+          title="听不懂的词，点开看白话"
+          actions={
             <button
               type="button"
               onClick={() => setGlossaryOpen((o) => !o)}
@@ -563,9 +617,10 @@ export function HomePage() {
               {glossaryOpen ? <Minus className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
               {glossaryOpen ? "收起" : "展开"}
             </button>
-          </div>
+          }
+        >
           {glossaryOpen && (
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               {GLOSSARY.map(({ term, plain }) => (
                 <div key={term} className="rounded-2xl border border-border bg-card/85 p-4 shadow-md">
                   <p className="flex items-center gap-2 text-sm font-medium text-card-foreground">
@@ -576,20 +631,21 @@ export function HomePage() {
               ))}
             </div>
           )}
-        </section>
+        </Section>
 
         {/* 底线：全程本地 + 版权红线 */}
-        <section className="flex flex-col gap-3 rounded-2xl border border-border bg-card/85 p-5 text-xs leading-5 text-muted-foreground shadow-md sm:flex-row sm:items-center sm:justify-between">
+        <section className="flex flex-col gap-3 rounded-2xl border border-border bg-card/70 p-5 text-xs leading-5 text-muted-foreground shadow-md sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
             <span>全程本地处理，不上传任何云端。只克隆自己或已授权的声音。</span>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex shrink-0 items-center gap-2">
             <Users className="h-4 w-4 text-primary" />
             <Link to="/voices?tab=market" className="font-medium text-primary transition hover:opacity-80">也可以试试预置的开源音色</Link>
           </div>
         </section>
-      </main>
+        </div>
+      </PageShell>
     </div>
   )
 }
