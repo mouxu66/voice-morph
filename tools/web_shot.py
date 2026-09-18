@@ -3,9 +3,9 @@
 
 用法（先起预览服务）：
     cd web && npx vite --port 5199
-    python tools/web_shot.py --route /fitting                 # 两主题 × 三档宽度
+    python tools/web_shot.py --route /audition                 # 两主题 × 三档宽度
     python tools/web_shot.py --route /home --sizes 1280      # 只验一档
-    python tools/web_shot.py --route /fitting --themes dark
+    python tools/web_shot.py --route /audition --themes dark
 
 为什么要有它（`docs/犯错指南.md` §3.22 / §3.26）：
   - 别让用户当眼睛。截图 + `scrollWidth` 量测能挡住"看着挺对其实 768px 顶出视口"。
@@ -122,7 +122,7 @@ def _shoot(port: int, base: str, route: str, width: int, height: int,
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="无头 Chrome 页面走查（截图 + 溢出量测）")
-    ap.add_argument("--route", default="/home", help="前端路由，如 /fitting")
+    ap.add_argument("--route", default="/home", help="前端路由，如 /audition")
     ap.add_argument("--base", default="http://127.0.0.1:5199", help="预览服务地址")
     ap.add_argument("--sizes", default="900,1280,1600", help="宽度档位（逗号分隔）")
     ap.add_argument("--height", type=int, default=1200,

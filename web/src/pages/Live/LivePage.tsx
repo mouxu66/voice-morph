@@ -24,7 +24,7 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useLive } from "@/pages/Live/useLive"
 import { PageShell } from "@/components/layout/PageShell"
-import { FittingEntry } from "@/components/FittingEntry"
+import { AuditionEntry } from "@/components/AuditionEntry"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { EffectLadderCard } from "@/components/EffectLadderCard"
 import { ChainResultList } from "@/components/ChainResultList"
@@ -779,8 +779,8 @@ export function LivePage(p: ReturnType<typeof useLive>) {
           <ErrorPanel title="语料生成失败" detail={p.genStatus.error} />
         )}
 
-        {/* 路标：本页一次只挂一个音色，想一次比多个就去试衣间 */}
-        <FittingEntry hint="想一次挂好几个音色、逐个点着试？" className="mt-6" />
+        {/* 路标：本页一次只挂一个音色，想一次比多个就去试音间 */}
+        <AuditionEntry hint="想一次挂好几个音色、逐个点着试？" className="mt-6" />
 
         {p.feedback && (
           p.feedback.tone === "error"

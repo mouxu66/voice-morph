@@ -18,7 +18,7 @@ import { downloadUrl } from "@/lib/download"
 import { PageShell } from "@/components/layout/PageShell"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
-import { FittingEntry } from "@/components/FittingEntry"
+import { AuditionEntry } from "@/components/AuditionEntry"
 import type { useOfflineVc } from "@/pages/OfflineVc/useOfflineVc"
 import { voiceOptionLabel } from "@/lib/voiceLabel"
 
@@ -396,7 +396,7 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
               <li className="rounded-lg border border-border bg-background/60 p-3">离线转换与实时变声共用显卡，实时变声运行时无法提交，请先停止。</li>
               <li className="rounded-lg border border-border bg-background/60 p-3">整段单次推理，长音频（几分钟）大约需要 1–3 分钟，请耐心等待。</li>
               <li className="rounded-lg border border-border bg-background/60 p-3">
-                <FittingEntry variant="inline" hint="本页一次只换一个音色，" />
+                <AuditionEntry variant="inline" hint="本页一次只换一个音色，" />
               </li>
             </ul>
           </div>

@@ -177,7 +177,7 @@ def test_nats_scorer_missing_dependency_reports_readable_error(client, monkeypat
     with pytest.raises(RuntimeError, match="NatScore 依赖缺失"):
         ac._nats_scorer()
 
-# ---------------- RVC 失败信息的可读性（2026-09-18 试衣间实测）----------------
+# ---------------- RVC 失败信息的可读性（2026-09-18 试音间实测）----------------
 
 
 def test_fail_tail_prefers_real_error_over_warning():

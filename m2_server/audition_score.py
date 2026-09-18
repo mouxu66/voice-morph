@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""试衣间客观打分（一次性子进程，跑完即退出）。
+"""试音间客观打分（一次性子进程，跑完即退出）。
 
 为什么必须是独立进程（2026-09-18 实测，血泪）：
     打分器 = CAM++ 声纹（speaker_sep）+ NatScore 的 whisper-small 编码器。
@@ -15,8 +15,8 @@
     transformers 重试 5 次、每次 read timeout 10s，白白拖了 2 分钟才给出分数。
     离线模式直接用本地缓存，秒级完成；缓存真缺时也会立刻报错而不是干等。
 
-用法（由 fitting_api._score_batch 调用，不建议手工执行）：
-    python fitting_score.py --jobs jobs.json --out scores.json
+用法（由 audition_api._score_batch 调用，不建议手工执行）：
+    python audition_score.py --jobs jobs.json --out scores.json
     jobs.json  : [{"key": "kangaroo_v2", "wav": "a.wav", "ref": "reference.wav"}, ...]
                 ref 为空串表示该音色没有参考音（只算自然度，不算音色像度）
     scores.json: {"kangaroo_v2": {"secs": 0.66, "nats": 2.9, "score_error": ""}, ...}
@@ -89,7 +89,7 @@ def score_one(wav: Path, ref: Path | None) -> dict:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="试衣间客观打分（一次性子进程）")
+    ap = argparse.ArgumentParser(description="试音间客观打分（一次性子进程）")
     ap.add_argument("--jobs", required=True, help="任务 JSON 路径")
     ap.add_argument("--out", required=True, help="结果 JSON 路径")
     args = ap.parse_args()

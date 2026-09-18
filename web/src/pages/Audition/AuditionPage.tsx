@@ -10,7 +10,7 @@ import {
   Radio,
   RefreshCw,
   Search,
-  Shirt,
+  AudioLines,
   Sparkles,
   Square,
   Upload,
@@ -24,9 +24,9 @@ import { ErrorPanel } from "@/components/ErrorPanel"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { downloadUrl } from "@/lib/download"
 import { cn } from "@/lib/utils"
-import type { FittingEnv, FittingResult, FittingSource } from "@/api/client"
-import { useFitting } from "@/pages/Fitting/useFitting"
-import type { FittingFilter, WardrobeVoice } from "@/pages/Fitting/useFitting"
+import type { AuditionEnv, AuditionResult, AuditionSource } from "@/api/client"
+import { useAudition } from "@/pages/Audition/useAudition"
+import type { AuditionFilter, TrialVoice } from "@/pages/Audition/useAudition"
 
 const PITCH_PRESETS: [string, number][] = [
   ["原调", 0],
@@ -34,7 +34,7 @@ const PITCH_PRESETS: [string, number][] = [
   ["女→男 -12", -12],
 ]
 
-const FILTERS: [FittingFilter, string][] = [
+const FILTERS: [AuditionFilter, string][] = [
   ["all", "全部"],
   ["ready", "能直接试"],
   ["mine", "我的"],
@@ -42,7 +42,7 @@ const FILTERS: [FittingFilter, string][] = [
 ]
 
 /** 环境态势条：谁在占显卡、还剩多少显存 —— 不让用户点下去才收到 409 */
-function EnvBar({ env, onRefresh }: { env: FittingEnv | null; onRefresh: () => void }) {
+function EnvBar({ env, onRefresh }: { env: AuditionEnv | null; onRefresh: () => void }) {
   if (!env) {
     return (
       <Card className="flex items-center gap-2 px-4 py-3 text-xs text-muted-foreground">
@@ -74,7 +74,7 @@ function EnvBar({ env, onRefresh }: { env: FittingEnv | null; onRefresh: () => v
       )}
       {env.cascade_running && <span className="text-yellow-700">级联变声在跑</span>}
       {env.offline_running && <span className="text-yellow-700">离线变声任务在跑</span>}
-      {env.busy_reason && <span className="text-yellow-700">{env.busy_reason} → 批量试穿暂不可用</span>}
+      {env.busy_reason && <span className="text-yellow-700">{env.busy_reason} → 批量试音暂不可用</span>}
       {!blocked && <span className="text-muted-foreground">可以开跑</span>}
       <span className="flex-1" />
       <button
@@ -88,7 +88,7 @@ function EnvBar({ env, onRefresh }: { env: FittingEnv | null; onRefresh: () => v
   )
 }
 
-function VoiceAvatar({ v }: { v: WardrobeVoice }) {
+function VoiceAvatar({ v }: { v: TrialVoice }) {
   if (v.image) {
     return (
       <img
@@ -106,14 +106,14 @@ function VoiceAvatar({ v }: { v: WardrobeVoice }) {
   )
 }
 
-/** 衣柜列表项：批量模式勾选，实时模式点一次换一件 */
-function WardrobeRow({
+/** 备选音色列表项：批量模式勾选，实时模式点一次换一个 */
+function VoiceRow({
   v,
   picked,
   disabled,
   onClick,
 }: {
-  v: WardrobeVoice
+  v: TrialVoice
   picked: boolean
   disabled: boolean
   onClick: () => void
@@ -156,13 +156,13 @@ function WardrobeRow({
   )
 }
 
-/** 试穿结果卡片：一条音频 + 客观分 + 出口动作 */
+/** 试音结果卡片：一条音频 + 客观分 + 出口动作 */
 function ResultCard({
   r,
   scoring,
   onHandoff,
 }: {
-  r: FittingResult
+  r: AuditionResult
   /** 打分阶段还在跑（此时"没有分数"是"还没算完"，而不是"算不了"） */
   scoring: boolean
   onHandoff: (url: string, voiceId: string) => Promise<boolean>
@@ -177,7 +177,7 @@ function ResultCard({
     setDlErr("")
     setDlBusy(true)
     try {
-      await downloadUrl(mediaUrl(r.url), `试衣间-${r.voice_id}.wav`)
+      await downloadUrl(mediaUrl(r.url), `试音间-${r.voice_id}.wav`)
     } catch (e) {
       setDlErr(e instanceof Error ? e.message : "下载失败")
     } finally {
@@ -196,7 +196,7 @@ function ResultCard({
         </div>
         {r.status === "running" && (
           <span className="flex shrink-0 items-center gap-1.5 text-xs text-primary">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />试穿中
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />试音中
           </span>
         )}
         {r.status === "done" && r.from_cache && (
@@ -208,7 +208,7 @@ function ResultCard({
 
       {r.status === "done" && r.url && (
         <>
-          <StudioAudioPlayer src={r.url} label="播放试穿结果" />
+          <StudioAudioPlayer src={r.url} label="播放试音结果" />
           <div className="flex flex-wrap items-center gap-2 text-[11px]">
             <span className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
               {r.duration_s != null ? `${r.duration_s}s` : "—"}
@@ -281,7 +281,7 @@ function ResultCard({
 
       {r.status === "failed" && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          {r.error || "试穿失败"}
+          {r.error || "试音失败"}
         </div>
       )}
 
@@ -292,8 +292,8 @@ function ResultCard({
   )
 }
 
-/** 源音频（"身体"）面板 */
-function SourcePanel(p: ReturnType<typeof useFitting>) {
+/** 试音音频面板：同一段素材喂给所有音色，这样比出来才公平 */
+function SourcePanel(p: ReturnType<typeof useAudition>) {
   return (
     <Card className="p-4 sm:p-5">
       <div className="flex flex-wrap items-center gap-3">
@@ -346,7 +346,7 @@ function SourcePanel(p: ReturnType<typeof useFitting>) {
       {p.source ? (
         <div className="mt-4">
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">当前身体</span>
+            <span className="font-medium text-foreground">当前试音音频</span>
             <span className="font-mono">{p.source.source_id}</span>
             <span>{p.source.duration_s}s</span>
             {p.source.builtin && <span className="rounded border border-border px-1.5 py-0.5">内置示范片段</span>}
@@ -361,7 +361,7 @@ function SourcePanel(p: ReturnType<typeof useFitting>) {
         <div className="mt-4 border-t border-border pt-3">
           <p className="text-[11px] font-medium text-muted-foreground">用过的音频（点一下换回来）</p>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {p.sources.map((s: FittingSource) => (
+            {p.sources.map((s: AuditionSource) => (
               <span key={s.source_id} className="inline-flex items-center gap-1">
                 <button
                   type="button"
@@ -394,8 +394,8 @@ function SourcePanel(p: ReturnType<typeof useFitting>) {
   )
 }
 
-/** 实时试穿面板：手动轮换，点哪件换哪件（不做自动连跑） */
-function LivePanel(p: ReturnType<typeof useFitting>) {
+/** 实时试音面板：手动轮换，点哪个换哪个（不做自动连跑） */
+function LivePanel(p: ReturnType<typeof useAudition>) {
   return (
     <Card className="p-4 sm:p-5">
       <div className="flex flex-wrap items-center gap-3">
@@ -406,7 +406,7 @@ function LivePanel(p: ReturnType<typeof useFitting>) {
           )}
         >
           <span className={cn("h-2 w-2 rounded-full", p.liveRunning ? "bg-green-500" : "bg-muted-foreground/50")} />
-          {p.liveRunning ? `正在试穿「${p.nameOf(p.liveExp)}」` : "未开麦"}
+          {p.liveRunning ? `正在试音「${p.nameOf(p.liveExp)}」` : "未开麦"}
         </span>
         {p.liveRunning && (
           <>
@@ -432,11 +432,11 @@ function LivePanel(p: ReturnType<typeof useFitting>) {
       </div>
 
       <p className="mt-3 text-xs leading-6 text-muted-foreground">
-        左边衣柜里<strong className="font-medium text-foreground">点哪个音色，就换成哪个</strong> —— 一次只挂一件，
-        换一件要重载模型（约 10 来秒）。戴上耳机对着麦克风说话，就能听到变身后的自己。
+        左边备选音色里<strong className="font-medium text-foreground">点哪个音色，就换成哪个</strong> —— 一次只挂一个音色，
+        换一个要重载模型（约 10 来秒）。戴上耳机对着麦克风说话，就能听到变身后的自己。
       </p>
       {p.batchRunning && (
-        <p className="mt-2 text-xs text-yellow-600">批量试穿正在跑，等它结束再开实时（两者都要独占显卡）。</p>
+        <p className="mt-2 text-xs text-yellow-600">批量试音正在跑，等它结束再开实时（两者都要独占显卡）。</p>
       )}
       {p.env && !p.env.live_running && p.env.busy_reason && (
         <p className="mt-2 text-xs text-yellow-600">当前 {p.env.busy_reason}，开实时前请先停掉。</p>
@@ -448,8 +448,8 @@ function LivePanel(p: ReturnType<typeof useFitting>) {
   )
 }
 
-export function FittingPage() {
-  const p = useFitting()
+export function AuditionPage() {
+  const p = useAudition()
   const [witMode, setWitMode] = useState<"batch" | "live">("batch")
 
   const pickedCount = p.selected.length
@@ -459,13 +459,13 @@ export function FittingPage() {
     return { total, done, pct: total ? Math.round((done / total) * 100) : 0 }
   }, [p.task?.total, p.task?.finished])
 
-  const wardrobeCard = (
+  const voiceListCard = (
     <Card className="flex max-h-[calc(100vh-160px)] flex-col p-4">
       <div className="flex items-center gap-2">
-        <Shirt className="h-4 w-4 text-primary" />
-        <h2 className="text-sm font-medium text-foreground">衣柜</h2>
+        <AudioLines className="h-4 w-4 text-primary" />
+        <h2 className="text-sm font-medium text-foreground">备选音色</h2>
         <span className="text-[11px] text-muted-foreground">
-          {p.visibleWardrobe.length}/{p.wardrobe.length} 款
+          {p.visibleWardrobe.length}/{p.voiceList.length} 款
         </span>
         <span className="flex-1" />
         {witMode === "batch" && (
@@ -516,15 +516,15 @@ export function FittingPage() {
         ))}
       </div>
 
-      {p.wardrobeError && (
+      {p.voiceListError && (
         <div className="mt-3">
-          <ErrorPanel title="音色列表读取失败" detail={p.wardrobeError} />
+          <ErrorPanel title="音色列表读取失败" detail={p.voiceListError} />
         </div>
       )}
 
       <div className="mt-3 flex-1 space-y-1.5 overflow-y-auto pr-1">
         {p.visibleWardrobe.map((v) => (
-          <WardrobeRow
+          <VoiceRow
             key={v.id}
             v={v}
             picked={witMode === "batch" ? p.selected.includes(v.id) : p.liveExp === v.id}
@@ -541,7 +541,7 @@ export function FittingPage() {
       </div>
 
       <p className="mt-3 border-t border-border pt-2.5 text-[11px] leading-5 text-muted-foreground">
-        「需下载」的音色会在试穿时自动取权重（与安装共用同一份缓存）；标「只能换音色」的是市场
+        「需下载」的音色会在试音时自动取权重（与安装共用同一份缓存）；标「只能换音色」的是市场
         RVC 权重，没有参考音，不能用文字合成。
       </p>
     </Card>
@@ -553,11 +553,11 @@ export function FittingPage() {
         <div className="space-y-5">
           <EnvBar env={p.env} onRefresh={() => void p.refreshEnv()} />
 
-          <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="试穿方式">
+          <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="试音方式">
             {(
               [
-                ["batch", "一次试多件", "一个声音 × 多个音色，并排听"],
-                ["live", "一件件实时试", "对着麦克风，点哪件换哪件"],
+                ["batch", "一次试多个", "一个声音 × 多个音色，并排听"],
+                ["live", "一个个实时试", "对着麦克风，点哪个换哪个"],
               ] as const
             ).map(([key, label, desc]) => (
               <button
@@ -582,19 +582,19 @@ export function FittingPage() {
           </div>
 
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,330px)_minmax(0,1fr)]">
-            <div className="lg:sticky lg:top-24 lg:self-start">{wardrobeCard}</div>
+            <div className="lg:sticky lg:top-24 lg:self-start">{voiceListCard}</div>
 
             <div className="space-y-5">
               {witMode === "live" ? (
                 <>
                   <Section
-                    eyebrow="实时试穿"
-                    title="点哪件换哪件"
+                    eyebrow="实时试音"
+                    title="点哪个换哪个"
                     desc="不用等文件转完，开口就能听见。一次只挂一个音色，切换要重载模型。"
                   >
                     <LivePanel {...p} />
                   </Section>
-                  <Section eyebrow="配套" title="想用文字的场合" desc="实时路径只认麦克风；要打字合成请切到「一次试多件」的输字模式。">
+                  <Section eyebrow="配套" title="想用文字的场合" desc="实时路径只认麦克风；要打字合成请切到「一次试多个」的输字模式。">
                     <Card className="flex flex-wrap items-center gap-3 p-4 text-xs text-muted-foreground">
                       <span>想对整段音频做精调（降噪、语气重铸、Seed-VC 补情绪）？</span>
                       <Link to="/offlinevc" className="font-medium text-primary transition hover:underline">
@@ -610,7 +610,7 @@ export function FittingPage() {
                 <>
                   <Section
                     eyebrow="第一步"
-                    title="给它一个身体"
+                    title="准备一段试音音频"
                     desc="录一句、上传一段，或用内置示范片段。同一段音频会喂给所有选中的音色，这样比出来才公平。"
                   >
                     <SourcePanel {...p} />
@@ -694,7 +694,7 @@ export function FittingPage() {
                         <span>
                           给每个结果打客观分（音色像度 + 自然度）
                           <span className="ml-1 text-muted-foreground">
-                            （只有带参考音的音色能算音色像度；打分在结果出来之后单独跑，不影响试穿速度。
+                            （只有带参考音的音色能算音色像度；打分在结果出来之后单独跑，不影响试音速度。
                             显存紧的时候可以关掉）
                           </span>
                         </span>
@@ -704,8 +704,8 @@ export function FittingPage() {
 
                   <Section
                     eyebrow="第三步"
-                    title="试穿台"
-                    desc="同一段身体，一次穿上所有选中的音色，并排听、按客观分排。"
+                    title="试音台"
+                    desc="同一段音频，一次试完所有选中的音色，并排听、按客观分排。"
                     actions={
                       <>
                         <button
@@ -732,7 +732,7 @@ export function FittingPage() {
                           className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-xs font-medium text-primary-foreground transition hover:opacity-90 disabled:pointer-events-none disabled:opacity-50"
                         >
                           {p.batchRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                          {p.batchRunning ? "试穿中…" : `开始试穿${pickedCount ? `（${pickedCount} 件）` : ""}`}
+                          {p.batchRunning ? "试音中…" : `开始试音${pickedCount ? `（${pickedCount} 个）` : ""}`}
                         </button>
                       </>
                     }
@@ -793,7 +793,7 @@ export function FittingPage() {
                         </Card>
                       )}
 
-                      {p.task?.status === "error" && <ErrorPanel title="试穿中断" detail={p.task.error} />}
+                      {p.task?.status === "error" && <ErrorPanel title="试音中断" detail={p.task.error} />}
 
                       {p.results.length > 0 ? (
                         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -803,10 +803,10 @@ export function FittingPage() {
                         </div>
                       ) : (
                         <Card tone="flat" className="flex flex-col items-center gap-2 px-4 py-10 text-center">
-                          <Shirt className="h-6 w-6 text-muted-foreground" />
-                          <p className="text-sm text-muted-foreground">还没试穿过。左边勾几件衣服，点「开始试穿」。</p>
+                          <AudioLines className="h-6 w-6 text-muted-foreground" />
+                          <p className="text-sm text-muted-foreground">还没试音过。左边挑几个音色，点「开始试音」。</p>
                           <p className="text-[11px] text-muted-foreground">
-                            每件大约十几秒到两三分钟；同样的参数第二次点会秒出（复用上次结果）。
+                            每个大约十几秒到两三分钟；同样的参数第二次点会秒出（复用上次结果）。
                           </p>
                         </Card>
                       )}

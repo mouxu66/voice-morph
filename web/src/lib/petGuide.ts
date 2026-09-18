@@ -49,9 +49,9 @@ export const GUIDES: Record<string, PageGuide> = {
     action: "play",
     motion: "bounce",
   },
-  "/fitting": {
-    title: "试衣间",
-    lines: ["音色就是衣服，", "你的声音是身体。", "点哪件就换哪件。"],
+  "/audition": {
+    title: "试音间",
+    lines: ["一个声音试多个音色，", "并排听、逐个换，", "挑中再拿去精调。"],
     action: "wave",
     motion: "pop",
   },

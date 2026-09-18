@@ -694,7 +694,7 @@ export async function rvcLiveStart(
 ): Promise<RvcStartResult> {
   const q = new URLSearchParams()
   if (expName) q.set("exp_name", expName)
-  // 试衣间要 "自己说话就听到变声"，必须显式开自我监听（game 档默认关）
+  // 试音间要 "自己说话就听到变声"，必须显式开自我监听（game 档默认关）
   if (opts?.monitor !== undefined) q.set("monitor", String(opts.monitor))
   if (opts?.monitorGain !== undefined) q.set("monitor_gain", String(opts.monitorGain))
   const qs = q.toString()
@@ -1629,10 +1629,10 @@ export async function petDiscoveryRemove(skin_id: string): Promise<{ removed: st
   return jsonFetch(`/pet-market/discovery/${encodeURIComponent(skin_id)}`, { method: "DELETE" });
 }
 
-// ---- 试衣间（一个声音 × 多个音色）----
+// ---- 试音间（一个声音 × 多个音色）----
 
-/** 试穿前的环境态势：谁在占 GPU、显存余量、能不能开跑（前端据此禁用按钮并给原因） */
-export type FittingEnv = {
+/** 试音前的环境态势：谁在占 GPU、显存余量、能不能开跑（前端据此禁用按钮并给原因） */
+export type AuditionEnv = {
   live_running: boolean;
   live_exp: string;
   cascade_running: boolean;
@@ -1649,7 +1649,7 @@ export type FittingEnv = {
   text_ready: boolean;
 };
 
-export type FittingSource = {
+export type AuditionSource = {
   source_id: string;
   url: string;
   duration_s: number;
@@ -1657,7 +1657,7 @@ export type FittingSource = {
   created_at?: number;
 };
 
-export type FittingResult = {
+export type AuditionResult = {
   voice_id: string;
   display_name: string;
   status: "running" | "done" | "failed";
@@ -1673,7 +1673,7 @@ export type FittingResult = {
   from_cache: boolean;
 };
 
-export type FittingTask = {
+export type AuditionTask = {
   task_id: string;
   /** 推理阶段在跑（打分阶段不影响这个值） */
   running: boolean;
@@ -1687,37 +1687,37 @@ export type FittingTask = {
   error: string;
   source_name: string;
   text: string;
-  results: FittingResult[];
+  results: AuditionResult[];
   /** 结果都出来后，客观分还在后台算（不挡结果，也不占独占位） */
   scoring: boolean;
   score_finished: number;
   score_total: number;
 };
 
-export async function fittingEnv(): Promise<FittingEnv> {
-  return jsonFetch("/fitting/env");
+export async function auditionEnv(): Promise<AuditionEnv> {
+  return jsonFetch("/audition/env");
 }
 
-export async function fittingSources(): Promise<FittingSource[]> {
-  const data = await jsonFetch<{ sources: FittingSource[] }>("/fitting/sources");
+export async function auditionSources(): Promise<AuditionSource[]> {
+  const data = await jsonFetch<{ sources: AuditionSource[] }>("/audition/sources");
   return data.sources;
 }
 
-export async function fittingUploadSource(file: Blob, filename = "a.wav"): Promise<FittingSource> {
+export async function auditionUploadSource(file: Blob, filename = "a.wav"): Promise<AuditionSource> {
   const fd = new FormData();
   fd.append("file", file, filename);
-  return jsonFetch("/fitting/source", { method: "POST", body: fd });
+  return jsonFetch("/audition/source", { method: "POST", body: fd });
 }
 
-export async function fittingBuiltinSource(): Promise<FittingSource> {
-  return jsonFetch("/fitting/source/builtin", { method: "POST" });
+export async function auditionBuiltinSource(): Promise<AuditionSource> {
+  return jsonFetch("/audition/source/builtin", { method: "POST" });
 }
 
-export async function fittingDeleteSource(sourceId: string): Promise<{ ok: boolean }> {
-  return jsonFetch(`/fitting/source/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
+export async function auditionDeleteSource(sourceId: string): Promise<{ ok: boolean }> {
+  return jsonFetch(`/audition/source/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
 }
 
-export async function fittingTry(req: {
+export async function auditionTry(req: {
   voice_ids: string[];
   source_id?: string;
   text?: string;
@@ -1726,17 +1726,17 @@ export async function fittingTry(req: {
   /** 是否计算客观分（音色像度 / 自然度）；关掉省一次打分器加载 */
   score?: boolean;
 }): Promise<{ ok: boolean; task_id: string; total: number; mode: string; score: boolean }> {
-  return jsonFetch("/fitting/try", {
+  return jsonFetch("/audition/try", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
   });
 }
 
-export async function fittingTask(): Promise<FittingTask> {
-  return jsonFetch("/fitting/task");
+export async function auditionTask(): Promise<AuditionTask> {
+  return jsonFetch("/audition/task");
 }
 
-export async function fittingCancel(): Promise<{ ok: boolean; cancelled: boolean; message?: string }> {
-  return jsonFetch("/fitting/cancel", { method: "POST" });
+export async function auditionCancel(): Promise<{ ok: boolean; cancelled: boolean; message?: string }> {
+  return jsonFetch("/audition/cancel", { method: "POST" });
 }

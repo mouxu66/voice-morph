@@ -111,7 +111,7 @@ _NOISE_RE = re.compile(
 def _fail_tail(stderr: str, stdout: str, n: int = 4) -> str:
     """从 RVC 子进程输出里挑出「真正的错误行」。
 
-    为什么需要挑（2026-09-18 试衣间实测）：offline_vc_infer.py 启动时 torch 会打一条
+    为什么需要挑（2026-09-18 试音间实测）：offline_vc_infer.py 启动时 torch 会打一条
     weight_norm 弃用 FutureWarning（两行：警告本身 + 源码片段），此时直接取最后 3 行，
     报出来的就是那条警告 —— 用户看到「RVC 推理失败: FutureWarning … WeightNorm.apply」，
     完全不知道真因是 cuDNN 崩了。优先取含 Error/error/Traceback 的行；
@@ -131,7 +131,7 @@ def _rvc_link(voice_id: str, src16k: Path, out_wav: Path,
               pitch: int = 0, index_rate: float = 0.5) -> None:
     """RVC 整段推理（与离线变声同链路：D:\\RVC\\.venv 子进程）。
 
-    pth / index 覆盖：试衣间对「未安装但已在市场下载缓存里」的音色用暂存权重推理
+    pth / index 覆盖：试音间对「未安装但已在市场下载缓存里」的音色用暂存权重推理
     （暂存权重无配套 index，传 index="" 显式跳过特征检索，与市场试听同一策略）。
     不传时保持原行为：从本机已就绪音色解析权重与 index。
     """

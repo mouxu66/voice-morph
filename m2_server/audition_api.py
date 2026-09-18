@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-"""试衣间（Fitting Room）：一个声音试穿多个音色。
+"""试音间（Audition Room）：同一个声音，一次试完一批音色。
 
-产品语义：音色是「衣服」，你的一段声音是「身体」。同一段源音频（或同一句文字）
-一次挂多个音色，串行跑完并排听 + 客观分；想立刻听到效果就用手动轮换的实时试穿。
+产品语义：一段试音音频（或一句文字）当"考题"，一次挂上多个音色，串行跑完并排听
++ 客观分；想立刻听到效果就用手动轮换的实时试音。
 
 三条路径与复用（不复制任何引擎代码）：
     - 批量并排（离线）: 本模块串行调 ab_chain._rvc_link
                         —— 与 /offlinevc、市场试听同一条 RVC 子进程链路
-    - 文字试穿        : 本模块逐音色调 qwen3_tts.tts —— 与 /tts、/ab/run 同链路
+    - 文字试音        : 本模块逐音色调 qwen3_tts.tts —— 与 /tts、/ab/run 同链路
     - 实时轮换（单件）: 前端直接调 rvc_live（/rvc/live/start?exp_name=&monitor=），
-                        本模块只负责提供环境态势（/fitting/env）与互斥保护
+                        本模块只负责提供环境态势（/audition/env）与互斥保护
     客观分（secs 音色像度 / nats 自然度）复用 ab_chain 已实现的打分器。
 
 命名坑（务必记住）：voicebank id ≠ RVC 实验名（`kangaroo` ↔ `kangaroo_v2`）。
@@ -17,13 +17,13 @@
 id（TTS 克隆要参考音），靠 rvc_convert.rvc_voice_candidates 反向求交。
 
 资源纪律（8GB 卡上两个 RVC 推理进程必然 OOM）：
-    - 批量任务启动时 hold_gpu("fitting", ...) 占独占位；离线变声 / 市场试听 /
+    - 批量任务启动时 hold_gpu("audition", ...) 占独占位；离线变声 / 市场试听 /
       链路对比都会查 runtime.gpu_holder_reason() 并回 409，不再各查各的
     - 实时 / 级联 / 离线任一在跑 → 本模块直接 409，不排队（排队会让用户以为卡死）
     - 任务可取消：取消后不再开下一个音色（否则选 10 个就锁死显卡十几分钟）
 
 缓存：产物文件名由 (模式|源|文本|pitch|index_rate) 的哈希决定 —— 同样的参数再点
-一次直接复用已有 wav，不重跑推理（批量试穿每件 1~3 分钟，重复跑很贵）。
+一次直接复用已有 wav，不重跑推理（批量试音每个 1~3 分钟，重复跑很贵）。
 """
 import hashlib
 import json
@@ -48,11 +48,11 @@ from runtime import (API_PREFIX, OUT, gpu_holder_reason, hold_gpu, release_gpu)
 
 router = APIRouter(prefix=API_PREFIX)
 
-FITTING_DIR = OUT / "fitting"
-FITTING_DIR.mkdir(parents=True, exist_ok=True)
+AUDITION_DIR = OUT / "audition"
+AUDITION_DIR.mkdir(parents=True, exist_ok=True)
 
 # 客观打分脚本（一次性子进程：不污染后端进程的 CUDA 上下文，见该文件顶部注释）
-SCORE_PY = Path(__file__).resolve().parent / "fitting_score.py"
+SCORE_PY = Path(__file__).resolve().parent / "audition_score.py"
 SCORE_TIMEOUT = 300
 
 _SRC_RE = re.compile(r"^src_[A-Za-z0-9_]+$")
@@ -66,11 +66,11 @@ MAX_SOURCE_S = 60.0
 SRC_KEEP = 20
 SRC_HARD_CAP = 40
 
-# 任务锁：全局单飞（一次只跑一个批量试穿）
+# 任务锁：全局单飞（一次只跑一个批量试音）
 _TASK_LOCK = threading.Lock()
 _CANCEL = threading.Event()
 
-FITTING_STATE: dict = {
+AUDITION_STATE: dict = {
     "task_id": "",
     "running": False,        # 只表示「推理阶段」在跑；打分阶段另有 scoring
     "status": "idle",        # idle | running | done | cancelled | error
@@ -83,7 +83,7 @@ FITTING_STATE: dict = {
     "error": "",
     "source_name": "",
     "text": "",
-    "results": [],           # 逐件追加，前端轮询即可看到结果陆续出来
+    "results": [],           # 逐个追加，前端轮询即可看到结果陆续出来
     "scoring": False,        # 结果都出来后，附加的客观分还在后台算
     "score_finished": 0,
     "score_total": 0,
@@ -155,7 +155,7 @@ def _resolve_weight(voice_id: str) -> tuple["Path | None", str, str]:
         1. 本机已就绪（已安装市场音色 / 自训产物）—— 纯 stat
         2. 只有训练检查点 G_*.pth —— 走提取（较慢，幂等缓存）
         3. 市场清单里有 —— 下到下载缓存再用（与市场试听共用同一份缓存，
-           之后真去安装时 DownloadManager 看到同一文件会跳过下载，等于试穿白赚下载量）
+           之后真去安装时 DownloadManager 看到同一文件会跳过下载，等于试音白赚下载量）
     """
     pth = _find_pth(voice_id)
     if pth:
@@ -184,17 +184,17 @@ def _score_batch(jobs: list[dict]) -> dict:
     """一次子进程算完整批客观分 → {key: {secs, nats, score_error}}。
 
     为什么**必须**走子进程：打分器（CAM++ + whisper-small）在后端主进程里加载会占住
-    那个 CUDA 上下文，之后每件音色的 RVC 推理子进程就会 `cuDNN CUDNN_STATUS_EXECUTION_FAILED`
-    （实测「第一个成功、第二个起全失败」）。详见 fitting_score.py 顶部注释。
-    子进程跑完即退出、显存全还，且整批只加载一次模型（逐件起进程要多等 N 倍加载时间）。
+    那个 CUDA 上下文，之后每个音色的 RVC 推理子进程就会 `cuDNN CUDNN_STATUS_EXECUTION_FAILED`
+    （实测「第一个成功、第二个起全失败」）。详见 audition_score.py 顶部注释。
+    子进程跑完即退出、显存全还，且整批只加载一次模型（逐个起进程要多等 N 倍加载时间）。
 
-    失败绝不抛：打分是附加信息，不能因为它把试穿结果变成失败。
+    失败绝不抛：打分是附加信息，不能因为它把试音结果变成失败。
     """
     if not jobs:
         return {}
     stamp = int(time.time() * 1000)
-    jobs_p = FITTING_DIR / f".score_jobs_{stamp}.json"
-    out_p = FITTING_DIR / f".score_out_{stamp}.json"
+    jobs_p = AUDITION_DIR / f".score_jobs_{stamp}.json"
+    out_p = AUDITION_DIR / f".score_out_{stamp}.json"
     try:
         jobs_p.write_text(json.dumps(jobs, ensure_ascii=False), encoding="utf-8")
         cmd = [sys.executable, str(SCORE_PY), "--jobs", str(jobs_p), "--out", str(out_p)]
@@ -237,7 +237,7 @@ def _duration_s(out: Path) -> "float | None":
         return None
 
 
-# ---------------- 单件试穿 ----------------
+# ---------------- 单件试音 ----------------
 
 
 def _cache_path(voice_id: str, mode: str, src: Path | None, text: str,
@@ -245,12 +245,12 @@ def _cache_path(voice_id: str, mode: str, src: Path | None, text: str,
     """产物路径 = 参数哈希。同样参数重复点不会重跑推理（结果直接复用）。"""
     key = f"{mode}|{src.name if src else ''}|{text}|{pitch}|{index_rate}"
     h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
-    return FITTING_DIR / f"fit_{voice_id}_{h}.wav"
+    return AUDITION_DIR / f"aud_{voice_id}_{h}.wav"
 
 
 def _try_one(voice_id: str, mode: str, src: Path | None, text: str,
              pitch: int, index_rate: float) -> tuple[Path, bool]:
-    """试穿一个音色 → (产物路径, 是否命中已有缓存)。异常带可读原因抛出。"""
+    """试音一个音色 → (产物路径, 是否命中已有缓存)。异常带可读原因抛出。"""
     out = _cache_path(voice_id, mode, src, text, pitch, index_rate)
     if out.exists() and out.stat().st_size > 1024:
         return out, True
@@ -284,36 +284,36 @@ def _try_one(voice_id: str, mode: str, src: Path | None, text: str,
 
 def _mark(**kw) -> None:
     with _STATE_LOCK:
-        FITTING_STATE.update(kw)
+        AUDITION_STATE.update(kw)
 
 
 def _snapshot() -> dict:
     with _STATE_LOCK:
-        return json.loads(json.dumps(FITTING_STATE, ensure_ascii=False))
+        return json.loads(json.dumps(AUDITION_STATE, ensure_ascii=False))
 
 
 def _set_result(entry: dict) -> None:
     """按 voice_id 覆盖式写入结果（同一任务里一个音色只出现一次）。"""
     with _STATE_LOCK:
-        for i, r in enumerate(FITTING_STATE["results"]):
+        for i, r in enumerate(AUDITION_STATE["results"]):
             if r.get("voice_id") == entry["voice_id"]:
-                FITTING_STATE["results"][i] = entry
+                AUDITION_STATE["results"][i] = entry
                 return
-        FITTING_STATE["results"].append(entry)
+        AUDITION_STATE["results"].append(entry)
 
 
 # ---------------- 任务线程 ----------------
 
 
 def _same_task(task_id: str) -> bool:
-    """打分线程期间用户可能已经开了下一轮试穿 —— 那时旧结果绝不能写回去。
+    """打分线程期间用户可能已经开了下一轮试音 —— 那时旧结果绝不能写回去。
 
     评分在独占位释放之后异步跑（见 _score_pass），所以"跑着分数、又点了开始"
     是完全可能的。没有这道闸，第一轮的分数会盖进第二轮的结果列表，
     表现为"刚跑的两个音色显示的是上一轮的分"。
     """
     with _STATE_LOCK:
-        return str(FITTING_STATE.get("task_id") or "") == task_id
+        return str(AUDITION_STATE.get("task_id") or "") == task_id
 
 
 def _score_pass(task_id: str) -> None:
@@ -331,7 +331,7 @@ def _score_pass(task_id: str) -> None:
             return
         _mark(scoring=True, score_finished=0, score_total=len(pending))
         jobs = [{"key": r["voice_id"],
-                 "wav": str(FITTING_DIR / Path(r["url"]).name),
+                 "wav": str(AUDITION_DIR / Path(r["url"]).name),
                  "ref": str(_ref_for(r["voice_id"]) or "")}
                 for r in pending]
         scores = _score_batch(jobs)
@@ -345,7 +345,7 @@ def _score_pass(task_id: str) -> None:
             entry["score_error"] = s.get("score_error") or ""
             _set_result(entry)
             with _STATE_LOCK:
-                FITTING_STATE["score_finished"] = FITTING_STATE.get("score_finished", 0) + 1
+                AUDITION_STATE["score_finished"] = AUDITION_STATE.get("score_finished", 0) + 1
     except Exception:  # noqa: BLE001
         pass          # 打分是附加信息，任何异常都不该影响已经出来的结果
     finally:
@@ -358,7 +358,7 @@ def _worker(task_id: str, voice_ids: list[str], mode: str,
             score: bool = True) -> None:
     try:
         # 阶段一：只做推理。这里绝不允许加载任何打分模型 —— 一旦占了本进程的
-        # CUDA 上下文，后面的 RVC 子进程会 cuDNN 崩（见 fitting_score.py）。
+        # CUDA 上下文，后面的 RVC 子进程会 cuDNN 崩（见 audition_score.py）。
         for idx, vid in enumerate(voice_ids):
             if _CANCEL.is_set():
                 _mark(status="cancelled", current="", current_name="",
@@ -366,7 +366,7 @@ def _worker(task_id: str, voice_ids: list[str], mode: str,
                 break
             name = _display_name(vid)
             _mark(current=vid, current_name=name,
-                  message=f"正在试穿「{name}」（{idx + 1}/{len(voice_ids)}）…")
+                  message=f"正在试音「{name}」（{idx + 1}/{len(voice_ids)}）…")
             entry = {"voice_id": vid, "display_name": name, "status": "running",
                      "url": "", "secs": None, "nats": None, "duration_s": None,
                      "error": "", "score_error": "", "from_cache": False}
@@ -374,7 +374,7 @@ def _worker(task_id: str, voice_ids: list[str], mode: str,
             try:
                 out, cached = _try_one(vid, mode, src, text, pitch, index_rate)
                 entry["status"] = "done"
-                entry["url"] = f"/api/media/outputs/fitting/{out.name}"
+                entry["url"] = f"/api/media/outputs/audition/{out.name}"
                 entry["from_cache"] = cached
                 entry["duration_s"] = _duration_s(out)
                 try:
@@ -386,24 +386,24 @@ def _worker(task_id: str, voice_ids: list[str], mode: str,
                                              "index_rate": index_rate,
                                              "source": src.name if src else ""})
                 except Exception:
-                    pass          # 登记失败不影响试穿结果
+                    pass          # 登记失败不影响试音结果
             except Exception as e:  # noqa: BLE001
                 entry["status"] = "failed"
                 entry["error"] = str(e)
             _set_result(entry)
             with _STATE_LOCK:
-                FITTING_STATE["finished"] = idx + 1
+                AUDITION_STATE["finished"] = idx + 1
         else:
             _mark(status="done", current="", current_name="",
-                  message=f"试穿完成（{len(voice_ids)} 件）")
+                  message=f"试音完成（{len(voice_ids)} 个）")
     except Exception as e:  # noqa: BLE001
-        _mark(status="error", error=str(e), message="试穿中断")
+        _mark(status="error", error=str(e), message="试音中断")
     finally:
         # 先释放独占位与锁，再决定要不要打分：用户不该为了几个附加分数
         # 而等着开不了实时变声。
         _mark(running=False)
         _CANCEL.clear()
-        release_gpu("fitting")
+        release_gpu("audition")
         _TASK_LOCK.release()
     if score and _snapshot()["status"] == "done":
         threading.Thread(target=_score_pass, args=(task_id,), daemon=True).start()
@@ -412,9 +412,9 @@ def _worker(task_id: str, voice_ids: list[str], mode: str,
 # ---------------- API ----------------
 
 
-@router.get("/fitting/env")
-def fitting_env():
-    """试穿前的环境态势：谁在占 GPU、显存余量、TTS 引擎是否在线。
+@router.get("/audition/env")
+def audition_env():
+    """试音前的环境态势：谁在占 GPU、显存余量、TTS 引擎是否在线。
 
     前端据此禁用按钮并给出原因 —— 而不是让用户点下去收一串 409。
     """
@@ -481,12 +481,12 @@ def fitting_env():
     }
 
 
-@router.get("/fitting/sources")
-def fitting_sources():
-    """试衣间里已备好的源音频（最近在前），供前端复用/展示。"""
+@router.get("/audition/sources")
+def audition_sources():
+    """试音间里已备好的源音频（最近在前），供前端复用/展示。"""
     import soundfile as sf
     items = []
-    files = sorted(FITTING_DIR.glob("src_*.wav"), key=lambda p: p.stat().st_mtime,
+    files = sorted(AUDITION_DIR.glob("src_*.wav"), key=lambda p: p.stat().st_mtime,
                    reverse=True)
     for p in files[:SRC_KEEP]:
         try:
@@ -494,7 +494,7 @@ def fitting_sources():
             dur = round(info.frames / info.samplerate, 1) if info.samplerate else 0.0
         except Exception:
             dur = 0.0
-        items.append({"source_id": p.stem, "url": f"/api/media/outputs/fitting/{p.name}",
+        items.append({"source_id": p.stem, "url": f"/api/media/outputs/audition/{p.name}",
                       "duration_s": dur, "builtin": p.stem == "src_builtin",
                       "created_at": int(p.stat().st_mtime)})
     return {"sources": items}
@@ -503,14 +503,14 @@ def fitting_sources():
 def _active_source_id() -> str:
     """当前任务正在使用的源音频 id（无任务时返回空串）。
 
-    注意别拿 `FITTING_STATE["current"]` 当它 —— current 是**音色** id，
+    注意别拿 `AUDITION_STATE["current"]` 当它 —— current 是**音色** id，
     源音频在 `source_name`（如 `src_1737...wav`）。用错了的后果是：
     保护形同虚设，清理/删除可能把正在被读取的源文件干掉，
     批量任务跑到一半报"源音频不存在"。
     """
     with _STATE_LOCK:
-        name = str(FITTING_STATE.get("source_name") or "")
-        running = bool(FITTING_STATE.get("running"))
+        name = str(AUDITION_STATE.get("source_name") or "")
+        running = bool(AUDITION_STATE.get("running"))
     if not name or not running:
         return ""
     return name[:-4] if name.endswith(".wav") else name
@@ -518,7 +518,7 @@ def _active_source_id() -> str:
 
 def _prune_sources(keep_id: str = "") -> None:
     """源音频超过硬上限时清掉最旧的（跳过正在使用的那个）。"""
-    files = sorted(FITTING_DIR.glob("src_*.wav"), key=lambda p: p.stat().st_mtime)
+    files = sorted(AUDITION_DIR.glob("src_*.wav"), key=lambda p: p.stat().st_mtime)
     if len(files) <= SRC_HARD_CAP:
         return
     protected = {keep_id, _active_source_id(), "src_builtin"}
@@ -532,12 +532,12 @@ def _prune_sources(keep_id: str = "") -> None:
 
 
 def _store_source(raw: bytes, suffix: str) -> dict:
-    """落地源音频：先转 16k 单声道 wav（同一个"身体"给所有音色，只转一次），
+    """落地源音频：先转 16k 单声道 wav（同一段试音素材喂给所有音色，只转一次），
     再校验时长，返回 source_id 与时长。"""
     stamp = int(time.time() * 1000)
     src_id = f"src_{stamp}"
-    raw_path = FITTING_DIR / f"{src_id}_raw{suffix or '.wav'}"
-    out_path = FITTING_DIR / f"{src_id}.wav"
+    raw_path = AUDITION_DIR / f"{src_id}_raw{suffix or '.wav'}"
+    out_path = AUDITION_DIR / f"{src_id}.wav"
     raw_path.write_bytes(raw)
     try:
         _preprocess16k(raw_path, out_path)
@@ -562,16 +562,16 @@ def _store_source(raw: bytes, suffix: str) -> dict:
     if dur > MAX_SOURCE_S:
         out_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400,
-                            detail=f"音频太长（{dur:.0f}s），试衣间请用 {MAX_SOURCE_S:.0f} 秒以内的片段"
+                            detail=f"音频太长（{dur:.0f}s），试音间请用 {MAX_SOURCE_S:.0f} 秒以内的片段"
                                    f"（每个音色要单独跑一遍，源太长会等到很久）")
     _prune_sources(keep_id=src_id)
-    return {"source_id": src_id, "url": f"/api/media/outputs/fitting/{out_path.name}",
+    return {"source_id": src_id, "url": f"/api/media/outputs/audition/{out_path.name}",
             "duration_s": round(dur, 1)}
 
 
-@router.post("/fitting/source")
-async def fitting_source(file: UploadFile = File(...)):
-    """上传/录音落成源音频（"身体"）。"""
+@router.post("/audition/source")
+async def audition_source(file: UploadFile = File(...)):
+    """上传/录音落成试音音频（同一段素材会被所有选中音色共用）。"""
     if (file.size or 0) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413,
                             detail=f"文件过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB")
@@ -585,16 +585,16 @@ async def fitting_source(file: UploadFile = File(...)):
     return _store_source(raw, suffix)
 
 
-@router.post("/fitting/source/builtin")
-def fitting_source_builtin():
-    """用内置中性中文人声当源音频（不想录音、或手上没有麦克风时的一键试穿）。
+@router.post("/audition/source/builtin")
+def audition_source_builtin():
+    """用内置中性中文人声当源音频（不想录音、或手上没有麦克风时的一键试音）。
 
     这段素材与任何目标音色没有源关系（市场试听用的同一份），所以输出只呈现
-    目标音色本身，不会因为"源句自带袋鼠腔"而污染所有试穿结果。
+    目标音色本身，不会因为"源句自带袋鼠腔"而污染所有试音结果。
     """
     if not BUILTIN_SRC.exists():
         raise HTTPException(status_code=404, detail=f"内置源句缺失：{BUILTIN_SRC}")
-    dst = FITTING_DIR / "src_builtin.wav"
+    dst = AUDITION_DIR / "src_builtin.wav"
     if not dst.exists():
         try:
             _preprocess16k(BUILTIN_SRC, dst)
@@ -606,7 +606,7 @@ def fitting_source_builtin():
         dur = round(info.frames / info.samplerate, 1) if info.samplerate else 0.0
     except Exception:
         dur = 0.0
-    return {"source_id": dst.stem, "url": f"/api/media/outputs/fitting/{dst.name}",
+    return {"source_id": dst.stem, "url": f"/api/media/outputs/audition/{dst.name}",
             "duration_s": dur, "builtin": True}
 
 
@@ -620,9 +620,9 @@ class TryRequest(BaseModel):
     score: bool = True
 
 
-@router.post("/fitting/try")
-def fitting_try(req: TryRequest):
-    """开一个批量试穿任务（后台串行执行，前端轮询 /fitting/task 看结果陆续出来）。
+@router.post("/audition/try")
+def audition_try(req: TryRequest):
+    """开一个批量试音任务（后台串行执行，前端轮询 /audition/task 看结果陆续出来）。
 
     音频模式：source_id + voice_ids[]（一个声音试 N 个音色）
     文字模式：text + voice_ids[]（同一句话各音色各合成一遍；仅带参考音的音色可用）
@@ -645,7 +645,7 @@ def fitting_try(req: TryRequest):
         sid = (req.source_id or "").strip()
         if not _SRC_RE.match(sid):
             raise HTTPException(status_code=400, detail="source_id 非法")
-        src = FITTING_DIR / f"{sid}.wav"
+        src = AUDITION_DIR / f"{sid}.wav"
         if not src.exists():
             raise HTTPException(status_code=404, detail=f"源音频 {sid} 不存在，请重新录制或上传")
     else:
@@ -666,7 +666,7 @@ def fitting_try(req: TryRequest):
         from rvc_live import _live_proc_alive
         if _live_proc_alive():
             raise HTTPException(status_code=409,
-                                detail="实时变声正在运行，请先停止再批量试穿（避免争抢显卡）")
+                                detail="实时变声正在运行，请先停止再批量试音（避免争抢显卡）")
     except HTTPException:
         raise
     except Exception:
@@ -675,7 +675,7 @@ def fitting_try(req: TryRequest):
         from cascade import _cascade_alive
         if _cascade_alive():
             raise HTTPException(status_code=409,
-                                detail="级联变声正在运行，请先停止再批量试穿（避免争抢显卡）")
+                                detail="级联变声正在运行，请先停止再批量试音（避免争抢显卡）")
     except HTTPException:
         raise
     except Exception:
@@ -690,13 +690,13 @@ def fitting_try(req: TryRequest):
         pass
 
     if not _TASK_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="已有试穿任务在跑，请先等它结束或取消")
-    if not hold_gpu("fitting", "试衣间正在批量试穿"):
+        raise HTTPException(status_code=409, detail="已有试音任务在跑，请先等它结束或取消")
+    if not hold_gpu("audition", "试音间正在批量试音"):
         _TASK_LOCK.release()
         raise HTTPException(status_code=409, detail="GPU 已被其他任务占用，请稍后再试")
 
     _CANCEL.clear()
-    task_id = f"fit_{int(time.time() * 1000)}"
+    task_id = f"aud_{int(time.time() * 1000)}"
     _mark(task_id=task_id, running=True, status="running", mode=mode,
           total=len(voice_ids), finished=0, current="", current_name="",
           message="排队中…", error="", results=[],
@@ -709,32 +709,32 @@ def fitting_try(req: TryRequest):
             "score": bool(req.score)}
 
 
-@router.get("/fitting/task")
-def fitting_task():
-    """当前试穿任务状态与已出结果（逐件追加，可边跑边听）。"""
+@router.get("/audition/task")
+def audition_task():
+    """当前试音任务状态与已出结果（逐件追加，可边跑边听）。"""
     return _snapshot()
 
 
-@router.post("/fitting/cancel")
-def fitting_cancel():
-    """取消批量试穿：当前这一件跑完就停，不再开下一个。"""
+@router.post("/audition/cancel")
+def audition_cancel():
+    """取消批量试音：当前这一件跑完就停，不再开下一个。"""
     if not _TASK_LOCK.locked() and not _snapshot().get("running"):
-        return {"ok": True, "cancelled": False, "message": "当前没有试穿任务"}
+        return {"ok": True, "cancelled": False, "message": "当前没有试音任务"}
     _CANCEL.set()
     _mark(message="正在取消（等当前这件跑完）…")
     return {"ok": True, "cancelled": True}
 
 
-@router.delete("/fitting/source/{source_id}")
-def fitting_source_delete(source_id: str):
+@router.delete("/audition/source/{source_id}")
+def audition_source_delete(source_id: str):
     """删掉一个不再需要的源音频（内置源句与使用中的源不允许删）。"""
     if not _SRC_RE.match(source_id):
         raise HTTPException(status_code=400, detail="source_id 非法")
     if source_id == "src_builtin":
         raise HTTPException(status_code=400, detail="内置源句不可删除")
     if source_id == _active_source_id():
-        raise HTTPException(status_code=409, detail="该源音频正在被当前试穿任务使用")
-    p = FITTING_DIR / f"{source_id}.wav"
+        raise HTTPException(status_code=409, detail="该源音频正在被当前试音任务使用")
+    p = AUDITION_DIR / f"{source_id}.wav"
     if not p.exists():
         raise HTTPException(status_code=404, detail=f"源音频 {source_id} 不存在")
     try:
@@ -744,9 +744,9 @@ def fitting_source_delete(source_id: str):
     return {"ok": True, "source_id": source_id}
 
 
-@router.get("/fitting/history")
-def fitting_history(limit: int = 50):
-    """试衣间产出的历史（复用作品库，kind=trial），供试衣间内快速回看。"""
+@router.get("/audition/history")
+def audition_history(limit: int = 50):
+    """试音间产出的历史（复用作品库，kind=trial），供试音间内快速回看。"""
     limit = max(1, min(int(limit), 100))
     try:
         from history import query as history_query

@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
-  fittingBuiltinSource,
-  fittingCancel,
-  fittingDeleteSource,
-  fittingEnv,
-  fittingSources,
-  fittingTask,
-  fittingTry,
-  fittingUploadSource,
+  auditionBuiltinSource,
+  auditionCancel,
+  auditionDeleteSource,
+  auditionEnv,
+  auditionSources,
+  auditionTask,
+  auditionTry,
+  auditionUploadSource,
   listRvcVoices,
   marketInstalled,
   marketManifest,
@@ -16,9 +16,9 @@ import {
   rvcLiveStart,
   rvcLiveStatus,
   rvcLiveStop,
-  type FittingEnv,
-  type FittingSource,
-  type FittingTask,
+  type AuditionEnv,
+  type AuditionSource,
+  type AuditionTask,
   type MarketItem,
   type RvcVoice,
 } from "@/api/client"
@@ -26,14 +26,14 @@ import { friendlyError } from "@/lib/errors"
 import { notify } from "@/lib/notify"
 import { setOvcHandoff } from "@/lib/ovcHandoff"
 
-export type WardrobeVoice = {
+export type TrialVoice = {
   /** RVC 实验名 / 市场 voice_id —— 语音链路一律用这个 key（voicebank id 是另一套命名） */
   id: string
   name: string
   origin: "mine" | "market"
-  /** 本机已有可推理权重（可直接试穿，不用下载） */
+  /** 本机已有可推理权重（可直接试音，不用下载） */
   ready: boolean
-  /** 有参考音 → 支持「文字试穿」（市场 RVC 权重没有参考音） */
+  /** 有参考音 → 支持「文字试音」（市场 RVC 权重没有参考音） */
   hasReference: boolean
   category?: string
   image?: string
@@ -41,15 +41,15 @@ export type WardrobeVoice = {
   license?: string
 }
 
-export type FittingFilter = "all" | "ready" | "mine" | "market"
+export type AuditionFilter = "all" | "ready" | "mine" | "market"
 
 // 环境探测要起 PowerShell 查进程（单次约 2~3 秒），所以轮询要克制：
 // 只在空闲时轮，跑任务时没必要（按钮本来就被任务状态禁掉了）。
 const ENV_POLL_MS = 8000
 const TASK_POLL_MS = 2000
 
-export function useFitting() {
-  const [env, setEnv] = useState<FittingEnv | null>(null)
+export function useAudition() {
+  const [env, setEnv] = useState<AuditionEnv | null>(null)
   const [myVoices, setMyVoices] = useState<RvcVoice[]>([])
   const [market, setMarket] = useState<MarketItem[]>([])
   const [installed, setInstalled] = useState<string[]>([])
@@ -62,16 +62,16 @@ export function useFitting() {
   /** 是否算客观分：关掉能省一次打分器加载（显存紧时更稳），结果照常出 */
   const [score, setScore] = useState(true)
 
-  const [source, setSource] = useState<FittingSource | null>(null)
-  const [sources, setSources] = useState<FittingSource[]>([])
-  const [task, setTask] = useState<FittingTask | null>(null)
+  const [source, setSource] = useState<AuditionSource | null>(null)
+  const [sources, setSources] = useState<AuditionSource[]>([])
+  const [task, setTask] = useState<AuditionTask | null>(null)
 
-  const [filter, setFilter] = useState<FittingFilter>("all")
+  const [filter, setFilter] = useState<AuditionFilter>("all")
   const [keyword, setKeyword] = useState("")
   const [uploading, setUploading] = useState(false)
   const [recording, setRecording] = useState(false)
   const [recordSeconds, setRecordSeconds] = useState(0)
-  const [wardrobeError, setWardrobeError] = useState("")
+  const [voiceListError, setWardrobeError] = useState("")
 
   const [liveExp, setLiveExp] = useState("")
   const [liveRunning, setLiveRunning] = useState(false)
@@ -85,13 +85,13 @@ export function useFitting() {
   // ---- 环境态势 ----
   const refreshEnv = useCallback(async () => {
     try {
-      setEnv(await fittingEnv())
+      setEnv(await auditionEnv())
     } catch {
       /* 环境探测失败不打断使用，按钮会按最保守的假设禁用 */
     }
   }, [])
 
-  // ---- 衣柜 ----
+  // ---- 备选音色 ----
   const refreshWardrobe = useCallback(async () => {
     setWardrobeError("")
     try {
@@ -111,18 +111,18 @@ export function useFitting() {
   // ---- 源音频 ----
   const refreshSources = useCallback(async () => {
     try {
-      const list = await fittingSources()
+      const list = await auditionSources()
       setSources(list)
       return list
     } catch {
-      return [] as FittingSource[]
+      return [] as AuditionSource[]
     }
   }, [])
 
   // ---- 任务 ----
   const refreshTask = useCallback(async () => {
     try {
-      setTask(await fittingTask())
+      setTask(await auditionTask())
     } catch {
       /* 轮询失败下次再来 */
     }
@@ -139,7 +139,7 @@ export function useFitting() {
     }
   }, [])
 
-  // ---- 首屏：环境 + 衣柜 + 源 + 任务 + 实时状态 ----
+  // ---- 首屏：环境 + 备选音色 + 源 + 任务 + 实时状态 ----
   useEffect(() => {
     void refreshEnv()
     void refreshWardrobe()
@@ -151,9 +151,9 @@ export function useFitting() {
         setSource((cur) => cur ?? list[0])
         return
       }
-      // 没有源音频时先备一份内置示范片段 —— 不录音也能立刻试穿
+      // 没有源音频时先备一份内置示范片段 —— 不录音也能立刻试音
       try {
-        const builtin = await fittingBuiltinSource()
+        const builtin = await auditionBuiltinSource()
         setSource(builtin)
         void refreshSources()
       } catch {
@@ -186,17 +186,17 @@ export function useFitting() {
       if (task?.status === "done") {
         const ok = (task.results || []).filter((r) => r.status === "done").length
         const bad = (task.results || []).filter((r) => r.status === "failed").length
-        if (ok && !bad) notify.success(`试穿完成：${ok} 件都出来了`)
-        else if (ok && bad) notify.warn(`试穿完成：成功 ${ok} 件、失败 ${bad} 件`, "失败原因见对应卡片")
-        else if (bad) notify.error(`试穿失败：${bad} 件都没跑出来`, "原因见对应卡片")
+        if (ok && !bad) notify.success(`试音完成：${ok} 个都出来了`)
+        else if (ok && bad) notify.warn(`试音完成：成功 ${ok} 个、失败 ${bad} 个`, "失败原因见对应卡片")
+        else if (bad) notify.error(`试音失败：${bad} 个都没跑出来`, "原因见对应卡片")
       }
     }
     wasRunning.current = running
   }, [task?.running, task?.status, task?.results, refreshEnv, refreshLive])
 
-  // ---- 衣柜合并：市场清单 + 本机音色（同 key 时以本机为准，保留市场的中文名与配图） ----
-  const wardrobe = useMemo<WardrobeVoice[]>(() => {
-    const map = new Map<string, WardrobeVoice>()
+  // ---- 备选音色合并：市场清单 + 本机音色（同 key 时以本机为准，保留市场的中文名与配图） ----
+  const voiceList = useMemo<TrialVoice[]>(() => {
+    const map = new Map<string, TrialVoice>()
     for (const it of market) {
       const id = (it.voice_id || it.id || "").trim()
       if (!id) continue
@@ -234,18 +234,18 @@ export function useFitting() {
 
   const visibleWardrobe = useMemo(() => {
     const kw = keyword.trim().toLowerCase()
-    return wardrobe.filter((v) => {
+    return voiceList.filter((v) => {
       if (filter === "ready" && !v.ready) return false
       if (filter === "mine" && v.origin !== "mine") return false
       if (filter === "market" && v.origin !== "market") return false
       if (!kw) return true
       return v.id.toLowerCase().includes(kw) || v.name.toLowerCase().includes(kw)
     })
-  }, [wardrobe, filter, keyword])
+  }, [voiceList, filter, keyword])
 
   const nameOf = useCallback(
-    (id: string) => wardrobe.find((v) => v.id === id)?.name ?? id,
-    [wardrobe],
+    (id: string) => voiceList.find((v) => v.id === id)?.name ?? id,
+    [voiceList],
   )
 
   // ---- 选择 ----
@@ -263,7 +263,7 @@ export function useFitting() {
 
   // ---- 源音频 ----
   const applySource = useCallback(
-    async (fn: () => Promise<FittingSource>) => {
+    async (fn: () => Promise<AuditionSource>) => {
       setUploading(true)
       try {
         const s = await fn()
@@ -281,13 +281,13 @@ export function useFitting() {
   )
 
   const useBuiltinSource = useCallback(
-    () => applySource(fittingBuiltinSource),
+    () => applySource(auditionBuiltinSource),
     [applySource],
   )
   const useFileSource = useCallback(
     (file: File | undefined) => {
       if (!file) return
-      void applySource(() => fittingUploadSource(file, file.name))
+      void applySource(() => auditionUploadSource(file, file.name))
     },
     [applySource],
   )
@@ -301,7 +301,7 @@ export function useFitting() {
   const removeSource = useCallback(
     async (id: string) => {
       try {
-        await fittingDeleteSource(id)
+        await auditionDeleteSource(id)
         setSource((cur) => (cur?.source_id === id ? null : cur))
         const list = await refreshSources()
         if (!source || source.source_id === id) setSource(list[0] ?? null)
@@ -327,7 +327,7 @@ export function useFitting() {
       rec.onstop = () => {
         stream.getTracks().forEach((t) => t.stop())
         const blob = new Blob(chunks.current, { type: mime })
-        void applySource(() => fittingUploadSource(blob, "fitting_recording.webm"))
+        void applySource(() => auditionUploadSource(blob, "audition_recording.webm"))
       }
       rec.start()
       recorder.current = rec
@@ -355,7 +355,7 @@ export function useFitting() {
     }
   }, [])
 
-  // ---- 批量试穿 ----
+  // ---- 批量试音 ----
   const batchRunning = !!task?.running
   const canRun = useMemo(() => {
     if (!selected.length || batchRunning || uploading || recording) return false
@@ -365,17 +365,17 @@ export function useFitting() {
   }, [selected.length, batchRunning, uploading, recording, env?.batch_ready, mode, source, text])
 
   const runBlockReason = useMemo(() => {
-    if (batchRunning) return "正在试穿，等这一轮跑完"
-    if (!selected.length) return "先在左边衣柜里挑几件（可多选）"
+    if (batchRunning) return "正在试音，等这一轮跑完"
+    if (!selected.length) return "先在左边备选音色里挑几个（可多选）"
     if (env && !env.batch_ready) return env.busy_reason || "显卡显存不足，先关掉占显存的程序"
-    if (mode === "audio" && !source) return "先录一段或上传一段声音当「身体」"
+    if (mode === "audio" && !source) return "先录一段或上传一段音频当试音素材"
     if (mode === "text" && !text.trim()) return "先写下要合成的话"
     return ""
   }, [batchRunning, selected.length, env, mode, source, text])
 
   const run = useCallback(async () => {
     try {
-      const res = await fittingTry({
+      const res = await auditionTry({
         voice_ids: selected,
         source_id: mode === "audio" ? source?.source_id ?? "" : "",
         text: mode === "text" ? text.trim() : "",
@@ -383,28 +383,28 @@ export function useFitting() {
         index_rate: indexRate,
         score,
       })
-      notify.info(`开始试穿 ${res.total} 件，每件约 10 秒到 3 分钟，结果会陆续出来`)
+      notify.info(`开始试音 ${res.total} 个，每个约 10 秒到 3 分钟，结果会陆续出来`)
       void refreshTask()
     } catch (e) {
-      notify.error(friendlyError(e, "试穿提交失败"))
+      notify.error(friendlyError(e, "试音提交失败"))
     }
   }, [selected, mode, source, text, pitch, indexRate, score, refreshTask])
 
   const cancel = useCallback(async () => {
     try {
-      const r = await fittingCancel()
-      notify.info(r.cancelled ? "已请求取消，当前这件跑完就停" : "当前没有试穿任务")
+      const r = await auditionCancel()
+      notify.info(r.cancelled ? "已请求取消，当前这个跑完就停" : "当前没有试音任务")
     } catch (e) {
       notify.error(friendlyError(e, "取消失败"))
     }
   }, [])
 
-  // ---- 实时试穿：手动轮换（点哪件换哪件，不做自动连跑） ----
+  // ---- 实时试音：手动轮换（点哪个换哪个，不做自动连跑） ----
   const startLive = useCallback(
     async (voiceId: string) => {
       const name = nameOf(voiceId)
       if (batchRunning) {
-        notify.warn("批量试穿正在跑，先等它结束再开实时（两个都抢显卡）")
+        notify.warn("批量试音正在跑，先等它结束再开实时（两个都抢显卡）")
         return
       }
       setLiveBusy(voiceId)
@@ -429,7 +429,7 @@ export function useFitting() {
         void refreshLive()
         void refreshEnv()
       } catch (e) {
-        notify.error(friendlyError(e, "实时试穿启动失败"), "若提示显存不足，先关掉占显卡的程序")
+        notify.error(friendlyError(e, "实时试音启动失败"), "若提示显存不足，先关掉占显卡的程序")
       } finally {
         setLiveBusy("")
       }
@@ -441,7 +441,7 @@ export function useFitting() {
     setLiveBusy("__stop__")
     try {
       await rvcLiveStop()
-      notify.info("已停止实时试穿，声卡已还原")
+      notify.info("已停止实时试音，声卡已还原")
       void refreshLive()
       void refreshEnv()
     } catch (e) {
@@ -461,14 +461,14 @@ export function useFitting() {
     }
   }, [liveMonitorOn])
 
-  // ---- 拿去微调：把试穿产物交给离线变声页继续调参（复用既有交接机制） ----
+  // ---- 拿去微调：把试音产物交给离线变声页继续调参（复用既有交接机制） ----
   const handoffToOfflineVc = useCallback(
     async (url: string, voiceId: string) => {
       try {
         // 必过 mediaUrl：桌面端页面是 file://，裸拼相对路径会打到 file:// 而不是后端
         const res = await fetch(mediaUrl(url))
         const blob = await res.blob()
-        const file = new File([blob], `fitting-${voiceId}.wav`, { type: "audio/wav" })
+        const file = new File([blob], `audition-${voiceId}.wav`, { type: "audio/wav" })
         setOvcHandoff([file])
         notify.success("已把这段音频带到离线变声页", "切过去就能继续调音高与检索强度")
         return true
@@ -482,12 +482,12 @@ export function useFitting() {
 
   return {
     env,
-    wardrobe,
+    voiceList,
     visibleWardrobe,
     marketCount: market.length,
     myCount: myVoices.length,
     installedCount: installed.length,
-    wardrobeError,
+    voiceListError,
     filter,
     setFilter,
     keyword,

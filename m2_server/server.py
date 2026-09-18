@@ -44,7 +44,7 @@ from cascade import router as cascade_router
 from clips_api import router as clips_router
 from effects import router as effects_router
 from finetune import router as ft_router
-from fitting_api import router as fitting_router
+from audition_api import router as audition_router
 from history_api import router as history_router
 from media_api import router as media_router
 from mine_api import router as mine_router
@@ -195,8 +195,8 @@ app.include_router(capture_router)
 app.include_router(ab_router)
 app.include_router(ab_chain_router)
 app.include_router(audio_router)
-# 试衣间：一个声音 × 多个音色（复用 offline_vc / market_preview / ab_chain 的链路与尺子）
-app.include_router(fitting_router)
+# 试音间：一个声音 × 多个音色（复用 offline_vc / market_preview / ab_chain 的链路与尺子）
+app.include_router(audition_router)
 
 # 预热 TTS worker + RVC 常驻模型：消除首条几十秒的模型加载
 # （实测 TTS 冷 41.8s→2.9s、RVC 24.7s→0.3s，端到端 ~77s→~13s）
