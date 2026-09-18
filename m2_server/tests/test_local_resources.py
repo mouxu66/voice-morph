@@ -12,12 +12,45 @@
 """
 from __future__ import annotations
 
+import importlib.util
 import shutil
 from pathlib import Path
 
 import pytest
 
-import conftest
+
+def _load_root_conftest():
+    """按**路径**加载 `m2_server/conftest.py`（本文件被测的那个模块）。
+
+    ⚠️ 不能写裸 `import conftest`：本目录（`tests/`）自 2026-09-18 起也有了
+    `conftest.py`（给所有用例做 outputs 全局隔离），而 pytest 的 `prepend`
+    导入模式会把**测试文件所在目录**插到 `sys.path` 前面 —— 裸 import 会命中
+    **本目录**那份，于是 `bare_runner` / `ffmpeg_path` / `_on_ci` 全部
+    `AttributeError`（本文件 5 条全红，而报错完全看不出是导入遮蔽导致的）。
+
+    按路径加载就绕开了这个遮蔽，也顺便钉住"被测的确实是根 conftest"。
+    """
+    path = Path(__file__).resolve().parents[1] / "conftest.py"
+    spec = importlib.util.spec_from_file_location("m2_root_conftest", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+conftest = _load_root_conftest()
+
+
+def test_root_conftest_is_the_one_under_test():
+    """钉住"被测的确实是 `m2_server/conftest.py`"。
+
+    本目录的 `conftest.py` 一旦把根 conftest 顶掉（裸 `import conftest` 就会），
+    本文件会以 `AttributeError` 的形式整片红 —— 那条报错完全指不出真因。
+    所以在这里正面确认加载到的是根那份、且四个被测函数都在。
+    """
+    assert Path(conftest.__file__).resolve() == \
+        Path(__file__).resolve().parents[1] / "conftest.py"
+    for fn in ("bare_runner", "ffmpeg_path", "missing_local", "_on_ci"):
+        assert callable(getattr(conftest, fn)), f"根 conftest 里没有 {fn}"
 
 
 def test_bare_runner_flag_parsing(monkeypatch):
