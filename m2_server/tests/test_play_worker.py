@@ -205,6 +205,75 @@ def test_persist_verify_appends_to_last_history(monkeypatch, tmp_path):
     assert "语音5" in hist[-1]["verify"][0]
 
 
+def test_persist_verify_writes_injected_path_not_global(monkeypatch, tmp_path):
+    """_persist_verify 只写调用方传入的路径，绝不碰全局 HISTORY_FILE。
+
+    复刻 2026-09-18 的污染路径：后台线程在调用方作用域退出后才执行，那一刻全局
+    HISTORY_FILE 已经是"另一个"文件。实测证据 —— 跑一遍 tests/ 就会往用户真实的
+    outputs/wechat_send_history.json 里塞进一条 `tts_x.wav / 1.0s`，他在桌宠
+    「最近发送」看到「1 分钟前 · 1s」，以为是自己刚发的（排查方向被带偏）。
+    """
+    global_file = tmp_path / "global.json"          # 假装是"真实"历史
+    global_file.write_text(json.dumps([{"ts": 1, "outcome": "ok"}]), "utf-8")
+    injected = tmp_path / "injected.json"           # 本次真正该写的地方
+    injected.write_text(json.dumps([{"ts": 2, "outcome": "ok"}]), "utf-8")
+    monkeypatch.setattr(wv, "HISTORY_FILE", global_file)
+
+    steps = ['UIA 校验：最新语音 语音5"秒']
+    wv._persist_verify(steps, injected)
+
+    assert json.loads(injected.read_text("utf-8"))[-1]["verify"] == steps
+    # 全局那份必须原封不动 —— 它就是用户的真实历史
+    assert "verify" not in json.loads(global_file.read_text("utf-8"))[-1]
+
+
+def test_do_send_captures_history_path_when_thread_starts(monkeypatch, tmp_path):
+    """_do_send 起 UIA 校验线程时，历史路径必须在**那一刻**定下来。
+
+    为什么单独测：`_uia_verify_sent` 要扫微信窗口（几百 ms~3s），lambda 体等它返回
+    才执行 `_persist_verify`，那时 `_do_send` 早已返回、调用方作用域退出。这里让打桩
+    的 `_uia_verify_sent` 在"线程执行中"把 HISTORY_FILE 换掉来复现该时序 ——
+    实现若让线程体自己读全局，就会写进换掉后的文件（测试转红）。
+    """
+    import time
+
+    hist = tmp_path / "wechat_send_history.json"    # 起线程时该写的文件
+    other = tmp_path / "other.json"                 # 线程跑起来后被"切走"的全局
+    monkeypatch.setattr(wv, "HISTORY_FILE", hist)
+    monkeypatch.setattr(wv, "_uia_ready", lambda: True)          # uia_active → 会起校验线程
+    monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
+    monkeypatch.setattr(wv, "_start_play", lambda w: _FakePopen(['PLAYING\n', 'DONE\n']))
+    monkeypatch.setattr(wv, "_wait_play_start", lambda p, t=40.0: True)
+    monkeypatch.setattr(wv, "_wait_play_done", lambda p, d: None)
+    monkeypatch.setattr(wv, "_trigger_record", lambda *a, **k: None)
+    monkeypatch.setattr(wv, "_finish_record", lambda: True)
+    monkeypatch.setattr(wv, "_wav_duration", lambda p: 1.0)
+    monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))
+    monkeypatch.setattr(wv, "_restore_async", lambda *a, **k: None)   # 本用例只看校验线程
+    (tmp_path / "tts_x.wav").write_bytes(b"RIFF")
+
+    def _verify_after_scope_gone(before_msg, expect_s, before_count=-1):
+        # 模拟"线程真正跑起来时，起线程那个作用域已经退出、HISTORY_FILE 已被换掉"
+        wv.HISTORY_FILE = other
+        return ['UIA 校验：最新语音 语音5"秒']
+
+    monkeypatch.setattr(wv, "_uia_verify_sent", _verify_after_scope_gone)
+
+    res = wv._do_send(wv.SendVoiceReq(wav="tts_x.wav"))
+    assert res["outcome"] == "ok"
+
+    for _ in range(100):        # daemon 线程不能 join，轮询等它落盘
+        try:
+            if "verify" in json.loads(hist.read_text("utf-8"))[-1]:
+                break
+        except Exception:
+            pass
+        time.sleep(0.05)
+
+    assert "verify" in json.loads(hist.read_text("utf-8"))[-1]   # 写进"起线程时"的路径
+    assert not other.exists()                                    # 被换掉的路径不许被碰
+
+
 # ---------------- 并行 UI 准备不破坏 _do_send 契约 ----------------
 
 def test_do_send_overlap_ui_prep_still_sends(monkeypatch, tmp_path):

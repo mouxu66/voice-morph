@@ -202,39 +202,57 @@ def _stop_play_worker() -> None:
         pass
 
 
-def _persist_verify(verify_steps: list[str]) -> None:
+def _persist_verify(verify_steps: list[str], history_file: Path | None = None) -> None:
     """把后台 UIA 校验结果写回发送历史最后一条（异步线程调用，不阻塞返回）。
 
     发送已序列化，最后一条必是本次刚落的历史；发完才起本线程，故无竞态。
+
+    ``history_file``：与 ``_restore_async`` 同理，**由调用方在起线程时传入**。
+    这里比 _restore_async 更隐蔽：调用方是
+    ``target=lambda: _persist_verify(_uia_verify_sent(...))``，lambda 体要等
+    ``_uia_verify_sent``（UIA 扫微信窗口，可能几百 ms~3s）跑完才真正执行本函数 ——
+    等它落到 ``HISTORY_FILE`` 这行时，调用方的作用域（以及测试的 monkeypatch）
+    早已退出。所以哪怕只晚几百毫秒，也足以把测试数据写进用户真实历史。
     """
+    path = history_file or HISTORY_FILE
     try:
-        if not HISTORY_FILE.exists():
+        if not path.exists():
             return
-        hist = json.loads(HISTORY_FILE.read_text("utf-8"))
+        hist = json.loads(path.read_text("utf-8"))
         if hist:
             hist[-1].setdefault("verify", []).extend(verify_steps)
-            HISTORY_FILE.write_text(json.dumps(hist, ensure_ascii=False), "utf-8")
+            path.write_text(json.dumps(hist, ensure_ascii=False), "utf-8")
     except Exception as e:
         logger.debug("[wechat] 写回校验结果失败: %s", e)
 
 
-def _restore_async() -> None:
+def _restore_async(history_file: Path | None = None) -> None:
     """后台线程还原声卡并写回发送历史最后一条，不阻塞 _do_send 返回（省 ~3s 同步等待）。
 
     与下一步 _run_audio('apply') 通过 _restore_lock 互斥，避免同时改默认音频设备抢设备。
     发送已落库（_append_history 在起本线程前完成），最后一条必是本次，无竞态。
+
+    ``history_file``：本次要写回的历史文件，**由调用方在起线程时传入**。
+    为什么不能在线程里直接读模块全局 ``HISTORY_FILE``（2026-09-18 实测踩坑）：
+    线程是异步的，它的生命周期会跨越调用方的作用域。单测里 ``HISTORY_FILE`` 被
+    monkeypatch 到 tmp_path，线程**读**的时候 patch 还在（读到 tmp_path 的内容），
+    **写**的时候测试已结束、patch 已撤销 —— 于是把测试数据原样搬进了用户真实的
+    ``outputs/wechat_send_history.json``（实测：跑一遍单测就多出一条
+    `tts_x.wav / 1.0s`，用户在桌宠「最近发送」里看到它，以为是自己发的）。
+    把路径在起线程时定下来，读写必然指向同一个文件。
     """
+    path = history_file or HISTORY_FILE
     try:
         with _restore_lock:
             restored, restore_err = _safe_restore()
         with _history_lock:
             try:
-                if HISTORY_FILE.exists():
-                    hist = json.loads(HISTORY_FILE.read_text("utf-8"))
+                if path.exists():
+                    hist = json.loads(path.read_text("utf-8"))
                     if hist:
                         hist[-1]["restored"] = restored
                         hist[-1]["restore_error"] = restore_err
-                        HISTORY_FILE.write_text(
+                        path.write_text(
                             json.dumps(hist, ensure_ascii=False), "utf-8")
             except Exception as e:
                 logger.debug("[wechat] 写回还原结果失败: %s", e)
@@ -1760,14 +1778,22 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
             _hist_appended = True
             # UIA 校验只是安全网，放后台线程不阻塞返回（省 ~0.5-3s）
             if uia_active:
+                # 路径在起线程时**就地取一次**存进局部变量，由 lambda 闭包带走。
+                # 不能让线程体自己去读全局 HISTORY_FILE：lambda 要等 _uia_verify_sent
+                # （UIA 扫窗口）跑完才执行 _persist_verify，那时调用方作用域已退出，
+                # 测试的 monkeypatch 也已撤销 → 读到真实 outputs/ 路径（见其 docstring）。
+                hist_path = HISTORY_FILE
                 threading.Thread(
-                    target=lambda: _persist_verify(_uia_verify_sent(before_msg, duration, before_count)),
+                    target=lambda: _persist_verify(
+                        _uia_verify_sent(before_msg, duration, before_count), hist_path),
                     daemon=True,
                 ).start()
                 steps.append("UIA 发送后校验：后台线程进行中（结果写入发送历史）")
             # 声卡还原 ~3s，放后台线程：下一步切卡由 _restore_lock 等它收尾，不抢设备，
             # 也不阻塞本次返回（省 ~3s 同步等待）。
-            threading.Thread(target=_restore_async, daemon=True).start()
+            # 把本次的历史文件路径**传进去**（见 _restore_async docstring：线程异步，
+            # 让它自己去读全局 HISTORY_FILE 会跨越作用域、读写到不同文件）。
+            threading.Thread(target=_restore_async, args=(HISTORY_FILE,), daemon=True).start()
             steps.append(f"[{time.time()-_tw:.1f}s] 声卡还原已交后台线程（不阻塞返回，约 3s）")
         else:
             steps.append("未找到发送按钮，已取消录音（本次未发送）")
@@ -1807,8 +1833,10 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
 
     # 6) 声卡还原已在上一步交后台线程（_restore_async），此处不阻塞直接返回。
     #    立即返回的 restored 记为 None（pending），最终结果由后台线程写回发送历史。
+    #    warning 同时进响应体与历史：响应给当前这次弹窗用，历史给事后追查用
+    #    （2026-09-18 事故：它此前只拼在 steps 文案里，两处都没人接）。
     return {"ok": True, "outcome": "ok", "method": RECORD_METHOD, "wav": wav.name, "duration_s": round(duration, 1),
-            "steps": steps, "restored": None,
+            "steps": steps, "restored": None, "warning": bind_warning,
             "_history": (True if _hist_appended
                          else _append_history(wav, duration, "ok", warning=bind_warning))}
 

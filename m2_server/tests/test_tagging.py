@@ -17,51 +17,44 @@ def _write_wav(path, samples):
     sf.write(str(path), samples, 16000, subtype="PCM_16")
 
 
-def test_analyze_full_speech():
+def test_analyze_full_speech(tmp_path):
     """带停顿的语音（前有声后静音）→ speech_ratio 中等，has_bgm=False。"""
     t = np.arange(16000, dtype=np.float32) / 16000
     tone = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
     # 前 0.6s 有声 + 后 0.4s 静音 → 有停顿节奏，非连续音乐
     speech = np.concatenate([tone[: 9600], np.zeros(6400, dtype=np.float32)])
-    wav = Path(tagging.__file__).parent / "_test_tone.wav"
-    try:
-        _write_wav(wav, speech)
-        m = tagging._analyze(wav)
-        assert m["duration_s"] == pytest.approx(1.0, abs=0.05)
-        assert 0.4 < m["speech_ratio"] < 0.8
-        assert m["has_bgm"] is False
-        assert m["loudness_dbfs"] > -20
-    finally:
-        wav.unlink(missing_ok=True)
+    # 写 tmp_path 而非源码目录：以前写 tagging 模块旁边，测试被中断（如全量跑崩，
+    # finally 没跑到）就会在仓库里留下 _test_*.wav —— 2026-09-18 实测残留了三个。
+    wav = tmp_path / "_test_tone.wav"
+    _write_wav(wav, speech)
+    m = tagging._analyze(wav)
+    assert m["duration_s"] == pytest.approx(1.0, abs=0.05)
+    assert 0.4 < m["speech_ratio"] < 0.8
+    assert m["has_bgm"] is False
+    assert m["loudness_dbfs"] > -20
 
 
-def test_analyze_silence():
+def test_analyze_silence(tmp_path):
     """整段静音 → speech_ratio=0，loudness 极低，has_bgm=False（不是音乐）。"""
     silence = np.zeros(16000, dtype=np.float32)
-    wav = Path(tagging.__file__).parent / "_test_silence.wav"
-    try:
-        _write_wav(wav, silence)
-        m = tagging._analyze(wav)
-        assert m["speech_ratio"] == 0.0
-        assert m["loudness_dbfs"] < -50
-        assert m["has_bgm"] is False
-    finally:
-        wav.unlink(missing_ok=True)
+    wav = tmp_path / "_test_silence.wav"
+    _write_wav(wav, silence)
+    m = tagging._analyze(wav)
+    assert m["speech_ratio"] == 0.0
+    assert m["loudness_dbfs"] < -50
+    assert m["has_bgm"] is False
 
 
-def test_analyze_continuous_low_speech_is_bgm():
+def test_analyze_continuous_low_speech_is_bgm(tmp_path):
     """连续无停顿的均匀信号（模拟纯音乐/单音）→ 疑似 BGM。"""
     t = np.arange(16000 * 3, dtype=np.float32) / 16000
     # 连续正弦、无停顿 → speech_ratio≈1 且帧响度过分均匀（变异系数小）
     music = (0.05 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
-    wav = Path(tagging.__file__).parent / "_test_music.wav"
-    try:
-        _write_wav(wav, music)
-        m = tagging._analyze(wav)
-        assert m["speech_ratio"] > 0.9
-        assert m["has_bgm"] is True
-    finally:
-        wav.unlink(missing_ok=True)
+    wav = tmp_path / "_test_music.wav"
+    _write_wav(wav, music)
+    m = tagging._analyze(wav)
+    assert m["speech_ratio"] > 0.9
+    assert m["has_bgm"] is True
 
 
 def test_detect_lang_zh(monkeypatch):
