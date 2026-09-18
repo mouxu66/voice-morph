@@ -76,13 +76,21 @@
       ② **别用 `/tmp`**（MSYS 会解析成 `D:\tmp`，路径对不上就白解一场），用显式 `D:/tmp`；
       ③ 包内主进程路径是 `\electron\*.cjs`（不是 `web/electron`）；
       ④ 这一步**只换主进程 .cjs**，前端 `dist/` 与 `resources/backend/` 不受影响，别顺手覆盖。
-- `tools/sync_backend.ps1` 与 `resources/backend/m2_server` 副本、`resources/backend/web_dist`：对**安装版**而言这是 `resolveProjectRoot()` 的**唯一**路径（见上），对源码模式而言才是兜底副本。**分发副本现在无需手动同步**：后端启动（= 每次打开桌面端）会自动把 `m2_server`/`tools`/`web/dist` 镜像到副本（`m2_server/backend_autosync.py`，`VM_BACKEND_AUTOSYNC=0` 可关）；sync_backend.ps1 仅剩手动应急用途。
+- `tools/sync_backend.ps1` 与 `resources/backend/{m2_server,web_dist}` 副本：⚠️**这是源码根下的 staging 目录，不是"已安装的那份"**。已安装的桌面端只读 `%LOCALAPPDATA%\Programs\voice-morph-desktop\resources\backend`，而 `backend_autosync.py`（后端启动时自动跑，`VM_BACKEND_AUTOSYNC=0` 可关）**只写 staging、不写它** → 装好的那份会**悄悄过期**（2026-09-18 实测过一次，见 `docs/犯错指南.md` §2.34）。给已安装的那份更新必须**显式指定目标**：
+  ```bash
+  $dst = "$env:LOCALAPPDATA\Programs\voice-morph-desktop\resources\backend"
+  & tools\sync_backend.ps1 -WhatIfSync -TargetRoot $dst   # 先看会动什么
+  & tools\sync_backend.ps1           -TargetRoot $dst     # 再真同步
+  python tools/verify_backend_sync.py                     # 只读核验：逐字节比对 + 报「不一致/缺失/多余」
+  ```
+  注意 `sync_backend.ps1` 是**只拷不删**（没有 autosync 的 `f.unlink()` 镜像清理），源里删掉/改名过的文件会**残留在副本里** → 用 `verify_backend_sync.py` 的「多余=N」查。**别用 `md5sum` 手工比对**（§2.28 的 `\` 前缀假红/假绿）。
 - **桌宠的 `web/electron/pet/pet.html`（+ `preload.cjs`）是渲染侧文件，不在 asar 里，安装版从磁盘读**：`pet.cjs:27` 的 `PET_DIR` 先试 `resolveProjectRoot()/web/electron/pet`，命中就用它，否则才回退 asar 内置副本。安装版 `resolveProjectRoot()` = `resources/backend`，所以**只要 `resources/backend/web/electron/pet/pet.html` 存在就优先读它 → 改完直接拷一份即热替，不必重打 asar**。⚠️ 但它**不在** `backend_autosync.py` 的镜像范围（只有 `m2_server`/`tools`/`web/dist`），且本机 `D:\变声\voice-morph-desktop\` 为空（无 staging 副本，autosync 恒跳过），所以**每次改 pet.html 都要手动拷**：
   ```bash
   cp D:/变声/web/electron/pet/pet.html \
      "C:/Users/mouxu/AppData/Local/Programs/voice-morph-desktop/resources/backend/web/electron/pet/pet.html"
-  md5sum 两边比对   # 必须一致
+  python tools/verify_backend_sync.py   # 只读核验；pet 也在比对范围内（10 个文件）
   ```
+  ⚠️ **别用 `md5sum` 比对**：Git Bash 的 `md5sum` 遇到含反斜杠的 Windows 路径会在哈希前加 `\` 前缀，一侧相对一侧绝对时**全假红**（68 个 .py 全报不一致），两侧都用绝对路径时**全假绿**（更危险，会把混装放过去）——见 `docs/犯错指南.md` §2.28。要手工比就用 `cmp -s A B`。
   需要重打包的只有 `web/electron/*.cjs` 这类**主进程**文件 —— 别把两者混为一谈（`docs/犯错指南.md` 速查表第 25/31 条）。
 - Electron 主进程源码在 `web/electron/*.cjs`（模块化），现役 app.asar 由 `npm run electron:build`（electron-builder）从 web/ 构建；**`.asar_tmp/` + `repack_asar.cjs`/`extract_asar.cjs`/`probe_asar.cjs`/`tools/verify_asar_repack.cjs` 是 2026-09-03 模块化重构之前的过时流程，已于 2026-09-13 全部删除**（它们会拿 46KB 旧单体主进程覆盖现役装配层）。`web/electron` 里剩余的 `smoke-loadpath.cjs` 是现役的加载自检。
 - 常见误判（2026-09-14 实测澄清）：

@@ -13,8 +13,22 @@
 
     【2026-09-05 起】本脚本仅剩手动应急用途：后端每次启动（= 每次打开桌面端）
     会通过 m2_server/backend_autosync.py 自动镜像同步 m2_server/tools/web_dist
-    到 resources/backend（VM_BACKEND_AUTOSYNC=0 可关），语义与本脚本一致
-    （MD5 比对 + 镜像清理多余文件）。
+    到 resources/backend（VM_BACKEND_AUTOSYNC=0 可关）。
+
+    ⚠️【2026-09-18 澄清：本脚本是「只拷不删」的，两边语义**并不**一致】
+    本脚本只做 MD5 比对 + 覆盖拷贝，**不删多余文件**；autosync 才是完整镜像
+    （拷贝 + `f.unlink()` 删除副本里源已不存在的文件 + `_prune_empty_dirs()` 清空目录）。
+    后果：**源里删掉或改名过的文件，本脚本拷完仍会留在副本里** —— 正是
+    `docs/犯错指南.md` §2.29 那种「半新半旧」的温床。
+
+    想确认副本有没有残留多余文件，跑（只读，不改任何东西）：
+
+        python tools/verify_backend_sync.py            # 看「多余=N」
+
+    想要完整镜像语义，用 backend_autosync（它带「源目录为空则跳过清理」的保险）。
+
+    这样设计是有意的：本脚本要能在**没有 Python 的机器**上应急裸跑，所以不引依赖；
+    带删除的逻辑一律留在有单测覆盖的 Python 侧。
 
     ⚠️【2026-09-18 重要澄清：默认目标不是「已安装的那份」】
     本脚本与 backend_autosync.py 的默认目标都是**源码根下的 staging 目录**

@@ -179,3 +179,31 @@ def test_sync_ps1_exclude_rule_matches_autosync():
         assert token in ps1, f"sync_backend.ps1 的排除正则里缺 {token!r}"
     for token in backend_autosync._EXCLUDE_SUFFIX:
         assert token.lstrip(".") in ps1, f"autosync 排除了 {token!r}，脚本的排除正则里却没有"
+
+
+def test_sync_ps1_is_copy_only_and_says_so():
+    """`sync_backend.ps1` 是「只拷不删」的，注释里不许声称与 autosync 语义一致。
+
+    为什么钉住（2026-09-18 实测踩到）：ps1 的 `Sync-Dir` 只有 MD5 比对 + `Copy-Item`，
+    **没有任何删除**；而 `backend_autosync.py` 有完整的 `f.unlink()` 镜像清理
+    （第 139-147 行）加 `_prune_empty_dirs()`。原注释却写着「语义与本脚本一致
+    （MD5 比对 + 镜像清理多余文件）」—— 照着信就会以为"源里删过的文件副本里也没了"，
+    实际会**留在副本里**，又变成 §2.29 那种半新半旧的混装。
+
+    反过来也成立：哪天给 ps1 真加了删除动作，这条守卫会转红，逼着作者同时更新注释 ——
+    文档和行为必须一致，不能只改一边。
+    """
+    text = _SYNC_PS1.read_text("utf-8")
+    head = text.split("param(")[0]
+
+    assert "语义与本脚本一致" not in text, \
+        "不许再声称与 autosync 语义一致 —— ps1 不做镜像清理"
+    assert "只拷不删" in head, "注释块必须点明本脚本不删多余文件"
+    assert "verify_backend_sync.py" in head, \
+        "必须告诉读者用只读核验脚本去查「多余」文件"
+
+    body = text.split("param(", 1)[1]
+    assert "Remove-Item" not in body, (
+        "ps1 出现了删除动作，注释却说「只拷不删」——"
+        "要么撤掉删除，要么同步更新注释块与这条守卫"
+    )
