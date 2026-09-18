@@ -171,7 +171,7 @@ export function AppChrome({
               type="button"
               onClick={() => setDrawerOpen(true)}
               aria-label="打开导航"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-card text-muted-foreground transition hover:border-primary hover:text-primary lg:hidden"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm transition hover:border-primary hover:text-primary lg:hidden"
             >
               <Menu className="h-4 w-4" />
             </button>
@@ -189,12 +189,12 @@ export function AppChrome({
               onClick={onOpenEnv}
               title="本地服务状态 · 点击打开环境体检"
               className={cn(
-                "flex h-9 items-center gap-2 rounded-full border px-3 text-xs transition",
+                "flex h-9 items-center gap-2 rounded-full border px-3 text-xs shadow-sm transition",
                 online
-                  ? "border-primary/30 bg-primary/10 text-primary hover:bg-primary/15"
+                  ? "border-primary/35 bg-primary/10 text-primary hover:bg-primary/15"
                   : serviceState === "starting"
-                    ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/15"
-                    : "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15",
+                    ? "border-yellow-500/50 bg-yellow-500/15 text-yellow-600 hover:bg-yellow-500/20"
+                    : "border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15",
               )}
             >
               <span
@@ -210,7 +210,7 @@ export function AppChrome({
             <button
               type="button"
               onClick={onOpenChain}
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-muted-foreground transition hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm transition hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               aria-label="发送链路自检"
               title="发送链路自检：变声能不能送进微信/QQ/游戏"
             >
@@ -219,7 +219,7 @@ export function AppChrome({
             <button
               type="button"
               onClick={() => setSettingsOpen(true)}
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-muted-foreground transition hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm transition hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               aria-label="打开设置"
               title="设置"
             >
