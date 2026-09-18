@@ -129,3 +129,53 @@ def test_kill_switch(monkeypatch, tmp_path):
     )
     backend_autosync.autostart_sync(root)
     assert called == [root]
+
+
+# --------------------------------------------------------------- 文档守卫
+
+_SYNC_PS1 = Path(__file__).resolve().parents[2] / "tools" / "sync_backend.ps1"
+
+
+def test_sync_ps1_documents_the_real_install_target():
+    """`sync_backend.ps1` 必须写清「默认目标是 staging 目录，不是已安装的那份」。
+
+    为什么值得用测试钉住（2026-09-18 实测踩到）：脚本与 autosync 的默认 `-TargetRoot`
+    都是**源码根下的 staging 目录** `<项目根>\\voice-morph-desktop\\resources\\backend`，
+    而**已安装**的桌面端读的是
+    `%LOCALAPPDATA%\\Programs\\voice-morph-desktop\\resources\\backend` ——
+    两者互不相干，autosync 也**不写**后者，所以装好的那份会悄悄过期。
+
+    原先脚本注释还写着「本机开发不必重打包：resolveProjectRoot() 优先命中 D:\\变声 源码根」，
+    那只对**源码模式**成立（`app.isPackaged === false`）。照着它做就会以为"已经同步了"，
+    实际装好的那份一直没动。
+
+    实测后果：`resources/backend/m2_server/rvc_live.py` 已是新版（会调
+    `qwen3_tts.worker_alive()`），而 `qwen3_tts.py` 还是旧版（**没有这个函数**）
+    → 运行期 `AttributeError`，实时变声的状态/启动路径直接崩。
+    **半新半旧的混装比全旧更危险。**
+    """
+    text = _SYNC_PS1.read_text("utf-8")
+    # 断言落在**注释块**（.SYNOPSIS/.DESCRIPTION，`param(` 之前）而不是全文：
+    # 全文里 `staging` 还会出现在脚本体内的 Write-Host 提示里，只查全文的话
+    # 注释块被改坏也不会转红（实测过 —— 变异验证时这条守卫没咬住）。
+    head = text.split("param(")[0]
+    assert "%LOCALAPPDATA%\\Programs\\voice-morph-desktop\\resources\\backend" in head, \
+        "注释块里必须写出已安装副本的真实路径，否则下次还会拷错地方"
+    assert "staging" in head, "必须点明默认目标是源码根下的 staging 目录"
+    assert "app.isPackaged=false" in text, \
+        "必须说清「优先命中源码根」只对源码模式（app.isPackaged=false）成立"
+    assert "本机开发不必重打包" not in text, "旧的误导性说法必须删掉"
+
+
+def test_sync_ps1_exclude_rule_matches_autosync():
+    """脚本与 `backend_autosync.py` 的排除规则必须覆盖同一批杂质。
+
+    `backend_autosync.py` 的注释明写"与 tools/sync_backend.ps1 的排除正则保持一致"，
+    但两边是**各写一份**的常量 —— 改动一边忘了另一边，就会出现"autosync 拷了、
+    手动脚本没拷"的诡异差异。这里把两者都钉在同一个集合上。
+    """
+    ps1 = _SYNC_PS1.read_text("utf-8")
+    for token in ("__pycache__", "\\.pyc$", "\\.pyo$", "\\.log$", "\\.bak$", "\\.tmp$"):
+        assert token in ps1, f"sync_backend.ps1 的排除正则里缺 {token!r}"
+    for token in backend_autosync._EXCLUDE_SUFFIX:
+        assert token.lstrip(".") in ps1, f"autosync 排除了 {token!r}，脚本的排除正则里却没有"

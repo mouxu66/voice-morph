@@ -16,9 +16,39 @@
     到 resources/backend（VM_BACKEND_AUTOSYNC=0 可关），语义与本脚本一致
     （MD5 比对 + 镜像清理多余文件）。
 
+    ⚠️【2026-09-18 重要澄清：默认目标不是「已安装的那份」】
+    本脚本与 backend_autosync.py 的默认目标都是**源码根下的 staging 目录**
+    `<项目根>\voice-morph-desktop\resources\backend`（打包前暂存用）。
+    而**已安装**的桌面端读的是另一个地方：
+
+        %LOCALAPPDATA%\Programs\voice-morph-desktop\resources\backend
+
+    （即 `C:\Users\<你>\AppData\Local\Programs\voice-morph-desktop\resources\backend`）
+
+    两者互不相干，且 autosync **不会**写后者 —— 所以装好的桌面端会**悄悄过期**。
+    2026-09-18 实测的后果：`resources/backend/m2_server` 里 `rvc_live.py` 已经是新版
+    （会调 `qwen3_tts.worker_alive()`），但 `qwen3_tts.py` 还是旧版（没有这个函数）
+    → 运行期 `AttributeError`，实时变声的状态/启动路径直接崩。
+    **半新半旧的混装比全旧更危险。**
+
+    要给已安装的桌面端更新，必须显式指定目标：
+
+        powershell -NoProfile -ExecutionPolicy Bypass -File tools\sync_backend.ps1 `
+          -TargetRoot "$env:LOCALAPPDATA\Programs\voice-morph-desktop\resources\backend"
+
+    先看会动哪些文件（不实际拷）：
+
+        ... -WhatIfSync -TargetRoot "<同上>"
+
+    注意 `web/electron/pet/*`（桌宠渲染侧）**不在**本脚本与 autosync 的镜像范围内，
+    改完要手动拷一份过去（见 AGENTS.md「桌面端改动如何生效」）。
+
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\sync_backend.ps1
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\sync_backend.ps1 -WhatIfSync
+    # 给「已安装」的桌面端更新（注意目标目录不同，见上）：
+    powershell -NoProfile -ExecutionPolicy Bypass -File tools\sync_backend.ps1 `
+      -TargetRoot "$env:LOCALAPPDATA\Programs\voice-morph-desktop\resources\backend"
 #>
 param(
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
@@ -71,5 +101,22 @@ $n2 = Sync-Dir -Src (Join-Path $ProjectRoot "tools")      -Dst (Join-Path $Targe
 Write-Host ""
 Write-Host "m2_server: $n1 个文件更新" -ForegroundColor Green
 Write-Host "tools:     $n2 个文件更新" -ForegroundColor Green
-Write-Host "完成。本机开发不必重打包：main.cjs 的 resolveProjectRoot() 优先命中 D:\变声 源码根。" -ForegroundColor Green
-Write-Host "仅当要重新分发安装包、且改了 web/electron 时才执行：cd web; npm run electron:build" -ForegroundColor Yellow
+
+# 目标目录归属提示：默认目标是**源码根下的 staging 目录**，不是已安装的桌面端。
+# 混装（一半新一半旧）比全旧更危险 —— 2026-09-18 实测过一次 AttributeError，见文件头。
+$installRoot = Join-Path $env:LOCALAPPDATA "Programs\voice-morph-desktop\resources\backend"
+if ((Resolve-Path -LiteralPath $TargetRoot -ErrorAction SilentlyContinue).Path -ne `
+    (Resolve-Path -LiteralPath $installRoot  -ErrorAction SilentlyContinue).Path) {
+    Write-Host ""
+    Write-Host "⚠ 本次目标是 staging 目录，**已安装的桌面端没有更新**。" -ForegroundColor Yellow
+    if (Test-Path $installRoot) {
+        Write-Host "  已安装的副本在这里，如需一并更新请加 -TargetRoot：$installRoot" -ForegroundColor Yellow
+    } else {
+        Write-Host "  （本机没检测到已安装的桌面端：$installRoot）" -ForegroundColor Yellow
+    }
+}
+
+Write-Host ""
+Write-Host "说明：只有**源码模式**（npm run electron，app.isPackaged=false）才会优先命中 D:\变声 源码根；" -ForegroundColor Cyan
+Write-Host "      安装版（变声工坊.exe）只读包内 resources/backend，绝不回退源码根。" -ForegroundColor Cyan
+Write-Host "仅当要重新分发安装包、且改了 web/electron 主进程时才执行：cd web; npm run electron:build" -ForegroundColor Yellow
