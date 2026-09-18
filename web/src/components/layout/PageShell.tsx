@@ -91,7 +91,8 @@ export function Section({
 
 /**
  * Card —— 统一的表面容器。收拢全站 `rounded-2xl border border-border bg-card/85
- * shadow-md` 这一串重复，并给出三档层次：flat（贴在页面背景上）/ raised（默认）/ hero（强调）。
+ * shadow-md` 这一串重复，并把底色与投影交给 .surface-card 分主题处理
+ * （亮色下卡片必须靠分层投影浮起，暗色靠比背景更亮，见 styles/index.css）。
  */
 export function Card({
   as: Tag = "div",
@@ -116,10 +117,10 @@ export function Card({
       title={title}
       className={cn(
         "rounded-2xl border",
-        tone === "flat" && "border-border/70 bg-background/40",
-        tone === "raised" && "border-border bg-card/80 shadow-md backdrop-blur-xl",
+        tone === "flat" && "border-dashed border-border bg-background/50",
+        tone === "raised" && "surface-card border-border",
         tone === "accent" && "border-primary/35 bg-primary/[0.07]",
-        interactive && "transition duration-200 hover:border-input hover:shadow-lg",
+        interactive && "transition duration-200 hover:border-input",
         className,
       )}
     >

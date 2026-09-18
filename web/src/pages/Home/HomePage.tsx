@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom"
 import { mediaUrl, type MarketItem } from "@/api/client"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { EffectLadderCard } from "@/components/EffectLadderCard"
-import { PageShell, Section } from "@/components/layout/PageShell"
+import { Card, PageShell, Section } from "@/components/layout/PageShell"
 import { cn } from "@/lib/utils"
 import { useAppStore } from "@/store/useAppStore"
 import { useHomeDemo } from "@/pages/Home/useHomeDemo"
@@ -162,7 +162,6 @@ const ADVANCED_ITEMS = [
     title: "训练变声：专属嗓子",
     desc: "从你的素材开始，练一副只属于你的音色——不像预置，是「你那副」。",
     tag: "最像 · 慢工细活",
-    tone: "default" as const,
   },
   {
     to: "/live?tab=rvc",
@@ -170,7 +169,6 @@ const ADVANCED_ITEMS = [
     title: "实时变声：开麦就用",
     desc: "你说话、它出声，游戏 / 会议 / 语音一个键直接用。预置音色装好即可开麦；想要专属嗓子，就按上面的路线练一副。",
     tag: "装好即开麦",
-    tone: "default" as const,
   },
   {
     to: "/offlinevc",
@@ -178,7 +176,6 @@ const ADVANCED_ITEMS = [
     title: "工具箱：整段变声",
     desc: "把录好的整段音频一次性变成目标音色，适合配音与剪辑后期。",
     tag: "进阶",
-    tone: "default" as const,
   },
 ]
 
@@ -303,8 +300,7 @@ export function HomePage() {
       {/* Hero —— 全页唯一的大标题。
           此前顶栏写着「首页」、页内 hero 又贴一个 `HOME / 先玩，再定制`、往下还有七个
           等重的节标题，同一个词被砸了三次。这里收敛成一处，并把「先听一个」提到首屏。 */}
-      <section className="relative overflow-hidden border-b border-border">
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/[0.12] via-background to-card" aria-hidden="true" />
+      <section className="hero-canvas relative overflow-hidden border-b border-border">
         <PageShell padded={false} className="relative py-10 lg:py-12">
           {/* grid-cols-1 不能省：不写的话窄屏是 auto 轨道，会被 h1 的 max-w-3xl 撑到 768px
               并把整页顶出视口（中文长句的 max-content 很宽，这正是窄屏横向溢出的来源）。 */}
@@ -380,16 +376,16 @@ export function HomePage() {
             /* 两种"空"含义不同：此前共用一句"收藏夹还是空的"，
                而后端没连上、音色列表读不出来时也会走到这里，那句话是错的。 */
             favOnly ? (
-              <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border bg-card/40 px-6 py-8 text-center">
+              <Card tone="flat" className="flex flex-col items-center gap-3 px-6 py-8 text-center">
                 <Star className="h-5 w-5 text-muted-foreground" />
                 <p className="text-sm text-muted-foreground">收藏夹还是空的——点音色卡右上角的心形，把喜欢的先收起来再慢慢挑。</p>
                 <button type="button" onClick={() => setFavOnly(false)}
                   className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20">
                   看全部音色 <ArrowRight className="h-3.5 w-3.5" />
                 </button>
-              </div>
+              </Card>
             ) : (
-              <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border bg-card/40 px-6 py-8 text-center">
+              <Card tone="flat" className="flex flex-col items-center gap-3 px-6 py-8 text-center">
                 <Loader2 className="h-5 w-5 animate-spin text-primary" />
                 <p className="max-w-md text-sm leading-6 text-muted-foreground">
                   音色列表还没读出来。本地服务刚启动要等一会儿（首次会加载模型）；一直没动静就点右上角的状态胶囊做一次环境体检。
@@ -398,7 +394,7 @@ export function HomePage() {
                   className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20">
                   去音色市场看看 <ArrowRight className="h-3.5 w-3.5" />
                 </Link>
-              </div>
+              </Card>
             )
           ) : (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -497,9 +493,9 @@ export function HomePage() {
         {/* 零炼丹信任条：打消"要自己炼模型"的顾虑。
             这块刻意放在 WANT MORE 之前 —— 用户看到"训练"两个字的第一反应是
             "我不会炼丹/要配环境/要洗数据"，不先破这个，下面三条路他根本不会点。 */}
-        <section className="rounded-2xl border border-primary/30 bg-primary/5 p-5">
+        <Card as="section" tone="accent" className="p-5 sm:p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-primary/40 bg-background text-primary">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-primary/30 bg-background text-primary">
               <Sparkles className="h-5 w-5" />
             </span>
             <div className="min-w-0 flex-1">
@@ -519,7 +515,7 @@ export function HomePage() {
               </ul>
             </div>
           </div>
-        </section>
+        </Card>
 
         {/* 玩出兴趣后，再谈定制 */}
         <Section
@@ -528,13 +524,13 @@ export function HomePage() {
           desc="想要不撞声音、开麦就能用的专属嗓子？往下是正经玩法，随时可以回来。"
         >
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            {ADVANCED_ITEMS.map(({ to, icon: Icon, title, desc, tag, tone }) => (
+            {ADVANCED_ITEMS.map(({ to, icon: Icon, title, desc, tag }) => (
               <Link
                 key={title}
                 to={to}
                 className="group rounded-2xl border border-border bg-card/85 p-5 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg"
               >
-                <span className={`flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-background ${tone === "default" ? "text-muted-foreground" : "text-primary"}`}>
+                <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary/25 bg-primary/10 text-primary transition group-hover:border-primary/45">
                   <Icon className="h-5 w-5" />
                 </span>
                 <h4 className="mt-3 text-sm font-semibold text-card-foreground">{title}</h4>
@@ -566,7 +562,7 @@ export function HomePage() {
               </Link>
             </div>
           )}
-          <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-md sm:p-6">
+          <Card className="p-5 sm:p-6">
             <ol className="flex flex-col gap-1">
               {STEPS.map(({ icon: Icon, title, todo, why, to, cta }, i) => (
                 <li key={title} className="group flex gap-4">
@@ -592,7 +588,7 @@ export function HomePage() {
                 </li>
               ))}
             </ol>
-          </div>
+          </Card>
         </Section>
 
         {/* 效果阶梯：为什么要继续采集 / 训练 */}
@@ -634,7 +630,7 @@ export function HomePage() {
         </Section>
 
         {/* 底线：全程本地 + 版权红线 */}
-        <section className="flex flex-col gap-3 rounded-2xl border border-border bg-card/70 p-5 text-xs leading-5 text-muted-foreground shadow-md sm:flex-row sm:items-center sm:justify-between">
+        <Card as="section" className="flex flex-col gap-3 p-5 text-xs leading-5 text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
             <span>全程本地处理，不上传任何云端。只克隆自己或已授权的声音。</span>
@@ -643,7 +639,7 @@ export function HomePage() {
             <Users className="h-4 w-4 text-primary" />
             <Link to="/voices?tab=market" className="font-medium text-primary transition hover:opacity-80">也可以试试预置的开源音色</Link>
           </div>
-        </section>
+        </Card>
         </div>
       </PageShell>
     </div>
