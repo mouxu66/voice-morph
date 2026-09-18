@@ -232,10 +232,30 @@ def _check_ruff() -> tuple[bool, str]:
                                "--output-format", "concise"], ROOT)
 
 
+#: 把"被吞掉的线程异常"升级为失败。
+#:
+#: daemon 线程内的异常，pytest 默认只记一条 `PytestUnhandledThreadExceptionWarning`，
+#: **不影响用例结果** —— 于是测试全绿、而它声称覆盖的路径其实没跑通（假绿）。
+#: 2026-09-18 实测：全绿 890 passed 的背后藏着 3 处线程异常
+#: （mock 签名写错 / 子进程解码失败），加这个开关后一次全部现形
+#: （docs/犯错指南.md §2.32）。加之前已确认全量 905 passed、fast 151 passed
+#: 都不会因此变红。
+_PYTEST_WERROR = ["-W", "error::pytest.PytestUnhandledThreadExceptionWarning"]
+
+
 def _check_pytest(fast: bool) -> tuple[bool, str]:
     targets = FAST_TESTS if fast else ["m2_server"]
+    # CODEBUDDY_SAFE_DELETE_ENABLED=0：WorkBuddy 注入的 sitecustomize 把
+    # `shutil.rmtree` 换成"移回收站"，批量删除时 raise SystemExit(1)。
+    # pytest 清理**自己的临时目录**也会中招 → 全量出现随机数量的假红
+    # （每次失败的用例都不一样，且报错与被测逻辑无关），单文件跑却全绿。
+    # 关掉该 shim 只影响本 pytest 子进程，在用户终端 / CI 上这个变量本就不存在，
+    # 设了也无副作用。详见 .workbuddy/memory/2026-09-06.md 与 §2.31。
     return _run("pytest" + ("(fast)" if fast else ""),
-                [sys.executable, "-m", "pytest", *targets, "-q", "--no-header"], ROOT)
+                [sys.executable, "-m", "pytest", *targets, "-q", "--no-header",
+                 *_PYTEST_WERROR],
+                ROOT,
+                extra_env={"CODEBUDDY_SAFE_DELETE_ENABLED": "0"})
 
 
 def _check_web() -> tuple[bool, str]:
