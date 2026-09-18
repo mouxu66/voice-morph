@@ -1442,7 +1442,11 @@ async function doSendText() {
     const voiceId = voiceSel.value || "";
     if (voiceId) localStorage.setItem(VOICE_KEY, voiceId);   // 记住上次选的音色
     setStatus("合成中… 完成后自动发到微信，全程别动键鼠", "ok");
-    if (window.pet.sendText) { window.pet.sendText(text, voiceId); sayEl.value = ""; }
+    if (window.pet.sendText) {
+      window.pet.sendText(text, voiceId);
+      sayEl.value = "";
+      void watchSendOutcome();   // 主进程旧版不回传结果时的兜底收尾（见函数注释）
+    }
   }
   setBusy(sendBtn, true);
   setTimeout(() => { setBusy(sendBtn, false); refreshPanel(); }, 25000);   // TTS+录音发送可能要十几秒
@@ -1479,39 +1483,76 @@ if (window.pet && window.pet.onPreviewResult) {
 if (window.pet && window.pet.onSendResult) {
   window.pet.onSendResult((r) => {
     if (!r) return;
-    if (r.ok) {
-      setStatus(`已发到微信 ✓（${r.duration_s || "?"}s）`, "ok");
-      void flagSendWarning(r.duration_s);   // 异步补查：有录音环境告警就改写状态栏
-    } else {
-      setStatus("发送失败：" + (r.error || "未知错误"), "err");
-    }
+    void settleSendResult(r);
     refreshPanel();
   });
 }
 
-/**
- * 发送成功后补查最新一条发送历史的录音环境告警，有则把状态栏从绿勾改成警示。
- *
- * 为什么绕一圈从 /history 读：主进程 pet-actions.cjs 的 "pet:send-result" 只透传
- * ok/duration_s/hint/outcome，把后端返回的 warning 丢掉了（改它就得重打 asar）。
- * 而后端 _append_history 已把 warning 落库，桌宠本来就直连 127.0.0.1:8000，
- * 所以这里补一次只读查询即可 —— pet.html 是热替换生效的，不必动主进程。
- *
- * 背景（2026-09-18 事故）：VM_WECHAT_RESTART=0 下微信绑在物理麦上 → 录进去是静音，
- * 但这里原先无条件打绿勾「已发到微信 ✓」，用户听到才发现，事后历史里也查不到线索。
- */
-async function flagSendWarning(durationS) {
+/** 读 /api/wechat/history 的最新一条；失败或无记录返回 null。 */
+async function fetchLastHistory() {
   try {
     const r = await fetch("http://127.0.0.1:8000/api/wechat/history", { cache: "no-store" });
-    if (!r.ok) return;
+    if (!r.ok) return null;
     const j = await r.json();
     const items = j.items || [];
-    const last = items[items.length - 1];
-    if (!last || !last.warning) return;
+    return items[items.length - 1] || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把一次发送结果落到状态栏。
+ *
+ * warning 优先用回传值；回传里没有就补查一次历史 —— 兼容"主进程还是旧版、没透传
+ * warning"的装机状态（改 *.cjs 要重打 asar，pet.html 却是热替换生效）。
+ * 告警含义：录音环境有问题（典型是微信绑在物理麦上）→ 这条语音很可能是静音。
+ * 背景见 2026-09-18 事故：此前这里无条件打绿勾「已发到微信 ✓」。
+ */
+async function settleSendResult(r, fallbackDurationS) {
+  if (!r || !r.ok) {
+    setStatus("发送失败：" + ((r && r.error) || "未知错误"), "err");
+    return;
+  }
+  let warn = r.warning || "";
+  let dur = r.duration_s || fallbackDurationS;
+  if (!warn) {
+    const last = await fetchLastHistory();
     // 只认刚发出的那条：ts 过旧说明是历史遗留告警，别拿来吓人
-    if (last.ts && Date.now() / 1000 - last.ts > 300) return;
-    setStatus(`已发出（${durationS || last.duration_s || "?"}s）但可能没声音：${last.warning}`, "warn");
-  } catch {}
+    if (last && (!last.ts || Date.now() / 1000 - last.ts <= 300)) {
+      warn = last.warning || "";
+      dur = dur || last.duration_s;
+    }
+  }
+  if (warn) setStatus(`已发出（${dur || "?"}s）但可能没声音：${warn}`, "warn");
+  else setStatus(`已发到微信 ✓（${dur || "?"}s）`, "ok");
+}
+
+/**
+ * 「合成并发送」的兜底看门狗。
+ *
+ * 为什么需要：主进程 pet-actions.cjs 的 doSendTextToWechat() 原先**从不回传**
+ * pet:send-result（只有 sendWechatWav 回传），于是这条路径的状态栏永远停在
+ * "合成中…"——2026-09-18 用户正是看到"已经合成完了，下面还写着合成中"来问的。
+ * 主进程已修，但改 *.cjs 要重打 asar；这里用只读轮询兜住旧装机：一旦
+ * /api/wechat/history 出现本次的新记录就收尾。收到正常回传时本循环会自行退出。
+ */
+async function watchSendOutcome() {
+  const startedAt = Date.now() / 1000;
+  for (let i = 0; i < 100; i++) {                    // 最多约 200s（TTS+RVC+录音）
+    await new Promise((res) => setTimeout(res, 2000));
+    const el = document.getElementById("status");
+    if (!el || !el.classList.contains("show")) return;
+    if (!statusText.textContent.includes("合成中")) return;   // 已被回传收尾
+    const last = await fetchLastHistory();
+    if (last && last.ts && last.ts >= startedAt - 5) {
+      await settleSendResult({ ok: last.outcome === "ok",
+                               duration_s: last.duration_s,
+                               warning: last.warning || "" });
+      refreshPanel();
+      return;
+    }
+  }
 }
 
 function overInteractive(e) {

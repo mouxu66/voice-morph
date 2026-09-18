@@ -256,9 +256,15 @@ function doSendTextToWechat(text, voiceId) {
     { text, voice_id: voiceId || "", rvc_voice: "", pitch: 0, index_rate: 0.5 },
     (data, code) => {
       const err = data.error || data.detail || `HTTP ${code}`;
+      const petWin = getPetWin();
       if (!data.ok) {
         hideAltHint();
         petGuideFail(err);
+        // 失败也必须回传：面板只靠 pet:send-result 收尾，不回传它就永远停在
+        // "合成中…"（2026-09-18 用户实测："已经合成完了，下面还写着合成中"）。
+        if (petWin) {
+          petWin.webContents.send("pet:send-result", { ok: false, error: String(err) });
+        }
         return;
       }
       hideAltHint();
@@ -271,6 +277,17 @@ function doSendTextToWechat(text, voiceId) {
         ].concat((data.steps || []).slice(-3)),
         action: outcome === "ok" ? "play" : "error", motion: "work", duration: 9000,
       });
+      if (petWin) {
+        // 与 sendWechatWav 同款载荷。warning 是录音环境告警（典型：微信绑的不是
+        // CABLE → 录进去可能是静音），透传给面板，好把绿勾改成警示态。
+        petWin.webContents.send("pet:send-result", {
+          ok: outcome === "ok",
+          duration_s: data.duration_s,
+          hint: data.hint,
+          outcome,
+          warning: data.warning || "",
+        });
+      }
     }, 180000);   // TTS + RVC + 录音可能两分钟，超时给足
 }
 
