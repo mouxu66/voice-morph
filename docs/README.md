@@ -25,7 +25,7 @@
 
 | 文档 | 那一天的结论 |
 |---|---|
-| `CODE_FIX_FINAL.md` | 代码质量 256 项问题清零（64% → 100%），5 文件 37 行改动 |
+| `CODE_FIX_FINAL.md` | 代码质量 256 项问题清零（64% → 100%），5 文件 37 行改动。⚠️ **事后更正（2026-09-19）：「清零」不实** —— 该提交信息声称改了 `rvc_live.py` 的 3 处 SIM115，实际**根本没碰该文件**（`git show --name-only 2babe07` 无 `rvc_live.py`），`ruff --select SIM115` 至今仍报 4 处；且同批自称「无破坏性变更」却引入了 `wins['area']` 的 `TypeError`。**别把本报告当事实来源**，详见 `犯错指南.md` §8.18 |
 | `CODE_FIX_COMPLETE.md` | 同一轮修复的第一阶段快照（240+/256，93.75%）；后续见 `CODE_FIX_FINAL.md` |
 | `CODE_QUALITY_REPORT.md` | 工具链清单（ruff/black/isort/mypy/pytest/vitest/eslint）+ 质量检测基线 |
 | `DEV_TOOLS_SETUP.md` | 开发环境配置快照：AI 插件、npm 包、Python 工具 |
