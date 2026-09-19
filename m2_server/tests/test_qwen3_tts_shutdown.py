@@ -55,6 +55,44 @@ def test_shutdown_worker_does_not_kill_foreign_port_owner(monkeypatch):
     assert killed == []
 
 
+# ---------------- 合成中保护：切游戏档延迟卸载（2026-09-19） ----------------
+
+def test_shutdown_worker_busy_defers_recycle(monkeypatch):
+    """合成中（busy>0）调用 shutdown_worker：不立即杀，等任务结束自动回收。
+
+    回归：此前切游戏档直接杀 worker，会把进行中的 TTS/转写/挖掘一起打断，
+    有声书/微信一键发送等长任务会不明不白失败。
+    """
+    recycled: list[int] = []
+    monkeypatch.setattr(qwen3_tts, "_do_recycle", lambda: recycled.append(1))
+    # 模拟一个合成任务进行中
+    qwen3_tts._busy = 1
+    try:
+        qwen3_tts.shutdown_worker()
+        assert qwen3_tts.shutdown_pending() is True
+        assert recycled == [], "busy>0 时不得立即卸载"
+        # 任务完成 → busy 归零 → 守护线程应随后自动回收
+        qwen3_tts._busy_dec()
+        thread = qwen3_tts._shutdown_thread
+        if thread is not None:
+            thread.join(timeout=5)
+        assert recycled == [1], "busy 归零后应自动执行卸载"
+        assert qwen3_tts.shutdown_pending() is False
+    finally:
+        qwen3_tts._busy = 0
+        qwen3_tts._shutdown_pending = False
+        qwen3_tts._shutdown_thread = None
+
+
+def test_shutdown_worker_idle_recycles_immediately(monkeypatch):
+    """无任务（busy=0）时调用 shutdown_worker：保持原有立即卸载语义。"""
+    recycled: list[int] = []
+    monkeypatch.setattr(qwen3_tts, "_do_recycle", lambda: recycled.append(1))
+    qwen3_tts.shutdown_worker()
+    assert recycled == [1]
+    assert qwen3_tts.shutdown_pending() is False
+
+
 # ---------------- netstat 解码：2026-09-18 实测故障（§2.33） ----------------
 
 def test_pids_on_port_survives_none_stdout(monkeypatch):

@@ -969,6 +969,11 @@ def rvc_live_profile_set(payload: LiveProfilePayload):
         # 切到 game 档即卸载 Qwen3-TTS worker（释放 ~4.8GB 显存给游戏）；
         # 切回 balanced 不主动拉起，用时懒加载。
         worker_was_alive = _sync_worker_for_profile(profile)
+    # 合成中保护（2026-09-19）：worker 正跑 tts/transcribe/analyze 时切换不做即杀，
+    # 改为延迟卸载（qwen3_tts 内等 busy 归零后自动回收）。此时 freed 尚未发生——
+    # 不虚报释放量，改由 tts_freed_deferred 告知前端「任务结束后释放」。
+    deferred = bool(worker_was_alive and profile == live_settings.PERF_GAME
+                    and qwen3_tts.shutdown_pending())
     restarted = False
     if changed and _live_proc_alive():
         # stop 尽力执行：失败也不阻断 start（声卡 restore/apply 幂等）
@@ -981,8 +986,8 @@ def rvc_live_profile_set(payload: LiveProfilePayload):
     return {"ok": True, "restarted": restarted, "profile": profile,
             "profile_desc": PROFILE_DESC.get(profile, ""),
             "tts_worker_alive": qwen3_tts.worker_alive(),
-            "tts_freed_mb": TTS_WORKER_VRAM_MB if (profile == live_settings.PERF_GAME
-                                                    and worker_was_alive) else 0}
+            "tts_freed_mb": TTS_WORKER_VRAM_MB if (worker_was_alive and not deferred) else 0,
+            "tts_freed_deferred": deferred}
 
 
 @router.get("/rvc/live/audio_devices")

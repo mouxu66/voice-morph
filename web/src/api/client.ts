@@ -724,6 +724,8 @@ export type LiveProfileResult = {
   tts_worker_alive?: boolean;
   /** 本次切换释放的显存（MB）；未切到 game 或 worker 本就未驻留时为 0 */
   tts_freed_mb?: number;
+  /** 合成中切 game：worker 未立即卸载，等任务结束后自动释放（此时 tts_freed_mb 为 0） */
+  tts_freed_deferred?: boolean;
 };
 
 export async function rvcLiveGetProfile(): Promise<LiveProfileResult> {

@@ -401,9 +401,12 @@ export function useLive() {
       setFeedback(null)
       try {
         const r = await rvcLiveSetProfile(profile)
-        const freed = r.tts_freed_mb
-          ? `已卸载语音合成引擎，释放约 ${(r.tts_freed_mb / 1024).toFixed(1)} GB 显存给游戏。`
-          : ""
+        // 合成中切 game：不即杀 worker，等任务结束后自动释放（见后端 tts_freed_deferred）
+        const freed = r.tts_freed_deferred
+          ? "语音合成引擎将在当前任务完成后自动释放（约 4.8 GB 显存）。"
+          : (r.tts_freed_mb
+              ? `已卸载语音合成引擎，释放约 ${(r.tts_freed_mb / 1024).toFixed(1)} GB 显存给游戏。`
+              : "")
         setFeedback({
           tone: "ok",
           text:

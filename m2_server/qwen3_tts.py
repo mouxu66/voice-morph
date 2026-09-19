@@ -34,6 +34,15 @@ _lock = threading.Lock()
 _proc = None
 _ready = False
 
+# ---- 合成中保护（2026-09-19）：切游戏档要卸载 worker 腾显存，但若正有任务
+# （tts/transcribe/analyze）在跑，直接杀会打断合成。改为 busy 计数 + 延迟卸载：
+# shutdown_worker 发现 busy>0 时不立即杀，置 _shutdown_pending 起守护线程等
+# busy 归零后再回收；合成完成的瞬间自动释放显存，用户任务不受影响。 ----
+_busy = 0
+_busy_lock = threading.Lock()
+_shutdown_pending = False
+_shutdown_thread: "threading.Thread | None" = None
+
 _NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW，避免弹黑窗
 
 
@@ -152,8 +161,52 @@ def worker_alive() -> bool:
 
     给状态面板用：游戏档卸载后这里变 False，前端据此展示「语音合成引擎已卸载，
     显存已释放」；不用 _ready 是因为服务重启后复用的 worker 没有 _proc/_ready。
+    延迟卸载期间 worker 进程尚存（合成中），/health 仍通 → 自然返回 True，
+    前端不会误报「已卸载」；等 _do_recycle 真杀掉进程后自然变 False。
     """
     return _health_ok()
+
+
+def _busy_inc() -> None:
+    global _busy
+    with _busy_lock:
+        _busy += 1
+
+
+def _busy_dec() -> None:
+    global _busy
+    with _busy_lock:
+        _busy = max(0, _busy - 1)
+
+
+def _do_recycle() -> None:
+    """真正的卸载动作：杀本进程拉起的 _proc + 清理端口上残留的本项目 worker。"""
+    global _ready
+    _ready = False
+    _terminate_proc()
+    for pid in _pids_on_port():
+        if _is_our_worker(pid):
+            print(f"[qwen3_tts] shutdown_worker 回收遗留 worker PID={pid}", flush=True)
+            _kill_pid(pid)
+
+
+def _recycle_when_idle() -> None:
+    """守护线程：等 busy 归零后执行卸载。合成任务完成瞬间自动释放显存。"""
+    global _shutdown_pending, _shutdown_thread
+    while True:
+        with _busy_lock:
+            idle = _busy == 0
+        if idle:
+            break
+        time.sleep(0.5)
+    _do_recycle()
+    _shutdown_pending = False
+    _shutdown_thread = None
+
+
+def shutdown_pending() -> bool:
+    """是否有延迟卸载在等合成结束（供状态面板/切档接口识别）。"""
+    return _shutdown_pending
 
 
 def shutdown_worker() -> None:
@@ -163,14 +216,21 @@ def shutdown_worker() -> None:
     服务重启后 _proc 为 None、worker 被 _ensure_worker 复用，只杀 _proc 会
     漏掉这块 ~4.8GB 显存（2026-09-15 实测）。按命令行判断只杀本项目 worker，
     绝不误伤占用 8001 的其他程序。
+
+    合成中保护（2026-09-19）：若正有 tts/transcribe/analyze 在跑（_busy>0），
+    不能直接杀——会打断进行中的任务。改为延迟：置 _shutdown_pending 起守护
+    线程，等 busy 归零后自动回收（合成完成瞬间释放显存）。server 退出路径
+    （atexit）走 _terminate_proc 快速杀，不受此保护影响。
     """
-    global _ready
-    _ready = False
-    _terminate_proc()
-    for pid in _pids_on_port():
-        if _is_our_worker(pid):
-            print(f"[qwen3_tts] shutdown_worker 回收遗留 worker PID={pid}", flush=True)
-            _kill_pid(pid)
+    global _shutdown_pending, _shutdown_thread
+    with _busy_lock:
+        if _busy > 0:
+            if not _shutdown_pending:
+                _shutdown_pending = True
+                _shutdown_thread = threading.Thread(target=_recycle_when_idle, daemon=True)
+                _shutdown_thread.start()
+            return
+    _do_recycle()
 
 
 atexit.register(_terminate_proc)
@@ -289,7 +349,11 @@ def analyze(clips: list[dict], sim_threshold: float | None = None,
         payload["sim_threshold"] = sim_threshold
     if min_cluster_size is not None:
         payload["min_cluster_size"] = int(min_cluster_size)
-    return json.loads(_post("/analyze", payload, timeout=1800))
+    _busy_inc()
+    try:
+        return json.loads(_post("/analyze", payload, timeout=1800))
+    finally:
+        _busy_dec()
 
 
 # 供 finetune 等模块复用：确保 worker 已拉起再直连；post 带死亡重试
@@ -305,8 +369,12 @@ def transcribe(path: str, vad_filter: bool = True, fast: bool = False,
     fast：走快速转写通道（质量略降）。
     """
     _ensure_worker()
-    return json.loads(_post("/transcribe", {"path": path, "vad_filter": vad_filter,
-                                            "fast": fast}, timeout=timeout))
+    _busy_inc()
+    try:
+        return json.loads(_post("/transcribe", {"path": path, "vad_filter": vad_filter,
+                                                "fast": fast}, timeout=timeout))
+    finally:
+        _busy_dec()
 
 
 def tts(text: str, ref_audio: str, ref_text: str = "", language: str = "Chinese",
@@ -318,6 +386,17 @@ def tts(text: str, ref_audio: str, ref_text: str = "", language: str = "Chinese"
     style_ref/style_ref_text/seg_chars：风格参考 ICL + 长文分段（见 worker /tts）。
     """
     _ensure_worker()
+    _busy_inc()
+    try:
+        return _tts_do(text, ref_audio, ref_text, language, voice_id,
+                       style_ref, style_ref_text, seg_chars)
+    finally:
+        _busy_dec()
+
+
+def _tts_do(text: str, ref_audio: str, ref_text: str, language: str,
+            voice_id: str = "", style_ref: str = "", style_ref_text: str = "",
+            seg_chars: int = 0) -> bytes:
     if voice_id:
         meta_p = os.path.join(PROJECT_ROOT, "media", "voicebank", voice_id, "meta.json")
         try:

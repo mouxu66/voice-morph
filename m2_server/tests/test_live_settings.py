@@ -289,6 +289,24 @@ def test_game_profile_running_unloads_worker(fake_tts_worker, monkeypatch):
     assert r["tts_freed_mb"] == rvc_live.TTS_WORKER_VRAM_MB
 
 
+def test_game_profile_defers_when_tts_busy(fake_tts_worker, monkeypatch):
+    """合成中切 game：不虚报释放量，改报延迟卸载（任务结束后自动释放）。
+
+    回归（2026-09-19）：此前切档直接杀 worker，合成中会被打断；现在改为
+    qwen3_tts 内延迟卸载，接口用 tts_freed_deferred 告知前端「完成后释放」。
+    这里模拟 qwen3_tts 因 busy>0 而延后卸载的真实现：worker 仍活着（alive 不变）。
+    """
+    fake_tts_worker["alive"] = True
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: False)
+    # qwen3_tts 判定 busy>0 → 延迟，不真杀：替换为 no-op 保持 alive
+    monkeypatch.setattr(rvc_live.qwen3_tts, "shutdown_worker", lambda: None)
+    monkeypatch.setattr(rvc_live.qwen3_tts, "shutdown_pending", lambda: True)
+    r = rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="game"))
+    assert r["tts_worker_alive"] is True
+    assert r["tts_freed_mb"] == 0, "延迟卸载尚未发生时不得虚报释放量"
+    assert r["tts_freed_deferred"] is True
+
+
 def test_balanced_switch_keeps_worker(fake_tts_worker, monkeypatch):
     """切回均衡档：不卸载也不主动拉起（懒加载，等真用上合成再起）。"""
     fake_tts_worker["alive"] = True
