@@ -5,7 +5,10 @@
     默认监听 8000 端口。
 
 本文件只负责：创建 app、可选 Token 鉴权中间件、CORS、注册全部路由、
-托管前端静态资源。业务实现按域拆在同目录各模块（行为与拆分前一致）：
+托管前端静态资源。业务实现按域拆在同目录各模块（行为与拆分前一致）。
+
+路由**容错注册**（某个能力不可用不能拖垮整个后端）在 plugin_loader.py，
+启动时会 print 一行「路由模块 N/M 个已加载」及逐条失败原因。
 
     system_api.py        /health /diagnose /system/storage（占用看板+清理）
     voices_api.py        /voices /voicebank（建库/删除/音色包导出导入）
@@ -31,40 +34,13 @@ import re
 import secrets
 
 import config as cfg
+import plugin_loader
 import uvicorn
-from ab_api import router as ab_router
-from ab_chain import router as ab_chain_router
-from audio_api import _start_audio_audit
-from audio_api import router as audio_router
-from audiobook import router as audiobook_router
-from audition_api import router as audition_router
-from capture_api import router as capture_router
-from cascade import router as cascade_router
-from clips_api import router as clips_router
-from effects import router as effects_router
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from finetune import router as ft_router
-from history_api import router as history_router
-from market_api import router as market_router
-from media_api import router as media_router
-from mine_api import router as mine_router
-from offline_vc import router as offlinevc_router
-from openai_compat import router as openai_router
-from pet_market_api import router as pet_market_router
-from pipeline_api import router as pipeline_router
-from raw_media_api import router as raw_media_router
 from runtime import ROOT
-from rvc_dataset_api import router as rvc_dataset_router
-from rvc_live import router as rvc_live_router
 from starlette.middleware.base import BaseHTTPMiddleware
-from system_api import router as system_router
-from tts_api import router as tts_router
-from voices_api import router as voices_router
-from wechat_voice import router as wechat_router
-
-from seed_vc import router as seedvc_router
 
 app = FastAPI(title="变声 · M2 转换服务", version="0.1.0")
 
@@ -165,61 +141,75 @@ else:
         allow_headers=["*"],
     )
 
-# ---- 注册路由（原有 9 个能力模块 + server.py 拆出的 11 个）----
-app.include_router(rvc_live_router)
-app.include_router(ft_router)
-app.include_router(audiobook_router)
-app.include_router(offlinevc_router)
-app.include_router(seedvc_router)
-app.include_router(cascade_router)
-app.include_router(effects_router)
-app.include_router(wechat_router)
-app.include_router(history_router)
-app.include_router(system_router)
-app.include_router(voices_router)
-app.include_router(raw_media_router)
-app.include_router(pipeline_router)
-app.include_router(clips_router)
-app.include_router(tts_router)
-app.include_router(mine_router)
-app.include_router(market_router)
-app.include_router(pet_market_router)
+# ---- 注册路由：容错加载（顺序与拆分前逐条一致）----
+# 为什么不再直接 `from xxx import router`：那是 26 处**模块级**导入，任意一处失败
+# （缺 torch / 缺权重 / 缺可选依赖 / 一个笔误）都会让整个后端 `ImportError` 起不来，
+# 而「用户没装这个能力」本来就是正常状态，不该表现为「软件打不开」。
+# 记账口径、为什么不吞 `BaseException` 见 plugin_loader.py 的模块注释。
+#
+# ⚠️ 两点别动：
+#   1. **顺序有语义** —— FastAPI 按注册顺序匹配路由，重排会让重叠路径换一个 handler 接；
+#   2. 拆成三段 `_register(...)` 是**照搬**原来的位置：中间那两个启动副作用
+#      （pet_market / market_images）原本就夹在 pet_market_api 与 capture_api 之间。
+_ROUTER_ORDER: list[str] = []
+
+
+def _register(*module_names: str) -> None:
+    """按给定顺序容错注册：导不进来的只跳过它自己，并在 registry 里留下原因。"""
+    _ROUTER_ORDER.extend(module_names)
+    for name in module_names:
+        router = plugin_loader.load_router(name)
+        if router is not None:
+            app.include_router(router)
+
+
+_register(
+    "rvc_live",
+    "finetune",
+    "audiobook",
+    "offline_vc",
+    "seed_vc",
+    "cascade",
+    "effects",
+    "wechat_voice",
+    "history_api",
+    "system_api",
+    "voices_api",
+    "raw_media_api",
+    "pipeline_api",
+    "clips_api",
+    "tts_api",
+    "mine_api",
+    "market_api",
+    "pet_market_api",
+)
 
 # 人偶市场：确保默认内置皮肤（芙宁娜）物化到 outputs（幂等，失败不阻塞）
-try:
-    from pet_market import ensure_default_bundle
-
-    ensure_default_bundle()
-except Exception:
-    pass
+plugin_loader.call_hook("pet_market", "ensure_default_bundle")
 
 # 音色市场远程图库：启动后台自动同步（VM_MARKET_IMG_REPO 未配置时为 no-op）
-try:
-    from market_images import start_background_sync
+plugin_loader.call_hook("market_images", "start_background_sync")
 
-    start_background_sync()
-except Exception:
-    pass
-app.include_router(capture_router)
-app.include_router(ab_router)
-app.include_router(ab_chain_router)
-app.include_router(audio_router)
+_register(
+    "capture_api",
+    "ab_api",
+    "ab_chain",
+    "audio_api",
+)
 # 试音间：一个声音 × 多个音色（复用 offline_vc / market_preview / ab_chain 的链路与尺子）
-app.include_router(audition_router)
+_register("audition_api")
 
 # 预热 TTS worker + RVC 常驻模型：消除首条几十秒的模型加载
 # （实测 TTS 冷 41.8s→2.9s、RVC 24.7s→0.3s，端到端 ~77s→~13s）
-try:
-    from warmup import start_background
+plugin_loader.call_hook("warmup", "start_background")
 
-    start_background()
-except Exception:
-    pass
-app.include_router(media_router)
-app.include_router(rvc_dataset_router)
 # OpenAI 兼容层：prefix=/v1（**不是** /api/v1）——SDK 的 base_url="…/v1" 语义要求如此，
 # 挂到 /api/v1 会让用户按官方文档写反而打不通。详见 openai_compat.py 模块注释。
-app.include_router(openai_router)
+_register("media_api", "rvc_dataset_api", "openai_compat")
+
+# 启动横幅：把容错结果说清楚。“哪个能力不可用”必须是**可见的**，
+# 否则这次容错只是把“崩溃”换成了“静默”，反而更难查。
+print(plugin_loader.report(_ROUTER_ORDER))
 
 # ---------------- 局域网访问：托管前端静态资源（手机浏览器打开 http://<本机IP>:8000） ----------------
 # 安装版前端在 app.asar 里不可读，打包时额外放一份到 backend/web_dist；开发态直接用 web/dist。
@@ -240,7 +230,9 @@ if _web_dist is not None:
 
 
 if __name__ == "__main__":
-    _start_audio_audit()  # 音频设备残留自动巡检（FRD F4）
+    # 音频设备残留自动巡检（FRD F4）。audio_api 导不进来时静默跳过 ——
+    # 巡检是「附加保险」，不该因为它连累整个后端起不来。
+    plugin_loader.call_hook("audio_api", "_start_audio_audit")
     # 打开桌面端 = 拉起后端：自动把 m2_server/tools/web/dist 镜像同步到
     # resources/backend 兜底副本（安装版回退用），详见 backend_autosync.py。
     # 后台线程执行，失败/关闭（VM_BACKEND_AUTOSYNC=0）均不影响启动。
