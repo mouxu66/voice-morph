@@ -359,8 +359,12 @@ export async function scanSetup(kinds?: SetupKind[]): Promise<ScanResult | null>
 export async function openGuideLink(kind: SetupKind, index: number): Promise<boolean> {
   if (!electron?.setupOpenGuideLink) return false;
   try {
-    return await electron.setupOpenGuideLink(kind, index);
-    return false;
+    // 主进程返回的是 `{ ok, url? }` / `{ ok: false, reason }`，**不是** boolean。
+    // 2026-09-19 修正：此前直接 `return await …` 把整个对象当布尔返回 —— 对象恒为真值，
+    // 于是 ModelSetupPanel 里那句 `if (!ok) notify.error(...)` 永远不会触发，打开链接失败时
+    // 界面毫无反馈（调用方以为拿到了 true）。紧随其后的 `return false;` 是死代码，也一并删掉。
+    const res = await electron.setupOpenGuideLink(kind, index);
+    return Boolean(res?.ok);
   } catch {
     return false;
   }
