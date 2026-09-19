@@ -163,7 +163,8 @@ export default function App() {
       </main>
 
       {/* 缺模型时的全局降级提示：不阻塞启动，只提示相关功能不可用 */}
-      <SetupBanner onOpen={() => setModelOpen(true)} />
+      {/* 「看诊断」直接开到环境体检：能力没挂上时那面板里的勾叉清单比配置向导更对口 */}
+      <SetupBanner onOpen={() => setModelOpen(true)} onDiagnose={() => setEnvOpen(true)} />
       <EnvHealth open={envOpen} onClose={() => setEnvOpen(false)} />
       <ModelSetupPanel open={modelOpen} onClose={() => setModelOpen(false)} />
       <SendChainCheck open={chainOpen} onClose={() => setChainOpen(false)} />

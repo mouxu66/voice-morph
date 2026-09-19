@@ -259,6 +259,17 @@ def _check_pytest(fast: bool) -> tuple[bool, str]:
 
 
 def _check_web() -> tuple[bool, str]:
+    """前端两步：`tsc -b`（类型）+ `vitest run`（用例）。
+
+    为什么要把 vitest 也放进来（2026-09-19）：本项目**第一个**前端单测
+    （`web/src/components/SetupBanner.test.tsx`）是在修“能力加载失败不提示”时加的，
+    而在此之前 `package.json` 里那几个 `test*` 脚本是**从未有测试文件、也从未被任何门禁调用**
+    的死脚本（`web/src` 下一个 `.test.tsx` 都没有）。
+    加测试而不接门禁 = 犯错指南 §3.15 / §3.23 那族错误（测试存在却从不在门禁里跑 → 慢慢腐烂），
+    所以“加第一个前端单测”这件事必须连同这一步一起做。
+
+    顺序：先 tsc（它管能不能构建，失败得最快），再 vitest。
+    """
     web = ROOT / "web"
     if not (web / "package.json").exists():
         return False, "未找到 web/package.json"
@@ -267,7 +278,10 @@ def _check_web() -> tuple[bool, str]:
     cmd = _npx_cmd()
     if cmd is None:
         return False, "未找到 npx（需要 Node.js）"
-    return _run("tsc", cmd + ["tsc", "-b", "--pretty", "false"], web)
+    ok, note = _run("tsc", cmd + ["tsc", "-b", "--pretty", "false"], web)
+    if not ok:
+        return False, note
+    return _run("vitest", cmd + ["vitest", "run"], web)
 
 
 #: `tools/test-*.cjs` 里**已被专属步骤跑过**的两个，别在 nodetest 里重复一遍
@@ -672,7 +686,7 @@ def _check_ci_fidelity(recreate: bool = False) -> int:
     ok = backend_ok and web_ok is not False
     print("\n================ ci-fidelity 汇总 ================")
     print(f"  [{'PASS' if backend_ok else 'FAIL'}] 后端 job（requires/electron/ruff/pytest）")
-    print(f"  [{'SKIP' if web_ok is None else ('PASS' if web_ok else 'FAIL')}] 前端 job（tsc -b，本机近似）")
+    print(f"  [{'SKIP' if web_ok is None else ('PASS' if web_ok else 'FAIL')}] 前端 job（tsc -b + vitest，本机近似）")
     print(f"  Python：CI 钉 {want} / 本次实际 {real}")
     print(f"  node  ：CI 钉 {ci_node} / 本机 {_probe_node() or '未知'}")
     print("  本机资源：已按裸 runner 模拟（VM_BARE_RUNNER=1），跳过集应与 CI 对齐")

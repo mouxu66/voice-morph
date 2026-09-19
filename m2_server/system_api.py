@@ -1,9 +1,11 @@
-"""系统级接口：/health 健康检查 + /diagnose 环境体检 + /system/storage 占用看板（B2）。
+"""系统级接口：/health 健康检查 + /capabilities 能力加载清单 + /diagnose 环境体检
++ /system/storage 占用看板（B2）。
 
 自 server.py 拆出（行为不变）；app 装配见 server.py。
 """
 
 import config as cfg
+import plugin_loader
 import storage
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -17,6 +19,35 @@ def health():
     import torch
 
     return {"status": "ok", "cuda": torch.cuda.is_available()}
+
+
+@router.get("/capabilities")
+def capabilities():
+    """路由模块的加载清单：哪些能力真的挂上了、哪些没挂上及原因。
+
+    为什么单独开一个端点而不塞进 `/health`：
+    · `/health` 第一行就是 `import torch`，没装 torch 时它本身就 500 ——
+      而「某个能力没装依赖」恰恰是没 torch 的环境里最需要看到的信息，
+      把能力清单挂在它上面等于在最需要的时候消失。本端点**不依赖任何重库**。
+    · 语义也不同：`/health` 答「服务在不在」，这里答「服务里有哪些能力」。
+
+    消费方：前端顶部降级提示（`SetupBanner`）—— 让「哪个能力不可用」
+    从 `backend.log` 走到界面上，而不是只对翻日志的人可见。
+    （`docs/插件化设计.md` 第 2 步的 `GET /api/plugins` 会在这个基础上扩成
+    带 manifest 的目录，本端点保留作为“只是加载状态”的稳定子集。）
+    """
+    res = plugin_loader.results()
+    routers = [r for r in res if r.purpose == plugin_loader.ROUTER_PURPOSE]
+    return {
+        "ok": all(r.ok for r in res),
+        "loaded": sum(1 for r in routers if r.ok),
+        "total": len(routers),
+        # 按模块名排序，方便前端直接展示与对账
+        "broken": [
+            {"module": r.module, "purpose": r.purpose, "reason": r.reason}
+            for r in sorted((r for r in res if not r.ok), key=lambda r: (r.module, r.purpose))
+        ],
+    }
 
 
 @router.get("/diagnose")

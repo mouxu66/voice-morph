@@ -19,6 +19,8 @@ import {
   type SetupStatus,
 } from "@/lib/electron"
 import { DiscoveryList, GuideBlock, GuideFooter, ScanHub } from "@/components/ModelDiscovery"
+import { getCapabilities } from "@/api/client"
+import type { CapabilityInfo } from "@/types"
 import { notify } from "@/lib/notify"
 import { cn } from "@/lib/utils"
 
@@ -498,13 +500,35 @@ export function ModelSetupPanel({ open, onClose }: { open: boolean; onClose: () 
  *  用于 TTS、实时变声等功能页顶部，替代"点了按钮才报错"的迟滞反馈。
  *
  *  自轮询：挂在顶层全局位置，不想让 App 层再维护一份状态。窗口聚焦时刷新
- *  （用户可能在配置面板里刚改完），避免显示过期状态。 */
-export function SetupBanner({ onOpen, className }: { onOpen: () => void; className?: string }) {
+ *  （用户可能在配置面板里刚改完），避免显示过期状态。
+ *
+ *  2026-09-19 起还兼管「后端能力没挂上」：路由模块导入失败（缺可选依赖等）过去只在
+ *  `backend.log` 里可见，用户拿到的只是一个静悄悄少了一半功能的界面。两者是同一类事
+ *  —— 相关功能不可用、其余正常 —— 所以共用一条横幅，不叠两条。
+ *  失败原因放在 title 里（悬停可见），不占版面。 */
+export function SetupBanner({
+  onOpen,
+  onDiagnose,
+  className,
+}: {
+  onOpen: () => void
+  /** 「看诊断」按钮的去处；不传则只显示「去配置」 */
+  onDiagnose?: () => void
+  className?: string
+}) {
   const [status, setStatus] = useState<SetupStatus | null>(null)
+  const [caps, setCaps] = useState<CapabilityInfo | null>(null)
   const [dismissed, setDismissed] = useState(false)
 
   const refresh = useCallback(async () => {
     setStatus(await getSetupStatus())
+    // 单独 try/catch：能力清单取不到时（后端刚启动 / 旧版后端没这个端点）
+    // 不该把上面那份配置状态一起吞掉。
+    try {
+      setCaps(await getCapabilities())
+    } catch {
+      setCaps(null)
+    }
   }, [])
 
   useEffect(() => {
@@ -521,13 +545,18 @@ export function SetupBanner({ onOpen, className }: { onOpen: () => void; classNa
     }
   }, [refresh])
 
-  if (!status || dismissed || status.allOk) return null
+  // 注意：不能再用 `!status || status.allOk` 短路 —— 能力清单可能在后端配置齐全时
+  // 依然非空（例如缺一个可选依赖），那时 status 完全可能是 allOk。
+  const missing = (status?.items ?? []).filter((i) => !i.ok)
+  const broken = caps?.broken ?? []
+  if (dismissed || (!missing.length && !broken.length)) return null
 
-  const ttsBad = status.items.filter((i) => !i.ok && (i.key === "tts_models" || i.key === "tts_venv"))
-  const rvcBad = status.items.filter((i) => !i.ok && i.key === "rvc_root")
   const labels: string[] = []
-  if (ttsBad.length) labels.push("TTS 未配置")
-  if (rvcBad.length) labels.push("RVC 未配置")
+  if (missing.some((i) => i.key === "tts_models" || i.key === "tts_venv")) labels.push("TTS 未配置")
+  if (missing.some((i) => i.key === "rvc_root")) labels.push("RVC 未配置")
+  if (broken.length) labels.push(`${broken.length} 个能力未加载`)
+
+  const reasons = broken.map((b) => `${b.module}: ${b.reason}`).join("\n")
 
   return (
     <div
@@ -538,14 +567,28 @@ export function SetupBanner({ onOpen, className }: { onOpen: () => void; classNa
     >
       <span className="flex min-w-0 items-center gap-2">
         <AlertTriangle className="h-4 w-4 shrink-0" />
-        <span className="truncate">
+        <span className="truncate" title={reasons || undefined}>
           <strong className="font-semibold">{labels.join(" · ")}</strong>
           <span className="ml-1 opacity-90">
-            —— 缺少 {status.items.filter((i) => !i.ok).map((i) => i.label).join("、")}，相关功能暂不可用，其余功能不受影响。
+            {missing.length ? `—— 缺少 ${missing.map((i) => i.label).join("、")}，` : "—— "}
+            相关功能暂不可用，其余功能不受影响。
           </span>
+          {broken.length ? (
+            <span className="ml-1 opacity-90">（{broken.map((b) => b.module).join("、")}）</span>
+          ) : null}
         </span>
       </span>
       <span className="flex shrink-0 items-center gap-2">
+        {broken.length && onDiagnose ? (
+          <button
+            type="button"
+            onClick={onDiagnose}
+            title={reasons}
+            className="rounded-md border border-yellow-600/40 bg-background/60 px-2.5 py-1 text-[11px] font-medium text-yellow-800 transition hover:bg-background"
+          >
+            看诊断
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={onOpen}

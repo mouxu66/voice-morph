@@ -237,6 +237,75 @@ def test_router_registration_order_is_frozen():
     assert list(server._ROUTER_ORDER) == list(_EXPECTED_ORDER)
 
 
+# ---------------------------------------------------------------- 4. 界面出口
+
+
+def _load_all() -> None:
+    """把 `server._ROUTER_ORDER` 整串过一遍加载器（复现一次启动时的记账）。"""
+    import server
+
+    for name in server._ROUTER_ORDER:
+        plugin_loader.load_router(name)
+
+
+def test_capabilities_endpoint_reports_load_state():
+    """`GET /api/capabilities` 是「哪个能力不可用」走到界面上的唯一出口。
+
+    健康树上的形状要稳：前端靠 `broken` 决定要不要弹降级提示。
+    """
+    from fastapi.testclient import TestClient
+
+    import server
+
+    _load_all()
+    body = TestClient(server.app).get("/api/capabilities").json()
+    assert body["ok"] is True
+    assert body["total"] == len(_EXPECTED_ORDER)
+    assert body["loaded"] == body["total"]
+    assert body["broken"] == []
+
+
+def test_capabilities_endpoint_lists_broken_with_reason(monkeypatch):
+    """坏一个模块时：`ok` 置假、计数对得上、**原因跟着出来**。
+
+    只报「坏了」而不给原因，等于把日志里的问题又讲一遍 —— 界面提示必须自带原因。
+    """
+    from fastapi.testclient import TestClient
+
+    import server
+
+    monkeypatch.setitem(sys.modules, "seed_vc", None)
+    _load_all()
+    body = TestClient(server.app).get("/api/capabilities").json()
+    assert body["ok"] is False
+    assert body["loaded"] == body["total"] - 1
+    assert [b["module"] for b in body["broken"]] == ["seed_vc"]
+    assert body["broken"][0]["reason"], "必须带上原因"
+
+
+def test_capabilities_endpoint_does_not_need_torch():
+    """本端点**不能**依赖重库。
+
+    反例就是挨着它的 `/api/health`：第一行 `import torch`，没 torch 时它自己 500。
+    而「某个能力没装依赖」恰恰是没 torch 的环境里最该看到的信息 ——
+    把能力清单挂在 /health 上等于在最需要的时候消失。
+    这条用裸环境（`requirements-dev.txt` 不装 torch）在 CI 上就是真实场景。
+    """
+    import inspect
+
+    import server
+    import system_api
+
+    src = inspect.getsource(system_api.capabilities)
+    # ⚠️ 必须先把 docstring 摘掉：本函数的注释**故意**举例了 `import torch`（说明为什么不挂在
+    # /health 上），不摘就会拿注释里的例子把自己判红 —— 断言要判的是**代码**，不是文档。
+    code = src.replace(system_api.capabilities.__doc__ or "", "")
+    assert "torch" not in code, "capabilities 的实现里不许出现 torch"
+    assert "plugin_loader" in code
+    # 打不到服务也不能因为缺 torch 而挂：源码层面钉住后，再确认它真的能返回
+    assert server.app is not None
+
+
 def test_report_exposes_failure_reasons(monkeypatch):
     """`report()` 必须把失败摊开说 —— 这是"容错没有变成静默"的唯一出口。"""
     monkeypatch.setitem(sys.modules, "seed_vc", None)

@@ -5,6 +5,28 @@ export interface HealthInfo {
   cuda: boolean;
 }
 
+/** 一个加载失败的后端能力（路由模块 / 启动钩子）—— 对应 `/api/capabilities` 的 broken 项 */
+export interface CapabilityBroken {
+  module: string;
+  purpose: string;
+  reason: string;
+}
+
+/**
+ * 后端能力加载清单（`GET /api/capabilities`）。
+ *
+ * 为什么单独一条而不并进 HealthInfo：判别的是两件事 ——
+ * `/health` 答「服务在不在」，这里答「服务里有哪些能力真的挂上了」。
+ * 这些能力「用户没装」是正常状态（缺 torch / 缺模型 / 没装微信），
+ * 不该表现为「软件坏了」，但也不该静默 —— 所以要在界面上说清楚。
+ */
+export interface CapabilityInfo {
+  ok: boolean;
+  loaded: number;
+  total: number;
+  broken: CapabilityBroken[];
+}
+
 // 环境体检单项（/api/diagnose 返回）；warn=true 表示「不致命的告警」（如退回 CPU）
 export interface DiagnoseItem {
   key: string;

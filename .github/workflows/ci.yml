@@ -68,9 +68,9 @@ jobs:
       - name: 一键自检（ruff + pytest，跳过前端）
         run: python tools/check.py --no-web
 
-  # 前端：类型检查（tsc -b 不产出 dist），Linux runner 足够
+  # 前端：类型检查 + 单测（tsc -b 不产出 dist），Linux runner 足够
   web:
-    name: 前端（tsc -b）
+    name: 前端（tsc -b + vitest）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -88,3 +88,9 @@ jobs:
       - name: 类型检查
         working-directory: web
         run: npx tsc -b --pretty false
+
+      # 与本机 `tools/check.py` 的 web 步一致（npm ci 默认装 devDependencies，
+      # 所以 vitest / jsdom / @testing-library 都在）。别改成只在本机跑的裸脚本。
+      - name: 单测（vitest）
+        working-directory: web
+        run: npx vitest run

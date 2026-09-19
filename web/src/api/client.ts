@@ -1,4 +1,5 @@
 import type {
+  CapabilityInfo,
   ClipItem,
   DiagnoseInfo,
   HealthInfo,
@@ -67,6 +68,17 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 
 export async function getHealth(): Promise<HealthInfo> {
   return jsonFetch<HealthInfo>("/health");
+}
+
+/**
+ * 后端能力加载清单：哪些路由模块真的挂上了、哪些没挂上及原因。
+ *
+ * 单开一个端点而不复用 `/health`：后者第一行就是 `import torch`，没 torch 时它自己
+ * 就 500 —— 而「某个能力缺依赖」恰恰是那种环境里最需要看到的信息，
+ * 挂在 /health 上等于在最需要的时候消失。
+ */
+export async function getCapabilities(): Promise<CapabilityInfo> {
+  return jsonFetch<CapabilityInfo>("/capabilities");
 }
 
 /** 环境体检：检查 ffmpeg / RVC 整合包 / 默认音色权重 / CUDA / TTS 模型 等本机依赖 */
