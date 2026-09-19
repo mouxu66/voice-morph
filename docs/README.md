@@ -25,6 +25,12 @@
 
 | 文档 | 那一天的结论 |
 |---|---|
+| `CODE_FIX_FINAL.md` | 代码质量 256 项问题清零（64% → 100%），5 文件 37 行改动 |
+| `CODE_FIX_COMPLETE.md` | 同一轮修复的第一阶段快照（240+/256，93.75%）；后续见 `CODE_FIX_FINAL.md` |
+| `CODE_QUALITY_REPORT.md` | 工具链清单（ruff/black/isort/mypy/pytest/vitest/eslint）+ 质量检测基线 |
+| `DEV_TOOLS_SETUP.md` | 开发环境配置快照：AI 插件、npm 包、Python 工具 |
+| `INTEGRATION_COMPLETE.md` | 应用内构建监听器集成报告（主进程 `web/electron/build-watch.cjs`） |
+| `WATCH_SHIP_COMPLETE_GUIDE.md` | 前端自动构建使用指南。⚠️ 文中"正在开发中"已过时——该功能当日即落地，以 `INTEGRATION_COMPLETE.md` 与 `AGENTS.md` 的 `npm run ship` 一节为准 |
 | `开源前待办清单-2026-09-12.md` | 开源就绪度审计（P0 已于 09-13 处理，见文内 ✅；**注意：其中提交哈希写于历史重写前，可能已失效**） |
 | `代码审查-2026-09-11.md` | 代码审查 |
 | `清理清单-2026-09-07.md` | 清理项 |

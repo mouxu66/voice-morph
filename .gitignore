@@ -75,6 +75,16 @@ test_tts.wav
 build_log.txt
 builder_log.txt
 
+# ===== 测试覆盖率产物（不入库）=====
+# pyproject.toml 的 pytest addopts 带 --cov-report=term-missing,html,json，
+# 每次跑 pytest 都会重写 .coverage / coverage.json / htmlcov/。
+# 前两个此前被误入库 → 工作区永远脏（2026-09-19 修复，git rm --cached 后加此节）。
+# htmlcov/ 由 coverage 自己生成的 .gitignore(*) 忽略，这里显式列出以防那个文件被删。
+.coverage
+.coverage.*
+coverage.json
+htmlcov/
+
 # ===== 试验脚本产物 / 诊断输出 =====
 tts_trial/*.txt
 tts_trial/ft_train_*.jsonl
