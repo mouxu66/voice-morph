@@ -311,3 +311,46 @@ def test_do_send_overlap_ui_prep_still_sends(monkeypatch, tmp_path):
     res = wv._do_send(wv.SendVoiceReq(wav="tts_x.wav"))
     assert res["outcome"] == "ok"
     assert any("麦克风已切到 CABLE" in s for s in res["steps"])
+
+
+def test_do_send_judges_uia_after_recording_env(monkeypatch, tmp_path):
+    """UIA 就绪判定必须排在录音环境准备**之后** —— 微信此时才真的起来了。
+
+    原实现把它排在 `pre_apply.result()`（会重启并拉起微信）之前，而
+    `ensure_active()` 写完激活字节只 sleep(0.5) 就查控件树，微信刚重启时
+    树还没物化 → 判 False 且缓存 3 秒 → **凡含重启微信的发送必然退化到
+    按坐标盲点的像素链路**（2026-09-19 实测 5 条里 4 条；像素链路点歪过一次
+    直接弹出了浏览器的网页版文件传输助手）。
+
+    这条用**调用顺序**守卫，防止将来重构又把它挪回去。
+    """
+    import config as cfg
+
+    pytest.importorskip("fastapi")
+    order: list[str] = []
+
+    def fake_env():
+        order.append("env")
+        return {"kind": "recording_env", "summary": "已切麦克风到 CABLE Output"}
+
+    def fake_uia():
+        order.append("uia")
+        return False  # 返回 False 才能走完像素链路的成功分支
+
+    monkeypatch.setattr(cfg, "OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(wv, "HISTORY_FILE", tmp_path / "wechat_send_history.json")
+    monkeypatch.setattr(wv, "_prepare_recording_env", fake_env)
+    monkeypatch.setattr(wv, "_await_uia_active", fake_uia)
+    monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
+    monkeypatch.setattr(wv, "_start_play", lambda w: _FakePopen(["PLAYING\n", "DONE\n"]))
+    monkeypatch.setattr(wv, "_wait_play_start", lambda p, t=40.0: True)
+    monkeypatch.setattr(wv, "_wait_play_done", lambda p, d: None)
+    monkeypatch.setattr(wv, "_trigger_record", lambda *a, **k: None)
+    monkeypatch.setattr(wv, "_finish_record", lambda: True)
+    monkeypatch.setattr(wv, "_wav_duration", lambda p: 1.0)
+    monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))
+    (tmp_path / "tts_x.wav").write_bytes(b"RIFF")
+
+    res = wv._do_send(wv.SendVoiceReq(wav="tts_x.wav"))
+    assert order == ["env", "uia"], f"UIA 判定必须在录音环境准备之后，实际顺序 {order}"
+    assert res["outcome"] == "ok"
