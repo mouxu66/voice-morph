@@ -75,6 +75,11 @@ asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
   "error::pytest.PytestUnhandledThreadExceptionWarning",
   "error::DeprecationWarning",
+  # pydub 在模块顶层 `import audioop`，Python 3.12+ 会发 DeprecationWarning；
+  # 这是第三方库的事，本项目改不了。不豁免它 → 所有 import 到 pydub 的用例整片假红
+  # （2026-09-19 实测：test_voices_api 6 条全红，且干净树上同样红 = 与业务代码无关）。
+  # 只豁免这一条具体消息，别放宽成 ignore::DeprecationWarning（那会放过自己的废弃用法）。
+  "ignore:'audioop' is deprecated:DeprecationWarning:pydub.utils",
 ]
 
 [tool.coverage.run]
