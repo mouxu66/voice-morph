@@ -101,6 +101,91 @@ def test_input_device_probe_missing_dir(monkeypatch, tmp_path):
     assert wp.last_input_device() is None
 
 
+def test_input_device_probe_reads_ready_suffix(tmp_path, monkeypatch):
+    """设备名落在 `*_ready.statistic` 时也必须读到（微信 4.1.13.12 的布局）。
+
+    2026-09-19 实测：微信升级后设备遥测从 `*_input.statistic` 搬到了
+    `*_ready.statistic`；只 glob 前者会让探针**恒返回 None** →
+    auto 模式每次都"保守重启" → 用户视角就是"你怎么老杀我微信"。
+    """
+    monkeypatch.setattr(wp, "_KVCOMM", tmp_path)
+    ready = tmp_path / "key_1_2_3_1789823987_4201_3600_ready.statistic"
+    ready.write_bytes(_blob("CABLE Output (VB-Audio Virtual Cable)"))
+    probe = wp.input_device_probe()
+    assert probe["device"] == "CABLE Output (VB-Audio Virtual Cable)"
+    assert probe["file"] == ready.name
+
+
+def test_input_device_probe_merges_both_suffixes(tmp_path, monkeypatch):
+    """两种后缀都要收，并按 mtime 取最新的那条 —— 换版本不能再静默失效。"""
+    monkeypatch.setattr(wp, "_KVCOMM", tmp_path)
+    inp = tmp_path / "a_input.statistic"
+    inp.write_bytes(_blob("麦克风阵列 (Senary Audio)"))
+    rdy = tmp_path / "b_ready.statistic"
+    rdy.write_bytes(_blob("CABLE Output (VB-Audio Virtual Cable)"))
+    os.utime(inp, (1, 1))
+    assert wp.input_device_probe()["file"] == rdy.name
+    # 反过来把 input 设成更新的，应改判成 input 那份
+    os.utime(rdy, (1, 1))
+    os.utime(inp, (2, 2))
+    probe = wp.input_device_probe()
+    assert probe["file"] == inp.name
+    assert probe["device"] == "麦克风阵列 (Senary Audio)"
+
+
+# ---------------- _await_uia_active：判早了会让发送退化到像素链路 ----------------
+
+
+def test_await_uia_active_retries_and_clears_negative_cache(monkeypatch):
+    """首次探测失败 → 清缓存重试 → 成功时必须拿到 True。
+
+    背景：`ensure_active()` 写完激活字节只 sleep(0.5) 就查控件树，微信刚重启时
+    树还没物化 → False，且该否定结果会**缓存 3 秒**；发送链路原先只调一次
+    `_uia_ready()`，于是「凡含重启微信的发送」必然退化到按坐标盲点的像素链路。
+    """
+    calls = {"ready": 0, "reset": 0}
+
+    def fake_ready():
+        calls["ready"] += 1
+        return calls["ready"] >= 2
+
+    class _FakeUia:
+        @staticmethod
+        def reset_state():
+            calls["reset"] += 1
+
+    monkeypatch.setattr(wv, "_uia", _FakeUia)
+    monkeypatch.setattr(wv, "_uia_ready", fake_ready)
+    assert wv._await_uia_active(retries=3, delay_s=0) is True
+    assert calls["ready"] == 2
+    assert calls["reset"] == 1  # 重试前确实清了否定缓存
+
+
+def test_await_uia_active_gives_up_after_retries(monkeypatch):
+    class _FakeUia:
+        @staticmethod
+        def reset_state():
+            pass
+
+    monkeypatch.setattr(wv, "_uia", _FakeUia)
+    monkeypatch.setattr(wv, "_uia_ready", lambda: False)
+    assert wv._await_uia_active(retries=3, delay_s=0) is False
+
+
+def test_await_uia_active_short_circuits_without_module(monkeypatch):
+    """wechat_uia 没导进来时直接 False，不做无意义的重试。"""
+    monkeypatch.setattr(wv, "_uia", None)
+    called = {"n": 0}
+
+    def fake_ready():
+        called["n"] += 1
+        return False
+
+    monkeypatch.setattr(wv, "_uia_ready", fake_ready)
+    assert wv._await_uia_active(retries=3, delay_s=0) is False
+    assert called["n"] == 0
+
+
 # ---------------- wechat_proc：杀 / 拉起 / 等就绪 ----------------
 
 

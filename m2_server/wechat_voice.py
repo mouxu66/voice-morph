@@ -284,6 +284,33 @@ def _uia_ready() -> bool:
         return False
 
 
+def _await_uia_active(retries: int = 3, delay_s: float = 0.5) -> bool:
+    """等微信 UIA 控件树物化后再判可用性（**必须在微信已起来之后调用**）。
+
+    2026-09-19 实测事故：判定原先排在 `pre_apply.result()`（会拉起微信）**之前**，
+    而 `ensure_active()` 写完激活字节只 `sleep(0.5)` 就查控件树 —— 微信刚重启时
+    树还没物化 → 判 False，且这个**否定结果会缓存 3 秒**；发送链路只调一次，
+    于是**凡涉及重启微信的发送必然退化到像素链路**（实测 5 条里 4 条走像素）。
+    像素链路是按坐标盲点，点歪过一次直接弹出了浏览器的网页版文件传输助手。
+
+    重试前先 `reset_state()` 清掉那个否定缓存，所以这里的 delay 不需要等满 3 秒，
+    只要给 Qt 建树留一点时间即可（这也正是 `reset_state()` docstring 所说
+    「微信重启后调用」的落点，此前生产代码里零调用）。
+    """
+    if _uia is None:  # 模块都没导进来，重试也没意义
+        return False
+    for i in range(max(1, retries)):
+        if _uia_ready():
+            return True
+        if i < retries - 1:
+            try:
+                _uia.reset_state()
+            except Exception:
+                pass
+            time.sleep(delay_s)
+    return False
+
+
 def _uia_center(box: tuple[int, int, int, int] | None) -> tuple[int, int] | None:
     return (((box[0] + box[2]) // 2), ((box[1] + box[3]) // 2)) if box else None
 
@@ -1799,17 +1826,11 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
     duration = _wav_duration(wav)
     steps.append(f"音频: {wav.name}（{duration:.1f}s）")
 
-    # UIA 预热（方案 A）：激活失败不影响主流程，后面各环节自动回退像素链路
-    uia_active = _uia_ready()
-    steps.append("UIA 结构化访问就绪" if uia_active else "UIA 不可用（走像素链路）")
+    # UIA 就绪判定必须等微信真的起来了再做（见下方 2.5 与 _await_uia_active 的注释）。
+    # 这里只放占位，保证异常路径也能安全引用。
+    uia_active = False
     before_msg = None
     before_count = -1
-    if uia_active:
-        try:
-            before_msg = _uia.latest_voice_message()
-            before_count = len(_uia.voice_messages() or [])
-        except Exception:
-            before_msg, before_count = None, -1
 
     restored = False
     bind_warning = ""  # 录音环境告警（微信绑错设备 → 可能录成静音），随本次落进发送历史
@@ -1843,6 +1864,18 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
         # 2026-09-18 事故复盘：它此前只活在 API 响应里，前端把 summary 尾部那句 ⚠
         # 当成了"上次残留的旧文案"忽略 → 静音语音被当成成功发出去，事后无从追查。
         bind_warning = env.get("warning", "") if isinstance(env, dict) else ""
+
+        # 2.5) UIA 就绪判定 —— **必须在上面录音环境准备之后**（微信此时才真的起来了）。
+        #      见 _await_uia_active 的 docstring：判早了会让所有"含重启微信"的发送
+        #      一律退化到按坐标盲点的像素链路。
+        uia_active = _await_uia_active()
+        steps.append("UIA 结构化访问就绪" if uia_active else "UIA 不可用（走像素链路）")
+        if uia_active:
+            try:
+                before_msg = _uia.latest_voice_message()
+                before_count = len(_uia.voice_messages() or [])
+            except Exception:
+                before_msg, before_count = None, -1
 
         # 3) 起播放（常驻 worker 复用 / 一次性子进程）。冷导入若发生，与下面的 UI 准备并行。
         _t_play = time.time()

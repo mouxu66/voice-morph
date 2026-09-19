@@ -210,7 +210,7 @@ def find_wechat_hwnd() -> int:
         )
     if wins[0]["area"] < MIN_CHAT_AREA and not _window_is_iconic(wins[0]["hwnd"]):
         raise RuntimeError(
-            f"微信主窗口没就绪（最大窗口 {wins['area']:,}px²，正常聊天窗口约 2,000,000px²）："
+            f"微信主窗口没就绪（最大窗口 {wins[0]['area']:,}px²，正常聊天窗口约 2,000,000px²）："
             "要么还停在登录页（先扫码登录），要么开着的是无关小窗——"
             "请把微信聊天窗口打开后重试"
         )
@@ -392,6 +392,15 @@ _KVCOMM = Path(os.environ.get("APPDATA", "")) / "Tencent" / "xwechat" / "net" / 
 # 据此过滤掉同文件里其它 CSV 行 —— 实测单独用数字前缀会命中 37 条假阳性。
 _DEV_LINE = re.compile(rb"(?:[0-9]{1,8},){9}([^,\x00-\x1f]{2,80})")
 
+# 录音设备遥测落在哪种后缀的文件里，**微信不同版本不一样**：
+#   · 4.1.13 之前：`*_input.statistic`（2026-09-11 实测，见 docs/犯错指南.md §2.15）
+#   · 4.1.13.12：设备名搬到了 `*_ready.statistic`（2026-09-19 实测）
+#     同一天实测 `*_input.statistic` 里 `cable` / `Senary` / `start_record` / `device`
+#     **全部 0 命中** —— 它装的是通用遥测（CPU 型号、收消息事件、群 ID）。
+# 两个都收、按 mtime 合并排序：换版本不会再静默失效（探针恒返回 None →
+# auto 模式每次都"保守重启" → 用户视角就是"你怎么老杀我微信"）。
+_STATISTIC_GLOBS = ("*_input.statistic", "*_ready.statistic")
+
 
 def input_device_probe() -> dict:
     """读微信遥测，返回它最近一次录音实际使用的输入设备名。
@@ -401,7 +410,8 @@ def input_device_probe() -> dict:
     """
     if not _KVCOMM.is_dir():
         return {"device": None, "file": None, "hits": 0}
-    files = sorted(_KVCOMM.glob("*_input.statistic"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = [p for pat in _STATISTIC_GLOBS for p in _KVCOMM.glob(pat)]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     for f in files[:8]:
         try:
             blob = f.read_bytes()
