@@ -77,10 +77,9 @@ def update(
             data["input_device"] = str(input_device).strip()
         if denoise is not None:
             data["denoise"] = bool(denoise)
-        if perf_profile is not None:
+        if perf_profile is not None and perf_profile in (PERF_BALANCED, PERF_GAME):
             # 非法档位直接忽略（保持原值），不该静默写成坏值
-            if perf_profile in (PERF_BALANCED, PERF_GAME):
-                data["perf_profile"] = perf_profile
+            data["perf_profile"] = perf_profile
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         # 原子写：先写临时文件再替换，避免并发读到大半个 JSON
         fd, tmp = tempfile.mkstemp(dir=str(SETTINGS_PATH.parent), suffix=".tmp")

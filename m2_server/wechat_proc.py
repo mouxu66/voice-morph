@@ -210,9 +210,9 @@ def find_wechat_hwnd() -> int:
         )
     if wins[0]["area"] < MIN_CHAT_AREA and not _window_is_iconic(wins[0]["hwnd"]):
         raise RuntimeError(
-            "微信主窗口没就绪（最大窗口 %dpx²，正常聊天窗口约 2,000,000px²）："
+            f"微信主窗口没就绪（最大窗口 {wins['area']:,}px²，正常聊天窗口约 2,000,000px²）："
             "要么还停在登录页（先扫码登录），要么开着的是无关小窗——"
-            "请把微信聊天窗口打开后重试" % wins[0]["area"]
+            "请把微信聊天窗口打开后重试"
         )
     return wins[0]["hwnd"]
 

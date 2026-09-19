@@ -302,15 +302,15 @@ def _ensure_worker():
                     f"Qwen3-TTS worker 无法启动，请先关闭该进程"
                 )
         if not os.path.exists(VENV312):
-            raise RuntimeError(f"找不到 venv312 解释器: {VENV312}")
-        _logf = open(os.path.join(os.path.dirname(WORKER), "worker_run.log"), "ab")
-        _proc = subprocess.Popen(
-            [VENV312, WORKER],
-            cwd=os.path.dirname(WORKER),
-            stdout=_logf,
-            stderr=subprocess.STDOUT,
-            creationflags=_NO_WINDOW,
-        )
+            raise RuntimeError(f"找不到 venv312 解释器：{VENV312}")
+        with open(os.path.join(os.path.dirname(WORKER), "worker_run.log"), "ab") as _logf:
+            _proc = subprocess.Popen(
+                [VENV312, WORKER],
+                cwd=os.path.dirname(WORKER),
+                stdout=_logf,
+                stderr=subprocess.STDOUT,
+                creationflags=_NO_WINDOW,
+            )
         # 模型加载较慢（约 10~30s，GPU 被挤占时更久），轮询 /health 直到就绪
         deadline = time.time() + 240
         while time.time() < deadline:
@@ -445,7 +445,8 @@ def _tts_do(
     if voice_id:
         meta_p = os.path.join(PROJECT_ROOT, "media", "voicebank", voice_id, "meta.json")
         try:
-            meta = json.loads(open(meta_p, encoding="utf-8").read())
+            with open(meta_p, encoding="utf-8") as f:
+                meta = json.loads(f.read())
         except Exception:
             meta = {}
         if meta.get("kind") == "finetuned" and meta.get("model_dir"):

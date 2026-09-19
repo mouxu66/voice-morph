@@ -89,27 +89,27 @@ def _spawn_worker() -> subprocess.Popen:
     stderr 落文件而不是 PIPE：RVC/hubert 加载期日志量大，PIPE 无人读会写满阻塞。
     """
     _WORKER_LOG.parent.mkdir(parents=True, exist_ok=True)
-    err = open(_WORKER_LOG, "a", encoding="utf-8")
-    proc = subprocess.Popen(
-        [str(RVC_VENV_PY), str(INFER_PY), "--serve"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=err,
-        cwd=str(RVC_ROOT),
-        text=True,
-        encoding="utf-8",
-        bufsize=1,
-        creationflags=_NO_WINDOW,
-    )
-    line = proc.stdout.readline()
-    if not line:
-        # worker 没打印 READY 就退了（常见的 hung/import 失败）
-        proc.wait(timeout=10)
-        raise RvcError(f"RVC worker 启动失败，退出码 {proc.returncode}，" f"详见 {_WORKER_LOG}")
-    head = json.loads(line)
-    if not head.get("ready"):
-        raise RvcError(f"RVC worker 握手异常: {head}")
-    return proc
+    with open(_WORKER_LOG, "a", encoding="utf-8") as err:
+        proc = subprocess.Popen(
+            [str(RVC_VENV_PY), str(INFER_PY), "--serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=err,
+            cwd=str(RVC_ROOT),
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+            creationflags=_NO_WINDOW,
+        )
+        line = proc.stdout.readline()
+        if not line:
+            # worker 没打印 READY 就退了（常见的 hung/import 失败）
+            proc.wait(timeout=10)
+            raise RvcError(f"RVC worker 启动失败，退出码 {proc.returncode}，" f"详见 {_WORKER_LOG}")
+        head = json.loads(line)
+        if not head.get("ready"):
+            raise RvcError(f"RVC worker 握手异常：{head}")
+        return proc
 
 
 def _get_worker() -> subprocess.Popen:
