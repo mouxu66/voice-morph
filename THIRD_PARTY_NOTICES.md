@@ -34,11 +34,19 @@ MIT License，© 2026 mouxu（见根目录 `LICENSE`）。
 | `lucide-react` | 1.34.0 | ISC |
 | `@fontsource/{inter,outfit,jetbrains-mono}` | 5.3.0 | OFL-1.1 |
 | `@tanstack/react-query` | 5.76.1 | MIT |
-| `electron-store` | 8.2.0 | MIT |
-| `electron-log` | 5.2.0 | MIT |
 
 > 许可取自 `web/node_modules/<包>/package.json` 与各包内 `LICENSE` 原文（2026-09-14 实读）。
-> `devDependencies`（vite / tailwind / electron-builder / typescript…）不进发行物，不在此表。
+>
+> **什么进发行物，由打包器决定，不由"写在哪个分区"决定**（2026-09-19 修正）。
+> 本表登记口径是 `web/package.json` 的 `dependencies`，因为 electron-builder 恰好会把它整棵树
+> 拷进 `app.asar` —— 这是个**巧合，不是因果**。反例就在眼前：`@fontsource/*` 的字体
+> **真的随 `dist/assets/*.woff2` 发出去**，而 `vite` 这个 devDependency 一行都不进包。
+> 所以判据只能是"这东西在发行物里有没有"，而 `tools/audit_licenses.py`
+> 用 `dependencies` 当它的**代理**（见该文件 `parse_frontend_deps` 注释）。
+>
+> 已于 2026-09-19 **删除** `electron-store` / `electron-log` 两条登记：
+> 全仓 grep 无任何引用（主进程 `require` 的第三方包数为 0），已从 `dependencies` 移除，
+> 故它们不再随任何发行物走。
 
 ## 2 运行时不随分发（由用户自装）—— 文档义务，非分发义务
 
@@ -182,8 +190,6 @@ npm:@fontsource/inter
 npm:@fontsource/jetbrains-mono
 npm:@fontsource/outfit
 npm:clsx
-npm:electron-log
-npm:electron-store
 npm:lucide-react
 npm:@tanstack/react-query
 npm:react

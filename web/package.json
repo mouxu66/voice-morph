@@ -24,14 +24,23 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,json,css}\"",
     "type-check": "tsc --noEmit"
   },
+  "//": [
+    "打包瘦身关键一条：build.files 里的 `!node_modules/**/*` 不能删。",
+    "electron-builder 默认会把 `dependencies` 整棵树拷进 resources/app.asar（无视 files 白名单），",
+    "而这些库 vite 早已打进 dist/ —— 同一份代码会在包里存两遍。",
+    "2026-09-19 实测：不排除时 asar 47.1MB / 5305 条目（node_modules 占 37.4MB / 5236 条目）；",
+    "排除后 6.74MB / 71 条目，安装包 101.5MB → 93.4MB。",
+    "这条排除能成立的前提是：主进程 web/electron/**/*.cjs 不 require 任何第三方包",
+    "（目前确实为 0，只有 fs/path/child_process/electron 等内置模块）。",
+    "主进程真要引第三方包时，必须把那个包从排除里放出来（改成白名单），否则运行期找不到模块。",
+    "回归防线：m2_server/tests/test_desktop_packaging.py。"
+  ],
   "dependencies": {
     "@fontsource/inter": "^5.3.0",
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/outfit": "^5.3.0",
     "@tanstack/react-query": "^5.103.1",
     "clsx": "^2.1.1",
-    "electron-log": "^5.4.4",
-    "electron-store": "^11.0.2",
     "lucide-react": "^1.14.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
@@ -72,7 +81,8 @@
     "productName": "变声工坊",
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "!node_modules/**/*"
     ],
     "extraResources": [
       {
@@ -86,13 +96,24 @@
           "**/*",
           "!**/__pycache__/**",
           "!**/*.pyc",
-          "!**/tests/**",
-          "!**/data/**"
+          "!**/tests/**"
         ]
       },
       {
         "from": "../tools",
-        "to": "backend/tools"
+        "to": "backend/tools",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/.pytest_cache/**",
+          "!**/outputs/**",
+          "!**/desktop-control/**",
+          "!**/wx_green_judge_check.py",
+          "!**/verify_backend_sync.py",
+          "!**/*.bak-*",
+          "!**/*.orig"
+        ]
       },
       {
         "from": "../requirements.txt",

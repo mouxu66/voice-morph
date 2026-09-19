@@ -101,8 +101,26 @@ t("签名证书路径指向 certs/black-seraph.pfx", () => {
   );
 });
 
-t("files 只收 dist 与 electron", () => {
-  assert.deepStrictEqual(build.files, ["dist/**/*", "electron/**/*"]);
+t("files 只收 dist 与 electron（外加 node_modules 排除）", () => {
+  assert.deepStrictEqual(build.files, [
+    "dist/**/*",
+    "electron/**/*",
+    "!node_modules/**/*",
+  ]);
+});
+
+// electron-builder 会把 `dependencies` **整棵树**拷进 app.asar，而 `files` 里的
+// 正向白名单（`dist/**/*`、`electron/**/*`）**管不住它** —— 只有显式的 `!node_modules/**/*` 能拦住。
+// 2026-09-19 实测：不排除时 app.asar 47.1MB / 5305 条目（`node_modules` 占 37.4MB / 5236 条目，
+// lucide-react 单独 19MB）；排除后 6.74MB / 71 条目，安装包 101.5MB → 93.4MB。
+// 这条排除能成立的前提是**主进程不 require 任何第三方包**（目前为 0）；
+// 语义级验证（包括"主进程真 require 了包就该改白名单"）在
+// `m2_server/tests/test_desktop_packaging.py`。
+t("files 排除 node_modules（否则 asar 白胖约 40MB）", () => {
+  assert.ok(
+    (build.files || []).includes("!node_modules/**/*"),
+    "build.files 丢了 `!node_modules/**/*` —— app.asar 会从 6.7MB 涨回 47MB"
+  );
 });
 
 // 发行物不得夹带模型权重或研究用途组件（RVC 底模同仓协议写「仅供研究」、
@@ -129,6 +147,37 @@ t("extraResources 不含 tests / __pycache__（服务端只带运行所需）", 
   const filter = m2.filter || [];
   for (const need of ["!**/__pycache__/**", "!**/tests/**"]) {
     assert.ok(filter.includes(need), `m2_server filter 缺少 ${need}`);
+  }
+});
+
+// 2026-09-19：这里曾有一条 `!**/data/**`，把 `m2_server/data/rvc_texts.txt`
+// （4KB，**生产文件**：RVC 训练语料模板）挡在安装包外。`config.load_rvc_texts()`
+// 有内置 20 句兜底 → 安装版**不报错**，只是把语料从 100+ 句悄悄退回 20 句。
+// 该目录下只有这一份文件，整目录排除没有任何收益。
+t("m2_server filter 没把 data/ 整目录排除掉", () => {
+  const m2 = (build.extraResources || []).find((r) => r.to === "backend/m2_server");
+  const filter = m2.filter || [];
+  assert.ok(
+    !filter.includes("!**/data/**"),
+    "`!**/data/**` 会漏掉 m2_server/data/rvc_texts.txt（生产文件，静默退化）"
+  );
+});
+
+// 2026-09-19：`tools/` 条目原本**一条 filter 都没有** → `tools/desktop-control/out/`
+// （87 张调试截图 / 95MB）、`__pycache__`、`.pytest_cache`、`.bak-*` 全部进包，
+// 实测重打一次安装包从 101MB 冲到 180MB。
+// 口径与 `tools/verify_backend_sync.py` 的 `_IGNORE_RULES` 对齐（那边是唯一权威）。
+t("extraResources 的 tools 条目排除了开发期产物", () => {
+  const tools = (build.extraResources || []).find((r) => r.to === "backend/tools");
+  assert.ok(tools, "未找到 backend/tools 条目");
+  const filter = tools.filter || [];
+  for (const need of [
+    "!**/__pycache__/**",
+    "!**/desktop-control/**",
+    "!**/outputs/**",
+    "!**/.pytest_cache/**",
+  ]) {
+    assert.ok(filter.includes(need), `tools filter 缺少 ${need}`);
   }
 });
 
