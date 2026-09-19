@@ -24,7 +24,7 @@ _MAX_ITEMS = int(os.environ.get("VM_HISTORY_MAX", "2000"))
 _MAX_TAGS = 8                       # 单条记录标签上限（防滥用）
 _MAX_TAG_LEN = 16
 _TAG_RE = re.compile(r"^[^\s,，;；/\\]{1,%d}$" % _MAX_TAG_LEN)
-_KINDS = {"tts", "offlinevc", "audiobook", "fx", "trial", "mine"}
+_KINDS = {"tts", "offlinevc", "audiobook", "fx", "trial", "mine", "seedvc"}
 
 _lock = threading.Lock()
 

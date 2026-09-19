@@ -21,6 +21,7 @@ const KIND_LABEL: Record<string, string> = {
   fx: "特效",
   trial: "试听",
   mine: "挖掘",
+  seedvc: "表达力变声",
 }
 
 function fmtTime(ts: number): string {

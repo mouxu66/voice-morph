@@ -33,6 +33,19 @@ def test_register_and_query(isolated):
     assert item["input_text"] == "你好"
 
 
+def test_seedvc_kind_preserved(isolated):
+    """Seed-VC（表达力变声）产出必须保留 seedvc 类型，不得静默降级为 tts。
+
+    回归（2026-09-19）：seed_vc.py 以 kind="seedvc" 登记，但 _KINDS 缺该值，
+    被 register 降级成 "tts"——作品库全显示成「语音合成」，无法按类型筛选。
+    """
+    hid = history.register("seedvc", "kangaroo", "s1.wav", "/api/media/outputs/s1.wav", 3.0)
+    assert hid
+    item = history.query(kind="seedvc")["items"][0]
+    assert item["kind"] == "seedvc"
+    assert history.query(kind="tts")["total"] == 0
+
+
 def test_query_filter_by_kind_and_voice(isolated):
     history.register("tts", "a", "1.wav", "/x", 1.0)
     history.register("fx", "b", "2.wav", "/x", 1.0)
