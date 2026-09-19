@@ -1,4 +1,5 @@
 """audiobook 文本切分 / SRT 解析单测（纯函数，无 GPU / 网络依赖）。"""
+
 import sys
 from pathlib import Path
 
@@ -12,8 +13,8 @@ pytest.importorskip("fastapi")
 
 import audiobook  # noqa: E402
 
-
 # ---------------- split_sentences ----------------
+
 
 def test_empty_and_whitespace():
     assert audiobook.split_sentences("") == []
@@ -66,8 +67,8 @@ def test_no_content_loss_property():
         "！！",
         "很短的句子",
         "a。b。c。d。",
-        "句" * 200,                                   # 无标点超长硬切
-        "，" .join(["长" * 50] * 3),                  # 逗号连接超长句
+        "句" * 200,  # 无标点超长硬切
+        "，".join(["长" * 50] * 3),  # 逗号连接超长句
         "长" * 90 + "，短。尾" + "。" + "尾尾",
     ]
     for text in strict_samples:
@@ -85,7 +86,7 @@ def test_no_content_loss_property():
 
 def test_oversized_sentence_split_at_comma():
     # 超 80 字且带逗号：应在逗号处二次切分，且不丢内容
-    text = "，" .join(["长" * 50] * 3)
+    text = "，".join(["长" * 50] * 3)
     out = audiobook.split_sentences(text)
     assert len(out) > 1
     assert "".join(out) == text

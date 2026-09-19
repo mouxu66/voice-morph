@@ -11,6 +11,7 @@ if str(_ROOT) not in sys.path:
 
 def test_defaults_point_to_sensible_locations():
     import config
+
     assert isinstance(config.ROOT, Path)
     assert str(config.RVC_ROOT).replace("\\", "/").lower() == "d:/rvc"
     assert config.SERVER_HOST == "0.0.0.0"
@@ -30,9 +31,9 @@ def test_no_private_voice_baked_into_config():
     src = (Path(__file__).resolve().parents[1] / "config.py").read_text(encoding="utf-8")
     m = re.search(r'RVC_DEFAULT_EXP\s*=\s*_str\(\s*"VM_RVC_EXP"\s*,\s*"([^"]*)"', src)
     assert m, "找不到 RVC_DEFAULT_EXP 的定义（改名？那就同步改这条检查）"
-    assert m.group(1) == "", (
-        f"默认音色被写死为 {m.group(1)!r}；应留空，由 VM_RVC_EXP 提供（见 .env.example）"
-    )
+    assert (
+        m.group(1) == ""
+    ), f"默认音色被写死为 {m.group(1)!r}；应留空，由 VM_RVC_EXP 提供（见 .env.example）"
 
 
 def test_default_voice_and_ref_are_env_driven(monkeypatch, tmp_path):
@@ -40,6 +41,7 @@ def test_default_voice_and_ref_are_env_driven(monkeypatch, tmp_path):
     monkeypatch.setenv("VM_RVC_EXP", "my_voice")
     monkeypatch.setenv("VM_DEFAULT_REF", str(tmp_path / "ref.wav"))
     import config as cfg
+
     importlib.reload(cfg)
     try:
         assert cfg.RVC_DEFAULT_EXP == "my_voice"
@@ -51,6 +53,7 @@ def test_default_voice_and_ref_are_env_driven(monkeypatch, tmp_path):
 
 def test_rvc_texts_loaded_from_bundled_file():
     import config
+
     texts = config.load_rvc_texts()
     # 只断言下界：语料会随音色迭代扩充（已从通用 20 句扩到外卖场景 100+ 句），
     # 写死条数会让每次扩充语料都误报失败。
@@ -63,6 +66,7 @@ def test_env_override(monkeypatch):
     monkeypatch.setenv("VM_RVC_ROOT", "C:/tmp/rvc")
     monkeypatch.setenv("VM_CORS_ORIGINS", "http://localhost:5173, https://a.test")
     import config as cfg
+
     importlib.reload(cfg)
     try:
         assert str(cfg.RVC_ROOT).replace("\\", "/").lower() == "c:/tmp/rvc"
@@ -78,12 +82,16 @@ def test_env_override_packaged_external_resources(monkeypatch):
     monkeypatch.setenv("VM_TTS_MODELS_DIR", "D:/变声/tts_models")
     monkeypatch.setenv("VM_TTS_VENV_PY", "D:/变声/tts_trial/venv312/Scripts/python.exe")
     import config as cfg
+
     importlib.reload(cfg)
     try:
         assert str(cfg.TTS_MODELS_DIR).replace("\\", "/").lower() == "d:/变声/tts_models"
         assert str(cfg.QWEN_MODEL_DIR) == str(cfg.TTS_MODELS_DIR / "qwen3-tts-1.7b-base")
         assert str(cfg.QWEN_TOKENIZER_DIR) == str(cfg.TTS_MODELS_DIR / "qwen3-tts-tokenizer-12hz")
-        assert str(cfg.TTS_VENV_PY).replace("\\", "/").lower() == "d:/变声/tts_trial/venv312/scripts/python.exe"
+        assert (
+            str(cfg.TTS_VENV_PY).replace("\\", "/").lower()
+            == "d:/变声/tts_trial/venv312/scripts/python.exe"
+        )
     finally:
         importlib.reload(cfg)
 
@@ -115,13 +123,14 @@ def test_env_override_full_chain_from_config_json(monkeypatch, tmp_path):
     monkeypatch.setenv("VM_PROJECT_ROOT", str(tmp_path))
 
     import config as cfg
+
     importlib.reload(cfg)
     try:
-        assert cfg.TTS_MODELS_DIR == models
-        assert cfg.QWEN_MODEL_DIR == models / "qwen3-tts-1.7b-base"
-        assert cfg.QWEN_TOKENIZER_DIR == models / "qwen3-tts-tokenizer-12hz"
-        assert cfg.TTS_VENV_PY == venv_py
-        assert cfg.RVC_ROOT == rvc
+        assert models == cfg.TTS_MODELS_DIR
+        assert models / "qwen3-tts-1.7b-base" == cfg.QWEN_MODEL_DIR
+        assert models / "qwen3-tts-tokenizer-12hz" == cfg.QWEN_TOKENIZER_DIR
+        assert venv_py == cfg.TTS_VENV_PY
+        assert rvc == cfg.RVC_ROOT
         # 推导出的 RVC 实验目录必须落在注入的根下（而不是回落到 D:/RVC）
         log_dir, dataset_dir = cfg.rvc_exp_dirs("kangaroo_v2")
         assert log_dir == rvc / "logs" / "kangaroo_v2"
@@ -139,6 +148,7 @@ def test_missing_config_falls_back_and_reports_unavailable(monkeypatch):
     for var in ("VM_TTS_MODELS_DIR", "VM_TTS_VENV_PY", "VM_RVC_ROOT", "VM_PROJECT_ROOT"):
         monkeypatch.delenv(var, raising=False)
     import config as cfg
+
     importlib.reload(cfg)
     try:
         # 回落默认值（项目内相对路径），不抛异常

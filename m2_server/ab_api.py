@@ -2,14 +2,14 @@
 
 自 server.py 拆出（行为不变）；app 装配见 server.py。
 """
+
 import json
 import time
 from pathlib import Path
 
+from common import voice_ref
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-
-from common import voice_ref
 from runtime import API_PREFIX, OUT, PREVIEW_TEXTS
 
 router = APIRouter(prefix=API_PREFIX)
@@ -25,6 +25,7 @@ def _speaker_emb(path: Path) -> "list[float]":
     if cached and cached[0] == mtime:
         return cached[1]
     from qwen3_tts import post
+
     data = json.loads(post("/emb", {"path": str(path)}, timeout=120))
     if "emb" not in data:
         raise RuntimeError(f"声纹提取失败: {data.get('error')}")
@@ -60,5 +61,9 @@ def ab_run(req: AbRunRequest):
         emb_gen = np.asarray(_speaker_emb(out))
         emb_ref = np.asarray(_speaker_emb(ref))
         sim = float(np.dot(emb_gen, emb_ref) / (np.linalg.norm(emb_gen) * np.linalg.norm(emb_ref)))
-        results[tag] = {"voice_id": vid, "url": f"/api/media/outputs/{fname}", "similarity": round(sim, 3)}
+        results[tag] = {
+            "voice_id": vid,
+            "url": f"/api/media/outputs/{fname}",
+            "similarity": round(sim, 3),
+        }
     return {"ok": True, "text": text, **results}

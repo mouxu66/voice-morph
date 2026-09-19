@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """DeepFilterNet 降噪强度标定（P2-5 验收工具）。
 
 背景：降噪与弱人声是一对矛盾——压得狠，底噪去得干净，但弱人声/远场声会被
@@ -22,30 +21,32 @@
 推荐规则：取"底噪降幅 ≥3dB" 且 "voiced_loss ≤5%" 的最强档；都不满足则取
 voiced_loss 最小的一档（宁可留噪，不可压断人声——压断是不可逆的）。
 """
+
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-
 import config as cfg
+import numpy as np
 from audio_enhance import ATTEN_LIM_PRESETS, enhance_file, resolve_atten_lim
 
 CALIB_DIR = cfg.OUTPUTS_DIR
 OUT_JSON = CALIB_DIR / "enhance_calib.json"
 
 # 推荐判据
-MIN_NOISE_DROP_DB = 3.0    # 至少降这么多底噪才算有收益
-MAX_VOICED_LOSS = 0.05     # 弱人声损伤上限（5% 有声帧被压没）
+MIN_NOISE_DROP_DB = 3.0  # 至少降这么多底噪才算有收益
+MAX_VOICED_LOSS = 0.05  # 弱人声损伤上限（5% 有声帧被压没）
 
 
 def _read16k(path: Path) -> tuple[np.ndarray, int]:
     """读成 16k 单声道 float32（与 pitch_advice 同一口径）。"""
     import soundfile as sf
+
     x, sr = sf.read(str(path), dtype="float32")
     if x.ndim > 1:
         x = x.mean(axis=1)
@@ -65,6 +66,7 @@ def _noise_db(x: np.ndarray, sr: int) -> float:
 def _speech_ratio(x: np.ndarray, sr: int) -> float:
     try:
         from clip_qc import analyze_signal
+
         return float(analyze_signal(x, sr).get("speech_ratio", 0.0))
     except Exception:
         return float("nan")
@@ -73,6 +75,7 @@ def _speech_ratio(x: np.ndarray, sr: int) -> float:
 def measure(x: np.ndarray, sr: int) -> dict:
     """测一条信号的可比指标。"""
     from pitch_advice import f0_curve
+
     _, voiced = f0_curve(x, sr)
     return {
         "noise_db": round(_noise_db(x, sr), 1),
@@ -108,11 +111,11 @@ def calib_one(path: Path, levels: list[str], save_dir: Path | None = None) -> di
     否则增强产物只用于算指标、算完即删。
     """
     import soundfile as sf
+
     x, sr = _read16k(path)
     base = measure(x, sr)
     base.pop("voiced")
-    out = {"name": path.stem, "duration_s": round(len(x) / sr, 1), "orig": base,
-           "levels": {}}
+    out = {"name": path.stem, "duration_s": round(len(x) / sr, 1), "orig": base, "levels": {}}
     if save_dir:
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -127,10 +130,8 @@ def calib_one(path: Path, levels: list[str], save_dir: Path | None = None) -> di
                 tmp = CALIB_DIR / f"_calib_{path.stem}_{lv}.wav"
                 enhance_file(path, tmp, atten_lim_db=resolve_atten_lim(lv))
                 y, sr2 = _read16k(tmp)
-                try:
+                with contextlib.suppress(Exception):
                     tmp.unlink(missing_ok=True)
-                except Exception:
-                    pass
             out["levels"][lv] = compare(x, y, min(sr, sr2))
         except Exception as e:  # 单档失败不拖垮整轮
             out["levels"][lv] = {"error": f"{type(e).__name__}: {e}"}
@@ -150,18 +151,22 @@ def recommend(summary: dict) -> tuple[str, str]:
         r = rows.get(lv)
         if not r:
             continue
-        if (r.get("noise_drop_db", 0) >= MIN_NOISE_DROP_DB
-                and r.get("voiced_loss", 1) <= MAX_VOICED_LOSS):
-            return lv, (f"底噪降 {r['noise_drop_db']}dB、弱人声损伤 {r['voiced_loss']:.1%}，"
-                        f"收益与损伤都可接受")
+        if (
+            r.get("noise_drop_db", 0) >= MIN_NOISE_DROP_DB
+            and r.get("voiced_loss", 1) <= MAX_VOICED_LOSS
+        ):
+            return lv, (
+                f"底噪降 {r['noise_drop_db']}dB、弱人声损伤 {r['voiced_loss']:.1%}，"
+                f"收益与损伤都可接受"
+            )
     best = min(rows.items(), key=lambda kv: kv[1].get("voiced_loss", 9))[0]
-    return best, (f"多档都压断了弱人声（最低损伤 {rows[best]['voiced_loss']:.1%}），"
-                  f"保守取该档")
+    return best, (f"多档都压断了弱人声（最低损伤 {rows[best]['voiced_loss']:.1%}），" f"保守取该档")
 
 
 def pick_noisy(n: int, pool: int = 20) -> list[Path]:
     """挑 SNR 最低（底噪最重）的 n 条切片做 A/B——越脏越能听出档位差异。"""
     from clip_qc import _read, analyze_signal
+
     scored = []
     for p in sorted((cfg.MEDIA_DIR / "clips").glob("*.wav"))[:pool]:
         try:
@@ -173,8 +178,9 @@ def pick_noisy(n: int, pool: int = 20) -> list[Path]:
     return [p for _, p in scored[:n]]
 
 
-def run(paths: list[Path], levels: list[str], save_dir: Path | None = None,
-        write_json: bool = True) -> dict:
+def run(
+    paths: list[Path], levels: list[str], save_dir: Path | None = None, write_json: bool = True
+) -> dict:
     items = []
     for i, p in enumerate(paths, 1):
         print(f"[{i}/{len(paths)}] {p.stem}", flush=True)
@@ -200,15 +206,14 @@ def run(paths: list[Path], levels: list[str], save_dir: Path | None = None,
     payload = {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "levels_tested": levels,
-        "presets": {k: v for k, v in ATTEN_LIM_PRESETS.items()},
+        "presets": dict(ATTEN_LIM_PRESETS.items()),
         "summary": summary,
         "items": items,
     }
     _print(summary, levels)
     if write_json:
         OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
-        OUT_JSON.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                            encoding="utf-8")
+        OUT_JSON.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\n详细结果：{OUT_JSON}")
     if save_dir:
         print(f"试听文件：{save_dir}")
@@ -222,12 +227,16 @@ def _print(summary: dict, levels: list[str]):
         r = summary["levels"].get(lv)
         if not r:
             continue
-        print(f"{lv:<10}{r['noise_drop_db']:>9.1f}dB{r['voiced_loss']:>9.1%}"
-              f"{r['voiced_ratio_delta']:>+12.3f}{r['speech_ratio_delta']:>+12.3f}")
+        print(
+            f"{lv:<10}{r['noise_drop_db']:>9.1f}dB{r['voiced_loss']:>9.1%}"
+            f"{r['voiced_ratio_delta']:>+12.3f}{r['speech_ratio_delta']:>+12.3f}"
+        )
     print(f"\n推荐默认档：{summary['recommended']}（{summary['reason']}）")
-    print("口径说明：弱声损伤 = 原本有声、增强后失声的帧占比。light 档混回干声多，"
-          "残留噪声会干扰 pyin 判定，故其数值里含「噪声混淆」成分，不全是真压断；"
-          "跨档比较时优先看「有声占比Δ」（负值越大＝压断越明显）。")
+    print(
+        "口径说明：弱声损伤 = 原本有声、增强后失声的帧占比。light 档混回干声多，"
+        "残留噪声会干扰 pyin 判定，故其数值里含「噪声混淆」成分，不全是真压断；"
+        "跨档比较时优先看「有声占比Δ」（负值越大＝压断越明显）。"
+    )
 
 
 def _main():
@@ -235,12 +244,16 @@ def _main():
     ap.add_argument("--limit", type=int, default=8, help="取前 N 条切片（默认 8）")
     ap.add_argument("--prefix", default="", help="只取该前缀的切片")
     ap.add_argument("--clips", nargs="*", default=[], help="显式指定切片文件")
-    ap.add_argument("--levels", default="light,standard,strong",
-                    help="要对比的档位，逗号分隔")
-    ap.add_argument("--save-dir", default="",
-                    help="把「原声+各档增强」写到该目录供 A/B 试听（不删除）")
-    ap.add_argument("--pick-noisy", type=int, default=0,
-                    help="自动挑 SNR 最低（底噪最重）的 N 条切片，A/B 差异最明显")
+    ap.add_argument("--levels", default="light,standard,strong", help="要对比的档位，逗号分隔")
+    ap.add_argument(
+        "--save-dir", default="", help="把「原声+各档增强」写到该目录供 A/B 试听（不删除）"
+    )
+    ap.add_argument(
+        "--pick-noisy",
+        type=int,
+        default=0,
+        help="自动挑 SNR 最低（底噪最重）的 N 条切片，A/B 差异最明显",
+    )
     args = ap.parse_args()
 
     if args.clips:
@@ -255,8 +268,12 @@ def _main():
         print("没有可用切片")
         return
     save_dir = Path(args.save_dir) if args.save_dir else None
-    run(paths, [s.strip() for s in args.levels.split(",") if s.strip()],
-        save_dir, write_json=save_dir is None)
+    run(
+        paths,
+        [s.strip() for s in args.levels.split(",") if s.strip()],
+        save_dir,
+        write_json=save_dir is None,
+    )
 
 
 if __name__ == "__main__":

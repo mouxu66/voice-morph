@@ -22,6 +22,7 @@
   - 单文件大小上限（HEAD + 流式总量双重校验）
   - 取消只删 .part，绝不产出残缺目标文件
 """
+
 import hashlib
 import json
 import threading
@@ -30,7 +31,6 @@ import urllib.parse
 from pathlib import Path
 
 import requests
-
 from runtime import OUT
 
 DOWNLOAD_DIR = OUT / "market"
@@ -39,9 +39,9 @@ STATE_FILE = DOWNLOAD_DIR / "downloads.json"
 CHUNK_SIZE = 256 * 1024
 CONNECT_TIMEOUT = 15
 READ_TIMEOUT = 60
-MAX_BYTES = 500 * 1024 * 1024           # 单权重上限 500MB
+MAX_BYTES = 500 * 1024 * 1024  # 单权重上限 500MB
 PART_SUFFIX = ".part"
-_PERSIST_MIN_INTERVAL = 0.5             # 进度落盘节流（秒）
+_PERSIST_MIN_INTERVAL = 0.5  # 进度落盘节流（秒）
 
 # 文件级并发上限：同时活跃的下载线程数（超出在信号量上排队）
 MAX_CONCURRENT_FILES = 3
@@ -59,14 +59,13 @@ def _torch_header_ok(path: Path) -> bool:
         return False
     if head[:2] == b"PK":
         return True
-    if head[:1] == b"\x80" and len(head) > 1 and head[1] in (0x00, 0x02, 0x03, 0x04, 0x05, 0x06):
-        return True
-    return False
+    return bool(head[:1] == b"\x80" and len(head) > 1 and head[1] in (0, 2, 3, 4, 5, 6))
+
 
 # 下载域名白名单：搜索/download 直链只允许这些主机（含子域，见 _validate_url）
 ALLOWED_HOSTS = {
     "huggingface.co",
-    "hf.co",                    # 官方短域（重定向目标多为 *.hf.co 子域）
+    "hf.co",  # 官方短域（重定向目标多为 *.hf.co 子域）
     "hf-mirror.com",
     "huggingface.cn",
     "modelscope.cn",
@@ -105,9 +104,13 @@ class DownloadManager:
     - progress() 返回主任务快照（兼容旧单任务消费者）；所有字段变化即时落盘。
     """
 
-    def __init__(self, download_dir: Path = None, state_file: Path = None,
-                 allow_loopback: bool = False,
-                 max_concurrent: int = MAX_CONCURRENT_FILES):
+    def __init__(
+        self,
+        download_dir: Path = None,
+        state_file: Path = None,
+        allow_loopback: bool = False,
+        max_concurrent: int = MAX_CONCURRENT_FILES,
+    ):
         self.download_dir = Path(download_dir or DOWNLOAD_DIR)
         self.state_file = Path(state_file or (self.download_dir / "downloads.json"))
         self.allow_loopback = allow_loopback
@@ -115,11 +118,11 @@ class DownloadManager:
         self.download_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._sem = threading.BoundedSemaphore(self.max_concurrent)
-        self._tasks: dict[str, dict] = {}          # name -> 任务状态（内存 + 落盘）
+        self._tasks: dict[str, dict] = {}  # name -> 任务状态（内存 + 落盘）
         self._threads: dict[str, threading.Thread] = {}
         self._events: dict[str, threading.Event] = {}
-        self._order: list[str] = []                # 启动顺序（主任务选取）
-        self._extra: dict = {}                     # install 等自定义段（顶层落盘）
+        self._order: list[str] = []  # 启动顺序（主任务选取）
+        self._extra: dict = {}  # install 等自定义段（顶层落盘）
         self._load()
 
     # ---- 持久化 ----
@@ -154,8 +157,8 @@ class DownloadManager:
             self._last_persist = ts
             tmp = self.state_file.with_suffix(".json.tmp")
             tmp.write_text(
-                json.dumps({**self._extra, "tasks": self._tasks},
-                           ensure_ascii=False, indent=2), "utf-8"
+                json.dumps({**self._extra, "tasks": self._tasks}, ensure_ascii=False, indent=2),
+                "utf-8",
             )
             tmp.replace(self.state_file)
 
@@ -200,7 +203,7 @@ class DownloadManager:
             t = tasks.get(n)
             if t and t.get("status") == "downloading":
                 th = threads.get(n)
-                if th is None or not th.is_alive():      # 线程僵死纠正
+                if th is None or not th.is_alive():  # 线程僵死纠正
                     t["status"] = "interrupted"
         active = [n for n in order if (tasks.get(n) or {}).get("status") == "downloading"]
         if active:
@@ -211,12 +214,18 @@ class DownloadManager:
             st = {}
         st["active"] = active
         if extra:
-            st = {**extra, **st}         # install 等自定义段并入（任务键优先）
+            st = {**extra, **st}  # install 等自定义段并入（任务键优先）
         return st
 
-    def start(self, name: str, url: str, mirror_url: str | None = None,
-              sha256: str | None = None, expected_size: int | None = None,
-              filename: str | None = None) -> dict:
+    def start(
+        self,
+        name: str,
+        url: str,
+        mirror_url: str | None = None,
+        sha256: str | None = None,
+        expected_size: int | None = None,
+        filename: str | None = None,
+    ) -> dict:
         """启动（或续传）一个下载任务；同名活跃任务拒绝重复。
 
         多个任务可并行存在，实际并发下载数受信号量 max_concurrent 限制。
@@ -241,8 +250,11 @@ class DownloadManager:
                 # 幂等完成：保留安装编排写入的 install 段（否则进度面板空白），
                 # 覆盖重装由安装层先清除产物再 start，避免装回旧文件。
                 self._tasks[name] = {
-                    "name": name, "filename": filename, "idle": True,
-                    "status": "done", "done_file": str(dest),
+                    "name": name,
+                    "filename": filename,
+                    "idle": True,
+                    "status": "done",
+                    "done_file": str(dest),
                     "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
                 if name not in self._order:
@@ -262,7 +274,9 @@ class DownloadManager:
                     "error": "",
                     "dest": str(dest),
                     "part": str(part),
-                    "started_at": prev.get("started_at") if resume else time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "started_at": (
+                        prev.get("started_at") if resume else time.strftime("%Y-%m-%d %H:%M:%S")
+                    ),
                     "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
                 if name not in self._order:
@@ -286,11 +300,9 @@ class DownloadManager:
         """
         with self._lock:
             if name is None:
-                targets = [n for n, th in self._threads.items()
-                           if th is not None and th.is_alive()]
+                targets = [n for n, th in self._threads.items() if th is not None and th.is_alive()]
             else:
-                targets = ([name] if name in self._threads
-                           and self._threads[name].is_alive() else [])
+                targets = [name] if name in self._threads and self._threads[name].is_alive() else []
             if not targets:
                 raise MarketError("没有进行中的下载任务")
             for n in targets:
@@ -301,19 +313,18 @@ class DownloadManager:
 
     def remove_artifact(self, filename: str) -> None:
         """删除下载产物（含 .part 残留），供安装覆盖重装时强制重新下载。"""
-        for p in (self.download_dir / filename,
-                  self.download_dir / (filename + PART_SUFFIX)):
+        for p in (self.download_dir / filename, self.download_dir / (filename + PART_SUFFIX)):
             p.unlink(missing_ok=True)
 
     # ---- 后台线程 ----
     def _run(self, name, url, mirror_url, sha256, expected_size, filename=None):
-        self._sem.acquire()          # 信号量：文件级并发限流（超出自动排队）
+        self._sem.acquire()  # 信号量：文件级并发限流（超出自动排队）
         try:
             filename = filename or f"{name}.pth"
             part = self.download_dir / (filename + PART_SUFFIX)
             dest = self.download_dir / filename
             cancel_evt = self._events.get(name)
-            err_url = url          # 最终失败时用于指明是主源还是镜像挂了
+            err_url = url  # 最终失败时用于指明是主源还是镜像挂了
             try:
                 if expected_size and expected_size > MAX_BYTES:
                     raise MarketError(f"文件超过上限 {MAX_BYTES} 字节")
@@ -336,8 +347,12 @@ class DownloadManager:
                         if attempt == 0 and mirror_url and not (cancel_evt and cancel_evt.is_set()):
                             # 只标记当前尝试源（attempt_url），不覆盖主源 url——
                             # 覆盖会污染 state，失败后排查看到的"主源"其实是镜像
-                            self._set_task(name, force=True, attempt_url=mirror_url,
-                                           error=f"主源失败({exc.__class__.__name__})，回退镜像重下")
+                            self._set_task(
+                                name,
+                                force=True,
+                                attempt_url=mirror_url,
+                                error=f"主源失败({exc.__class__.__name__})，回退镜像重下",
+                            )
                             # 主源中途失败时 .part 不可信：删除从头（hasher 由
                             # _download_to 的 offset==0 分支自动重置，避免旧字节混入 digest）
                             if part.exists():
@@ -347,7 +362,9 @@ class DownloadManager:
 
                 if cancel_evt and cancel_evt.is_set():
                     part.unlink(missing_ok=True)
-                    self._set_task(name, force=True, status="cancelled", error="", done=0, total=None)
+                    self._set_task(
+                        name, force=True, status="cancelled", error="", done=0, total=None
+                    )
                     return
 
                 size = part.stat().st_size
@@ -360,15 +377,25 @@ class DownloadManager:
                 # 权重类文件做文件头校验：杜绝 404 HTML / 任意网页内容当权重落盘
                 if dest.suffix.lower() in TORCH_SUFFIXES and not _torch_header_ok(part):
                     part.unlink(missing_ok=True)
-                    raise MarketError("文件头校验失败：不是有效的 PyTorch 存档（可能下载到了错误页面）")
+                    raise MarketError(
+                        "文件头校验失败：不是有效的 PyTorch 存档（可能下载到了错误页面）"
+                    )
                 if box["h"] is not None:
                     digest = box["h"].hexdigest()
                     if digest != sha256:
                         part.unlink(missing_ok=True)
                         raise MarketError(f"SHA256 不符: 期望 {sha256} 实际 {digest}")
                 part.replace(dest)
-                self._set_task(name, force=True, status="done", error="", done=size, total=size,
-                               dest=str(dest), file_name=dest.name)
+                self._set_task(
+                    name,
+                    force=True,
+                    status="done",
+                    error="",
+                    done=size,
+                    total=size,
+                    dest=str(dest),
+                    file_name=dest.name,
+                )
                 # 清理 url/mirror/哈希等敏感态，进入完成态
                 with self._lock:
                     t = self._tasks.get(name) or {}
@@ -379,8 +406,12 @@ class DownloadManager:
                 part.unlink(missing_ok=True)
                 # 带上失败的来源主机：排查「主源挂了还是镜像也挂了」时不必猜
                 host = urllib.parse.urlparse(err_url or url).hostname or ""
-                self._set_task(name, force=True, status="failed",
-                               error=f"{exc.__class__.__name__}: {exc}" + (f"（来源 {host}）" if host else ""))
+                self._set_task(
+                    name,
+                    force=True,
+                    status="failed",
+                    error=f"{exc.__class__.__name__}: {exc}" + (f"（来源 {host}）" if host else ""),
+                )
             finally:
                 if cancel_evt:
                     cancel_evt.clear()
@@ -406,9 +437,14 @@ class DownloadManager:
         headers = {"Range": f"bytes={resume}-"} if resume else {}
         redirects = 0
         while True:
-            _validate_url(url, self.allow_loopback)   # 每一次跳转目标都过白名单
-            resp = requests.get(url, stream=True, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                                allow_redirects=False, headers=headers)
+            _validate_url(url, self.allow_loopback)  # 每一次跳转目标都过白名单
+            resp = requests.get(
+                url,
+                stream=True,
+                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                allow_redirects=False,
+                headers=headers,
+            )
             if resp.status_code in (301, 302, 303, 307, 308):
                 loc = resp.headers.get("Location")
                 resp.close()

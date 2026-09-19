@@ -9,17 +9,18 @@
   2. RVC 子进程报错时，torch 的弃用警告会把真错误挤出 tail，用户看到假原因
      → `_fail_tail` 的过滤（见 test_ab_chain.py）。
 """
+
+import contextlib
 import subprocess
 import threading
 import time
 from pathlib import Path
 
+import audition_api as fa
 import numpy as np
 import pytest
-import soundfile as sf
-
-import audition_api as fa
 import runtime
+import soundfile as sf
 from runtime import EXCLUSIVE_TASKS, gpu_holder_reason, hold_gpu, release_gpu
 
 
@@ -36,15 +37,27 @@ def _clean_gpu_registry():
 def _reset_state():
     fa._CANCEL.clear()
     if fa._TASK_LOCK.locked():
-        try:
+        with contextlib.suppress(RuntimeError):
             fa._TASK_LOCK.release()
-        except RuntimeError:
-            pass
     with fa._STATE_LOCK:
         fa.AUDITION_STATE.update(
-            task_id="", running=False, status="idle", mode="", total=0, finished=0,
-            current="", current_name="", message="", error="", source_name="",
-            text="", results=[], scoring=False, score_finished=0, score_total=0)
+            task_id="",
+            running=False,
+            status="idle",
+            mode="",
+            total=0,
+            finished=0,
+            current="",
+            current_name="",
+            message="",
+            error="",
+            source_name="",
+            text="",
+            results=[],
+            scoring=False,
+            score_finished=0,
+            score_total=0,
+        )
 
 
 @pytest.fixture()
@@ -77,8 +90,14 @@ def _wait_idle(timeout: float = 10.0):
     raise AssertionError(f"任务没有在 {timeout}s 内结束：{fa._snapshot()}")
 
 
-def _stub_infer(monkeypatch, *, failing: set[str] | None = None,
-                handle=None, cached: bool = False, gate: threading.Event | None = None):
+def _stub_infer(
+    monkeypatch,
+    *,
+    failing: set[str] | None = None,
+    handle=None,
+    cached: bool = False,
+    gate: threading.Event | None = None,
+):
     """打桩「一件」的试音：写个真 wav 出来，按需失败/阻塞/报告命中缓存。"""
     failing = failing or set()
 
@@ -98,6 +117,7 @@ def _stub_infer(monkeypatch, *, failing: set[str] | None = None,
 
 def _stub_history(monkeypatch):
     import history
+
     monkeypatch.setattr(history, "register", lambda *a, **k: "x")
 
 
@@ -106,15 +126,15 @@ def _stub_history(monkeypatch):
 
 def test_hold_gpu_is_exclusive():
     assert hold_gpu("audition", "试音间正在批量试音") is True
-    assert hold_gpu("other", "别的任务") is False          # 已被占就抢不到
+    assert hold_gpu("other", "别的任务") is False  # 已被占就抢不到
     assert gpu_holder_reason() == "试音间正在批量试音"
     release_gpu("audition")
     assert gpu_holder_reason() == ""
-    assert hold_gpu("other", "别的任务") is True           # 释放后可用
+    assert hold_gpu("other", "别的任务") is True  # 释放后可用
 
 
 def test_release_gpu_is_idempotent():
-    release_gpu("never-held")                              # 不该抛
+    release_gpu("never-held")  # 不该抛
     assert gpu_holder_reason() == ""
 
 
@@ -171,20 +191,22 @@ def test_resolve_weight_downloads_when_in_manifest(tmp_path, monkeypatch):
     staged.write_bytes(b"\x00" * 8)
     monkeypatch.setattr(fa, "_find_pth", lambda _v: None)
     monkeypatch.setattr(fa, "ensure_infer_pth", lambda _v: None)
-    monkeypatch.setattr(fa, "find_manifest_item",
-                        lambda v: {"id": v, "download": {"url": "https://x/y.pth"}})
+    monkeypatch.setattr(
+        fa, "find_manifest_item", lambda v: {"id": v, "download": {"url": "https://x/y.pth"}}
+    )
     monkeypatch.setattr(fa, "_ensure_staged", lambda _v, _dl: staged)
     pth, index, err = fa._resolve_weight("katoong_manbo")
     assert pth == staged
-    assert index == ""          # 暂存权重无 index → 显式跳过检索
+    assert index == ""  # 暂存权重无 index → 显式跳过检索
     assert err == ""
 
 
 def test_resolve_weight_download_failure_is_readable(monkeypatch):
     monkeypatch.setattr(fa, "_find_pth", lambda _v: None)
     monkeypatch.setattr(fa, "ensure_infer_pth", lambda _v: None)
-    monkeypatch.setattr(fa, "find_manifest_item",
-                        lambda v: {"id": v, "download": {"url": "https://x/y.pth"}})
+    monkeypatch.setattr(
+        fa, "find_manifest_item", lambda v: {"id": v, "download": {"url": "https://x/y.pth"}}
+    )
 
     def _boom(_v, _dl):
         raise RuntimeError("网络断了")
@@ -210,9 +232,9 @@ def test_cache_path_is_deterministic_and_param_sensitive():
     src = fa.AUDITION_DIR / "src_1.wav"
     a = fa._cache_path("v1", "audio", src, "", 0, 0.5)
     assert fa._cache_path("v1", "audio", src, "", 0, 0.5) == a
-    assert fa._cache_path("v1", "audio", src, "", 12, 0.5) != a       # pitch 变了
-    assert fa._cache_path("v2", "audio", src, "", 0, 0.5) != a       # 音色变了
-    assert fa._cache_path("v1", "text", None, "你好", 0, 0.5) != a     # 模式变了
+    assert fa._cache_path("v1", "audio", src, "", 12, 0.5) != a  # pitch 变了
+    assert fa._cache_path("v2", "audio", src, "", 0, 0.5) != a  # 音色变了
+    assert fa._cache_path("v1", "text", None, "你好", 0, 0.5) != a  # 模式变了
 
 
 def test_duration_s_reads_header(aud_dir):
@@ -224,8 +246,7 @@ def test_duration_s_reads_header(aud_dir):
 
 
 def _jobs():
-    return [{"key": "v1", "wav": "a.wav", "ref": ""},
-            {"key": "v2", "wav": "b.wav", "ref": ""}]
+    return [{"key": "v1", "wav": "a.wav", "ref": ""}, {"key": "v2", "wav": "b.wav", "ref": ""}]
 
 
 def test_score_batch_empty_is_noop():
@@ -234,6 +255,7 @@ def test_score_batch_empty_is_noop():
 
 def test_score_batch_timeout_marks_every_key(aud_dir, monkeypatch):
     """打分超时不能让试音失败 —— 只给每个 key 一条可读原因。"""
+
     def _timeout(*_a, **_k):
         raise subprocess.TimeoutExpired(cmd="x", timeout=1)
 
@@ -256,8 +278,10 @@ def test_score_batch_missing_output_file(aud_dir, monkeypatch):
 
 
 def test_score_batch_reads_json_output(aud_dir, monkeypatch):
-    payload = {"v1": {"secs": 0.66, "nats": 2.9, "score_error": ""},
-               "v2": {"secs": None, "nats": None, "score_error": "自然度打分失败：缺模型"}}
+    payload = {
+        "v1": {"secs": 0.66, "nats": 2.9, "score_error": ""},
+        "v2": {"secs": None, "nats": None, "score_error": "自然度打分失败：缺模型"},
+    }
 
     class _R:
         returncode = 0
@@ -269,6 +293,7 @@ def test_score_batch_reads_json_output(aud_dir, monkeypatch):
         out = cmd[cmd.index("--out") + 1]
         with open(out, "w", encoding="utf-8") as f:
             import json
+
             json.dump(payload, f)
         return _R()
 
@@ -326,10 +351,21 @@ def test_audition_score_cli_offline_by_default():
 
 
 def test_env_shape(monkeypatch):
-    env = fa.audition_env()          # 只调一次：每次探测要起 PowerShell 查进程，很贵
-    for key in ("live_running", "cascade_running", "offline_running", "tts_worker",
-                "gpu_total_mb", "gpu_used_mb", "gpu_free_mb", "min_free_vram_mb",
-                "low_vram", "busy_reason", "batch_ready", "text_ready"):
+    env = fa.audition_env()  # 只调一次：每次探测要起 PowerShell 查进程，很贵
+    for key in (
+        "live_running",
+        "cascade_running",
+        "offline_running",
+        "tts_worker",
+        "gpu_total_mb",
+        "gpu_used_mb",
+        "gpu_free_mb",
+        "min_free_vram_mb",
+        "low_vram",
+        "busy_reason",
+        "batch_ready",
+        "text_ready",
+    ):
         assert key in env, f"env 缺字段 {key}"
     assert env["batch_ready"] is True
 
@@ -343,9 +379,12 @@ def test_env_reports_busy_when_gpu_held():
 
 def test_env_reports_low_vram(monkeypatch):
     import rvc_live
-    monkeypatch.setattr(rvc_live, "_gpu_snapshot",
-                        lambda: {"gpu_total_mb": 8000, "gpu_used_mb": 7000,
-                                 "live_proc_vram_mb": 0})
+
+    monkeypatch.setattr(
+        rvc_live,
+        "_gpu_snapshot",
+        lambda: {"gpu_total_mb": 8000, "gpu_used_mb": 7000, "live_proc_vram_mb": 0},
+    )
     monkeypatch.setattr(rvc_live, "MIN_LIVE_FREE_VRAM_MB", 2048)
     env = fa.audition_env()
     assert env["gpu_free_mb"] == 1000
@@ -362,6 +401,7 @@ def test_sources_empty_initially(aud_dir):
 
 def test_source_delete_rejects_builtin(aud_dir):
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as ei:
         fa.audition_source_delete("src_builtin")
     assert ei.value.status_code == 400
@@ -369,6 +409,7 @@ def test_source_delete_rejects_builtin(aud_dir):
 
 def test_source_delete_rejects_bad_id(aud_dir):
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as ei:
         fa.audition_source_delete("../etc/passwd")
     assert ei.value.status_code == 400
@@ -376,6 +417,7 @@ def test_source_delete_rejects_bad_id(aud_dir):
 
 def test_source_delete_missing_returns_404(aud_dir):
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as ei:
         fa.audition_source_delete("src_404")
     assert ei.value.status_code == 404
@@ -408,7 +450,7 @@ def test_score_pass_does_not_write_into_next_task(aud_dir, monkeypatch):
     fa.audition_try(fa.TryRequest(voice_ids=["v1"], source_id="src_1", score=True))
     _wait_idle()
     time.sleep(0.4)
-    assert fa._snapshot()["results"] == []      # 旧分没被塞进新一轮
+    assert fa._snapshot()["results"] == []  # 旧分没被塞进新一轮
 
 
 def test_source_delete_blocked_while_in_use(aud_dir):
@@ -418,6 +460,7 @@ def test_source_delete_blocked_while_in_use(aud_dir):
         fa.AUDITION_STATE["source_name"] = "src_222.wav"
         fa.AUDITION_STATE["running"] = True
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as ei:
         fa.audition_source_delete("src_222")
     assert ei.value.status_code == 409
@@ -435,6 +478,7 @@ def test_active_source_ignores_stale_name_when_idle(aud_dir):
 
 def test_prune_sources_keeps_recent_and_skips_active(aud_dir):
     import os
+
     for i in range(8):
         p = _wav(fa.AUDITION_DIR / f"src_{i}.wav")
         os.utime(p, (1000 + i, 1000 + i))
@@ -443,8 +487,8 @@ def test_prune_sources_keeps_recent_and_skips_active(aud_dir):
         fa.AUDITION_STATE["running"] = True
     fa._prune_sources()
     left = {p.stem for p in fa.AUDITION_DIR.glob("src_*.wav")}
-    assert "src_0" in left                       # 正在用，绝不删
-    assert "src_7" in left and "src_6" in left   # 最近的留着
+    assert "src_0" in left  # 正在用，绝不删
+    assert "src_7" in left and "src_6" in left  # 最近的留着
     assert len(left) <= fa.SRC_HARD_CAP
 
 
@@ -453,6 +497,7 @@ def test_prune_sources_keeps_recent_and_skips_active(aud_dir):
 
 def test_try_rejects_empty_voice_list(aud_dir):
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as ei:
         fa.audition_try(fa.TryRequest(voice_ids=[]))
     assert ei.value.status_code == 400
@@ -460,6 +505,7 @@ def test_try_rejects_empty_voice_list(aud_dir):
 
 def test_try_rejects_invalid_voice_id(aud_dir):
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as ei:
         fa.audition_try(fa.TryRequest(voice_ids=["../../etc"], source_id="src_1"))
     assert ei.value.status_code == 400
@@ -467,6 +513,7 @@ def test_try_rejects_invalid_voice_id(aud_dir):
 
 def test_try_rejects_missing_source(aud_dir):
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as ei:
         fa.audition_try(fa.TryRequest(voice_ids=["v1"], source_id="src_nope"))
     assert ei.value.status_code == 404
@@ -474,6 +521,7 @@ def test_try_rejects_missing_source(aud_dir):
 
 def test_try_rejects_bad_source_id(aud_dir):
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as ei:
         fa.audition_try(fa.TryRequest(voice_ids=["v1"], source_id="../../x"))
     assert ei.value.status_code == 400
@@ -481,6 +529,7 @@ def test_try_rejects_bad_source_id(aud_dir):
 
 def test_try_requires_text_or_source(aud_dir):
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as ei:
         fa.audition_try(fa.TryRequest(voice_ids=["v1"], text=""))
     assert ei.value.status_code == 400
@@ -488,6 +537,7 @@ def test_try_requires_text_or_source(aud_dir):
 
 def test_try_rejects_overlong_text(aud_dir):
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as ei:
         fa.audition_try(fa.TryRequest(voice_ids=["v1"], text="啊" * 201))
     assert ei.value.status_code == 400
@@ -495,6 +545,7 @@ def test_try_rejects_overlong_text(aud_dir):
 
 def test_try_rejects_out_of_range_params(aud_dir):
     from fastapi import HTTPException
+
     _wav(fa.AUDITION_DIR / "src_1.wav")
     with pytest.raises(HTTPException) as ei:
         fa.audition_try(fa.TryRequest(voice_ids=["v1"], source_id="src_1", index_rate=2))
@@ -506,6 +557,7 @@ def test_try_rejects_out_of_range_params(aud_dir):
 
 def test_try_409_when_gpu_held(aud_dir):
     from fastapi import HTTPException
+
     _wav(fa.AUDITION_DIR / "src_1.wav")
     hold_gpu("other", "离线变声任务正在运行")
     with pytest.raises(HTTPException) as ei:
@@ -515,8 +567,9 @@ def test_try_409_when_gpu_held(aud_dir):
 
 
 def test_try_409_when_live_running(aud_dir, monkeypatch):
-    from fastapi import HTTPException
     import rvc_live
+    from fastapi import HTTPException
+
     _wav(fa.AUDITION_DIR / "src_1.wav")
     monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: True)
     with pytest.raises(HTTPException) as ei:
@@ -532,8 +585,9 @@ def test_try_runs_to_completion_and_releases_resources(aud_dir, monkeypatch):
     _wav(fa.AUDITION_DIR / "src_1.wav")
     _stub_infer(monkeypatch)
     _stub_history(monkeypatch)
-    fa.audition_try(fa.TryRequest(voice_ids=["kangaroo_v2", "katoong_manbo"],
-                                 source_id="src_1", score=False))
+    fa.audition_try(
+        fa.TryRequest(voice_ids=["kangaroo_v2", "katoong_manbo"], source_id="src_1", score=False)
+    )
     st = _wait_idle()
     assert st["status"] == "done"
     assert st["finished"] == 2
@@ -549,9 +603,13 @@ def test_try_dedupes_but_keeps_order(aud_dir, monkeypatch):
     _wav(fa.AUDITION_DIR / "src_1.wav")
     _stub_infer(monkeypatch)
     _stub_history(monkeypatch)
-    fa.audition_try(fa.TryRequest(voice_ids=["kangaroo_v2", "kangaroo_v2",
-                                            "katoong_manbo"],
-                                 source_id="src_1", score=False))
+    fa.audition_try(
+        fa.TryRequest(
+            voice_ids=["kangaroo_v2", "kangaroo_v2", "katoong_manbo"],
+            source_id="src_1",
+            score=False,
+        )
+    )
     st = _wait_idle()
     assert st["total"] == 2
     assert [r["voice_id"] for r in st["results"]] == ["kangaroo_v2", "katoong_manbo"]
@@ -559,6 +617,7 @@ def test_try_dedupes_but_keeps_order(aud_dir, monkeypatch):
 
 def test_try_second_call_409_while_running(aud_dir, monkeypatch):
     from fastapi import HTTPException
+
     _wav(fa.AUDITION_DIR / "src_1.wav")
     gate = threading.Event()
     _stub_infer(monkeypatch, gate=gate)
@@ -575,14 +634,15 @@ def test_per_voice_failure_does_not_abort_others(aud_dir, monkeypatch):
     _wav(fa.AUDITION_DIR / "src_1.wav")
     _stub_infer(monkeypatch, failing={"bad_voice"})
     _stub_history(monkeypatch)
-    fa.audition_try(fa.TryRequest(voice_ids=["bad_voice", "good_voice"],
-                                 source_id="src_1", score=False))
+    fa.audition_try(
+        fa.TryRequest(voice_ids=["bad_voice", "good_voice"], source_id="src_1", score=False)
+    )
     st = _wait_idle()
     by_id = {r["voice_id"]: r for r in st["results"]}
     assert by_id["bad_voice"]["status"] == "failed"
     assert "没有可推理的模型" in by_id["bad_voice"]["error"]
     assert by_id["good_voice"]["status"] == "done"
-    assert st["status"] == "done"          # 单件失败不把整个任务标为 error
+    assert st["status"] == "done"  # 单件失败不把整个任务标为 error
 
 
 def test_cancel_marks_status_cancelled(aud_dir, monkeypatch):
@@ -595,7 +655,7 @@ def test_cancel_marks_status_cancelled(aud_dir, monkeypatch):
     gate.set()
     st = _wait_idle()
     assert st["status"] == "cancelled"
-    assert gpu_holder_reason() == ""       # 取消也必须释放独占位
+    assert gpu_holder_reason() == ""  # 取消也必须释放独占位
 
 
 def test_cancel_without_task_is_noop(aud_dir):
@@ -638,13 +698,13 @@ def test_score_runs_after_lock_released(aud_dir, monkeypatch):
     monkeypatch.setattr(fa, "_score_batch", _score_batch_slow)
     fa.audition_try(fa.TryRequest(voice_ids=["v1", "v2"], source_id="src_1", score=True))
     _wait_idle()
-    for _ in range(200):                    # 打分线程是异步的，等它跑完
+    for _ in range(200):  # 打分线程是异步的，等它跑完
         if not fa._snapshot().get("scoring"):
             break
         time.sleep(0.02)
 
-    assert observed["lock_held_during_convert"] is True     # 推理时确实占着
-    assert observed["lock_held_when_scoring"] is False      # 打分时已释放
+    assert observed["lock_held_during_convert"] is True  # 推理时确实占着
+    assert observed["lock_held_when_scoring"] is False  # 打分时已释放
     assert observed["gpu_held_when_scoring"] == ""
     assert observed["keys"] == ["v1", "v2"]
     st = fa._snapshot()
@@ -667,7 +727,7 @@ def test_score_disabled_skips_scoring_pass(aud_dir, monkeypatch):
     st = _wait_idle()
     time.sleep(0.2)
     assert called["n"] == 0
-    assert st["results"][0]["nats"] is None     # 没算就明确是 None，不编造分数
+    assert st["results"][0]["nats"] is None  # 没算就明确是 None，不编造分数
 
 
 def test_score_failure_keeps_results(aud_dir, monkeypatch):
@@ -675,10 +735,14 @@ def test_score_failure_keeps_results(aud_dir, monkeypatch):
     _wav(fa.AUDITION_DIR / "src_1.wav")
     _stub_infer(monkeypatch)
     _stub_history(monkeypatch)
-    monkeypatch.setattr(fa, "_score_batch",
-                        lambda jobs: {j["key"]: {"secs": None, "nats": None,
-                                                 "score_error": "打分超时（>300s），已跳过"}
-                                      for j in jobs})
+    monkeypatch.setattr(
+        fa,
+        "_score_batch",
+        lambda jobs: {
+            j["key"]: {"secs": None, "nats": None, "score_error": "打分超时（>300s），已跳过"}
+            for j in jobs
+        },
+    )
     fa.audition_try(fa.TryRequest(voice_ids=["v1"], source_id="src_1", score=True))
     _wait_idle()
     for _ in range(200):
@@ -707,7 +771,7 @@ def test_score_pass_survives_exception(aud_dir, monkeypatch):
         time.sleep(0.02)
     st = fa._snapshot()
     assert st["scoring"] is False
-    assert st["results"][0]["status"] == "done"     # 结果不受影响
+    assert st["results"][0]["status"] == "done"  # 结果不受影响
 
 
 # ---------------- 文字模式 ----------------
@@ -729,6 +793,7 @@ def test_text_mode_synthesizes_via_tts(aud_dir, monkeypatch, tmp_path):
     monkeypatch.setattr(fa.cfg, "MEDIA_DIR", tmp_path)
 
     import qwen3_tts
+
     payload = ref.read_bytes()
     monkeypatch.setattr(qwen3_tts, "tts", lambda *a, **k: payload)
 
@@ -755,8 +820,9 @@ def test_text_mode_synthesizes_via_tts(aud_dir, monkeypatch, tmp_path):
 
 @pytest.fixture()
 def client():
-    from fastapi.testclient import TestClient
     import server
+    from fastapi.testclient import TestClient
+
     return TestClient(server.app, raise_server_exceptions=False)
 
 
@@ -773,8 +839,9 @@ def _all_paths(routes) -> set:
         p = getattr(r, "path", None)
         if p:
             out.add(p)
-        sub = (getattr(r, "routes", None)
-               or getattr(getattr(r, "original_router", None), "routes", None))
+        sub = getattr(r, "routes", None) or getattr(
+            getattr(r, "original_router", None), "routes", None
+        )
         if sub:
             out |= _all_paths(sub)
     return out
@@ -782,10 +849,18 @@ def _all_paths(routes) -> set:
 
 def test_audition_routes_are_registered():
     import server
+
     paths = _all_paths(server.app.routes)
-    for p in ("/api/audition/env", "/api/audition/sources", "/api/audition/source",
-              "/api/audition/source/builtin", "/api/audition/source/{source_id}",
-              "/api/audition/try", "/api/audition/task", "/api/audition/cancel"):
+    for p in (
+        "/api/audition/env",
+        "/api/audition/sources",
+        "/api/audition/source",
+        "/api/audition/source/builtin",
+        "/api/audition/source/{source_id}",
+        "/api/audition/try",
+        "/api/audition/task",
+        "/api/audition/cancel",
+    ):
         assert p in paths, f"路由没挂上：{p}"
 
 
@@ -805,8 +880,9 @@ def test_task_over_http(client):
 
 
 def test_try_over_http_missing_source_is_404(client):
-    r = client.post("/api/audition/try",
-                    json={"voice_ids": ["kangaroo_v2"], "source_id": "src_nope"})
+    r = client.post(
+        "/api/audition/try", json={"voice_ids": ["kangaroo_v2"], "source_id": "src_nope"}
+    )
     assert r.status_code == 404
     assert "源音频" in r.json()["detail"]
 
@@ -849,7 +925,7 @@ def _stub_convert_paths(monkeypatch, *, worker_ok: bool, worker_enabled: bool = 
         calls["worker"].append(task)
         if not worker_ok:
             raise rvc_convert.RvcError("worker 挂了")
-        Path(task["output"]).write_bytes(b"RIFF")     # 假装产出了文件
+        Path(task["output"]).write_bytes(b"RIFF")  # 假装产出了文件
         return {"ok": True}
 
     def _rvc_link(voice_id, src, out, **kw):
@@ -877,22 +953,22 @@ def test_convert_prefers_resident_worker(tmp_path, monkeypatch, aud_dir):
     task = calls["worker"][0]
     assert task["cmd"] == "convert"
     assert task["pth"] == str(pth)
-    assert calls["subprocess"] == []            # 走了 worker 就不该再起子进程
+    assert calls["subprocess"] == []  # 走了 worker 就不该再起子进程
 
 
 def test_convert_returns_false_when_worker_fails(tmp_path, monkeypatch, aud_dir):
     calls = _stub_convert_paths(monkeypatch, worker_ok=False)
     pth, src, out = _audio_inputs(tmp_path)
     assert fa._convert_with_worker(pth, "", src, out, 0, 0.5) is False
-    assert len(calls["worker"]) == 1            # 试过
-    assert calls["subprocess"] == []            # 但回退决定权在调用方
+    assert len(calls["worker"]) == 1  # 试过
+    assert calls["subprocess"] == []  # 但回退决定权在调用方
 
 
 def test_convert_respects_worker_disabled(tmp_path, monkeypatch, aud_dir):
     calls = _stub_convert_paths(monkeypatch, worker_ok=True, worker_enabled=False)
     pth, src, out = _audio_inputs(tmp_path)
     assert fa._convert_with_worker(pth, "", src, out, 0, 0.5) is False
-    assert calls["worker"] == []                # VM_RVC_WORKER=0 时连试都不试
+    assert calls["worker"] == []  # VM_RVC_WORKER=0 时连试都不试
 
 
 def test_try_one_uses_worker_and_reports_engine(tmp_path, monkeypatch, aud_dir):
@@ -925,8 +1001,7 @@ def test_result_records_engine(aud_dir, monkeypatch):
 
 def _stub_engine_lifecycle(monkeypatch, order: list):
     """记录「收引擎」与「打分」的先后顺序。"""
-    monkeypatch.setattr("rvc_convert.stop_worker",
-                        lambda: order.append("stop_worker"))
+    monkeypatch.setattr("rvc_convert.stop_worker", lambda: order.append("stop_worker"))
 
     def _score(jobs):
         order.append("score")

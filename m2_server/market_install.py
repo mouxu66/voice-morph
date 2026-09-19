@@ -15,17 +15,18 @@
   - 下载 URL 仍走 DownloadManager 域名白名单
   - 单安装互斥；下载中不能并发安装（复用 DownloadManager 的互斥）
 """
+
+import contextlib
 import json
 import os
 import re
 import shutil
 import threading
 import time
-
 from pathlib import Path
 
-from market_download import DownloadManager, MarketError, get_manager, _torch_header_ok
 import config as cfg
+from market_download import DownloadManager, MarketError, _torch_header_ok, get_manager
 
 VOICE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
@@ -33,7 +34,7 @@ INSTALL_PHASES = ("downloading_pth", "downloading_index", "staging")
 
 # 覆盖重装前的旧版本归档目录（RVC 视野之外；卸载时连带清除）
 OLD_DIR = cfg.OUTPUTS_DIR / "market" / ".old"
-OLD_KEEP = 3               # 每个音色最多保留的历史备份份数
+OLD_KEEP = 3  # 每个音色最多保留的历史备份份数
 
 
 class InstallError(MarketError):
@@ -43,18 +44,23 @@ class InstallError(MarketError):
 class InstallManager:
     """单安装互斥编排器：串行 pth → index → 落位。"""
 
-    def __init__(self, manager: DownloadManager | None = None,
-                 old_dir: Path | None = None):
+    def __init__(self, manager: DownloadManager | None = None, old_dir: Path | None = None):
         self.manager = manager or get_manager()
         self.old_dir = Path(old_dir or OLD_DIR)
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        self._backed_up = False          # 本次覆盖重装是否有旧版本备份（失败自动回滚依据）
+        self._backed_up = False  # 本次覆盖重装是否有旧版本备份（失败自动回滚依据）
 
     # ---- 对外 ----
-    def run(self, voice_id: str, download: dict, index: dict | None = None,
-            display_name: str = "", manifest_id: str = "",
-            overwrite: bool = False) -> dict:
+    def run(
+        self,
+        voice_id: str,
+        download: dict,
+        index: dict | None = None,
+        display_name: str = "",
+        manifest_id: str = "",
+        overwrite: bool = False,
+    ) -> dict:
         """启动安装：校验 → 状态落盘 → 后台线程执行。已有安装/下载在跑抛 InstallError。
 
         overwrite=False：目标音色已存在（logs/assets 任一，含自训产物）时抛 409，
@@ -75,29 +81,34 @@ class InstallManager:
         if conflict and not overwrite:
             raise InstallError(
                 f"音色 {voice_id} 已存在：{'、'.join(str(p) for p in conflict)}（含自训产物）。"
-                "如需覆盖请显式指定 overwrite=true")
+                "如需覆盖请显式指定 overwrite=true"
+            )
         if conflict:
             # 覆盖重装：先归档旧版本（失败自动回滚的后悔药），再清除旧下载产物
             # （防止 DownloadManager 幂等分支装回旧文件）
             self._backed_up = self._backup(voice_id)
             for suffix in (".pth", ".index"):
                 self.manager.remove_artifact(f"{voice_id}{suffix}")
-        self.manager.set_meta(install={
-            "voice_id": voice_id,
-            "display_name": display_name or voice_id,
-            "manifest_id": manifest_id,
-            "status": "queued",         # queued/downloading_*/staging/installed/failed/cancelled/interrupted
-            "phase": "",
-            "message": "排队中",
-            "percent": 0.0,
-            "error": "",
-            "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "resume_pth": cur.get("name") == f"install_{voice_id}" and cur.get("status") != "done",
-        })
+        self.manager.set_meta(
+            install={
+                "voice_id": voice_id,
+                "display_name": display_name or voice_id,
+                "manifest_id": manifest_id,
+                "status": "queued",  # queued/downloading_*/staging/installed/failed/cancelled/interrupted
+                "phase": "",
+                "message": "排队中",
+                "percent": 0.0,
+                "error": "",
+                "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "resume_pth": cur.get("name") == f"install_{voice_id}"
+                and cur.get("status") != "done",
+            }
+        )
         self._thread = threading.Thread(
             target=self._run,
-            args=(voice_id, download, index, display_name, manifest_id), daemon=True,
+            args=(voice_id, download, index, display_name, manifest_id),
+            daemon=True,
         )
         self._thread.start()
         return self.progress()
@@ -181,8 +192,11 @@ class InstallManager:
         src = snap / "source.json"
         if src.exists():
             shutil.copy2(src, log_dir / "source.json")
-        return {"voice_id": voice_id, "snapshot": snap.name,
-                "restored_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        return {
+            "voice_id": voice_id,
+            "snapshot": snap.name,
+            "restored_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
     def _try_auto_rollback(self, voice_id: str) -> bool:
         """本次为覆盖重装且存在备份时，安装失败自动恢复旧版本。返回是否已恢复。"""
@@ -238,10 +252,8 @@ class InstallManager:
         if install.get("status") not in ACTIVE:
             raise InstallError("没有进行中的安装任务")
         if self.manager.is_busy():
-            try:
-                self.manager.cancel()
-            except MarketError:
-                pass                      # 下载任务恰好结束，忽略同锁竞争
+            with contextlib.suppress(MarketError):
+                self.manager.cancel()  # 下载任务恰好结束，忽略同锁竞争
         with self._lock:
             st = self.progress_locked()
             install = dict(st.get("install") or {})
@@ -260,7 +272,10 @@ class InstallManager:
         st = self.manager.progress()
         install = dict(st.get("install") or {})
         alive = self._thread is not None and self._thread.is_alive()
-        if install.get("status") in ("queued", "downloading_pth", "downloading_index", "staging") and not alive:
+        if (
+            install.get("status") in ("queued", "downloading_pth", "downloading_index", "staging")
+            and not alive
+        ):
             install["status"] = "interrupted"
             install["message"] = "服务重启/中断，可重新发起安装自动续传"
         st["install"] = install
@@ -312,7 +327,8 @@ class InstallManager:
         if not self._is_market_installed(voice_id):
             raise InstallError(
                 f"音色 {voice_id} 不是市场安装来源（无 source.json 标记），为避免误删自训产物，"
-                "请到音色库中删除")
+                "请到音色库中删除"
+            )
         paths: list = []
         if log_dir.exists():
             paths.append(log_dir)
@@ -359,8 +375,9 @@ class InstallManager:
         except Exception:  # noqa: BLE001 —— 溯源信息拿不到不该让用户装不上音色
             return None
 
-    def write_source(self, voice_id: str, manifest_id: str, display_name: str,
-                     license_fields: dict | None = None):
+    def write_source(
+        self, voice_id: str, manifest_id: str, display_name: str, license_fields: dict | None = None
+    ):
         """安装落位后写入溯源标记（logs/<id>/source.json），供卸载与音色库角标使用。
 
         `license_fields` 来自 `market_license.probe()`（G4）：把"上游到底标了什么"
@@ -380,8 +397,14 @@ class InstallManager:
         src.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # ---- 后台线程 ----
-    def _run(self, voice_id: str, download: dict, index: dict | None,
-             display_name: str, manifest_id: str = ""):
+    def _run(
+        self,
+        voice_id: str,
+        download: dict,
+        index: dict | None,
+        display_name: str,
+        manifest_id: str = "",
+    ):
         try:
             # pth 与 index 并行下载（下载器按信号量限流，不抢完才开始下一个），
             # 各自任务名独立，_download_wait 只轮询自己那个任务。
@@ -390,8 +413,11 @@ class InstallManager:
             def _dl_pth():
                 try:
                     self._download_wait(
-                        voice_id, f"install_{voice_id}", download.get("url"),
-                        mirror_url=download.get("mirror_url"), filename=f"{voice_id}.pth",
+                        voice_id,
+                        f"install_{voice_id}",
+                        download.get("url"),
+                        mirror_url=download.get("mirror_url"),
+                        filename=f"{voice_id}.pth",
                     )
                 except Exception as exc:  # noqa: BLE001 —— 线程内收集，join 后统一抛
                     errs["pth"] = exc
@@ -399,14 +425,21 @@ class InstallManager:
             def _dl_idx():
                 try:
                     self._download_wait(
-                        voice_id, f"install_{voice_id}_idx", index.get("url"),
-                        mirror_url=index.get("mirror_url"), filename=f"{voice_id}.index",
+                        voice_id,
+                        f"install_{voice_id}_idx",
+                        index.get("url"),
+                        mirror_url=index.get("mirror_url"),
+                        filename=f"{voice_id}.index",
                     )
                 except Exception as exc:  # noqa: BLE001
                     errs["index"] = exc
 
-            self._set_install(status="downloading_pth", phase="下载权重与索引",
-                              message="正在下载权重与索引文件 …", percent=_pct_of(0, INSTALL_PHASES))
+            self._set_install(
+                status="downloading_pth",
+                phase="下载权重与索引",
+                message="正在下载权重与索引文件 …",
+                percent=_pct_of(0, INSTALL_PHASES),
+            )
             pth_t = threading.Thread(target=_dl_pth, daemon=True)
             pth_t.start()
             idx_t = None
@@ -415,8 +448,12 @@ class InstallManager:
                 idx_t.start()
             pth_t.join()
             if idx_t:
-                self._set_install(status="downloading_index", phase="下载索引",
-                                  message="正在下载索引文件 …", percent=_pct_of(1, INSTALL_PHASES))
+                self._set_install(
+                    status="downloading_index",
+                    phase="下载索引",
+                    message="正在下载索引文件 …",
+                    percent=_pct_of(1, INSTALL_PHASES),
+                )
                 idx_t.join()
             if errs:
                 raise next(iter(errs.values()))
@@ -424,21 +461,31 @@ class InstallManager:
             if not pth_file.exists():
                 raise InstallError("权重下载未产生文件")
 
-            self._set_install(status="staging", phase="注册音色",
-                              message="正在写入音色库 …", percent=_pct_of(2, INSTALL_PHASES))
+            self._set_install(
+                status="staging",
+                phase="注册音色",
+                message="正在写入音色库 …",
+                percent=_pct_of(2, INSTALL_PHASES),
+            )
             self._stage(voice_id)
             # G4：回读上游许可并连同"来路"落进 source.json（探测失败不影响安装）
             self.write_source(voice_id, manifest_id, display_name, self._probe_license(manifest_id))
             # A2：安装收尾自动触发试听生成（fire-and-forget，GPU 忙则 skipped 等前端重试）
             try:
                 from market_preview import try_auto_preview
+
                 try_auto_preview(voice_id)
             except Exception:  # noqa: BLE001 —— 试听失败不阻塞安装
                 pass
 
-            self._set_install(status="installed", phase="完成", message="安装完成",
-                              percent=100.0, error="",
-                              updated_at=time.strftime("%Y-%m-%d %H:%M:%S"))
+            self._set_install(
+                status="installed",
+                phase="完成",
+                message="安装完成",
+                percent=100.0,
+                error="",
+                updated_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            )
         except InstallError as exc:
             # 用户主动取消（cancelled 已由 cancel() 写入）时不要覆盖成 failed
             with self._lock:
@@ -452,8 +499,9 @@ class InstallManager:
             msg = "安装失败"
             if self._try_auto_rollback(voice_id):
                 msg += "（已自动回滚到旧版本）"
-            self._set_install(status="failed", message=msg,
-                              error=f"{exc.__class__.__name__}: {exc}")
+            self._set_install(
+                status="failed", message=msg, error=f"{exc.__class__.__name__}: {exc}"
+            )
 
     def _set_install(self, **kw):
         with self._lock:
@@ -462,8 +510,9 @@ class InstallManager:
             install.update({**kw, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")})
             self.manager.set_meta(install=install)
 
-    def _download_wait(self, voice_id: str, name: str, url: str,
-                       mirror_url: str | None, filename: str):
+    def _download_wait(
+        self, voice_id: str, name: str, url: str, mirror_url: str | None, filename: str
+    ):
         """用 DownloadManager 下载单个文件并等待落盘；期间检测取消/失败。
 
         轮询用 task_status(name) 精确查本任务，多任务并发下载时互不干扰。
@@ -471,7 +520,7 @@ class InstallManager:
         st = self.manager.start(name=name, url=url, mirror_url=mirror_url, filename=filename)
         if st.get("status") != "downloading":
             return
-        deadline = time.time() + 3600 * 2          # 2h 兜底（正常 55MB 分钟级）
+        deadline = time.time() + 3600 * 2  # 2h 兜底（正常 55MB 分钟级）
         while time.time() < deadline:
             st = self.manager.task_status(name)
             s, err = st.get("status"), st.get("error") or ""
@@ -515,10 +564,8 @@ def _link_or_copy(src: Path, dst: Path) -> str:
     OSError，静默回退为复制，行为与改动前一致。
     """
     if dst.exists():
-        try:
+        with contextlib.suppress(OSError):
             dst.unlink()
-        except OSError:
-            pass
     try:
         os.link(src, dst)
         return "hardlink"

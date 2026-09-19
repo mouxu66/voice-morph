@@ -9,7 +9,9 @@
 之所以走子进程：主进程在 .venv(torch2.9)，Qwen3-TTS 需 venv312(torch2.8cu129)，
 不能同进程 import；用常驻 worker 避免每次请求都重新加载 4GB 模型。
 """
+
 import atexit
+import contextlib
 import json
 import os
 import socket
@@ -20,7 +22,9 @@ import urllib.error
 import urllib.request
 
 # PROJECT_ROOT 可被安装版注入（VM_PROJECT_ROOT=D:\变声）：venv312 与 worker 日志都在项目目录
-PROJECT_ROOT = os.environ.get("VM_PROJECT_ROOT") or os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+PROJECT_ROOT = os.environ.get("VM_PROJECT_ROOT") or os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..")
+)
 VENV312 = os.path.join(PROJECT_ROOT, "tts_trial", "venv312", "Scripts", "python.exe")
 # worker 必须用项目目录里的脚本：cwd 决定 tts_models 模型路径解析，
 # 安装版若从 resources 下启动，会在安装目录里找模型导致 HFValidationError 崩溃
@@ -73,9 +77,18 @@ def _pids_on_port(port: int = PORT) -> list:
         #   cp936 环境 stdout 正常 136 行；utf-8 模式 stdout is None。
         # 按 utf-8 解 GBK 会把中文表头变成 U+FFFD，但本函数只解析 PID 行（纯 ASCII），
         # 不受影响；`errors="replace"` 保证任何编码都不会再抛。
-        out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace",
-                             timeout=10, creationflags=_NO_WINDOW).stdout or ""
+        out = (
+            subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                creationflags=_NO_WINDOW,
+            ).stdout
+            or ""
+        )
     except Exception:
         return []
     pids = []
@@ -99,20 +112,33 @@ def _cmdline_of(pid: int) -> str:
     """
     try:
         r = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
-            capture_output=True, text=True, timeout=20, encoding="utf-8",
-            errors="ignore", creationflags=_NO_WINDOW)
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            encoding="utf-8",
+            errors="ignore",
+            creationflags=_NO_WINDOW,
+        )
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout
     except Exception:
         pass
     try:  # 老系统回退
         r = subprocess.run(
-            ["wmic", "process", "where", f"ProcessId={pid}", "get",
-             "CommandLine", "/format:list"],
-            capture_output=True, text=True, timeout=15, encoding="utf-8",
-            errors="ignore", creationflags=_NO_WINDOW)
+            ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine", "/format:list"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            encoding="utf-8",
+            errors="ignore",
+            creationflags=_NO_WINDOW,
+        )
         return r.stdout or ""
     except Exception:
         return ""
@@ -126,11 +152,13 @@ def _is_our_worker(pid: int) -> bool:
 
 
 def _kill_pid(pid: int) -> None:
-    try:
-        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True,
-                       timeout=15, creationflags=_NO_WINDOW)
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid)],
+            capture_output=True,
+            timeout=15,
+            creationflags=_NO_WINDOW,
+        )
 
 
 def _terminate_proc() -> None:
@@ -142,17 +170,13 @@ def _terminate_proc() -> None:
     global _proc
     if _proc is None:
         return
-    try:
+    with contextlib.suppress(Exception):
         _proc.terminate()
-    except Exception:
-        pass
     try:
         _proc.wait(timeout=10)
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             _proc.kill()
-        except Exception:
-            pass
     _proc = None
 
 
@@ -275,7 +299,8 @@ def _ensure_worker():
             if _port_bound():
                 raise RuntimeError(
                     f"端口 {PORT} 被其他程序占用（PID={_pids_on_port()}），"
-                    f"Qwen3-TTS worker 无法启动，请先关闭该进程")
+                    f"Qwen3-TTS worker 无法启动，请先关闭该进程"
+                )
         if not os.path.exists(VENV312):
             raise RuntimeError(f"找不到 venv312 解释器: {VENV312}")
         _logf = open(os.path.join(os.path.dirname(WORKER), "worker_run.log"), "ab")
@@ -294,13 +319,11 @@ def _ensure_worker():
                 return
             if _proc.poll() is not None:
                 _terminate_proc()  # 已退出也要回收，避免残留句柄
-                raise RuntimeError(
-                    "Qwen3-TTS worker 进程意外退出（详见 m2_server/worker_run.log）")
+                raise RuntimeError("Qwen3-TTS worker 进程意外退出（详见 m2_server/worker_run.log）")
             time.sleep(2)
         # 超时必须杀掉自己拉起的进程：否则它会继续占着 8001，让之后每次尝试都 10048
         _terminate_proc()
-        raise RuntimeError(
-            "Qwen3-TTS worker 启动超时（模型加载失败？检查 GPU 是否被其他程序占用）")
+        raise RuntimeError("Qwen3-TTS worker 启动超时（模型加载失败？检查 GPU 是否被其他程序占用）")
 
 
 def _is_timeout(exc: Exception) -> bool:
@@ -313,7 +336,8 @@ def _post(path: str, payload: dict, timeout: int) -> bytes:
     body = json.dumps(payload).encode("utf-8")
     for attempt in (1, 2):
         req = urllib.request.Request(
-            BASE + path, data=body, headers={"Content-Type": "application/json"})
+            BASE + path, data=body, headers={"Content-Type": "application/json"}
+        )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read()
@@ -325,7 +349,8 @@ def _post(path: str, payload: dict, timeout: int) -> bytes:
             if _is_timeout(e):
                 raise RuntimeError(
                     f"Qwen3-TTS worker 响应超时（>{timeout}s）；worker 仍在运行，"
-                    f"未重启。若为长文本，请拆短后重试") from e
+                    f"未重启。若为长文本，请拆短后重试"
+                ) from e
             if attempt == 2:
                 raise
             # 连不上 = worker 已被杀或崩溃，才重置并重拉
@@ -336,8 +361,9 @@ def _post(path: str, payload: dict, timeout: int) -> bytes:
     raise RuntimeError("unreachable")
 
 
-def analyze(clips: list[dict], sim_threshold: float | None = None,
-            min_cluster_size: int | None = None) -> dict:
+def analyze(
+    clips: list[dict], sim_threshold: float | None = None, min_cluster_size: int | None = None
+) -> dict:
     """音色挖掘：clips=[{name,path}] -> 簇列表（含代表切片与转写文字）。
 
     sim_threshold：聚类相似度阈值（默认 0.5，调高可挖出更多不同音色）
@@ -361,8 +387,7 @@ ensure_worker = _ensure_worker
 post = _post
 
 
-def transcribe(path: str, vad_filter: bool = True, fast: bool = False,
-               timeout: int = 600) -> dict:
+def transcribe(path: str, vad_filter: bool = True, fast: bool = False, timeout: int = 600) -> dict:
     """语音转写：wav 路径 -> {text, quality}。语气中转链路的 ASR 环节。
 
     vad_filter：交给 whisper 内部过滤静音（语气中转对整段人声有效，保持默认）；
@@ -371,15 +396,27 @@ def transcribe(path: str, vad_filter: bool = True, fast: bool = False,
     _ensure_worker()
     _busy_inc()
     try:
-        return json.loads(_post("/transcribe", {"path": path, "vad_filter": vad_filter,
-                                                "fast": fast}, timeout=timeout))
+        return json.loads(
+            _post(
+                "/transcribe",
+                {"path": path, "vad_filter": vad_filter, "fast": fast},
+                timeout=timeout,
+            )
+        )
     finally:
         _busy_dec()
 
 
-def tts(text: str, ref_audio: str, ref_text: str = "", language: str = "Chinese",
-        voice_id: str = "", style_ref: str = "", style_ref_text: str = "",
-        seg_chars: int = 0) -> bytes:
+def tts(
+    text: str,
+    ref_audio: str,
+    ref_text: str = "",
+    language: str = "Chinese",
+    voice_id: str = "",
+    style_ref: str = "",
+    style_ref_text: str = "",
+    seg_chars: int = 0,
+) -> bytes:
     """按音色合成：普通音色走克隆（ref_text 空则 x-vector 声纹模式）；
     微调音色（voicebank/<id>/meta.json kind=finetuned）自动分流到 /tts_speaker。
 
@@ -388,15 +425,23 @@ def tts(text: str, ref_audio: str, ref_text: str = "", language: str = "Chinese"
     _ensure_worker()
     _busy_inc()
     try:
-        return _tts_do(text, ref_audio, ref_text, language, voice_id,
-                       style_ref, style_ref_text, seg_chars)
+        return _tts_do(
+            text, ref_audio, ref_text, language, voice_id, style_ref, style_ref_text, seg_chars
+        )
     finally:
         _busy_dec()
 
 
-def _tts_do(text: str, ref_audio: str, ref_text: str, language: str,
-            voice_id: str = "", style_ref: str = "", style_ref_text: str = "",
-            seg_chars: int = 0) -> bytes:
+def _tts_do(
+    text: str,
+    ref_audio: str,
+    ref_text: str,
+    language: str,
+    voice_id: str = "",
+    style_ref: str = "",
+    style_ref_text: str = "",
+    seg_chars: int = 0,
+) -> bytes:
     if voice_id:
         meta_p = os.path.join(PROJECT_ROOT, "media", "voicebank", voice_id, "meta.json")
         try:
@@ -404,11 +449,22 @@ def _tts_do(text: str, ref_audio: str, ref_text: str, language: str,
         except Exception:
             meta = {}
         if meta.get("kind") == "finetuned" and meta.get("model_dir"):
-            return _post("/tts_speaker", {"model_dir": meta["model_dir"],
-                                          "speaker": meta.get("speaker") or voice_id,
-                                          "text": text, "language": language}, timeout=900)
-    payload: dict = {"text": text, "language": language,
-                     "ref_audio": ref_audio, "ref_text": ref_text}
+            return _post(
+                "/tts_speaker",
+                {
+                    "model_dir": meta["model_dir"],
+                    "speaker": meta.get("speaker") or voice_id,
+                    "text": text,
+                    "language": language,
+                },
+                timeout=900,
+            )
+    payload: dict = {
+        "text": text,
+        "language": language,
+        "ref_audio": ref_audio,
+        "ref_text": ref_text,
+    }
     if style_ref:
         payload["style_ref"] = style_ref
         if style_ref_text:

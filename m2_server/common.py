@@ -3,15 +3,15 @@
 集中了原先在 server.py / audiobook.py / finetune.py 各自重复的实现，
 避免「同一规则四处定义、改一处漏三处」。
 """
+
 import json
 import os
 import re
 import shutil
 from pathlib import Path
 
-from fastapi import HTTPException
-
 import config as cfg
+from fastapi import HTTPException
 
 # 音色 ID 白名单：仅允许字母/数字/下划线/连字符，杜绝路径穿越（如 .. 或 /）
 _VOICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")

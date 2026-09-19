@@ -26,44 +26,48 @@
 
 共享运行状态（流水线进度/挖掘状态/内录状态/路径常量）在 runtime.py。
 """
+
 import re
 import secrets
-import uvicorn
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
 
 import config as cfg
+import uvicorn
 from ab_api import router as ab_router
 from ab_chain import router as ab_chain_router
-from audio_api import _start_audio_audit, router as audio_router
+from audio_api import _start_audio_audit
+from audio_api import router as audio_router
 from audiobook import router as audiobook_router
+from audition_api import router as audition_router
 from capture_api import router as capture_router
 from cascade import router as cascade_router
 from clips_api import router as clips_router
 from effects import router as effects_router
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from finetune import router as ft_router
-from audition_api import router as audition_router
 from history_api import router as history_router
+from market_api import router as market_router
 from media_api import router as media_router
 from mine_api import router as mine_router
-from market_api import router as market_router
 from offline_vc import router as offlinevc_router
 from openai_compat import router as openai_router
 from pet_market_api import router as pet_market_router
 from pipeline_api import router as pipeline_router
 from raw_media_api import router as raw_media_router
+from runtime import ROOT
 from rvc_dataset_api import router as rvc_dataset_router
 from rvc_live import router as rvc_live_router
-from seed_vc import router as seedvc_router
+from starlette.middleware.base import BaseHTTPMiddleware
 from system_api import router as system_router
 from tts_api import router as tts_router
 from voices_api import router as voices_router
 from wechat_voice import router as wechat_router
-from runtime import ROOT
+
+from seed_vc import router as seedvc_router
 
 app = FastAPI(title="变声 · M2 转换服务", version="0.1.0")
+
 
 # 可选 Token 鉴权：仅当配置了 VM_API_TOKEN 时启用，否则完全不拦截（LAN-only 默认）。
 # 设计要点：
@@ -99,7 +103,10 @@ if cfg.API_TOKEN:
                 or _token_eq(request.query_params.get("api_key", ""), token)
             )
             if not ok:
-                return JSONResponse(status_code=401, content={"detail": "unauthorized（需 X-API-Key 头或 api_key 参数）"})
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "unauthorized（需 X-API-Key 头或 api_key 参数）"},
+                )
             return await call_next(request)
 
     app.add_middleware(_TokenMiddleware)
@@ -108,6 +115,7 @@ else:
     # （含 /tts 吃显存、/rvc/live/* 切系统声卡）。暴露到 LAN 前务必设置 VM_API_TOKEN 并收紧 CORS。
     if cfg.SERVER_HOST in ("0.0.0.0", ""):
         import logging
+
         logging.warning(
             "安全告警: 服务以 0.0.0.0 监听且未设置 VM_API_TOKEN，局域网内任意设备可调用所有接口"
             "（含 /tts 与 /rvc/live）。生产/暴露到 LAN 前请设置 VM_API_TOKEN 并收紧 VM_CORS_ORIGINS。"
@@ -134,8 +142,7 @@ class _OriginGuardMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         origin = request.headers.get("Origin", "")
         if origin and not LOCAL_ORIGIN_RE.match(origin):
-            return JSONResponse(status_code=403,
-                                content={"detail": f"拒绝跨站来源: {origin}"})
+            return JSONResponse(status_code=403, content={"detail": f"拒绝跨站来源: {origin}"})
         return await call_next(request)
 
 
@@ -181,6 +188,7 @@ app.include_router(pet_market_router)
 # 人偶市场：确保默认内置皮肤（芙宁娜）物化到 outputs（幂等，失败不阻塞）
 try:
     from pet_market import ensure_default_bundle
+
     ensure_default_bundle()
 except Exception:
     pass
@@ -188,6 +196,7 @@ except Exception:
 # 音色市场远程图库：启动后台自动同步（VM_MARKET_IMG_REPO 未配置时为 no-op）
 try:
     from market_images import start_background_sync
+
     start_background_sync()
 except Exception:
     pass
@@ -202,6 +211,7 @@ app.include_router(audition_router)
 # （实测 TTS 冷 41.8s→2.9s、RVC 24.7s→0.3s，端到端 ~77s→~13s）
 try:
     from warmup import start_background
+
     start_background()
 except Exception:
     pass
@@ -213,8 +223,9 @@ app.include_router(openai_router)
 
 # ---------------- 局域网访问：托管前端静态资源（手机浏览器打开 http://<本机IP>:8000） ----------------
 # 安装版前端在 app.asar 里不可读，打包时额外放一份到 backend/web_dist；开发态直接用 web/dist。
-_web_dist = next((c for c in [ROOT / "web_dist", ROOT / "web" / "dist"]
-                  if (c / "index.html").exists()), None)
+_web_dist = next(
+    (c for c in [ROOT / "web_dist", ROOT / "web" / "dist"] if (c / "index.html").exists()), None
+)
 if _web_dist is not None:
 
     @app.get("/{full_path:path}", include_in_schema=False)

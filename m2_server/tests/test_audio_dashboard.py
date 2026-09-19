@@ -1,4 +1,5 @@
 """F4 音频设备诊断还原看板逻辑单测（mock 掉 PowerShell / 进程探测）。"""
+
 import sys
 from pathlib import Path
 
@@ -43,7 +44,7 @@ def test_audit_once_no_stale_noop(monkeypatch):
     called = []
     monkeypatch.setattr(server, "_run_audio_config", lambda a: called.append(a) or {"ok": True})
     assert server._audit_once() is None
-    assert called == []                      # 无残留不触发还原
+    assert called == []  # 无残留不触发还原
 
 
 def test_audit_once_restore_ok(monkeypatch):
@@ -53,7 +54,7 @@ def test_audit_once_restore_ok(monkeypatch):
     ev = server._audit_once()
     assert ev["action"] == "restore"
     assert ev["result"] == "ok"
-    assert calls == ["restore"]              # 成功后不再走 reset
+    assert calls == ["restore"]  # 成功后不再走 reset
     assert server._AUDIO_AUDIT["last_error"] == ""
 
 
@@ -69,7 +70,7 @@ def test_audit_once_restore_fail_then_reset(monkeypatch):
     ev = server._audit_once()
     assert ev["action"] == "reset"
     assert ev["result"] == "ok"
-    assert calls == ["restore", "reset"]     # restore 失败后兜底 reset
+    assert calls == ["restore", "reset"]  # restore 失败后兜底 reset
 
 
 def test_audit_once_all_fail(monkeypatch):
@@ -85,4 +86,4 @@ def test_audit_history_capped(monkeypatch):
     monkeypatch.setattr(server, "_run_audio_config", lambda a: {"ok": True})
     for _ in range(25):
         server._audit_once()
-    assert len(server._AUDIO_AUDIT["auto_restored"]) == 20   # 只保留最近 20 条
+    assert len(server._AUDIO_AUDIT["auto_restored"]) == 20  # 只保留最近 20 条

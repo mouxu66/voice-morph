@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """试音间客观打分（一次性子进程，跑完即退出）。
 
 为什么必须是独立进程（2026-09-18 实测，血泪）：
@@ -21,6 +20,7 @@
                 ref 为空串表示该音色没有参考音（只算自然度，不算音色像度）
     scores.json: {"kangaroo_v2": {"secs": 0.66, "nats": 2.9, "score_error": ""}, ...}
 """
+
 import argparse
 import json
 import os
@@ -47,10 +47,10 @@ def _prepare_paths() -> None:
 def _secs(wav: Path, ref: Path):
     import numpy as np
     import speaker_sep
+
     emb = speaker_sep._sv_embed(speaker_sep._read16k(wav))
     emb_ref = speaker_sep._sv_embed(speaker_sep._read16k(ref))
-    return float(np.dot(emb, emb_ref) /
-                 (np.linalg.norm(emb) * np.linalg.norm(emb_ref) + 1e-9))
+    return float(np.dot(emb, emb_ref) / (np.linalg.norm(emb) * np.linalg.norm(emb_ref) + 1e-9))
 
 
 _NATS = None
@@ -101,7 +101,8 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         Path(args.out).write_text(
             json.dumps({"__error__": f"任务文件读取失败：{e}"}, ensure_ascii=False),
-            encoding="utf-8")
+            encoding="utf-8",
+        )
         return 2
 
     out: dict = {}

@@ -9,14 +9,14 @@
 
 用例隔离：patch pet_market.PET_SKINS_DIR / STATE_FILE 到 tmp。
 """
+
 import json
 import time
 import warnings
 import zipfile
 
-import pytest
-
 import pet_market
+import pytest
 from pet_market import PetMarketError
 
 
@@ -81,16 +81,16 @@ def test_manifest_has_licensed_items(iso):
     ids = [i["id"] for i in items]
     assert "furina" in ids and "gel-slime" in ids and "mika" in ids and "pixel-cat" in ids
     for it in items:
-        assert it["license"]                                  # 全部标注许可
-        assert it["attribution"]                              # 全部有来源署名
+        assert it["license"]  # 全部标注许可
+        assert it["attribution"]  # 全部有来源署名
         if not it["bundle"]:
-            assert it["source_urls"], it["id"]                # 远端皮肤必须有下载源
+            assert it["source_urls"], it["id"]  # 远端皮肤必须有下载源
             for u in it["source_urls"]:
-                iso._validate_url(u)                          # 下载源必须过白名单
+                iso._validate_url(u)  # 下载源必须过白名单
 
 
 def test_apply_state_roundtrip(iso, tmp_path):
-    assert iso.load_applied() == iso.DEFAULT_SKIN             # 默认 furina
+    assert iso.load_applied() == iso.DEFAULT_SKIN  # 默认 furina
     iso.save_applied("gel-slime")
     assert iso.load_applied() == "gel-slime"
 
@@ -122,11 +122,11 @@ def test_sheet_file_whitelist(iso):
     p = iso.sheet_file("furina", "idle.webp")
     assert p.name == "idle.webp"
     with pytest.raises(PetMarketError):
-        iso.sheet_file("furina", "LICENSE")                   # 非状态 sheet
+        iso.sheet_file("furina", "LICENSE")  # 非状态 sheet
     with pytest.raises(PetMarketError):
         iso.sheet_file("furina", "../etc/passwd")
     with pytest.raises(PetMarketError):
-        iso.sheet_file("burina", "idle.webp")                 # 未安装（不存在）
+        iso.sheet_file("burina", "idle.webp")  # 未安装（不存在）
 
 
 def test_invalid_skin_id_rejected(iso):
@@ -143,10 +143,11 @@ def test_uninstall_bundle_only_resets(iso, tmp_path):
     r = iso.uninstall("furina")
     assert r["reset_applied"] is True
     assert iso.load_applied() == iso.DEFAULT_SKIN
-    assert (iso.PET_SKINS_DIR / "furina" / "skin.json").exists()   # 未删文件
+    assert (iso.PET_SKINS_DIR / "furina" / "skin.json").exists()  # 未删文件
 
 
 # ---- 远端皮肤安装编排（monkeypatch 下载层） ----
+
 
 def _fake_gif_zip(ffmpeg: str, tmp_path) -> str:
     """造一个含单帧 gif 的 zip 源码包（模拟 OpenGameArt 猫素材 zip）。
@@ -155,11 +156,26 @@ def _fake_gif_zip(ffmpeg: str, tmp_path) -> str:
     CI 上没装 → fail（2026-09-13 这三条就是 WinError 2，见 conftest.py 顶部）。
     """
     import subprocess
+
     gif = tmp_path / "anim.gif"
     r = subprocess.run(
-        [ffmpeg, "-y", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=2",
-         "-t", "1", "-loop", "0", str(gif)],
-        capture_output=True, text=True, timeout=120)
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x48:rate=2",
+            "-t",
+            "1",
+            "-loop",
+            "0",
+            str(gif),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     assert r.returncode == 0, r.stderr[-300:]
     zp = tmp_path / "cat.zip"
     with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -174,11 +190,12 @@ def test_install_remote_gif_skin(iso, tmp_path, monkeypatch, ffmpeg_bin):
 
     def fake_download(url: str, dst, box):
         import shutil
+
         shutil.copyfile(zip_path, dst)
         box["bytes"] = dst.stat().st_size
 
     monkeypatch.setattr(iso, "_download_to", fake_download)
-    monkeypatch.setattr(iso, "_make_preview", lambda d: None)   # 跳过 ffmpeg 预览
+    monkeypatch.setattr(iso, "_make_preview", lambda d: None)  # 跳过 ffmpeg 预览
 
     st = iso.install("pixel-cat")
     assert st["status"] in ("queued", "downloading", "done")
@@ -230,6 +247,7 @@ def test_install_queue_two_then_both_done(iso, tmp_path, monkeypatch, ffmpeg_bin
 
     def _fake(url, dst, box):
         import shutil
+
         if ".zip" in url:
             shutil.copyfile(zip_path, dst)
         else:
@@ -238,7 +256,7 @@ def test_install_queue_two_then_both_done(iso, tmp_path, monkeypatch, ffmpeg_bin
 
     monkeypatch.setattr(iso, "_download_to", _fake)
     monkeypatch.setattr(iso, "_make_preview", lambda d: None)
-    iso.MAX_CONCURRENT_INSTALLS = 1            # 单槽 → 第二个必然排队
+    iso.MAX_CONCURRENT_INSTALLS = 1  # 单槽 → 第二个必然排队
     try:
         iso.install("pixel-cat")
         iso.install("pixel-capybara")
@@ -253,13 +271,13 @@ def test_install_queue_two_then_both_done(iso, tmp_path, monkeypatch, ffmpeg_bin
                 break
             time.sleep(0.02)
         assert items["pixel-cat"] in ("downloading", "installing"), items
-        assert items["pixel-capybara"] == "queued", items    # 第二个在排队
+        assert items["pixel-capybara"] == "queued", items  # 第二个在排队
         deadline = time.time() + 60
         while time.time() < deadline and iso.is_busy():
             time.sleep(0.05)
         items = {t["skin_id"]: t["status"] for t in iso.progress()["items"]}
-        assert items["pixel-cat"] == "done", items           # 先完成的在做
-        assert items["pixel-capybara"] == "done", items      # 排队的自动接续
+        assert items["pixel-cat"] == "done", items  # 先完成的在做
+        assert items["pixel-capybara"] == "done", items  # 排队的自动接续
         assert (iso.PET_SKINS_DIR / "pixel-capybara" / "skin.json").exists()
     finally:
         iso.MAX_CONCURRENT_INSTALLS = 2
@@ -278,8 +296,8 @@ def test_cancel_queued_task(iso, tmp_path, monkeypatch):
     iso.MAX_CONCURRENT_INSTALLS = 1
     try:
         iso.install("pixel-cat")
-        time.sleep(0.1)                       # 确保 worker 已进入下载
-        iso.install("mika")                   # 占用唯一并发槽 → 排队
+        time.sleep(0.1)  # 确保 worker 已进入下载
+        iso.install("mika")  # 占用唯一并发槽 → 排队
         r = iso.cancel("mika")
         assert r["status"] == "cancelled"
         items = iso.progress()["items"]
@@ -323,12 +341,14 @@ def test_cancel_no_task_rejects(iso):
 
 # ---- 搜索与详情 ----
 
+
 def test_search_filters_manifest(iso):
     """按名称/描述/分类/作者/许可模糊命中；分类过滤生效；带 installed/applied 标记。"""
     iso.apply("furina")
     hits = iso.search("像素")
-    assert hits and all("像素" in (h.get("name") or "") or "像素" in (h.get("category") or "")
-                        for h in hits)
+    assert hits and all(
+        "像素" in (h.get("name") or "") or "像素" in (h.get("category") or "") for h in hits
+    )
     by_lic = iso.search("MIT")
     assert all("MIT" in (h.get("license") or "").upper() for h in by_lic)
     cats = iso.search("", "像素萌宠")
@@ -345,10 +365,10 @@ def test_detail_returns_license_and_states(iso):
     assert d["frameW"] == 150 and d["frameH"] == 150
     assert "idle" in d["states"] and "error" in d["states"]
     assert "MIT" in d["license_text"] and d["source_urls"] == []
-    d2 = iso.detail("gel-slime")          # 未安装远端皮肤
+    d2 = iso.detail("gel-slime")  # 未安装远端皮肤
     assert d2["installed"] is False
     assert d2["states"] == {} and d2["license_text"] == ""
-    assert d2["source_urls"]              # 有源链接
+    assert d2["source_urls"]  # 有源链接
     with pytest.raises(PetMarketError, match="无此皮肤"):
         iso.detail("no-such")
 
@@ -370,6 +390,7 @@ def test_busy_counts_queued_task(iso, tmp_path, monkeypatch):
     ① 卸载在排队任务未跑完时被放行；② 测试轮询 `while is_busy()`
     会在安装开始前就退出 → 误判「安装未完成」。
     """
+
     def _slow_download(url, dst, box):
         time.sleep(1.5)
         dst.write_bytes(b"x")
@@ -378,13 +399,13 @@ def test_busy_counts_queued_task(iso, tmp_path, monkeypatch):
     monkeypatch.setattr(iso, "_make_preview", lambda d: None)
     iso.MAX_CONCURRENT_INSTALLS = 1
     try:
-        iso.install("pixel-cat")        # 占满唯一并发槽
-        iso.install("mika")             # 排队中
+        iso.install("pixel-cat")  # 占满唯一并发槽
+        iso.install("mika")  # 排队中
         st = {t["skin_id"]: t["status"] for t in iso.progress()["items"]}
         assert st["mika"] == "queued", st
         assert iso.is_busy() is True, "排队中的任务也必须算忙"
         with pytest.raises(PetMarketError, match="任务"):
-            iso.uninstall("mika")       # 排队未落地 → 拒绝卸载
+            iso.uninstall("mika")  # 排队未落地 → 拒绝卸载
     finally:
         iso.MAX_CONCURRENT_INSTALLS = 2
         deadline = time.time() + 15
@@ -393,6 +414,7 @@ def test_busy_counts_queued_task(iso, tmp_path, monkeypatch):
 
 
 # ---- API 壳（路由存在性 + 错误映射 404/409/400） ----
+
 
 @pytest.fixture()
 def iso_api(monkeypatch, tmp_path):
@@ -403,8 +425,9 @@ def iso_api(monkeypatch, tmp_path):
 
 def test_api_manifest_and_applied(iso_api):
     pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
     import server
+    from fastapi.testclient import TestClient
+
     c = TestClient(server.app)
     r = c.get("/api/pet-market/manifest")
     assert r.status_code == 200
@@ -419,19 +442,21 @@ def test_api_manifest_and_applied(iso_api):
 
 def test_api_invalid_skin_id_400(iso_api):
     pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
     import server
+    from fastapi.testclient import TestClient
+
     c = TestClient(server.app)
     r = c.post("/api/pet-market/install", json={"skin_id": "../evil"})
     assert r.status_code == 400
     r2 = c.post("/api/pet-market/apply", json={"skin_id": "no-such"})
-    assert r2.status_code == 404        # 清单无此皮肤
+    assert r2.status_code == 404  # 清单无此皮肤
 
 
 def test_api_bundle_apply_roundtrip(iso_api):
     pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
     import server
+    from fastapi.testclient import TestClient
+
     c = TestClient(server.app)
     r = c.post("/api/pet-market/apply", json={"skin_id": "furina"})
     assert r.status_code == 200
@@ -440,13 +465,14 @@ def test_api_bundle_apply_roundtrip(iso_api):
     assert r2.status_code == 200
     assert r2.headers["content-type"].startswith("image/webp")
     r3 = c.get("/api/pet-market/sheet/furina/LICENSE")
-    assert r3.status_code == 400        # 非状态 sheet → 业务错误映射 400
+    assert r3.status_code == 400  # 非状态 sheet → 业务错误映射 400
 
 
 def test_api_search_detail_cancel(iso_api, monkeypatch):
     pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
     import server
+    from fastapi.testclient import TestClient
+
     c = TestClient(server.app)
     r = c.get("/api/pet-market/search", params={"q": "像素", "cat": "像素萌宠"})
     assert r.status_code == 200
@@ -461,10 +487,12 @@ def test_api_search_detail_cancel(iso_api, monkeypatch):
     assert c.post("/api/pet-market/install", json={"skin_id": "../evil"}).status_code == 400
     assert c.post("/api/pet-market/install", json={"skin_id": "no-such"}).status_code == 404
     assert c.post("/api/pet-market/cancel", json={"skin_id": "no-such"}).status_code == 404
+
     # 并发撞车：慢下载期间同 id 重复 install → 409；随后可取消
     def _slow(url, dst, box):
         time.sleep(1.0)
         dst.write_bytes(b"x")
+
     monkeypatch.setattr(pet_market, "_download_to", _slow)
     monkeypatch.setattr(pet_market, "_make_preview", lambda d: None)
     assert c.post("/api/pet-market/install", json={"skin_id": "mika"}).status_code == 200

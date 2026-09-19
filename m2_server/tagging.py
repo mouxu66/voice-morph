@@ -6,17 +6,18 @@
     - has_bgm 为启发式：语音节奏占比极低但有持续能量 → 疑似纯 BGM/音乐。
     - 打标失败不阻断上传，写 tag_error 即可。
 """
+
+import contextlib
 import subprocess
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-
 from common import find_ffmpeg
 
 # 静音判定阈值（RMS，线性 0~1）：低于此视为静音帧
-_SILENCE_RMS = 0.008      # ≈ -42 dBFS
-_FRAME_S = 0.02           # 20ms 分帧
+_SILENCE_RMS = 0.008  # ≈ -42 dBFS
+_FRAME_S = 0.02  # 20ms 分帧
 _LOUDNESS_MIN_DBFS = -35.0
 
 
@@ -24,9 +25,24 @@ def _extract_audio(video: Path, out_wav: Path) -> bool:
     """ffmpeg 提取 16k 单声道 wav；失败返回 False。"""
     try:
         r = subprocess.run(
-            [find_ffmpeg(), "-y", "-loglevel", "error", "-i", str(video),
-             "-vn", "-ac", "1", "-ar", "16000", str(out_wav)],
-            capture_output=True, text=True, timeout=300)
+            [
+                find_ffmpeg(),
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(video),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                str(out_wav),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
         return r.returncode == 0 and out_wav.exists()
     except Exception:
         return False
@@ -42,7 +58,7 @@ def _analyze(wav: Path) -> dict:
         raise ValueError("空音频")
     duration_s = n / sr
     # 响度（整体 RMS → dBFS，避免 log(0)）
-    rms_all = float(np.sqrt(np.mean(data ** 2) + 1e-12))
+    rms_all = float(np.sqrt(np.mean(data**2) + 1e-12))
     loudness_dbfs = round(float(20 * np.log10(rms_all + 1e-12)), 1)
     # 语音占比：分帧统计 RMS 超阈值的帧占比
     frame = max(1, int(sr * _FRAME_S))
@@ -52,7 +68,7 @@ def _analyze(wav: Path) -> dict:
         rms = np.zeros(1, dtype=np.float32)
     else:
         seg = data[: frames_n * frame].reshape(frames_n, frame)
-        rms = np.sqrt(np.mean(seg ** 2, axis=1) + 1e-12)
+        rms = np.sqrt(np.mean(seg**2, axis=1) + 1e-12)
         speech_ratio = round(float(np.mean(rms > _SILENCE_RMS)), 3)
     # 疑似 BGM：几乎无停顿（speech_ratio 高）且帧响度过分均匀（变异系数小）。
     # 语音有呼吸/句间停顿，帧 RMS 起伏大；连续音乐/单音则异常平稳（允许误报）。
@@ -69,11 +85,17 @@ def _analyze(wav: Path) -> dict:
 def _detect_lang(wav: Path) -> str:
     """用 worker 转写探测语言（按 CJK 占比判 zh/en）；worker 离线回退 unknown。"""
     try:
-        from qwen3_tts import post
         import json as _json
-        data = _json.loads(post("/transcribe",
-                                {"path": str(wav).replace("\\", "/"),
-                                 "vad_filter": False, "fast": True}, timeout=60))
+
+        from qwen3_tts import post
+
+        data = _json.loads(
+            post(
+                "/transcribe",
+                {"path": str(wav).replace("\\", "/"), "vad_filter": False, "fast": True},
+                timeout=60,
+            )
+        )
         text = (data.get("text") or "").strip()
         if not text:
             return "unknown"
@@ -98,7 +120,5 @@ def tag_video(video_path: Path, tmp_dir: Path | None = None) -> dict:
     except Exception as e:
         return {"tagging": False, "tag_error": f"{type(e).__name__}: {e}"}
     finally:
-        try:
+        with contextlib.suppress(Exception):
             wav.unlink(missing_ok=True)
-        except Exception:
-            pass

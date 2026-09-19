@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """切片质检与自动优选（P1-1）：切片级打分 + 等级 + 不合格原因 + 建库自动优选。
 
 与 `tools/voice_qc.py` 的分工：
@@ -23,6 +22,7 @@
     python m2_server/clip_qc.py --prefix video_xxx     # 只扫某个素材的切片
     python m2_server/clip_qc.py --all                  # 扫全部切片（不含声纹维度）
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,26 +31,25 @@ import math
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-
 import config as cfg
+import numpy as np
 
 QC_DIR = cfg.OUTPUTS_DIR / "clip_qc"
 
 # ---------------- 阈值（按真实素材标定后可整体调整）----------------
-DUR_OK = (2.5, 10.0)        # 合格区间：沿用 pipeline 的 CLIP_MIN_MS / CLIP_MAX_MS
-DUR_FAIL = (1.5, 12.0)      # 硬判废
-LOUD_OK = (-20.0, -3.0)     # max_dBFS 合格区间
-LOUD_FAIL_FLOOR = -50.0     # 沿用 pipeline_clean 的判废阈值
-CLIP_FAIL = 0.005           # |x| > 0.99 的采样占比
+DUR_OK = (2.5, 10.0)  # 合格区间：沿用 pipeline 的 CLIP_MIN_MS / CLIP_MAX_MS
+DUR_FAIL = (1.5, 12.0)  # 硬判废
+LOUD_OK = (-20.0, -3.0)  # max_dBFS 合格区间
+LOUD_FAIL_FLOOR = -50.0  # 沿用 pipeline_clean 的判废阈值
+CLIP_FAIL = 0.005  # |x| > 0.99 的采样占比
 # 实测标定（2026-09-01，动画合集 39 条）：pipeline 按 >=350ms 静音切片，单条内部
 # 天然带句间静音，3~10s 正常切片的中段静音普遍在 0.27~0.35，取 0.40 会误杀，故放宽。
-MID_SILENCE_FAIL = 0.60     # 首/末有效语音之间的静音占比
-SPEECH_MIN = 0.25           # 有效语音占切片时长的比例下限（低于此≈静音或纯伴奏）
-SNR_FAIL = 10.0             # dB
-SPK_SIM_FAIL = 0.50         # 与主说话人中心声纹的余弦相似度（低于即一票否决）
-SPK_SIM_FULL = 0.75         # 相似度拿满分的线
-SNR_FULL = 30.0             # SNR 拿满分的线
+MID_SILENCE_FAIL = 0.60  # 首/末有效语音之间的静音占比
+SPEECH_MIN = 0.25  # 有效语音占切片时长的比例下限（低于此≈静音或纯伴奏）
+SNR_FAIL = 10.0  # dB
+SPK_SIM_FAIL = 0.50  # 与主说话人中心声纹的余弦相似度（低于即一票否决）
+SPK_SIM_FULL = 0.75  # 相似度拿满分的线
+SNR_FULL = 30.0  # SNR 拿满分的线
 
 WEIGHTS = {
     "duration": 20,
@@ -68,9 +67,11 @@ GRADE_C = 40
 
 # ---------------- 信号分析 ----------------
 
+
 def _read(path: Path) -> tuple[np.ndarray, int]:
     """读音频为 (float32 单声道, 采样率)。"""
     import soundfile as sf
+
     x, sr = sf.read(str(path), dtype="float32")
     if x.ndim == 2:
         x = x[:, 0]
@@ -95,9 +96,16 @@ def analyze_signal(x: np.ndarray, sr: int) -> dict:
 
     rms = _rms_frames(x, sr)
     if rms.size == 0:
-        return {"duration_s": dur, "loudness_dbfs": loud, "clip_ratio": clip_ratio,
-                "snr_db": 0.0, "mid_silence": 1.0, "head_silence": 1.0,
-                "tail_silence": 1.0, "speech_ratio": 0.0}
+        return {
+            "duration_s": dur,
+            "loudness_dbfs": loud,
+            "clip_ratio": clip_ratio,
+            "snr_db": 0.0,
+            "mid_silence": 1.0,
+            "head_silence": 1.0,
+            "tail_silence": 1.0,
+            "speech_ratio": 0.0,
+        }
 
     # 低分位能量≈底噪，高分位≈语音；阈值取两者折中，避免整段都很响时误判
     low = float(np.percentile(rms, 20))
@@ -105,13 +113,20 @@ def analyze_signal(x: np.ndarray, sr: int) -> dict:
     thr = max(low * 6.0, high * 0.10, 1e-4)
     speech = rms > thr
     if not speech.any():
-        return {"duration_s": dur, "loudness_dbfs": loud, "clip_ratio": clip_ratio,
-                "snr_db": 0.0, "mid_silence": 1.0, "head_silence": 1.0,
-                "tail_silence": 1.0, "speech_ratio": 0.0}
+        return {
+            "duration_s": dur,
+            "loudness_dbfs": loud,
+            "clip_ratio": clip_ratio,
+            "snr_db": 0.0,
+            "mid_silence": 1.0,
+            "head_silence": 1.0,
+            "tail_silence": 1.0,
+            "speech_ratio": 0.0,
+        }
 
     idx = np.flatnonzero(speech)
     s0, s1 = int(idx[0]), int(idx[-1])
-    mid = speech[s0:s1 + 1]
+    mid = speech[s0 : s1 + 1]
     snr = 20.0 * math.log10(float(rms[speech].mean()) / (low + 1e-12))
     return {
         "duration_s": dur,
@@ -126,6 +141,7 @@ def analyze_signal(x: np.ndarray, sr: int) -> dict:
 
 
 # ---------------- 判分 ----------------
+
 
 def _ramp(v: float, lo: float, hi: float) -> float:
     """v<=lo → 0，v>=hi → 1，中间线性。"""
@@ -156,7 +172,8 @@ def _speaker_sim(path: Path, center) -> float | None:
     """切片声纹与主说话人中心的余弦相似度；失败返回 None（不参与判分）。"""
     try:
         import speaker_sep
-        a16 = speaker_sep._read16k(path)          # 同项目模块，内部已处理重采样
+
+        a16 = speaker_sep._read16k(path)  # 同项目模块，内部已处理重采样
         if a16.size < int(0.4 * 16000):
             return None
         emb = speaker_sep._sv_embed(a16)
@@ -174,8 +191,15 @@ def _speaker_sim(path: Path, center) -> float | None:
 def score_clip(path, spk_center=None) -> dict:
     """对单个切片打分，返回 {name, score, grade, reasons, duration_s, metrics...}。"""
     p = Path(path)
-    item = {"name": p.stem, "score": 0, "grade": "D", "reasons": [],
-            "duration_s": 0.0, "spk_sim": None, "metrics": {}}
+    item = {
+        "name": p.stem,
+        "score": 0,
+        "grade": "D",
+        "reasons": [],
+        "duration_s": 0.0,
+        "spk_sim": None,
+        "metrics": {},
+    }
     try:
         x, sr = _read(p)
     except Exception as e:  # noqa: BLE001
@@ -249,6 +273,7 @@ def score_clip(path, spk_center=None) -> dict:
 
 # ---------------- 素材级：落盘与缓存 ----------------
 
+
 def material_file(prefix: str) -> Path:
     return QC_DIR / f"{prefix}.json"
 
@@ -284,8 +309,9 @@ def load_all() -> dict[str, dict]:
     return out
 
 
-def score_material(prefix: str, paths, spk_center=None, force: bool = False,
-                   main_spk: int | None = None) -> dict:
+def score_material(
+    prefix: str, paths, spk_center=None, force: bool = False, main_spk: int | None = None
+) -> dict:
     """给一个素材的全部切片打分并落盘；指纹未变且维度齐全时直接返回缓存。
 
     spk_center: 主说话人中心声纹（CAM++ 192 维），传了才计算"说话人一致性"维度。
@@ -293,8 +319,7 @@ def score_material(prefix: str, paths, spk_center=None, force: bool = False,
     paths = sorted(Path(p) for p in paths)
     fp = _fingerprint(paths)
     cached = None if force else load_material(prefix)
-    if cached and cached.get("fingerprint") == fp and (
-            spk_center is None or cached.get("has_spk")):
+    if cached and cached.get("fingerprint") == fp and (spk_center is None or cached.get("has_spk")):
         return cached
 
     clips: dict[str, dict] = {}
@@ -302,9 +327,15 @@ def score_material(prefix: str, paths, spk_center=None, force: bool = False,
         try:
             clips[p.stem] = score_clip(p, spk_center)
         except Exception as e:  # noqa: BLE001
-            clips[p.stem] = {"name": p.stem, "score": 0, "grade": "D",
-                             "reasons": [f"质检异常（{type(e).__name__}）"],
-                             "duration_s": 0.0, "spk_sim": None, "metrics": {}}
+            clips[p.stem] = {
+                "name": p.stem,
+                "score": 0,
+                "grade": "D",
+                "reasons": [f"质检异常（{type(e).__name__}）"],
+                "duration_s": 0.0,
+                "spk_sim": None,
+                "metrics": {},
+            }
 
     grades = {"A": 0, "B": 0, "C": 0, "D": 0}
     for it in clips.values():
@@ -317,8 +348,11 @@ def score_material(prefix: str, paths, spk_center=None, force: bool = False,
         "count": len(clips),
         "has_spk": spk_center is not None,
         "main_spk": main_spk,
-        "center": (np.asarray(spk_center, dtype=float).round(6).tolist()
-                   if spk_center is not None else None),
+        "center": (
+            np.asarray(spk_center, dtype=float).round(6).tolist()
+            if spk_center is not None
+            else None
+        ),
         "grades": grades,
         "ok_count": grades["A"] + grades["B"],
         "clips": clips,
@@ -326,7 +360,8 @@ def score_material(prefix: str, paths, spk_center=None, force: bool = False,
     try:
         QC_DIR.mkdir(parents=True, exist_ok=True)
         material_file(prefix).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     except Exception:  # noqa: BLE001
         pass  # 落盘失败不影响本次返回结果
     return payload
@@ -338,8 +373,7 @@ def score_prefixes(prefixes, clips_dir, force: bool = False) -> dict:
     返回汇总 {materials, total, ok, grades:{A,B,C,D}}。
     """
     clips_dir = Path(clips_dir)
-    summary = {"materials": 0, "total": 0, "ok": 0,
-               "grades": {"A": 0, "B": 0, "C": 0, "D": 0}}
+    summary = {"materials": 0, "total": 0, "ok": 0, "grades": {"A": 0, "B": 0, "C": 0, "D": 0}}
     for pre in prefixes:
         if not pre:
             continue
@@ -360,6 +394,7 @@ def score_prefixes(prefixes, clips_dir, force: bool = False) -> dict:
 
 # ---------------- 自动优选 ----------------
 
+
 def recommend(target_s: float = 30.0, only_grades=("A", "B"), limit: int | None = None):
     """跨素材挑分最高的切片，累计到 target_s 为止。返回 (切片名列表, 总时长)。"""
     items = []
@@ -371,7 +406,7 @@ def recommend(target_s: float = 30.0, only_grades=("A", "B"), limit: int | None 
 
     picked: list[str] = []
     total = 0.0
-    for score, dur, name in items:
+    for _score, dur, name in items:
         picked.append(name)
         total += dur
         if total >= target_s:
@@ -382,6 +417,7 @@ def recommend(target_s: float = 30.0, only_grades=("A", "B"), limit: int | None 
 
 
 # ---------------- 命令行 ----------------
+
 
 def _main():
     ap = argparse.ArgumentParser(description="切片质检（P1-1）")
@@ -401,8 +437,10 @@ def _main():
 
     summary = score_prefixes(prefixes, clips_dir, force=args.force)
     print(f"素材 {summary['materials']} 个 / 切片 {summary['total']} 条")
-    print(f"等级分布 A={summary['grades']['A']} B={summary['grades']['B']} "
-          f"C={summary['grades']['C']} D={summary['grades']['D']}")
+    print(
+        f"等级分布 A={summary['grades']['A']} B={summary['grades']['B']} "
+        f"C={summary['grades']['C']} D={summary['grades']['D']}"
+    )
     print(f"可用（A+B）{summary['ok']} 条")
     picked, total = recommend()
     print(f"自动优选示例（目标 30s）：{len(picked)} 条 / {total}s")

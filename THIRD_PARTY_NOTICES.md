@@ -16,7 +16,7 @@ MIT License，© 2026 mouxu（见根目录 `LICENSE`）。
 | 组件 | 许可 | 现状 / 义务 |
 |---|---|---|
 | Electron 32 + Chromium | Electron MIT；Chromium 为 BSD 等多许可 | ✅ 已覆盖：electron-builder 自动在安装目录生成 `LICENSE.electron.txt` + `LICENSES.chromium.html`（实测 `web/release2/win-unpacked/` 下存在）。**打包时不要删这两个文件** |
-| 前端生产依赖 10 个（见机器块 `npm:`） | MIT / ISC / OFL-1.1 | 随 `web/dist` 打包进安装包。表见 §1.1 |
+| 前端生产依赖 13 个（见机器块 `npm:`） | MIT / ISC / OFL-1.1 | 随 `web/dist` 打包进安装包。表见 §1.1 |
 | **字体** `@fontsource/inter` `@fontsource/jetbrains-mono` `@fontsource/outfit` | **OFL-1.1** | ✅ **已随包分发**：三份许可原文在 `web/public/licenses/{inter,jetbrains-mono,outfit}-OFL-1.1.txt`。`web/public/` 是 vite 静态目录 → 原样进 `web/dist/` → 而 `dist` **两条路都在发行物里**（`build.files` 进 `app.asar` + `build.extraResources` 进 `backend/web_dist`），所以不需要改打包配置就满足 OFL-1.1 §1。界面上「设置 → 关于 → 开源许可」直接展示（`LicensesDialog.tsx`），后端 SPA catch-all 负责把 `web_dist/licenses/…` 发出去。版权行**由原文正则提取**、不手写 |
 | **许可原文载荷**（`web/public/licenses/`） | 逐条见其 `index.json` | 由 `tools/sync_license_payload.py` 生成（**别手改**）；`tools/audit_licenses.py` 核对"声明的原文在不在、版权行对不对得上、版本与 lockfile 一致不"，并强制**字体依赖 ⇄ 载荷条目双向对齐** |
 | 宠物皮肤 `furina`（`m2_server/assets/pet-skins/furina/`） | MIT，来源 `Ice-teapop/desktop-pet`（原创 SVG） | ✅ **合规范例**：目录内已附 `LICENSE`，`skin.json` 带 `license` / `attribution` 字段。新增皮肤照此办理 |
@@ -33,6 +33,9 @@ MIT License，© 2026 mouxu（见根目录 `LICENSE`）。
 | `clsx` / `tailwind-merge` | 2.1.1 / 2.6.1 | MIT |
 | `lucide-react` | 1.34.0 | ISC |
 | `@fontsource/{inter,outfit,jetbrains-mono}` | 5.3.0 | OFL-1.1 |
+| `@tanstack/react-query` | 5.76.1 | MIT |
+| `electron-store` | 8.2.0 | MIT |
+| `electron-log` | 5.2.0 | MIT |
 
 > 许可取自 `web/node_modules/<包>/package.json` 与各包内 `LICENSE` 原文（2026-09-14 实读）。
 > `devDependencies`（vite / tailwind / electron-builder / typescript…）不进发行物，不在此表。
@@ -179,7 +182,10 @@ npm:@fontsource/inter
 npm:@fontsource/jetbrains-mono
 npm:@fontsource/outfit
 npm:clsx
+npm:electron-log
+npm:electron-store
 npm:lucide-react
+npm:@tanstack/react-query
 npm:react
 npm:react-dom
 npm:react-router-dom

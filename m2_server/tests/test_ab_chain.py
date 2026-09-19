@@ -3,13 +3,13 @@
 全部本地完成：三条链路与打分全部 stub，不跑真实 RVC/Seed-VC/TTS 子进程，
 不加载 CAM++/NatScore 模型、不碰网络。
 """
+
 import io
 
+import ab_chain as ac
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
-import ab_chain as ac
 
 
 @pytest.fixture()
@@ -27,11 +27,13 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(ac, "MAX_UPLOAD_BYTES", 64 * 1024 * 1024)
 
     def fake_pre(src, dst):
-        dst.write_bytes(b"RIFF16k")     # 免真实 ffmpeg
+        dst.write_bytes(b"RIFF16k")  # 免真实 ffmpeg
+
     monkeypatch.setattr(ac, "_preprocess16k", fake_pre)
 
     def fake_score(wav, ref_):
         return {"secs": 0.9, "nats": 3.25, "duration_s": 3.0}
+
     monkeypatch.setattr(ac, "_score_metrics", fake_score)
 
     app = FastAPI()
@@ -41,20 +43,19 @@ def client(monkeypatch, tmp_path):
 
 def _mk_link_via(tag: str, monkeypatch):
     """把 tag 对应的链路替换成「写一个文件即成功」的 stub。"""
-    import soundfile as sf
     import numpy as np
+    import soundfile as sf
 
     func_name = {"seed_vc": "_seedvc_link"}.get(tag, f"_{tag}_link")
 
     def fake_link(voice_id, src16k, out_wav):
-        sf.write(str(out_wav),
-                 np.sin(np.linspace(0, 100, 16000)).astype(np.float32), 16000)
+        sf.write(str(out_wav), np.sin(np.linspace(0, 100, 16000)).astype(np.float32), 16000)
+
     monkeypatch.setattr(ac, func_name, fake_link)
 
 
 def _upload(voice_id: str = "kangaroo", text: str = "", name: str = "src.wav"):
-    return {"file": (name, io.BytesIO(b"RIFFraw"))},\
-           {"voice_id": voice_id, "text": text}
+    return {"file": (name, io.BytesIO(b"RIFFraw"))}, {"voice_id": voice_id, "text": text}
 
 
 def test_chain_success_three_links(client, monkeypatch):
@@ -95,6 +96,7 @@ def test_chain_single_link_failure_isolated(client, monkeypatch):
 
     def boom(voice_id, src16k, out_wav):
         raise RuntimeError("RVC 推理失败: CUDA OOM")
+
     monkeypatch.setattr(ac, "_rvc_link", boom)
 
     files, data = _upload(text="说点什么。")
@@ -111,6 +113,7 @@ def test_chain_single_link_failure_isolated(client, monkeypatch):
 def test_chain_lock_busy_returns_409(client, monkeypatch):
     """已有链路对比在跑 → 409，而不是排队/叠加。"""
     import threading
+
     lock = threading.Lock()
     lock.acquire()
     monkeypatch.setattr(ac, "_chain_lock", lock)
@@ -138,16 +141,19 @@ def test_chain_missing_voice_returns_400(client, monkeypatch):
 
 def test_run_one_success_and_failure(client, monkeypatch):
     """_run_one：成功产出 url，异常转 failed 且清理残留文件。"""
+
     def ok_link(dst):
         pass  # 不产出文件 → 视为失败
+
     r1 = ac._run_one("rvc", ok_link, 1)
     assert r1["status"] == "failed"
 
-    import soundfile as sf
     import numpy as np
+    import soundfile as sf
 
     def real_ok(dst):
         sf.write(str(dst), np.zeros(16000, dtype=np.float32), 16000)
+
     r2 = ac._run_one("rvc", real_ok, 2)
     assert r2["status"] == "done"
     assert r2["url"].endswith("ab_chain_rvc_2.wav")
@@ -173,9 +179,10 @@ def test_nats_scorer_missing_dependency_reports_readable_error(client, monkeypat
     ckpt.write_bytes(b"stub")
     monkeypatch.setattr(ac, "NATSCORE_CKPT", ckpt)
     monkeypatch.setattr(ac, "_NATS", None)
-    monkeypatch.setitem(sys.modules, "natscore_local", None)   # import → ImportError
+    monkeypatch.setitem(sys.modules, "natscore_local", None)  # import → ImportError
     with pytest.raises(RuntimeError, match="NatScore 依赖缺失"):
         ac._nats_scorer()
+
 
 # ---------------- RVC 失败信息的可读性（2026-09-18 试音间实测）----------------
 
@@ -187,14 +194,16 @@ def test_fail_tail_prefers_real_error_over_warning():
     `FutureWarning: torch.nn.utils.weight_norm is deprecated` + 源码片段，
     报出来的错就成了那条警告，完全指不到问题。
     """
-    stderr = "\n".join([
-        r"D:\RVC\.venv\Lib\site-packages\torch\nn\utils\weight_norm.py:143: FutureWarning:"
-        r" `torch.nn.utils.weight_norm` is deprecated in favor of"
-        r" `torch.nn.utils.parametrizations.weight_norm`.",
-        "  WeightNorm.apply(module, name, dim)",
-        "Traceback (most recent call last):",
-        "RuntimeError: cuDNN error: CUDNN_STATUS_EXECUTION_FAILED",
-    ])
+    stderr = "\n".join(
+        [
+            r"D:\RVC\.venv\Lib\site-packages\torch\nn\utils\weight_norm.py:143: FutureWarning:"
+            r" `torch.nn.utils.weight_norm` is deprecated in favor of"
+            r" `torch.nn.utils.parametrizations.weight_norm`.",
+            "  WeightNorm.apply(module, name, dim)",
+            "Traceback (most recent call last):",
+            "RuntimeError: cuDNN error: CUDNN_STATUS_EXECUTION_FAILED",
+        ]
+    )
     tail = ac._fail_tail(stderr, "")
     assert "cuDNN" in tail
     assert "FutureWarning" not in tail
@@ -202,13 +211,15 @@ def test_fail_tail_prefers_real_error_over_warning():
 
 def test_fail_tail_drops_warnings_and_caret_lines():
     """没有 error 字样时，退而求其次：去掉警告/源码片段/caret 再取末尾。"""
-    stdout = "\n".join([
-        "UserWarning: something deprecated",
-        "  some_source_line()",
-        "    ^^^^^^^^",
-        "real problem line one",
-        "real problem line two",
-    ])
+    stdout = "\n".join(
+        [
+            "UserWarning: something deprecated",
+            "  some_source_line()",
+            "    ^^^^^^^^",
+            "real problem line one",
+            "real problem line two",
+        ]
+    )
     tail = ac._fail_tail("", stdout, n=2)
     assert "real problem line two" in tail
     assert "UserWarning" not in tail
@@ -230,8 +241,10 @@ def test_rvc_link_reports_readable_error_on_failure(tmp_path, monkeypatch):
     class _R:
         returncode = 1
         stdout = ""
-        stderr = ("x.py:1: FutureWarning: deprecated\n  warn()\n"
-                  "RuntimeError: cuDNN error: CUDNN_STATUS_EXECUTION_FAILED")
+        stderr = (
+            "x.py:1: FutureWarning: deprecated\n  warn()\n"
+            "RuntimeError: cuDNN error: CUDNN_STATUS_EXECUTION_FAILED"
+        )
 
     monkeypatch.setattr(ac.subprocess, "run", lambda *a, **k: _R())
     with pytest.raises(RuntimeError) as ei:
@@ -268,7 +281,7 @@ def test_rvc_link_accepts_weight_override_without_touching_resolver(tmp_path, mo
 
     monkeypatch.setattr(ac.subprocess, "run", _run)
     ac._rvc_link("market_voice", src, out, pth=pth, index="", pitch=3, index_rate=0.7)
-    assert called["resolver"] == 0                 # 有覆盖就不碰解析器
+    assert called["resolver"] == 0  # 有覆盖就不碰解析器
     assert str(pth) in seen["cmd"]
     assert seen["cmd"][seen["cmd"].index("--index") + 1] == ""
     assert seen["cmd"][seen["cmd"].index("--pitch") + 1] == "3"

@@ -4,6 +4,7 @@
 （源里删除的文件/目录同步清掉）、无桌面端结构跳过、安装版形态跳过、
 VM_BACKEND_AUTOSYNC=0 总开关。全部跑在 tmp_path 上，不碰真实目录。
 """
+
 import sys
 import types
 from pathlib import Path
@@ -12,9 +13,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-import pytest  # noqa: E402
-
 import backend_autosync  # noqa: E402
+import pytest  # noqa: E402
 
 
 def _make_src(root: Path) -> None:
@@ -124,9 +124,7 @@ def test_kill_switch(monkeypatch, tmp_path):
         def start(self):
             self._target(*self._args)
 
-    monkeypatch.setattr(
-        backend_autosync, "threading", types.SimpleNamespace(Thread=FakeThread)
-    )
+    monkeypatch.setattr(backend_autosync, "threading", types.SimpleNamespace(Thread=FakeThread))
     backend_autosync.autostart_sync(root)
     assert called == [root]
 
@@ -159,11 +157,13 @@ def test_sync_ps1_documents_the_real_install_target():
     # 全文里 `staging` 还会出现在脚本体内的 Write-Host 提示里，只查全文的话
     # 注释块被改坏也不会转红（实测过 —— 变异验证时这条守卫没咬住）。
     head = text.split("param(")[0]
-    assert "%LOCALAPPDATA%\\Programs\\voice-morph-desktop\\resources\\backend" in head, \
-        "注释块里必须写出已安装副本的真实路径，否则下次还会拷错地方"
+    assert (
+        "%LOCALAPPDATA%\\Programs\\voice-morph-desktop\\resources\\backend" in head
+    ), "注释块里必须写出已安装副本的真实路径，否则下次还会拷错地方"
     assert "staging" in head, "必须点明默认目标是源码根下的 staging 目录"
-    assert "app.isPackaged=false" in text, \
-        "必须说清「优先命中源码根」只对源码模式（app.isPackaged=false）成立"
+    assert (
+        "app.isPackaged=false" in text
+    ), "必须说清「优先命中源码根」只对源码模式（app.isPackaged=false）成立"
     assert "本机开发不必重打包" not in text, "旧的误导性说法必须删掉"
 
 
@@ -196,14 +196,11 @@ def test_sync_ps1_is_copy_only_and_says_so():
     text = _SYNC_PS1.read_text("utf-8")
     head = text.split("param(")[0]
 
-    assert "语义与本脚本一致" not in text, \
-        "不许再声称与 autosync 语义一致 —— ps1 不做镜像清理"
+    assert "语义与本脚本一致" not in text, "不许再声称与 autosync 语义一致 —— ps1 不做镜像清理"
     assert "只拷不删" in head, "注释块必须点明本脚本不删多余文件"
-    assert "verify_backend_sync.py" in head, \
-        "必须告诉读者用只读核验脚本去查「多余」文件"
+    assert "verify_backend_sync.py" in head, "必须告诉读者用只读核验脚本去查「多余」文件"
 
     body = text.split("param(", 1)[1]
     assert "Remove-Item" not in body, (
-        "ps1 出现了删除动作，注释却说「只拷不删」——"
-        "要么撤掉删除，要么同步更新注释块与这条守卫"
+        "ps1 出现了删除动作，注释却说「只拷不删」——" "要么撤掉删除，要么同步更新注释块与这条守卫"
     )

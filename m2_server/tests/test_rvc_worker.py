@@ -7,13 +7,13 @@
 2026-09-13：`_fake_rvc_env` 让本文件与"本机是否装了 D:\\RVC"完全解耦
 （此前两条回退用例在干净 CI runner 上因环境守卫直接红）。
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
 import pytest
-
 import rvc_convert as rc
 import warmup as wm
 
@@ -101,6 +101,7 @@ def _fake_rvc_env(tmp_path, monkeypatch):
 
 # ---------------- worker 握手与协议 ----------------
 
+
 def test_spawn_worker_reads_ready_line(monkeypatch):
     """worker 必须先打 {"ready":true} 才能收任务，否则调用方会停在握手上。"""
     fake = _FakeProc([], ready=True)
@@ -139,6 +140,7 @@ def test_worker_call_raises_on_task_error(monkeypatch):
 
 # ---------------- 崩溃重启 + 回退 ----------------
 
+
 def test_worker_call_restarts_dead_worker_once(monkeypatch):
     """worker 崩了自动重启重试一次：显卡掉线/进程被杀不该让用户看到报错。"""
     calls = {"n": 0}
@@ -162,8 +164,7 @@ def _raise_break(*a, **k):
 
 def test_worker_call_falls_back_to_oneshot(tmp_path, monkeypatch):
     """worker 彻底起不来时退回一次性子进程，整条发送链路不能因此失败。"""
-    monkeypatch.setattr(rc, "_spawn_worker",
-                        lambda: (_ for _ in ()).throw(rc.RvcError("起不来")))
+    monkeypatch.setattr(rc, "_spawn_worker", lambda: (_ for _ in ()).throw(rc.RvcError("起不来")))
     monkeypatch.setattr(rc, "OUTPUTS_DIR", tmp_path)
     monkeypatch.setattr(rc, "resolve_model", lambda v: (Path("x.pth"), None))
     src = tmp_path / "tts_1.wav"
@@ -181,10 +182,11 @@ def test_worker_call_falls_back_to_oneshot(tmp_path, monkeypatch):
             returncode = 0
             stdout = "OK"
             stderr = ""
+
         return R()
 
     monkeypatch.setattr(rc.subprocess, "run", fake_run)
-    out = rc.rvc_convert(src, "kangaroo_v2")   # 绝对路径，绕过 OUTPUTS_DIR 拼接
+    out = rc.rvc_convert(src, "kangaroo_v2")  # 绝对路径，绕过 OUTPUTS_DIR 拼接
     assert out.name == "tts_1_kangaroo_v2.wav"
     # 退回路径仍必须 cwd=RVC 根（2026-09-10 修过一次这个坑）
     assert seen["cwd"] and "RVC" in str(seen["cwd"]).upper()
@@ -193,8 +195,7 @@ def test_worker_call_falls_back_to_oneshot(tmp_path, monkeypatch):
 def test_worker_disabled_uses_oneshot_directly(tmp_path, monkeypatch):
     """VM_RVC_WORKER=0 → 压根不碰 worker（排查用的一次性链路）。"""
     monkeypatch.setattr(rc, "USE_WORKER", False)
-    monkeypatch.setattr(rc, "_spawn_worker",
-                        lambda: pytest.fail("关掉 worker 后不该再 spawn"))
+    monkeypatch.setattr(rc, "_spawn_worker", lambda: pytest.fail("关掉 worker 后不该再 spawn"))
     monkeypatch.setattr(rc, "OUTPUTS_DIR", tmp_path)
     monkeypatch.setattr(rc, "resolve_model", lambda v: (Path("x.pth"), None))
     src = tmp_path / "tts_1.wav"
@@ -208,6 +209,7 @@ def test_worker_disabled_uses_oneshot_directly(tmp_path, monkeypatch):
             returncode = 0
             stdout = "OK"
             stderr = ""
+
         return R()
 
     monkeypatch.setattr(rc.subprocess, "run", _run)
@@ -217,15 +219,25 @@ def test_worker_disabled_uses_oneshot_directly(tmp_path, monkeypatch):
 
 # ---------------- 预热 ----------------
 
+
 def test_warmup_records_each_step(monkeypatch):
     """TTS 与 RVC 各自计时；任一步失败都要记进 steps，不抛出。"""
     monkeypatch.setattr(wm, "ENABLED", True)
-    monkeypatch.setattr(wm, "_state",
-                        {"running": False, "done": False, "steps": [],
-                         "started_at": 0.0, "finished_at": 0.0, "error": ""})
+    monkeypatch.setattr(
+        wm,
+        "_state",
+        {
+            "running": False,
+            "done": False,
+            "steps": [],
+            "started_at": 0.0,
+            "finished_at": 0.0,
+            "error": "",
+        },
+    )
     monkeypatch.setattr(wm, "_warm_tts", lambda: None)
     monkeypatch.setattr(wm, "_warm_rvc", lambda: None)
-    monkeypatch.setattr(wm, "_warm_play_worker", lambda: None)   # 本测试只验 TTS/RVC 计时
+    monkeypatch.setattr(wm, "_warm_play_worker", lambda: None)  # 本测试只验 TTS/RVC 计时
     st = wm.run()
     assert [s["step"] for s in st["steps"]] == ["TTS worker", "RVC", "微信播放worker"]
     assert all(s["ok"] for s in st["steps"])
@@ -233,11 +245,19 @@ def test_warmup_records_each_step(monkeypatch):
 
 def test_warmup_one_step_failure_does_not_abort(monkeypatch):
     """预热失败只降级（第一下慢），绝不能把整个后端拖垮。"""
-    monkeypatch.setattr(wm, "_state",
-                        {"running": False, "done": False, "steps": [],
-                         "started_at": 0.0, "finished_at": 0.0, "error": ""})
-    monkeypatch.setattr(wm, "_warm_tts",
-                        lambda: (_ for _ in ()).throw(RuntimeError("GPU 被占")))
+    monkeypatch.setattr(
+        wm,
+        "_state",
+        {
+            "running": False,
+            "done": False,
+            "steps": [],
+            "started_at": 0.0,
+            "finished_at": 0.0,
+            "error": "",
+        },
+    )
+    monkeypatch.setattr(wm, "_warm_tts", lambda: (_ for _ in ()).throw(RuntimeError("GPU 被占")))
     monkeypatch.setattr(wm, "_warm_rvc", lambda: None)
     monkeypatch.setattr(wm, "_warm_play_worker", lambda: None)
     st = wm.run()
@@ -248,8 +268,7 @@ def test_warmup_one_step_failure_does_not_abort(monkeypatch):
 def test_warmup_disabled_no_thread(monkeypatch):
     monkeypatch.setattr(wm, "ENABLED", False)
     started = []
-    monkeypatch.setattr(wm.threading, "Thread",
-                        lambda *a, **k: started.append(1))
+    monkeypatch.setattr(wm.threading, "Thread", lambda *a, **k: started.append(1))
     wm.start_background()
     assert started == []
 
@@ -260,8 +279,9 @@ def test_warmup_endpoint_exists():
     枚举 app.routes 会撞上 _IncludedRouter（挂载子应用时出现、无 .path 属性），
     故用真实请求确认：返回 200 且 body 是预热状态，而不是 404（漏注册/被改名）。
     """
-    from fastapi.testclient import TestClient
     import server
+    from fastapi.testclient import TestClient
+
     client = TestClient(server.app)
     resp = client.get("/api/system/warmup")
     assert resp.status_code != 404

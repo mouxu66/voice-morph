@@ -53,14 +53,15 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-import numpy as np
-import soundfile as sf
+import contextlib
 
 import config as cfg
+import numpy as np
+import soundfile as sf
+import wechat_proc as wproc  # 进程/窗口底层操作（重启微信链路）
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import wechat_proc as wproc      # 进程/窗口底层操作（重启微信链路）
 
 router = APIRouter(prefix="/api/wechat", tags=["wechat"])
 
@@ -80,7 +81,9 @@ _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 # `|` 后面的端点词是**兜底候选**：英文系统下 MME 会把名字截断到 31 字符
 # （"CABLE Input (VB-Audio Virtual C"），完整驱动名反而匹配不上（2026-09-19 级联事故）。
 # 消费方 play_worker._resolve_device 按序尝试两个候选；_device_keyword() 只取第一个。
-OUTPUT_DEVICE_KEYWORD = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "VB-Audio Virtual Cable|CABLE Input")
+OUTPUT_DEVICE_KEYWORD = os.environ.get(
+    "VM_LIVE_OUTPUT_DEVICE", "VB-Audio Virtual Cable|CABLE Input"
+)
 # 发语音方式：mic=鼠标长按输入框右下角话筒图标（默认，官方交互）
 #             alt=按住键盘快捷键（微信默认 Alt；VM_WECHAT_RECORD_KEY 可改键）
 RECORD_METHOD = os.environ.get("VM_WECHAT_RECORD_METHOD", "mic").strip().lower()
@@ -91,8 +94,8 @@ MIC_OFFSET_X = int(os.environ.get("VM_WECHAT_MIC_OFFSET_X", "-157"))
 MIC_OFFSET_Y = int(os.environ.get("VM_WECHAT_MIC_OFFSET_Y", "-63"))
 # 发语音按键：RECORD_METHOD=alt 时生效。默认 alt；微信里改过快捷键就用 VM_WECHAT_RECORD_KEY 指定。
 RECORD_KEY = os.environ.get("VM_WECHAT_RECORD_KEY", "alt")
-LEAD_S = float(os.environ.get("VM_WECHAT_LEAD_S", "0.35"))   # 按住后等待录音开始
-TAIL_S = float(os.environ.get("VM_WECHAT_TAIL_S", "0.3"))    # 播完后的尾巴静音（松开前）
+LEAD_S = float(os.environ.get("VM_WECHAT_LEAD_S", "0.35"))  # 按住后等待录音开始
+TAIL_S = float(os.environ.get("VM_WECHAT_TAIL_S", "0.3"))  # 播完后的尾巴静音（松开前）
 # 自动发送专用静音头：开播后先垫这段再出人声，用来盖住「点按钮→微信真正开始录」的延迟。
 # 太小会削掉开头第一个字，太大会在语音前留下空白。0.8s 是实测折中。
 PLAY_LEAD_S = float(os.environ.get("VM_WECHAT_PLAY_LEAD_S", "0.8"))
@@ -113,10 +116,10 @@ RESTART_WAIT_S = float(os.environ.get("VM_WECHAT_RESTART_WAIT_S", "90"))
 RESTART_KILL_GRACE_S = float(os.environ.get("VM_WECHAT_RESTART_KILL_GRACE_S", "2.5"))
 
 _send_lock = threading.Lock()
-_play_proc = None   # 正在向 CABLE 播放的子进程，供 /stop_play 中止
+_play_proc = None  # 正在向 CABLE 播放的子进程，供 /stop_play 中止
 PLAY_WORKER_ENABLED = os.environ.get("VM_WECHAT_PLAY_WORKER", "1") == "1"
 PLAY_WORKER_SCRIPT = cfg.ROOT / "m2_server" / "play_worker.py"
-_play_worker_proc = None   # 常驻播放 worker（play_worker.py），复用同进程省冷导入
+_play_worker_proc = None  # 常驻播放 worker（play_worker.py），复用同进程省冷导入
 
 
 class _PlayWorkerHandle:
@@ -150,10 +153,8 @@ class _PlayWorkerHandle:
                 return 0
             if '"error"' in line:
                 msg = ""
-                try:
+                with contextlib.suppress(Exception):
                     msg = json.loads(line).get("msg", "")
-                except Exception:
-                    pass
                 raise RuntimeError(f"播放 worker 失败: {msg}")
         raise RuntimeError("播放 worker 等待 done 超时")
 
@@ -170,15 +171,16 @@ def _get_play_worker() -> "subprocess.Popen | None":
             raise RuntimeError(f"找不到 play_worker.py: {PLAY_WORKER_SCRIPT}")
         proc = subprocess.Popen(
             [str(RVC_VENV_PY), str(PLAY_WORKER_SCRIPT), OUTPUT_DEVICE_KEYWORD],
-            stdout=subprocess.PIPE, stdin=subprocess.PIPE, text=True, bufsize=1,
+            stdout=subprocess.PIPE,
+            stdin=subprocess.PIPE,
+            text=True,
+            bufsize=1,
             creationflags=_NO_WINDOW,
         )
         line = proc.stdout.readline() if proc.stdout else ""
         if not line or '"ready"' not in line:
-            try:
+            with contextlib.suppress(Exception):
                 proc.kill()
-            except Exception:
-                pass
             raise RuntimeError(f"play worker 未就绪: {line[:200]!r}")
         _play_worker_proc = proc
         logger.info("[wechat] 播放 worker 已就绪（常驻，省冷导入）")
@@ -196,10 +198,8 @@ def _stop_play_worker() -> None:
     if proc is None:
         return
     try:
-        try:
+        with contextlib.suppress(Exception):
             proc.stdin.close()
-        except Exception:
-            pass
         proc.kill()
     except Exception:
         pass
@@ -255,8 +255,7 @@ def _restore_async(history_file: Path | None = None) -> None:
                     if hist:
                         hist[-1]["restored"] = restored
                         hist[-1]["restore_error"] = restore_err
-                        path.write_text(
-                            json.dumps(hist, ensure_ascii=False), "utf-8")
+                        path.write_text(json.dumps(hist, ensure_ascii=False), "utf-8")
             except Exception as e:
                 logger.debug("[wechat] 写回还原结果失败: %s", e)
     except Exception as e:
@@ -269,7 +268,7 @@ def _restore_async(history_file: Path | None = None) -> None:
 # （模板匹配 + 绿钮 HSV）完整保留为降级路径。禁用：VM_WECHAT_UIA=0。
 try:
     import wechat_uia as _uia
-except Exception as _e:      # uiautomation 未安装 / 非 Windows → 纯像素链路
+except Exception as _e:  # uiautomation 未安装 / 非 Windows → 纯像素链路
     _uia = None
     logger.info("[wechat] UIA 模块不可用，使用纯像素链路: %s", _e)
 
@@ -309,10 +308,23 @@ def _run_audio(action: str) -> dict:
             _restore_lock.acquire()
             acquired = True
         proc = subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-WindowStyle", "Hidden", "-File", str(AUDIO_PS1), "-action", action],
-            capture_output=True, text=True, timeout=120,
-            encoding="utf-8", errors="replace",
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+                str(AUDIO_PS1),
+                "-action",
+                action,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            encoding="utf-8",
+            errors="replace",
             # 关键：不弹控制台窗口。实测（2026-09-09）弹出的 PowerShell 蓝窗会
             # 短暂遮挡微信右下角，导致 _find_green_send 截图截到控制台 →
             # 浮层检测连续误判 → 自动发送整体降级为手动。
@@ -332,7 +344,9 @@ def _run_audio(action: str) -> dict:
     except json.JSONDecodeError:
         raise RuntimeError(f"audio_config {action} 输出不是 JSON: {out[:300]}")
     if not data.get("ok"):
-        raise RuntimeError(f"audio_config {action} 失败: {json.dumps(data, ensure_ascii=False)[:500]}")
+        raise RuntimeError(
+            f"audio_config {action} 失败: {json.dumps(data, ensure_ascii=False)[:500]}"
+        )
     return data
 
 
@@ -350,19 +364,18 @@ class _PendingApply:
         self._result: dict | None = None
         self._error: BaseException | None = None
         self._consumed = False
-        self._thread = threading.Thread(target=self._run, daemon=True,
-                                        name="wechat-audio-apply")
+        self._thread = threading.Thread(target=self._run, daemon=True, name="wechat-audio-apply")
         self._thread.start()
 
     def _run(self) -> None:
         try:
             self._result = _run_audio("apply")
-        except BaseException as e:   # 原样转交 result()，交给 _do_send 的异常路径处理
+        except BaseException as e:  # 原样转交 result()，交给 _do_send 的异常路径处理
             self._error = e
         finally:
             self._done.set()
 
-    _TIMEOUT = 130.0     # 后台任务等待上限（_run_audio 自身 timeout=120）
+    _TIMEOUT = 130.0  # 后台任务等待上限（_run_audio 自身 timeout=120）
 
     def result(self) -> dict:
         """阻塞到后台准备结束；成功返回结果 dict，失败原样抛出（_do_send 内调用一次）。"""
@@ -378,17 +391,13 @@ class _PendingApply:
         """消费前的任务作废（TTS 失败 / 早退路径）：等线程收尾并还原声卡，
         绝不把系统默认麦留在 CABLE 上。已消费（_do_send 接手）时是安全的空操作。"""
         if self._consumed:
-            return        # _do_send 已消费：还原由其异常/早退路径负责，别重复 restore
+            return  # _do_send 已消费：还原由其异常/早退路径负责，别重复 restore
         self._consumed = True
         self._done.wait(timeout=self._TIMEOUT)
-        try:
+        with contextlib.suppress(Exception):
             self._after_run()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             _safe_restore()
-        except Exception:
-            pass
 
     def _after_run(self) -> None:
         """子类钩子：任务作废时的额外收尾（基类无事可做）。"""
@@ -430,7 +439,7 @@ def _device_keyword() -> str:
         return ""
     for tok in ("cable input", "cable output", "speaker", "speakers", "麦克风", "扬声器"):
         if kw.startswith(tok):
-            kw = kw[len(tok):]
+            kw = kw[len(tok) :]
             break
     return kw.strip(" ()[]-—")
 
@@ -468,17 +477,20 @@ def _binding_warning() -> str:
     全部是读操作，绝不修改任何状态。返回空串 = 没有值得提醒的问题。
     """
     if not wproc.list_wechat_processes():
-        return (f"微信当前没在运行，且 {RESTART_MODE_ENV}=0 不会自动拉起"
-                "（本次会降级为手动发送）")
+        return f"微信当前没在运行，且 {RESTART_MODE_ENV}=0 不会自动拉起" "（本次会降级为手动发送）"
     dev = wproc.input_device_probe().get("device")
     if not dev:
-        return ("读不到微信上次录音用的输入设备，无法确认它会不会录到 CABLE；"
-                "若发出去是静音，需设 VM_WECHAT_RESTART=auto")
+        return (
+            "读不到微信上次录音用的输入设备，无法确认它会不会录到 CABLE；"
+            "若发出去是静音，需设 VM_WECHAT_RESTART=auto"
+        )
     kw = _device_keyword()
     if kw and kw in dev.lower():
         return ""
-    return (f"微信上次录音用的是「{dev}」而不是 {OUTPUT_DEVICE_KEYWORD}，"
-            f"而 {RESTART_MODE_ENV}=0 不会重启它 → 这条语音可能录成静音")
+    return (
+        f"微信上次录音用的是「{dev}」而不是 {OUTPUT_DEVICE_KEYWORD}，"
+        f"而 {RESTART_MODE_ENV}=0 不会重启它 → 这条语音可能录成静音"
+    )
 
 
 def _relaunch_quietly(exe) -> None:
@@ -497,8 +509,16 @@ def _prepare_recording_env() -> dict:
     且绝不把用户的微信留在死状态。
     """
     need, why = _need_wechat_restart()
-    info = {"kind": "recording_env", "restart": False, "reason": why, "exe": "",
-            "killed": [], "new_pid": None, "hwnd": None, "waited_s": 0.0}
+    info = {
+        "kind": "recording_env",
+        "restart": False,
+        "reason": why,
+        "exe": "",
+        "killed": [],
+        "new_pid": None,
+        "hwnd": None,
+        "waited_s": 0.0,
+    }
     if not need:
         _run_audio("apply")
         # 不重启时补一次只读的绑定检查（见 _binding_warning）：把"可能录成静音"
@@ -514,7 +534,8 @@ def _prepare_recording_env() -> dict:
     if exe is None:
         raise RuntimeError(
             "需要重启微信才能让它重新枚举录音设备，但找不到微信主程序；"
-            "请设环境变量 VM_WECHAT_EXE 指向 Weixin.exe")
+            "请设环境变量 VM_WECHAT_EXE 指向 Weixin.exe"
+        )
     info["exe"] = str(exe)
     info["killed"] = wproc.kill_wechat(grace_s=RESTART_KILL_GRACE_S).get("pids", [])
     try:
@@ -523,14 +544,16 @@ def _prepare_recording_env() -> dict:
         info["new_pid"] = wproc.start_wechat(exe)
         ready = wproc.wait_wechat_ready(timeout_s=RESTART_WAIT_S)
     except BaseException:
-        if not wproc.list_wechat_processes():      # 别把用户的微信丢在死状态
+        if not wproc.list_wechat_processes():  # 别把用户的微信丢在死状态
             _relaunch_quietly(exe)
         raise
     info.update(restart=True, hwnd=ready["hwnd"], waited_s=ready["waited_s"])
     kill_note = f"杀掉旧进程 {info['killed']}" if info["killed"] else "微信原本未运行"
-    info["summary"] = (f"已重启微信（{kill_note} → 新 PID {info['new_pid']}，"
-                       f"{ready['waited_s']:.1f}s 窗口就绪）并切麦克风到 CABLE Output"
-                       f"；原因：{why}")
+    info["summary"] = (
+        f"已重启微信（{kill_note} → 新 PID {info['new_pid']}，"
+        f"{ready['waited_s']:.1f}s 窗口就绪）并切麦克风到 CABLE Output"
+        f"；原因：{why}"
+    )
     return info
 
 
@@ -559,12 +582,12 @@ class _PendingRecordingEnv(_PendingApply):
     _do_send 真正要用麦克风前才 .result() 等尾差。
     """
 
-    _TIMEOUT = 240.0     # 覆盖 杀 + 切卡 + 拉起 + 等窗口(90s) 的最坏情况
+    _TIMEOUT = 240.0  # 覆盖 杀 + 切卡 + 拉起 + 等窗口(90s) 的最坏情况
 
     def _run(self) -> None:
         try:
             self._result = _prepare_recording_env()
-        except BaseException as e:   # 原样转交 result()，交给 _do_send 的异常路径处理
+        except BaseException as e:  # 原样转交 result()，交给 _do_send 的异常路径处理
             self._error = e
         finally:
             self._done.set()
@@ -586,7 +609,7 @@ class _PendingRecordingEnv(_PendingApply):
 
 # ---------------- 播放 wav → CABLE Input（RVC venv 子进程，唯一有 sounddevice） ----------------
 
-_PLAY_SCRIPT = r'''
+_PLAY_SCRIPT = r"""
 import sys
 import numpy as np
 import sounddevice as sd
@@ -615,7 +638,7 @@ print("PLAYING", flush=True)
 sd.play(np.concatenate([lead, data, tail]), sr, device=idx)
 sd.wait()
 print("DONE", flush=True)
-'''
+"""
 
 
 def _start_play_oneshot(wav: Path) -> subprocess.Popen:
@@ -623,10 +646,20 @@ def _start_play_oneshot(wav: Path) -> subprocess.Popen:
     if not RVC_VENV_PY.exists():
         raise RuntimeError(f"找不到 RVC venv 解释器: {RVC_VENV_PY}（sounddevice 在该环境）")
     return subprocess.Popen(
-        [str(RVC_VENV_PY), "-c", _PLAY_SCRIPT, str(wav), OUTPUT_DEVICE_KEYWORD,
-         str(PLAY_LEAD_S), str(TAIL_S)],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
-        creationflags=_NO_WINDOW,   # 播放期间不得弹出控制台遮挡微信
+        [
+            str(RVC_VENV_PY),
+            "-c",
+            _PLAY_SCRIPT,
+            str(wav),
+            OUTPUT_DEVICE_KEYWORD,
+            str(PLAY_LEAD_S),
+            str(TAIL_S),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        creationflags=_NO_WINDOW,  # 播放期间不得弹出控制台遮挡微信
     )
 
 
@@ -668,10 +701,8 @@ def _wait_play_done(proc: subprocess.Popen, duration_s: float) -> None:
     try:
         proc.wait(timeout=duration_s + 30)
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             proc.kill()
-        except Exception:
-            pass
         raise RuntimeError("播放到 CABLE Input 超时")
 
 
@@ -680,10 +711,19 @@ def _play_to_cable(wav: Path, duration_s: float) -> None:
         raise RuntimeError(f"找不到 RVC venv 解释器: {RVC_VENV_PY}（sounddevice 在该环境）")
     try:
         proc = subprocess.run(
-            [str(RVC_VENV_PY), "-c", _PLAY_SCRIPT, str(wav), OUTPUT_DEVICE_KEYWORD,
-             str(LEAD_S), str(TAIL_S)],
-            capture_output=True, text=True, timeout=duration_s + 30,
-            creationflags=_NO_WINDOW,   # 同上：播放期间不得弹出控制台遮挡微信
+            [
+                str(RVC_VENV_PY),
+                "-c",
+                _PLAY_SCRIPT,
+                str(wav),
+                OUTPUT_DEVICE_KEYWORD,
+                str(LEAD_S),
+                str(TAIL_S),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=duration_s + 30,
+            creationflags=_NO_WINDOW,  # 同上：播放期间不得弹出控制台遮挡微信
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError("播放到 CABLE Input 超时")
@@ -697,13 +737,13 @@ def _play_to_cable(wav: Path, duration_s: float) -> None:
 # 键位表：VK 用左键变体（比 VK_MENU 0x12 更精确），scan 是对应硬件扫描码
 # （SendInput 同时带上 wVk+wScan，Qt/RawInput 层的应用能读到更完整的输入事件）
 _KEYMAP = {
-    "alt":   (0xA4, 0x38),   # VK_LMENU
-    "menu":  (0xA4, 0x38),
-    "ctrl":  (0xA2, 0x1D),   # VK_LCONTROL
+    "alt": (0xA4, 0x38),  # VK_LMENU
+    "menu": (0xA4, 0x38),
+    "ctrl": (0xA2, 0x1D),  # VK_LCONTROL
     "control": (0xA2, 0x1D),
-    "shift": (0xA0, 0x2A),   # VK_LSHIFT
-    "win":   (0x5B, 0x5B),   # VK_LWIN
-    "lwin":  (0x5B, 0x5B),
+    "shift": (0xA0, 0x2A),  # VK_LSHIFT
+    "win": (0x5B, 0x5B),  # VK_LWIN
+    "lwin": (0x5B, 0x5B),
 }
 _fkey_up = 0x0002
 
@@ -718,6 +758,7 @@ def _record_key_code() -> tuple[int, int]:
 
 def _user32():
     import ctypes
+
     return ctypes.windll.user32
 
 
@@ -726,20 +767,30 @@ import ctypes as _ctypes
 
 
 class _KBDINPUT(_ctypes.Structure):
-    _fields_ = [("wVk", _ctypes.c_ushort), ("wScan", _ctypes.c_ushort),
-                ("dwFlags", _ctypes.c_ulong), ("time", _ctypes.c_ulong),
-                ("dwExtraInfo", _ctypes.c_void_p)]
+    _fields_ = [
+        ("wVk", _ctypes.c_ushort),
+        ("wScan", _ctypes.c_ushort),
+        ("dwFlags", _ctypes.c_ulong),
+        ("time", _ctypes.c_ulong),
+        ("dwExtraInfo", _ctypes.c_void_p),
+    ]
 
 
 class _MOUSEINPUT(_ctypes.Structure):
-    _fields_ = [("dx", _ctypes.c_long), ("dy", _ctypes.c_long),
-                ("mouseData", _ctypes.c_ulong), ("dwFlags", _ctypes.c_ulong),
-                ("time", _ctypes.c_ulong), ("dwExtraInfo", _ctypes.c_void_p)]
+    _fields_ = [
+        ("dx", _ctypes.c_long),
+        ("dy", _ctypes.c_long),
+        ("mouseData", _ctypes.c_ulong),
+        ("dwFlags", _ctypes.c_ulong),
+        ("time", _ctypes.c_ulong),
+        ("dwExtraInfo", _ctypes.c_void_p),
+    ]
 
 
 class _INPUT(_ctypes.Structure):
     class _U(_ctypes.Union):
         _fields_ = [("ki", _KBDINPUT), ("mi", _MOUSEINPUT)]
+
     _anonymous_ = ("u",)
     _fields_ = [("type", _ctypes.c_ulong), ("u", _U)]
 
@@ -767,10 +818,8 @@ def _send_input_mouse(flags: int, dx: int = 0, dy: int = 0) -> None:
 
 
 # 进程内统一 DPI 坐标系（幂等）：GetWindowRect / GetSystemMetrics / ImageGrab 全部物理像素
-try:
+with contextlib.suppress(Exception):
     _user32().SetProcessDPIAware()
-except Exception:
-    pass
 
 SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN = 76, 77
 SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN = 78, 79
@@ -801,14 +850,15 @@ def _mouse_left(down: bool) -> None:
 
 # PostMessage 状态：按住期间的 (目标窗口, lparam)，松开时用同一窗口/坐标
 _postmsg_ctx: tuple[int, int] | None = None
-_rect_ctx: tuple[int, int, int, int] | None = None   # 录音中的窗口 rect（finish 找绿钮用）
-_record_via: str | None = None    # 本次录音启动方式：postmsg / realclick / None
+_rect_ctx: tuple[int, int, int, int] | None = None  # 录音中的窗口 rect（finish 找绿钮用）
+_record_via: str | None = None  # 本次录音启动方式：postmsg / realclick / None
 _exstyle_restore: tuple[int, int] | None = None  # (渲染子窗口 hwnd, 原扩展样式) 实时点击路径用
 WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP = 0x200, 0x201, 0x202
 MK_LBUTTON = 0x0001
 
 
 # ---------------- 渲染子窗口与 WS_EX_TRANSPARENT（借鉴 wechatauto-replica guia.py） ----------------
+
 
 def _find_render_hwnd(main_hwnd: int) -> int:
     """枚举微信主窗口子窗口，找 Qt 自绘渲染层（类名前缀 MMUIRenderSubWindow*，取最大面积）。
@@ -864,17 +914,19 @@ def _exstyle_restore_if_needed() -> None:
     global _exstyle_restore
     if _exstyle_restore:
         hwnd, old = _exstyle_restore
-        try:
+        with contextlib.suppress(Exception):
             _user32().SetWindowLongW(hwnd, -20, old)
-        except Exception:
-            pass
         _exstyle_restore = None
         time.sleep(0.05)
 
 
-def _postmsg_mouse(screen_point: tuple[int, int] | None, down: bool = False,
-                   up: bool = False, target: int | None = None,
-                   lparam: int | None = None) -> tuple[int, int] | None:
+def _postmsg_mouse(
+    screen_point: tuple[int, int] | None,
+    down: bool = False,
+    up: bool = False,
+    target: int | None = None,
+    lparam: int | None = None,
+) -> tuple[int, int] | None:
     """把鼠标按下/抬起直投微信窗口过程（绕过被过滤的注入输入队列）。
 
     down=True：定位光标下实际子窗口 → 客户区坐标 → MOUSEMOVE+LBUTTONDOWN，
@@ -883,6 +935,7 @@ def _postmsg_mouse(screen_point: tuple[int, int] | None, down: bool = False,
     """
     import ctypes
     from ctypes import wintypes
+
     u = _user32()
     try:
         if down and screen_point:
@@ -905,8 +958,9 @@ def _postmsg_mouse(screen_point: tuple[int, int] | None, down: bool = False,
     return None
 
 
-def _mic_point(rect: tuple[int, int, int, int],
-               offset_x: int = MIC_OFFSET_X, offset_y: int = MIC_OFFSET_Y) -> tuple[int, int]:
+def _mic_point(
+    rect: tuple[int, int, int, int], offset_x: int = MIC_OFFSET_X, offset_y: int = MIC_OFFSET_Y
+) -> tuple[int, int]:
     """由窗口 rect 计算话筒图标坐标（输入框右下角、发送按钮左侧，可配置偏移）。"""
     left, top, right, bottom = rect
     return (right + offset_x, bottom + offset_y)
@@ -925,15 +979,15 @@ def _ncc_match(img: np.ndarray, tpl: np.ndarray) -> tuple[tuple[int, int] | None
         return None, -1.0
     t = tpl.astype(np.float64)
     t0 = t - t.mean()
-    t_norm = np.sqrt((t0 ** 2).sum())
+    t_norm = np.sqrt((t0**2).sum())
     if t_norm == 0:
         return None, -1.0
     best_score, best_pos = -2.0, None
     for y in range(ih - th + 1):
         for x in range(iw - tw + 1):
-            win = img[y:y + th, x:x + tw].astype(np.float64)
+            win = img[y : y + th, x : x + tw].astype(np.float64)
             w0 = win - win.mean()
-            denom = np.sqrt((w0 ** 2).sum()) * t_norm
+            denom = np.sqrt((w0**2).sum()) * t_norm
             if denom < 1e-6:
                 continue
             score = float((w0 * t0).sum() / denom)
@@ -963,8 +1017,9 @@ def _find_mic_icon(rect: tuple[int, int, int, int], thresh: float = 0.75) -> tup
     try:
         from PIL import Image as PILImage
         from PIL import ImageGrab
-        l, t, r, b = rect
-        box = (max(0, r - 340), max(0, b - 150), r, b)   # 搜索区：右下 340x150
+
+        left, top, right, bottom = rect
+        box = (max(0, right - 340), max(0, bottom - 150), right, bottom)  # 搜索区：右下 340x150
         shot = np.asarray(ImageGrab.grab(bbox=box).convert("L"))
         best: tuple[float, tuple[int, int], tuple[int, int]] | None = None
         for tpl_path in _mic_templates():
@@ -980,7 +1035,7 @@ def _find_mic_icon(rect: tuple[int, int, int, int], thresh: float = 0.75) -> tup
         if best is None or best[0] < thresh:
             return None
         score, pos, (tw, thh) = best
-        cx = box[0] + pos[0] + tw // 2    # 匹配位置 + 模板中心
+        cx = box[0] + pos[0] + tw // 2  # 匹配位置 + 模板中心
         cy = box[1] + pos[1] + thh // 2
         return cx, cy
     except Exception:
@@ -990,6 +1045,7 @@ def _find_mic_icon(rect: tuple[int, int, int, int], thresh: float = 0.75) -> tup
 def _window_rect(hwnd: int) -> tuple[int, int, int, int]:
     import ctypes
     from ctypes import wintypes
+
     rect = wintypes.RECT()
     if not _user32().GetWindowRect(hwnd, ctypes.byref(rect)):
         raise RuntimeError("GetWindowRect 失败")
@@ -1006,33 +1062,37 @@ def _ensure_onscreen(hwnd: int) -> None:
     from ctypes import wintypes
 
     class MONITORINFO(ctypes.Structure):
-        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
-                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("rcMonitor", wintypes.RECT),
+            ("rcWork", wintypes.RECT),
+            ("dwFlags", wintypes.DWORD),
+        ]
 
     u = _user32()
     mi = MONITORINFO()
     mi.cbSize = ctypes.sizeof(MONITORINFO)
-    hmon = u.MonitorFromWindow(hwnd, 2)   # MONITOR_DEFAULTTONEAREST
+    hmon = u.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
     if not hmon or not u.GetMonitorInfoW(hmon, ctypes.byref(mi)):
         return
-    l, t, r, b = _window_rect(hwnd)
+    left, top, right, bottom = _window_rect(hwnd)
     wa = mi.rcWork
     dx = dy = 0
     # 优先级：底边 > 右边 > 顶边/左边。
     # 话筒在窗口右下角，底边被（自动隐藏的）任务栏压住会直接导致点击失效；
     # 而最大化窗口的 top 常为负值（Windows 把边框裁到屏外），此时若为了
     # 「顶边不溢出」把窗口往下推，反而会把底边推出屏幕 —— 实测踩过（2026-09-09）。
-    if b > wa.bottom:
-        dy = wa.bottom - b
-    elif t < wa.top and b <= wa.top:      # 仅当窗口整体在上边界之外才拉回
-        dy = wa.top - t
-    if r > wa.right:
-        dx = wa.right - r
-    elif l < wa.left and r <= wa.left:    # 仅当窗口整体在左边界之外才拉回
-        dx = wa.left - l
+    if bottom > wa.bottom:
+        dy = wa.bottom - bottom
+    elif top < wa.top and bottom <= wa.top:  # 仅当窗口整体在上边界之外才拉回
+        dy = wa.top - top
+    if right > wa.right:
+        dx = wa.right - right
+    elif left < wa.left and right <= wa.left:  # 仅当窗口整体在左边界之外才拉回
+        dx = wa.left - left
     if dx or dy:
         # SWP_NOSIZE(0x1) | SWP_NOZORDER(0x4) | SWP_NOACTIVATE(0x10)
-        u.SetWindowPos(hwnd, 0, l + dx, t + dy, 0, 0, 0x1 | 0x4 | 0x10)
+        u.SetWindowPos(hwnd, 0, left + dx, top + dy, 0, 0, 0x1 | 0x4 | 0x10)
         time.sleep(0.15)
 
 
@@ -1048,13 +1108,14 @@ def _find_wechat_hwnd() -> int:
 def _foreground_wechat() -> int:
     """把微信拉到前台，返回其窗口句柄。SetForegroundWindow 有系统限制，用 ALT 抖动绕过。"""
     import ctypes
+
     user32 = ctypes.windll.user32
     hwnd = _find_wechat_hwnd()
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, 9)  # SW_RESTORE
         time.sleep(0.3)
     vk, scan = _KEYMAP["alt"]
-    _send_input_kb(vk, scan, False)   # ALT down/up 解锁前台切换限制
+    _send_input_kb(vk, scan, False)  # ALT down/up 解锁前台切换限制
     _send_input_kb(vk, scan, True)
     user32.SetForegroundWindow(hwnd)
     time.sleep(0.25)
@@ -1080,10 +1141,16 @@ def _grab_bottom_gray(rect: tuple[int, int, int, int]) -> np.ndarray:
     像素会把信号稀释到 0.1~0.2 量级，触发不了阈值（2026-09-09 实测）。
     """
     from PIL import ImageGrab
-    l, t, r, b = rect
+
+    left, top, right, bottom = rect
     u = _user32()
     sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
-    box = (max(0, min(r, sw) - 560), max(0, min(b, sh) - 140), min(r, sw), min(b, sh))
+    box = (
+        max(0, min(right, sw) - 560),
+        max(0, min(bottom, sh) - 140),
+        min(right, sw),
+        min(bottom, sh),
+    )
     return np.asarray(ImageGrab.grab(bbox=box).convert("L")).astype(np.int16)
 
 
@@ -1092,7 +1159,7 @@ def _snapshot_overlay_baseline(rect: tuple[int, int, int, int]) -> None:
     global _overlay_baseline
     try:
         _overlay_baseline = _grab_bottom_gray(rect)
-    except Exception as e:      # 截图失败不该阻断发送
+    except Exception as e:  # 截图失败不该阻断发送
         logger.warning("[wechat] 基线快照失败，浮层检测将退化为绿色按钮判据: %s", e)
         _overlay_baseline = None
 
@@ -1146,7 +1213,7 @@ def _trigger_record(ui: dict | None = None) -> None:
             cached_mic = ui.get("mic")
         else:
             hwnd = _foreground_wechat()
-            _ensure_onscreen(hwnd)                 # 防止窗口底边超屏被任务栏遮挡
+            _ensure_onscreen(hwnd)  # 防止窗口底边超屏被任务栏遮挡
             rect = _window_rect(hwnd)
             cached_mic = None
         _rect_ctx = rect
@@ -1173,7 +1240,8 @@ def _trigger_record(ui: dict | None = None) -> None:
                     return
                 raise RuntimeError(
                     "UIA 已点击语音按钮但录音浮层未出现；为避免把录音误发出去，"
-                    "本次不重复点击（请稍后重试）")
+                    "本次不重复点击（请稍后重试）"
+                )
         # 降级：摘 WS_EX_TRANSPARENT + SendInput 单击语音按钮
         point = cached_mic or (_find_mic_icon(rect) or _mic_point(rect))
         # 摘样式（必做）+ SendInput 单击语音按钮
@@ -1192,10 +1260,8 @@ def _trigger_record(ui: dict | None = None) -> None:
             _record_via = "realclick"
             return
         # 浮层未出现：best-effort 还原样式 + 抛错走降级
-        try:
+        with contextlib.suppress(Exception):
             _mouse_left(False)
-        except Exception:
-            pass
         _exstyle_restore_if_needed()
         raise RuntimeError("微信录音未能启动（浮层未出现），请稍后重试")
     _foreground_wechat()
@@ -1209,18 +1275,25 @@ def _find_green_send(rect: tuple[int, int, int, int], retries: int = 4) -> tuple
     浮层渲染有延迟，重试几次；找不到返回 None（调用方点 × 取消兜底）。
     """
     from PIL import ImageGrab
-    l, t, r, b = rect
+
+    left, top, right, bottom = rect
     # 取域必须 clamp 到屏幕内：bbox 超出屏幕时 PIL 会把屏外部分填黑，
     # 若绿钮正好落在填黑区就永远检测不到（最大化窗口底边常溢出几像素）。
     u = _user32()
     sw, sh = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
-    box = (max(0, min(r, sw) - 560), max(0, min(b, sh) - 140), min(r, sw), min(b, sh))
+    box = (
+        max(0, min(right, sw) - 560),
+        max(0, min(bottom, sh) - 140),
+        min(right, sw),
+        min(bottom, sh),
+    )
     if box[2] <= box[0] or box[3] <= box[1]:
         return None
     for _ in range(retries):
         img = np.asarray(ImageGrab.grab(bbox=box).convert("RGB")).astype(int)
-        green = (img[:, :, 1] > 150) & (img[:, :, 0] < 120) & \
-                (img[:, :, 2] > 80) & (img[:, :, 2] < 180)
+        green = (
+            (img[:, :, 1] > 150) & (img[:, :, 0] < 120) & (img[:, :, 2] > 80) & (img[:, :, 2] < 180)
+        )
         ys, xs = np.nonzero(green)
         if len(xs) > 50:
             return int(xs.mean()) + box[0], int(ys.mean()) + box[1]
@@ -1242,7 +1315,7 @@ def _finish_record() -> bool:
     try:
         if RECORD_METHOD == "mic":
             rect = _rect_ctx or _window_rect(_find_wechat_hwnd())
-            time.sleep(TAIL_S)   # 尾音缓冲（等 wav 尾音真正录进去）
+            time.sleep(TAIL_S)  # 尾音缓冲（等 wav 尾音真正录进去）
             # 发送钮定位：UIA 结构化矩形优先，绿钮 HSV 兜底（2026-09-10 方案 A）。
             send_pt = None
             if _uia_ready():
@@ -1256,7 +1329,7 @@ def _finish_record() -> bool:
                 time.sleep(0.12)
                 _mouse_left(True)
                 time.sleep(0.06)
-                _mouse_left(False)   # 点 ↑ 绿钮 = 发送
+                _mouse_left(False)  # 点 ↑ 绿钮 = 发送
                 return True
             # 没找到绿钮（浮层异常）：点 × 取消，避免挂起录音
             cancel_pt = _cancel_point(rect)
@@ -1297,6 +1370,7 @@ def _cancel_point(rect: tuple[int, int, int, int]) -> tuple[int, int] | None:
 
 # ---------------- wav 时长（stdlib wave；合成产物是标准 PCM wav） ----------------
 
+
 def _wav_duration(path: Path) -> float:
     try:
         with wave.open(str(path), "rb") as w:
@@ -1305,8 +1379,9 @@ def _wav_duration(path: Path) -> float:
         return 0.0
 
 
-def _trim_edges(path: Path, keep_head_s: float = 0.12, keep_tail_s: float = 0.12,
-                thresh: float = 0.015) -> Path:
+def _trim_edges(
+    path: Path, keep_head_s: float = 0.12, keep_tail_s: float = 0.12, thresh: float = 0.015
+) -> Path:
     """裁掉 wav 首尾静音，只保留人声段前后一点点缓冲。
 
     背景：TTS 产物经常首尾带 0.5~1s 静音，直接播放会让微信录出的语音
@@ -1318,15 +1393,15 @@ def _trim_edges(path: Path, keep_head_s: float = 0.12, keep_tail_s: float = 0.12
             d = d.mean(axis=1)
         if len(d) == 0:
             return path
-        win = max(int(sr * 0.02), 1)          # 20ms 滑动窗
+        win = max(int(sr * 0.02), 1)  # 20ms 滑动窗
         n = len(d) // win
         rms = np.sqrt((d[: n * win] ** 2).reshape(n, win).mean(axis=1))
         idx = np.nonzero(rms > thresh)[0]
-        if len(idx) == 0:                      # 整段都静音，不裁（可能本就是纯静音测试）
+        if len(idx) == 0:  # 整段都静音，不裁（可能本就是纯静音测试）
             return path
         s = max(int((idx[0] - keep_head_s * 50) * win), 0)
         e = min(int((idx[-1] + 1 + keep_tail_s * 50) * win), len(d))
-        if e - s < int(sr * 0.3):              # 裁后太短（<0.3s），保持原样
+        if e - s < int(sr * 0.3):  # 裁后太短（<0.3s），保持原样
             return path
         tmp = path.with_name(f"{path.stem}_trim{path.suffix}")
         sf.write(tmp, d[s:e], sr, format="WAV")
@@ -1337,14 +1412,15 @@ def _trim_edges(path: Path, keep_head_s: float = 0.12, keep_tail_s: float = 0.12
 
 # ---------------- 主流程 ----------------
 
+
 class SendVoiceReq(BaseModel):
-    wav: str | None = None   # outputs/ 下的文件名；缺省=最近一次 TTS 合成产物
+    wav: str | None = None  # outputs/ 下的文件名；缺省=最近一次 TTS 合成产物
 
 
 class SendTextReq(BaseModel):
     text: str
-    voice_id: str = ""        # TTS 参考音色（决定语气/韵律，"怎么说"）
-    rvc_voice: str = ""       # RVC 音色（决定"谁在说"）；留空=不换声，音色会明显不像
+    voice_id: str = ""  # TTS 参考音色（决定语气/韵律，"怎么说"）
+    rvc_voice: str = ""  # RVC 音色（决定"谁在说"）；留空=不换声，音色会明显不像
     pitch: int = 0
     index_rate: float = 0.5
 
@@ -1381,16 +1457,21 @@ def send_text(req: SendTextReq):
         # 合成/组装任何一步失败，下面的 except 会 abandon() 兜底还原声卡。
         apply_task = _PendingRecordingEnv()
         from tts_api import synth_wav
+
         wav, duration_s, _vid = synth_wav(req.text, req.voice_id)
-        steps = [f"合成: {wav.name}（{duration_s:.1f}s，voice={_vid or '默认'}，用时 {time.time()-_t0:.1f}s）"]
+        steps = [
+            f"合成: {wav.name}（{duration_s:.1f}s，voice={_vid or '默认'}，用时 {time.time()-_t0:.1f}s）"
+        ]
         # 没显式给 rvc_voice 时，按 voicebank id → RVC 实验名的约定推一个
         # （kangaroo → kangaroo_v2）。推不到就照发，并在 steps 里说清楚音色会不像。
         rvc_voice = req.rvc_voice
         if not rvc_voice:
             from rvc_convert import resolve_rvc_voice
+
             rvc_voice = resolve_rvc_voice(_vid or req.voice_id) or ""
         if rvc_voice:
             from rvc_convert import rvc_convert as _rvc
+
             _t1 = time.time()
             wav = _rvc(wav, rvc_voice, req.pitch, req.index_rate)
             steps.append(f"RVC 换声 → {rvc_voice}（用时 {time.time()-_t1:.1f}s）")
@@ -1459,8 +1540,11 @@ def precheck():
         "last_input_device": probe.get("device"),
         "device_source": probe.get("file"),
         "target_keyword": _device_keyword(),
-        "hint": ("微信会先被重启，再切麦克风到 CABLE Output"
-                 if need else "不会重启微信，直接切麦克风到 CABLE Output"),
+        "hint": (
+            "微信会先被重启，再切麦克风到 CABLE Output"
+            if need
+            else "不会重启微信，直接切麦克风到 CABLE Output"
+        ),
     }
 
 
@@ -1476,8 +1560,10 @@ def manual_send():
     try:
         from rvc_live import _live_proc_alive, rvc_live_start
     except Exception as exc:
-        return JSONResponse(status_code=500, content={
-            "ok": False, "error": f"加载实时变声模块失败: {exc}", "steps": steps})
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"加载实时变声模块失败: {exc}", "steps": steps},
+        )
     try:
         if _live_proc_alive():
             steps.append("实时变声已在运行")
@@ -1489,12 +1575,16 @@ def manual_send():
                 body = {}
             if not body.get("ok"):
                 detail = body.get("detail") or body.get("error") or "未知错误"
-                return JSONResponse(status_code=500, content={
-                    "ok": False, "error": f"启动实时变声失败: {detail}", "steps": steps})
+                return JSONResponse(
+                    status_code=500,
+                    content={"ok": False, "error": f"启动实时变声失败: {detail}", "steps": steps},
+                )
             steps.append("已启动实时变声（模型加载中，稍等片刻）")
     except Exception as exc:
-        return JSONResponse(status_code=500, content={
-            "ok": False, "error": f"启动实时变声失败: {exc}", "steps": steps})
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"启动实时变声失败: {exc}", "steps": steps},
+        )
     return {
         "ok": True,
         "steps": steps,
@@ -1505,7 +1595,7 @@ def manual_send():
 
 
 class PlayToCableReq(BaseModel):
-    wav: str | None = None     # outputs/ 下的文件名；缺省=最近 TTS
+    wav: str | None = None  # outputs/ 下的文件名；缺省=最近 TTS
     lead_s: float | None = None  # 静音头长度（秒），给用户时间按 Alt，默认 2.0
 
 
@@ -1532,12 +1622,16 @@ def _do_play_to_cable(req: PlayToCableReq):
     if req.wav:
         wav = (cfg.OUTPUTS_DIR / req.wav) if not Path(req.wav).is_absolute() else Path(req.wav)
         if not wav.exists():
-            return JSONResponse(status_code=404, content={"ok": False, "error": f"找不到音频 {req.wav}"})
+            return JSONResponse(
+                status_code=404, content={"ok": False, "error": f"找不到音频 {req.wav}"}
+            )
     else:
         cands = sorted(cfg.OUTPUTS_DIR.glob("tts_*.wav"), key=lambda p: p.stat().st_mtime)
         if not cands:
-            return JSONResponse(status_code=404, content={
-                "ok": False, "error": "outputs/ 下没有 TTS 产物，先在网页上合成一条语音"})
+            return JSONResponse(
+                status_code=404,
+                content={"ok": False, "error": "outputs/ 下没有 TTS 产物，先在网页上合成一条语音"},
+            )
         wav = cands[-1]
     trimmed = _trim_edges(wav)
     if trimmed != wav:
@@ -1551,9 +1645,18 @@ def _do_play_to_cable(req: PlayToCableReq):
         steps.append("麦克风已切到 CABLE Output")
         global _play_proc
         proc = subprocess.Popen(
-            [str(RVC_VENV_PY), "-c", _PLAY_SCRIPT, str(wav), OUTPUT_DEVICE_KEYWORD,
-             str(lead), str(TAIL_S)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            [
+                str(RVC_VENV_PY),
+                "-c",
+                _PLAY_SCRIPT,
+                str(wav),
+                OUTPUT_DEVICE_KEYWORD,
+                str(lead),
+                str(TAIL_S),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
         _play_proc = proc
         try:
@@ -1571,21 +1674,22 @@ def _do_play_to_cable(req: PlayToCableReq):
         _run_audio("restore")
         steps.append("声卡已还原")
     except Exception as exc:
-        try:
+        with contextlib.suppress(Exception):
             _run_audio("restore")
-        except Exception:
-            pass
-        return JSONResponse(status_code=500, content={
-            "ok": False, "error": str(exc), "steps": steps})
+        return JSONResponse(
+            status_code=500, content={"ok": False, "error": str(exc), "steps": steps}
+        )
     return {
         "ok": True,
         "wav": wav.name,
         "duration_s": round(duration, 1),
         "lead_s": lead,
         "steps": steps,
-        "hint": (f"音频已播放到 CABLE（{duration:.1f}s，含 {lead}s 静音头）。"
-                 f"请在这 2 秒静音头内到微信按住 Alt 开始说话，"
-                 f"录到这段音频后松开 Alt 发送。"),
+        "hint": (
+            f"音频已播放到 CABLE（{duration:.1f}s，含 {lead}s 静音头）。"
+            f"请在这 2 秒静音头内到微信按住 Alt 开始说话，"
+            f"录到这段音频后松开 Alt 发送。"
+        ),
     }
 
 
@@ -1602,10 +1706,8 @@ def stop_play():
     try:
         proc.kill()
     except Exception as exc:
-        return JSONResponse(status_code=500, content={
-            "ok": False, "error": f"停止播放失败: {exc}"})
-    return {"ok": True, "stopped": True,
-            "detail": "已停止向 CABLE 播放，声卡将自动还原"}
+        return JSONResponse(status_code=500, content={"ok": False, "error": f"停止播放失败: {exc}"})
+    return {"ok": True, "stopped": True, "detail": "已停止向 CABLE 播放，声卡将自动还原"}
 
 
 def _safe_restore() -> tuple[bool, str]:
@@ -1621,8 +1723,7 @@ def _safe_restore() -> tuple[bool, str]:
             return False, f"restore 失败({e})；reset 兜底也失败({e2})"
 
 
-def _uia_verify_sent(before_msg: str | None, expect_s: float,
-                     before_count: int = -1) -> list[str]:
+def _uia_verify_sent(before_msg: str | None, expect_s: float, before_count: int = -1) -> list[str]:
     """发送后读 UIA 里最新语音消息，校验真的发出去了 + 时长正常。
 
     这是"ok≠真发出"那道坑的自动化防线（2026-09-10）：以前只能靠截图肉眼看气泡，
@@ -1653,8 +1754,11 @@ def _uia_verify_sent(before_msg: str | None, expect_s: float,
     secs = _uia.duration_from_message(msg)
     # 注意：UIA 只暴露聊天可视区里的消息（虚拟列表），条数经常恒定不变，
     # 所以"条数没涨"不等于没发出去，别把它当失败判据。
-    note = (f"条数 {before_count}→{count}，确认新增" if added
-            else f"条数 {before_count}→{count}，UIA 仅暴露可视区故不增属正常")
+    note = (
+        f"条数 {before_count}→{count}，确认新增"
+        if added
+        else f"条数 {before_count}→{count}，UIA 仅暴露可视区故不增属正常"
+    )
     out = [f"UIA 校验：最新语音 {msg}（{note}）"]
     if secs is not None and expect_s >= 3 and secs > max(expect_s * 3, expect_s + 20):
         out.append(f"⚠ 时长异常（{secs:.0f}s 远大于预期 {expect_s:.1f}s），疑似 60s 截断复发")
@@ -1676,14 +1780,21 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
     if req.wav:
         wav = (cfg.OUTPUTS_DIR / req.wav) if not Path(req.wav).is_absolute() else Path(req.wav)
         if not wav.exists():
-            return JSONResponse(status_code=404, content={
-                "ok": False, "outcome": "failed", "error": f"找不到音频 {req.wav}"})
+            return JSONResponse(
+                status_code=404,
+                content={"ok": False, "outcome": "failed", "error": f"找不到音频 {req.wav}"},
+            )
     else:
         cands = sorted(cfg.OUTPUTS_DIR.glob("tts_*.wav"), key=lambda p: p.stat().st_mtime)
         if not cands:
-            return JSONResponse(status_code=404, content={
-                "ok": False, "outcome": "failed",
-                "error": "outputs/ 下没有 TTS 产物，先在网页上合成一条语音"})
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "ok": False,
+                    "outcome": "failed",
+                    "error": "outputs/ 下没有 TTS 产物，先在网页上合成一条语音",
+                },
+            )
         wav = cands[-1]
     duration = _wav_duration(wav)
     steps.append(f"音频: {wav.name}（{duration:.1f}s）")
@@ -1701,8 +1812,8 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
             before_msg, before_count = None, -1
 
     restored = False
-    bind_warning = ""    # 录音环境告警（微信绑错设备 → 可能录成静音），随本次落进发送历史
-    proc = None          # 后台播放进程（异常路径要能 kill）
+    bind_warning = ""  # 录音环境告警（微信绑错设备 → 可能录成静音），随本次落进发送历史
+    proc = None  # 后台播放进程（异常路径要能 kill）
     _tw = time.time()
     try:
         # 2) 录音环境准备：必要时重启微信（关键，见模块 docstring），
@@ -1713,14 +1824,20 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
         if pre_apply is not None:
             env = pre_apply.result()
             if isinstance(env, dict) and env.get("kind") == "recording_env":
-                steps.append(f"[{time.time()-_tw:.1f}s] {env['summary']}"
-                             f"（准备已与 TTS 并行，此处仅等 {time.time()-_ta:.1f}s）")
-            else:      # 兼容旧契约（测试里的假任务 / 老调用方）
-                steps.append(f"[{time.time()-_tw:.1f}s] 麦克风已切到 CABLE Output"
-                             f"（切卡已与 TTS 并行，此处仅等 {time.time()-_ta:.1f}s）")
+                steps.append(
+                    f"[{time.time()-_tw:.1f}s] {env['summary']}"
+                    f"（准备已与 TTS 并行，此处仅等 {time.time()-_ta:.1f}s）"
+                )
+            else:  # 兼容旧契约（测试里的假任务 / 老调用方）
+                steps.append(
+                    f"[{time.time()-_tw:.1f}s] 麦克风已切到 CABLE Output"
+                    f"（切卡已与 TTS 并行，此处仅等 {time.time()-_ta:.1f}s）"
+                )
         else:
             env = _prepare_recording_env()
-            steps.append(f"[{time.time()-_tw:.1f}s] {env.get('summary', '麦克风已切到 CABLE Output')}")
+            steps.append(
+                f"[{time.time()-_tw:.1f}s] {env.get('summary', '麦克风已切到 CABLE Output')}"
+            )
 
         # 录音环境告警单独拎出来：除了拼进 steps 给前端，还要落进发送历史。
         # 2026-09-18 事故复盘：它此前只活在 API 响应里，前端把 summary 尾部那句 ⚠
@@ -1738,7 +1855,7 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
         def _prep_ui() -> None:
             try:
                 h = _foreground_wechat()
-                _ensure_onscreen(h)                      # 防止窗口底边超屏被任务栏遮挡
+                _ensure_onscreen(h)  # 防止窗口底边超屏被任务栏遮挡
                 r = _window_rect(h)
                 _ui["hwnd"] = h
                 _ui["rect"] = r
@@ -1748,19 +1865,27 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
 
         _prep_t = threading.Thread(target=_prep_ui, daemon=True)
         _prep_t.start()
-        play_ready = _wait_play_start(proc)             # 主线程等导入/ready（与 _prep_ui 并行）
+        play_ready = _wait_play_start(proc)  # 主线程等导入/ready（与 _prep_ui 并行）
         _prep_t.join()
         if play_ready:
-            steps.append(f"[{time.time()-_tw:.1f}s] 播放就绪（冷导入 {time.time()-_t_play:.1f}s，"
-                         f"已与 UI 准备并行）")
+            steps.append(
+                f"[{time.time()-_tw:.1f}s] 播放就绪（冷导入 {time.time()-_t_play:.1f}s，"
+                f"已与 UI 准备并行）"
+            )
         else:
             steps.append("⚠ 未等到播放开始信号，仍按原计划录音（开头可能被削）")
 
         # 4) 点语音按钮开始录制（UI 已并行准备好，直接复用；准备失败则退回原路径重算）
         _trigger_record(ui=_ui if not _ui.get("err") else None)
         if RECORD_METHOD == "mic":
-            steps.append(f"[{time.time()-_tw:.1f}s] " + ("UIA 已点击语音按钮，开始录音" if _record_via == "uia"
-                         else "已点击话筒图标，开始录音"))
+            steps.append(
+                f"[{time.time()-_tw:.1f}s] "
+                + (
+                    "UIA 已点击语音按钮，开始录音"
+                    if _record_via == "uia"
+                    else "已点击话筒图标，开始录音"
+                )
+            )
         else:
             steps.append(f"[{time.time()-_tw:.1f}s] 已按住 {RECORD_KEY.upper()} 开始录音")
 
@@ -1775,11 +1900,14 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
         sent = _finish_record()
         _hist_appended = False
         if sent:
-            steps.append(f"[{time.time()-_tw:.1f}s] " + {
-                "uia": "UIA 点击语音按钮录音 → 已点发送钮，语音已发送",
-                "realclick": "已点击语音按钮 → 已点发送钮，语音已发送",
-                "postmsg": "已点浮层发送按钮，语音已发送",
-            }.get(via, "语音已发送"))
+            steps.append(
+                f"[{time.time()-_tw:.1f}s] "
+                + {
+                    "uia": "UIA 点击语音按钮录音 → 已点发送钮，语音已发送",
+                    "realclick": "已点击语音按钮 → 已点发送钮，语音已发送",
+                    "postmsg": "已点浮层发送按钮，语音已发送",
+                }.get(via, "语音已发送")
+            )
             # 发送已成功：先落历史（后台写回校验/还原结果都依赖它）
             _append_history(wav, duration, "ok", warning=bind_warning)
             _hist_appended = True
@@ -1792,7 +1920,8 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
                 hist_path = HISTORY_FILE
                 threading.Thread(
                     target=lambda: _persist_verify(
-                        _uia_verify_sent(before_msg, duration, before_count), hist_path),
+                        _uia_verify_sent(before_msg, duration, before_count), hist_path
+                    ),
                     daemon=True,
                 ).start()
                 steps.append("UIA 发送后校验：后台线程进行中（结果写入发送历史）")
@@ -1805,11 +1934,17 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
         else:
             steps.append("未找到发送按钮，已取消录音（本次未发送）")
             restored, restore_err = _safe_restore()
-            return {"ok": True, "outcome": "cancelled", "method": RECORD_METHOD,
-                    "wav": wav.name, "duration_s": round(duration, 1),
-                    "steps": steps, "restored": restored, "restore_error": restore_err,
-                    "_history": _append_history(wav, duration, "cancelled",
-                                                warning=bind_warning)}
+            return {
+                "ok": True,
+                "outcome": "cancelled",
+                "method": RECORD_METHOD,
+                "wav": wav.name,
+                "duration_s": round(duration, 1),
+                "steps": steps,
+                "restored": restored,
+                "restore_error": restore_err,
+                "_history": _append_history(wav, duration, "cancelled", warning=bind_warning),
+            }
     except Exception as exc:
         # 失败也要：⓪掐掉后台播放（否则会一直往 CABLE 灌声音）
         #            ①松开录音键/鼠标（防止按住不放卡死）②还原声卡（reset 兜底）
@@ -1818,34 +1953,53 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
                 proc.kill()
         except Exception:
             pass
-        try:
+        with contextlib.suppress(Exception):
             _finish_record()
-        except Exception:
-            pass
         restored, restore_err = _safe_restore()
         # 自动降级：模拟按键/播放失败 → 引导式手动发送（播放到 CABLE，用户自己按 Alt）
         if AUTO_FALLBACK:
             fb = _guided_fallback(wav, duration, steps)
-            return {"ok": True, "outcome": "manual_fallback", "wav": wav.name,
-                    "duration_s": round(duration, 1),
-                    "steps": steps + fb["steps"],
-                    "restored": restored, "restore_error": restore_err,
-                    "auto_error": str(exc),
-                    "fallback": fb,
-                    "_history": _append_history(wav, duration, "manual_fallback",
-                                                warning=bind_warning)}
-        return JSONResponse(status_code=500, content={
-            "ok": False, "outcome": "failed", "error": str(exc),
-            "steps": steps, "restored": restored, "restore_error": restore_err})
+            return {
+                "ok": True,
+                "outcome": "manual_fallback",
+                "wav": wav.name,
+                "duration_s": round(duration, 1),
+                "steps": steps + fb["steps"],
+                "restored": restored,
+                "restore_error": restore_err,
+                "auto_error": str(exc),
+                "fallback": fb,
+                "_history": _append_history(wav, duration, "manual_fallback", warning=bind_warning),
+            }
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "outcome": "failed",
+                "error": str(exc),
+                "steps": steps,
+                "restored": restored,
+                "restore_error": restore_err,
+            },
+        )
 
     # 6) 声卡还原已在上一步交后台线程（_restore_async），此处不阻塞直接返回。
     #    立即返回的 restored 记为 None（pending），最终结果由后台线程写回发送历史。
     #    warning 同时进响应体与历史：响应给当前这次弹窗用，历史给事后追查用
     #    （2026-09-18 事故：它此前只拼在 steps 文案里，两处都没人接）。
-    return {"ok": True, "outcome": "ok", "method": RECORD_METHOD, "wav": wav.name, "duration_s": round(duration, 1),
-            "steps": steps, "restored": None, "warning": bind_warning,
-            "_history": (True if _hist_appended
-                         else _append_history(wav, duration, "ok", warning=bind_warning))}
+    return {
+        "ok": True,
+        "outcome": "ok",
+        "method": RECORD_METHOD,
+        "wav": wav.name,
+        "duration_s": round(duration, 1),
+        "steps": steps,
+        "restored": None,
+        "warning": bind_warning,
+        "_history": (
+            True if _hist_appended else _append_history(wav, duration, "ok", warning=bind_warning)
+        ),
+    }
 
 
 def _guided_fallback(wav: Path, duration: float, steps: list[str]) -> dict:
@@ -1854,13 +2008,17 @@ def _guided_fallback(wav: Path, duration: float, steps: list[str]) -> dict:
         _run_audio("apply")
         _play_to_cable(wav, duration)
         _safe_restore()
-        return {"steps": ["已降级：音频已播到 CABLE，请到微信手动录完松开发送"],
-                "hint": "到微信按住 Alt（或长按输入框右下角话筒图标）说话，录到这段音频后松开发送",
-                "lead_s": 2.0}
+        return {
+            "steps": ["已降级：音频已播到 CABLE，请到微信手动录完松开发送"],
+            "hint": "到微信按住 Alt（或长按输入框右下角话筒图标）说话，录到这段音频后松开发送",
+            "lead_s": 2.0,
+        }
     except Exception as e:
-        return {"steps": ["降级播放失败"],
-                "hint": f"自动降级也失败（{e}），请改用「手动发送」",
-                "lead_s": 2.0}
+        return {
+            "steps": ["降级播放失败"],
+            "hint": f"自动降级也失败（{e}），请改用「手动发送」",
+            "lead_s": 2.0,
+        }
 
 
 # ---------------- 发送历史（桌宠「最近发送」用） ----------------
@@ -1869,8 +2027,7 @@ HISTORY_FILE = cfg.OUTPUTS_DIR / "wechat_send_history.json"
 HISTORY_MAX = 20
 
 
-def _append_history(wav: Path, duration_s: float, outcome: str = "ok",
-                    warning: str = "") -> bool:
+def _append_history(wav: Path, duration_s: float, outcome: str = "ok", warning: str = "") -> bool:
     """把一次发送记进历史（最多 HISTORY_MAX 条，覆盖写）。outcome: ok/manual_fallback/failed。
 
     warning：录音环境告警（典型是 RESTART=0 下微信绑的不是 CABLE → 可能录成静音）。
@@ -1882,8 +2039,12 @@ def _append_history(wav: Path, duration_s: float, outcome: str = "ok",
         hist = []
         if HISTORY_FILE.exists():
             hist = json.loads(HISTORY_FILE.read_text("utf-8"))
-        rec = {"wav": wav.name, "duration_s": round(duration_s, 1),
-               "ts": int(time.time()), "outcome": outcome}
+        rec = {
+            "wav": wav.name,
+            "duration_s": round(duration_s, 1),
+            "ts": int(time.time()),
+            "outcome": outcome,
+        }
         if warning:
             rec["warning"] = warning
         hist.append(rec)
@@ -1915,5 +2076,9 @@ def last_send():
     if not cands:
         return {"ok": False, "error": "还没有 TTS 产物"}
     wav = cands[-1]
-    return {"ok": True, "wav": wav.name, "duration_s": round(_wav_duration(wav), 1),
-            "url": f"/api/media/outputs/{wav.name}"}
+    return {
+        "ok": True,
+        "wav": wav.name,
+        "duration_s": round(_wav_duration(wav), 1),
+        "url": f"/api/media/outputs/{wav.name}",
+    }

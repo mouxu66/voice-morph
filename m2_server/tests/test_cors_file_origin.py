@@ -25,13 +25,13 @@
     第一版就是这么红的，靠 `tools/check.py --ci-fidelity` 在 push 前拦下来的
     —— 本机全绿、CI 全红。改用不依赖重库的探针路径后，两种环境行为一致。
 """
+
 from __future__ import annotations
 
-import pytest
-from fastapi.testclient import TestClient
-
 import config as cfg
+import pytest
 import server
+from fastapi.testclient import TestClient
 
 # 不存在的路径：由中间件层处理（有 web/dist 时被 SPA catch-all 兜成 200，
 # 没有时是 404），两种情况都不碰任何重依赖，正好用来单测中间件。
@@ -42,8 +42,7 @@ PROBE_PATH = "/api/__cors_probe__"
 def client():
     if cfg.CORS_ORIGINS != ["*"]:
         pytest.skip(
-            f"本机显式配置了 VM_CORS_ORIGINS={cfg.CORS_ORIGINS}，"
-            "file:// 放行契约只覆盖默认模式"
+            f"本机显式配置了 VM_CORS_ORIGINS={cfg.CORS_ORIGINS}，" "file:// 放行契约只覆盖默认模式"
         )
     # raise_server_exceptions=False：端点若 500，我们想看的是响应头而不是异常栈
     return TestClient(server.app, raise_server_exceptions=False)

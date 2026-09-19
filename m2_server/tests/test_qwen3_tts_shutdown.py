@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Qwen3-TTS worker 生命周期（游戏档卸载路径）测试。
 
 背景（2026-09-15）：切到「游戏低占用」档时要把语音合成 worker 杀卸载，
@@ -12,6 +11,7 @@
      的其他程序。
   worker_alive 以 /health 实况为准（复用场景下没有 _ready，靠健康探测）。
 """
+
 import sys
 from pathlib import Path
 
@@ -57,6 +57,7 @@ def test_shutdown_worker_does_not_kill_foreign_port_owner(monkeypatch):
 
 # ---------------- 合成中保护：切游戏档延迟卸载（2026-09-19） ----------------
 
+
 def test_shutdown_worker_busy_defers_recycle(monkeypatch):
     """合成中（busy>0）调用 shutdown_worker：不立即杀，等任务结束自动回收。
 
@@ -95,6 +96,7 @@ def test_shutdown_worker_idle_recycles_immediately(monkeypatch):
 
 # ---------------- netstat 解码：2026-09-18 实测故障（§2.33） ----------------
 
+
 def test_pids_on_port_survives_none_stdout(monkeypatch):
     """netstat 解码失败（stdout 为 None）时不能抛异常，必须返回空列表。
 
@@ -108,6 +110,7 @@ def test_pids_on_port_survives_none_stdout(monkeypatch):
 
     这条守卫锁的就是最后一环：**stdout 为 None 也不能崩**。
     """
+
     class _R:
         stdout = None
 
@@ -157,7 +160,7 @@ def test_system_command_calls_specify_encoding():
                 continue  # 注释里提到命令名（如本条故障说明）不算
             if not any(c in line for c in _SYSTEM_CMDS):
                 continue
-            window = "\n".join(lines[max(0, i - 4): i + 5])
+            window = "\n".join(lines[max(0, i - 4) : i + 5])
             if "subprocess." not in window:
                 continue  # 不是在起子进程
             if "text=True" not in window:

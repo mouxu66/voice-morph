@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """A7/A8 实时输入设备选择器 + 降噪开关测试。
 
 覆盖两层：
@@ -6,6 +5,7 @@
   2. rvc_live 新端点函数：设备校验（400 找不到设备）、成功写入、needs_restart
      （直接调用 FastAPI 端点函数，不起 app；mock 设备枚举与进程探测）
 """
+
 import sys
 import time
 from pathlib import Path
@@ -25,8 +25,7 @@ import rvc_live  # noqa: E402
 @pytest.fixture(autouse=True)
 def _tmp_settings(tmp_path, monkeypatch):
     """每个用例独立设置文件，避免污染真实 outputs/。"""
-    monkeypatch.setattr(live_settings, "SETTINGS_PATH",
-                        tmp_path / "live_settings.json")
+    monkeypatch.setattr(live_settings, "SETTINGS_PATH", tmp_path / "live_settings.json")
     # rvc_live 持有的是模块引用，两个模块看到的是同一个 module 对象，
     # patch 模块属性即可（上面的 setattr 已经做到）。这里仅兜底确认。
     assert rvc_live.live_settings is live_settings
@@ -73,8 +72,10 @@ def test_get_returns_copy():
 
 # ---------------- 端点函数 ----------------
 
-_DEVICES = [{"name": "麦克风阵列 (Senary Audio)", "is_default": True},
-            {"name": "CABLE Output (VB-Audio Virtual C", "is_default": False}]
+_DEVICES = [
+    {"name": "麦克风阵列 (Senary Audio)", "is_default": True},
+    {"name": "CABLE Output (VB-Audio Virtual C", "is_default": False},
+]
 
 
 def test_get_endpoint_shape(monkeypatch):
@@ -91,6 +92,7 @@ def test_get_endpoint_shape(monkeypatch):
 def test_post_unknown_device_400(monkeypatch):
     monkeypatch.setattr(rvc_live, "_mme_input_devices", lambda: _DEVICES)
     from rvc_live import LiveDevicesPayload
+
     with pytest.raises(Exception) as ei:
         rvc_live.rvc_live_audio_devices_set(LiveDevicesPayload(input_device="不存在的麦"))
     assert "找不到输入设备" in str(getattr(ei.value, "detail", ei.value))
@@ -100,7 +102,8 @@ def test_post_save_device_and_denoise(monkeypatch):
     monkeypatch.setattr(rvc_live, "_mme_input_devices", lambda: _DEVICES)
     monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: False)
     r = rvc_live.rvc_live_audio_devices_set(
-        rvc_live.LiveDevicesPayload(input_device="cable output", denoise=False))
+        rvc_live.LiveDevicesPayload(input_device="cable output", denoise=False)
+    )
     # 关键词大小写不敏感模糊匹配（MME 截断名也能对上）
     assert r["ok"] is True
     assert r["input_device"] == "cable output"
@@ -113,8 +116,7 @@ def test_post_save_device_and_denoise(monkeypatch):
 def test_post_running_needs_restart(monkeypatch):
     monkeypatch.setattr(rvc_live, "_mme_input_devices", lambda: _DEVICES)
     monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: True)
-    r = rvc_live.rvc_live_audio_devices_set(
-        rvc_live.LiveDevicesPayload(input_device="麦克风阵列"))
+    r = rvc_live.rvc_live_audio_devices_set(rvc_live.LiveDevicesPayload(input_device="麦克风阵列"))
     assert r["running"] is True and r["needs_restart"] is True
 
 
@@ -131,20 +133,24 @@ def test_resolve_prefers_explicit_device(monkeypatch):
 
     # 捕获 candidates 顺序：模拟枚举结果命中显式选择（api 字段必须为 MME，
     # 与真实枚举一致——函数按 hostapi==MME 过滤）
-    mme = [{"name": "麦克风阵列 (Senary Audio)", "api": "MME", "in": 2, "out": 0},
-           {"name": "CABLE Output (VB-Audio Virtual C", "api": "MME", "in": 2, "out": 0},
-           {"name": "CABLE Input (VB-Audio Virtual C", "api": "MME", "in": 0, "out": 2}]
+    mme = [
+        {"name": "麦克风阵列 (Senary Audio)", "api": "MME", "in": 2, "out": 0},
+        {"name": "CABLE Output (VB-Audio Virtual C", "api": "MME", "in": 2, "out": 0},
+        {"name": "CABLE Input (VB-Audio Virtual C", "api": "MME", "in": 0, "out": 2},
+    ]
     monkeypatch.setattr(rvc_live, "VENV_PY", Path("python"), raising=False)
     import subprocess as _sp
 
     class _R:
         stdout = __import__("json").dumps(mme) + "\n"
+
     monkeypatch.setattr(_sp, "run", lambda *a, **k: _R())
     inp, _out = rvc_live._resolve_device_names()
     assert inp == "CABLE Output (VB-Audio Virtual C"
 
 
 # ---------------- 性能档位（perf_profile） ----------------
+
 
 def test_perf_default_balanced():
     assert live_settings.get()["perf_profile"] == "balanced"
@@ -205,6 +211,7 @@ def test_perf_set_valid_idle(monkeypatch):
 
 def test_perf_set_unknown_400():
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as ei:
         rvc_live.rvc_live_profile_set(rvc_live.LiveProfilePayload(profile="ultra"))
     assert ei.value.status_code == 400
@@ -356,13 +363,15 @@ def test_profile_get_exposes_tts_worker_alive(fake_tts_worker, monkeypatch):
 def _patch_gpu_payload(monkeypatch, total, used, profile="balanced"):
     live_settings.update(perf_profile=profile)
     monkeypatch.setattr(
-        rvc_live, "_gpu_snapshot",
-        lambda: {"gpu_total_mb": total, "gpu_used_mb": used, "live_proc_vram_mb": None})
+        rvc_live,
+        "_gpu_snapshot",
+        lambda: {"gpu_total_mb": total, "gpu_used_mb": used, "live_proc_vram_mb": None},
+    )
 
 
 def test_vram_precheck_blocks_when_free_too_low(monkeypatch):
     """余量不足安全线 → 返回提示文案（start 会以 409 拒绝启动）。"""
-    _patch_gpu_payload(monkeypatch, 8192, 7400)   # free 792 < 2048
+    _patch_gpu_payload(monkeypatch, 8192, 7400)  # free 792 < 2048
     msg = rvc_live._vram_precheck()
     assert msg is not None
     assert "显存余量" in msg and "游戏低占用" in msg
@@ -377,7 +386,7 @@ def test_vram_precheck_game_profile_message(monkeypatch):
 
 
 def test_vram_precheck_passes_when_enough_free(monkeypatch):
-    _patch_gpu_payload(monkeypatch, 8192, 3000)   # free 5192 达标
+    _patch_gpu_payload(monkeypatch, 8192, 3000)  # free 5192 达标
     assert rvc_live._vram_precheck() is None
 
 
@@ -390,8 +399,10 @@ def test_vram_precheck_skips_when_no_gpu(monkeypatch):
 def test_start_blocked_by_vram_precheck(monkeypatch, fake_tts_worker):
     """预检不过 → 409 拒绝启动（不切声卡、不拉起进程）。"""
     import sys as _sys
-    import cascade
     from pathlib import Path as _Path
+
+    import cascade
+
     calls = {"applied": 0, "audio": 0}
     monkeypatch.setattr(rvc_live, "_sync_worker_for_profile", lambda p: None)
     monkeypatch.setattr(rvc_live, "_vram_precheck", lambda: "显存余量仅 792 MB，低于安全阈值")
@@ -399,11 +410,16 @@ def test_start_blocked_by_vram_precheck(monkeypatch, fake_tts_worker):
     monkeypatch.setattr(cascade, "_cascade_alive", lambda: False)
     monkeypatch.setattr(rvc_live, "_model_status", lambda exp=None: True)
     monkeypatch.setattr(rvc_live, "RUNTIME_PY", _Path(_sys.executable))
-    monkeypatch.setattr(rvc_live, "_apply_model_config",
-                        lambda: calls.__setitem__("applied", 1) or True)
-    monkeypatch.setattr(rvc_live, "_audio",
-                        lambda action: calls.__setitem__("audio", calls["audio"] + 1) or {"ok": True})
+    monkeypatch.setattr(
+        rvc_live, "_apply_model_config", lambda: calls.__setitem__("applied", 1) or True
+    )
+    monkeypatch.setattr(
+        rvc_live,
+        "_audio",
+        lambda action: calls.__setitem__("audio", calls["audio"] + 1) or {"ok": True},
+    )
     from fastapi import HTTPException
+
     with pytest.raises(HTTPException) as ei:
         rvc_live.rvc_live_start(exp_name="kangaroo", monitor=False)
     assert ei.value.status_code == 409
@@ -443,7 +459,7 @@ def test_gpu_probe_balanced_ttl_1s(monkeypatch):
     rvc_live._gpu_snapshot()
     assert len(calls) == 3, "首次快照应三连查（used/total/pid）"
 
-    rvc_live._gpu_cache["ts"] = time.time() - 2.0   # 伪造 2s 前的缓存
+    rvc_live._gpu_cache["ts"] = time.time() - 2.0  # 伪造 2s 前的缓存
     rvc_live._gpu_snapshot()
     assert len(calls) == 6, "均衡档 TTL 1s，2s 前的缓存必须失效"
 
@@ -480,4 +496,3 @@ def test_gpu_ttl_falls_back_on_broken_settings(monkeypatch):
 
     monkeypatch.setattr(live_settings, "get", boom)
     assert rvc_live._gpu_ttl() == rvc_live._GPU_TTL_BALANCED
-

@@ -11,15 +11,15 @@
     - 同一时刻只允许一个任务（GPU 单路），重复提交返回 409。
     - 每句的独立 wav 保留在 outputs/ 供逐句试听，最终拼接为单一成品 wav。
 """
+
 import re
 import threading
 import time
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-
 import config as cfg
 from common import is_valid_voice_id, selected_voice, voice_ref
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 OUT = cfg.OUTPUTS_DIR
 OUT.mkdir(exist_ok=True)
@@ -33,8 +33,8 @@ router = APIRouter(prefix="/api")
 # 注意：全角分支只能含全角标点——半角 !? 若混入会不检查后续空白就切分，
 # 导致 "Hi!" 被拆成 "Hi"，碎片拼句时与下一句单词粘连（如 HiBye）。
 _SENT_END = re.compile(r"(?<=[。！？；])|(?<=[.!?](?=\s))")
-_MAX_SENT = 80    # 单句超过这个字数则在逗号处二次切分
-_MIN_SENT = 4     # 碎片短于这个字数并入下一句
+_MAX_SENT = 80  # 单句超过这个字数则在逗号处二次切分
+_MIN_SENT = 4  # 碎片短于这个字数并入下一句
 _SUB_SENT = re.compile(r"(?<=[，、,])")
 
 
@@ -79,7 +79,8 @@ def split_sentences(text: str) -> list[str]:
 # ---------------- SRT 解析 ----------------
 
 _SRT_TIME = re.compile(
-    r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})")
+    r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})"
+)
 
 
 def _srt_seconds(h: str, m: str, s: str, ms: str) -> float:
@@ -99,7 +100,7 @@ def parse_srt(text: str) -> list[tuple[float, float, str]]:
             continue
         start = _srt_seconds(*m.group(1, 2, 3, 4))
         end = _srt_seconds(*m.group(5, 6, 7, 8))
-        lines = [ln.strip() for ln in block[m.end():].strip().splitlines()]
+        lines = [ln.strip() for ln in block[m.end() :].strip().splitlines()]
         body = " ".join(ln for ln in lines if ln and not ln.isdigit())
         if body:
             cues.append((start, end, body))
@@ -111,8 +112,8 @@ def parse_srt(text: str) -> list[tuple[float, float, str]]:
 
 AUDIOBOOK_STATE: dict = {
     "running": False,
-    "status": "idle",            # idle | running | done | cancelled | error
-    "mode": "",                  # text | srt
+    "status": "idle",  # idle | running | done | cancelled | error
+    "mode": "",  # text | srt
     "voice_id": "",
     "done": 0,
     "total": 0,
@@ -121,7 +122,7 @@ AUDIOBOOK_STATE: dict = {
     "url": "",
     "duration_s": 0.0,
     "error": "",
-    "segments": [],              # [{i, text, url, duration_s, failed}]
+    "segments": [],  # [{i, text, url, duration_s, failed}]
 }
 _ab_cancel = threading.Event()
 _ab_lock = threading.Lock()
@@ -130,8 +131,8 @@ _ab_lock = threading.Lock()
 class AudiobookRequest(BaseModel):
     text: str
     voice_id: str = ""
-    gap_ms: int = 350             # 句间停顿（text 模式；srt 模式按时间轴对齐，此值为最短间隔）
-    ref_text: str = ""            # 兼容字段，忽略
+    gap_ms: int = 350  # 句间停顿（text 模式；srt 模式按时间轴对齐，此值为最短间隔）
+    ref_text: str = ""  # 兼容字段，忽略
 
 
 def _detect_lang(s: str) -> str:
@@ -164,9 +165,18 @@ async def audiobook_run(req: AudiobookRequest):
 
         _ab_cancel.clear()
         AUDIOBOOK_STATE.update(
-            running=True, status="running", mode=mode, voice_id=voice_id,
-            done=0, total=len(jobs), percent=0, current_text="",
-            url="", duration_s=0.0, error="", segments=[],
+            running=True,
+            status="running",
+            mode=mode,
+            voice_id=voice_id,
+            done=0,
+            total=len(jobs),
+            percent=0,
+            current_text="",
+            url="",
+            duration_s=0.0,
+            error="",
+            segments=[],
         )
 
     threading.Thread(
@@ -189,21 +199,27 @@ def _audiobook_worker(jobs, voice_id: str, gap_ms: int, mode: str):
     total = len(jobs)
 
     try:
-        for i, (text, start_s, _end_s) in enumerate(jobs):
+        for i, (text, _, _) in enumerate(jobs):
             if _ab_cancel.is_set():
-                AUDIOBOOK_STATE.update(running=False, status="cancelled",
-                                       current_text="", error="已取消")
+                AUDIOBOOK_STATE.update(
+                    running=False, status="cancelled", current_text="", error="已取消"
+                )
                 return
-            AUDIOBOOK_STATE.update(current_text=text, done=i,
-                                   percent=int(i * 100 / total))
+            AUDIOBOOK_STATE.update(current_text=text, done=i, percent=int(i * 100 / total))
             seg_url = ""
             dur = 0.0
             try:
-                wav = qwen_tts(text, ref_audio=str(ref), ref_text="",
-                               language=_detect_lang(text), voice_id=voice_id)
+                wav = qwen_tts(
+                    text,
+                    ref_audio=str(ref),
+                    ref_text="",
+                    language=_detect_lang(text),
+                    voice_id=voice_id,
+                )
                 seg_path = OUT / f"audiobook_{stamp}_seg{i + 1:04d}.wav"
                 seg_path.write_bytes(wav)
                 import soundfile as sf
+
                 d, sr = sf.read(str(seg_path))
                 dur = round(len(d) / sr, 2)
                 seg_url = f"/api/media/outputs/{seg_path.name}"
@@ -212,8 +228,14 @@ def _audiobook_worker(jobs, voice_id: str, gap_ms: int, mode: str):
                 failed += 1
                 pieces.append(AudioSegment.silent(duration=600, frame_rate=24000))
             AUDIOBOOK_STATE["segments"].append(
-                {"i": i + 1, "text": text, "url": seg_url, "duration_s": dur,
-                 "failed": seg_url == ""})
+                {
+                    "i": i + 1,
+                    "text": text,
+                    "url": seg_url,
+                    "duration_s": dur,
+                    "failed": seg_url == "",
+                }
+            )
             AUDIOBOOK_STATE.update(done=i + 1, percent=int((i + 1) * 100 / total))
 
             # 句间停顿：text 模式固定 gap；srt 模式留给下方按时间轴对齐
@@ -227,13 +249,14 @@ def _audiobook_worker(jobs, voice_id: str, gap_ms: int, mode: str):
         if mode == "srt":
             aligned: list[AudioSegment] = []
             cursor = 0.0
-            for i, (text, start_s, _e) in enumerate(jobs):
+            for i, (_, start_s, _e) in enumerate(jobs):
                 seg = pieces[i]
                 if i > 0 and start_s is not None:
                     wait = min(max(start_s - cursor, 0.0), 3.0)
                     if wait > 0.15:
-                        aligned.append(AudioSegment.silent(
-                            duration=int(wait * 1000), frame_rate=24000))
+                        aligned.append(
+                            AudioSegment.silent(duration=int(wait * 1000), frame_rate=24000)
+                        )
                     cursor += wait
                 aligned.append(seg)
                 if start_s is not None:
@@ -248,20 +271,25 @@ def _audiobook_worker(jobs, voice_id: str, gap_ms: int, mode: str):
         final_path = OUT / fname
         final.export(str(final_path), format="wav")
         import soundfile as sf
+
         d, sr = sf.read(str(final_path))
         duration_s = round(len(d) / sr, 1)
         from history import register as history_register
-        history_register("audiobook", voice_id, fname, f"/api/media/outputs/{fname}",
-                         duration_s, input_text="")
+
+        history_register(
+            "audiobook", voice_id, fname, f"/api/media/outputs/{fname}", duration_s, input_text=""
+        )
         AUDIOBOOK_STATE.update(
-            running=False, status="done", percent=100, current_text="",
+            running=False,
+            status="done",
+            percent=100,
+            current_text="",
             url=f"/api/media/outputs/{fname}",
             duration_s=duration_s,
             error="" if not failed else f"{failed} 句合成失败（以静音占位）",
         )
     except Exception as e:
-        AUDIOBOOK_STATE.update(running=False, status="error",
-                               current_text="", error=str(e))
+        AUDIOBOOK_STATE.update(running=False, status="error", current_text="", error=str(e))
 
 
 @router.get("/audiobook/status")

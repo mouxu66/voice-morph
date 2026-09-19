@@ -1,4 +1,5 @@
 """B2 存储占用看板：目标扫描 / 受保护目标拒绝清理 / 清理联动历史记录。"""
+
 import sys
 from pathlib import Path
 
@@ -6,13 +7,12 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-import pytest  # noqa: E402
-from fastapi import FastAPI  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-
 import config as cfg  # noqa: E402
 import history  # noqa: E402
+import pytest  # noqa: E402
 import storage  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 from system_api import router  # noqa: E402
 
 
@@ -25,9 +25,16 @@ def dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "RVC_ROOT", rvc)
     monkeypatch.setattr(cfg, "ROOT", tmp_path)
     monkeypatch.setattr(history, "HISTORY_FILE", outputs / "history.jsonl")
-    for d in (outputs / "market", outputs / "qc", outputs / "logs_placeholder",
-              media / "clips", media / "ft", media / "voicebank", rvc / "assets" / "weights",
-              tmp_path / "m2_server"):
+    for d in (
+        outputs / "market",
+        outputs / "qc",
+        outputs / "logs_placeholder",
+        media / "clips",
+        media / "ft",
+        media / "voicebank",
+        rvc / "assets" / "weights",
+        tmp_path / "m2_server",
+    ):
         d.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(storage, "_market_dir", lambda: outputs / "market")
     return tmp_path
@@ -77,12 +84,12 @@ def test_scan_missing_dirs_zero(dirs):
 
 def test_clean_only_removes_target_files(dirs):
     _put(dirs / "outputs" / "market", "a.pth", 100)
-    _put(dirs / "outputs" / "market", "downloads.json", 5)   # 状态文件不该被误删
+    _put(dirs / "outputs" / "market", "downloads.json", 5)  # 状态文件不该被误删
     _put(dirs / "outputs", "keep.wav", 10)
     res = storage.clean(["market_downloads"])
     assert res["removed_files"] == 1 and res["freed_bytes"] == 100
     assert (dirs / "outputs" / "market" / "downloads.json").exists()
-    assert (dirs / "outputs" / "keep.wav").exists()          # 未勾选的目标不动
+    assert (dirs / "outputs" / "keep.wav").exists()  # 未勾选的目标不动
 
 
 def test_clean_rejects_protected(dirs):
@@ -98,7 +105,7 @@ def test_clean_outputs_wav_also_drops_dead_history(dirs):
     assert history.query()["total"] == 1
     res = storage.clean(["outputs_wav"])
     assert res["removed_files"] == 1
-    assert history.query()["total"] == 0                     # 空链接记录同步摘掉
+    assert history.query()["total"] == 0  # 空链接记录同步摘掉
 
 
 def test_clean_survives_unlinkable_file(dirs, monkeypatch):

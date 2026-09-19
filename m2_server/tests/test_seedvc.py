@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Seed-VC 接口默认参数对齐测试。
 
 背景（2026-09-05 优化项①）：experiments/seedvc_param_sweep.py 实测 + 前端默认
@@ -6,6 +5,7 @@ sim=0.5 时音色相似度最高（CAM++ 0.807）且漏源最低；后端 /seedv
 run_conversion 原默认 0.7，前端不传参时（post_seedvc 等场景）会用到与最优经验
 不一致的值。本测试锁死「默认=0.5」契约，防止默认值回退或前后端再次漂移。
 """
+
 import inspect
 from pathlib import Path
 
@@ -27,7 +27,9 @@ def test_seedvc_run_form_defaults_aligned():
 
 def test_run_conversion_defaults_aligned():
     """run_conversion 默认 similarity_cfg_rate=0.5（offline_vc post_seedvc 复用同一契约）。"""
-    assert inspect.signature(seed_vc.run_conversion).parameters["similarity_cfg_rate"].default == 0.5
+    assert (
+        inspect.signature(seed_vc.run_conversion).parameters["similarity_cfg_rate"].default == 0.5
+    )
 
 
 def test_run_conversion_cfm_ckpt_optional():
@@ -62,7 +64,7 @@ def test_ft_ckpt_dir_without_cfm_returns_none(tmp_path, monkeypatch):
     """
     run_dir = tmp_path / "half_trained"
     run_dir.mkdir()
-    (run_dir / "G_1000.pth").write_bytes(b"x")      # 只有 G/D，CFM 还没落盘
+    (run_dir / "G_1000.pth").write_bytes(b"x")  # 只有 G/D，CFM 还没落盘
     monkeypatch.setitem(seed_vc.SEEDVC_FT_RUNS, "half_trained", run_dir)
     assert seed_vc._ft_ckpt("half_trained") is None
 
@@ -99,10 +101,12 @@ def test_run_conversion_passes_ckpt_to_cmd(monkeypatch, tmp_path):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     ckpt = tmp_path / "fake_cfm.pth"
-    seed_vc.run_conversion(tmp_path / "in_src.wav", tmp_path / "in_tgt.wav", tmp_path,
-                           cfm_checkpoint_path=ckpt)
+    seed_vc.run_conversion(
+        tmp_path / "in_src.wav", tmp_path / "in_tgt.wav", tmp_path, cfm_checkpoint_path=ckpt
+    )
     assert str(ckpt) in captured["cmd"]
     assert "--cfm-checkpoint-path" in captured["cmd"]
+
     # 不传时保持零样本命令（无该参数）
     def fake_run_no_ckpt(cmd, *args, **kwargs):
         captured["cmd"] = cmd

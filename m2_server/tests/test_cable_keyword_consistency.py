@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """守住「播放端设备关键词」在五处源码里的一致（2026-09-19 级联启动即退出事故）。
 
 **事故**：`cascade_stream.py` / `cascade.py` / `rvc_live.py` / `play_worker.py` 的默认值
@@ -21,6 +20,7 @@
 （`cascade_stream` 顶部就 `import sounddevice`），单测里既慢又可能因缺设备报错。
 这里只读源码抓默认值，零依赖、毫秒级。
 """
+
 import re
 from pathlib import Path
 
@@ -62,11 +62,13 @@ def test_env_default_is_identical_everywhere(fname, var):
     """
     got = _env_default(fname, var)
     assert got is not None, (
-        f"{fname} 里找不到 `{var} = os.environ.get(\"VM_LIVE_OUTPUT_DEVICE\", ...)` —— "
-        "变量被改名/删除的话这条守卫就失效了，请同步更新本测试")
+        f'{fname} 里找不到 `{var} = os.environ.get("VM_LIVE_OUTPUT_DEVICE", ...)` —— '
+        "变量被改名/删除的话这条守卫就失效了，请同步更新本测试"
+    )
     assert got == EXPECTED, (
         f"{fname} 的 `{var}` 默认值是 {got!r}，应为 {EXPECTED!r}。"
-        "单个关键词覆盖不了「中文名字完整 / 英文名字被 MME 截断」两种情形（见模块 docstring）")
+        "单个关键词覆盖不了「中文名字完整 / 英文名字被 MME 截断」两种情形（见模块 docstring）"
+    )
 
 
 def test_play_worker_fallback_is_identical():
@@ -97,8 +99,8 @@ def test_candidates_cover_both_localized_and_english_names():
 
     这条把"为什么要双候选"变成可执行断言，不依赖真机设备。
     """
-    localized = "扬声器 (VB-Audio Virtual Cable)"          # 中文 Windows：名字完整
-    english_truncated = "CABLE Input (VB-Audio Virtual C"   # 英文 Windows：MME 截断到 31 字符
+    localized = "扬声器 (VB-Audio Virtual Cable)"  # 中文 Windows：名字完整
+    english_truncated = "CABLE Input (VB-Audio Virtual C"  # 英文 Windows：MME 截断到 31 字符
     cands = [c.strip().lower() for c in EXPECTED.split("|") if c.strip()]
     assert any(c in localized.lower() for c in cands), "没有候选能命中中文叫法"
     assert any(c in english_truncated.lower() for c in cands), "没有候选能命中英文截断叫法"
@@ -122,15 +124,14 @@ def test_real_local_machine_names_if_available():
     sd = pytest.importorskip("sounddevice")
     try:
         devices = list(sd.query_devices())
-    except Exception as e:      # 没有音频设备（CI）时跳过
+    except Exception as e:  # 没有音频设备（CI）时跳过
         pytest.skip(f"枚举音频设备失败: {e}")
     apis = sd.query_hostapis()
     mme = next((i for i, a in enumerate(apis) if a["name"] == "MME"), None)
     if mme is None:
         pytest.skip("本机没有 MME 主机 API")
     cands = [c.strip().lower() for c in EXPECTED.split("|") if c.strip()]
-    outs = [d["name"] for d in devices
-            if d["hostapi"] == mme and d["max_output_channels"] > 0]
+    outs = [d["name"] for d in devices if d["hostapi"] == mme and d["max_output_channels"] > 0]
     if not outs:
         pytest.skip("本机 MME 下没有任何播放端设备（裸 runner / 无声卡）")
     hit = [n for n in outs if any(c in n.lower() for c in cands)]

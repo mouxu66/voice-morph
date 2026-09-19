@@ -15,6 +15,7 @@ const appConfig = require("./app-config.cjs");
 const modelSetup = require("./model-setup.cjs");
 const modelScan = require("./model-scan.cjs");
 const modelGuides = require("./model-guides.cjs");
+const buildWatch = require("./build-watch.cjs");
 
 /** 各配置项对应的目录选择器提示语与推导规则 */
 const PICK_SPECS = {
@@ -335,6 +336,21 @@ function registerSetupIpc(getWindow) {
       shell.showItemInFolder(appConfig.configPath());
     } catch { /* 忽略 */ }
     return { ok: true, path: appConfig.configPath() };
+  });
+
+  // ==================== 构建监听器 IPC ====================
+  ipcMain.handle("build-watch:start", async () => {
+    const result = buildWatch.startWatcher();
+    return { ...result, timestamp: Date.now() };
+  });
+
+  ipcMain.handle("build-watch:stop", async () => {
+    const result = buildWatch.stopWatcher();
+    return { ...result, timestamp: Date.now() };
+  });
+
+  ipcMain.handle("build-watch:status", async () => {
+    return buildWatch.getWatcherStatus();
   });
 }
 

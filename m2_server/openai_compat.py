@@ -28,10 +28,10 @@
     是为了让 tools/check_secrets.py 的占位符白名单放行 —— 那个扫描器拦「标识符里含
     apiKey/token 且右边是字面量」的写法，本机不需要真密钥，不该为此改动门禁规则。
 """
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
-
 from runtime import API_PREFIX  # noqa: F401  （保留以对齐其它模块的导入习惯）
 
 router = APIRouter(prefix="/v1")
@@ -88,7 +88,9 @@ def _resolve_voice(requested: str) -> str:
     if req in ("", "default"):
         cur = selected_voice()
         if not cur:
-            raise ValueError("本机还没有选中音色，请先在「音色库」里选一个，或把 voice 传成具体音色 id")
+            raise ValueError(
+                "本机还没有选中音色，请先在「音色库」里选一个，或把 voice 传成具体音色 id"
+            )
         return cur
 
     ids = _available_voice_ids()
@@ -96,14 +98,29 @@ def _resolve_voice(requested: str) -> str:
         return req
 
     # OpenAI 内置音色名不映射（本机没有这些音色，静默替换会让用户以为生效了）
-    builtin = {"alloy", "echo", "fable", "onyx", "nova", "shimmer", "ash", "ballad",
-               "coral", "sage", "verse", "marin", "cedar"}
+    builtin = {
+        "alloy",
+        "echo",
+        "fable",
+        "onyx",
+        "nova",
+        "shimmer",
+        "ash",
+        "ballad",
+        "coral",
+        "sage",
+        "verse",
+        "marin",
+        "cedar",
+    }
     if req in builtin:
         raise ValueError(
             f"voice='{req}' 是 OpenAI 的云端内置音色，本机没有它。"
             f"请改用本机音色 id（例如 'default' 表示当前选中音色）"
         )
-    raise ValueError(f"未知音色 id: '{req}'。可用音色: {', '.join(ids) if ids else '（音色库为空）'}")
+    raise ValueError(
+        f"未知音色 id: '{req}'。可用音色: {', '.join(ids) if ids else '（音色库为空）'}"
+    )
 
 
 def _transcode(wav_bytes: bytes, fmt: str) -> tuple[bytes, str]:
@@ -112,9 +129,7 @@ def _transcode(wav_bytes: bytes, fmt: str) -> tuple[bytes, str]:
     返回 (字节, 媒体类型)；不支持的格式抛 ValueError。
     """
     if fmt not in _FORMAT_MIME:
-        raise ValueError(
-            f"不支持的 response_format: '{fmt}'。可选: {', '.join(_FORMAT_MIME)}"
-        )
+        raise ValueError(f"不支持的 response_format: '{fmt}'。可选: {', '.join(_FORMAT_MIME)}")
     if fmt == "pcm":
         # OpenAI 的 pcm 是 24kHz 16-bit 裸流；本机 TTS 恒 24000Hz，去掉 44 字节头即可
         return wav_bytes[44:], _FORMAT_MIME["pcm"]
@@ -127,7 +142,6 @@ def _transcode(wav_bytes: bytes, fmt: str) -> tuple[bytes, str]:
     from pathlib import Path
 
     import soundfile as sf
-
     from common import find_ffmpeg  # 项目统一的 ffmpeg 查找（含 Windows 兜底）
 
     ffmpeg = find_ffmpeg()
@@ -144,9 +158,7 @@ def _transcode(wav_bytes: bytes, fmt: str) -> tuple[bytes, str]:
             capture_output=True,
         )
         if proc.returncode != 0 or not dst.exists():
-            raise ValueError(
-                f"转码为 {fmt} 失败: {proc.stderr.decode('utf-8', 'ignore')[:200]}"
-            )
+            raise ValueError(f"转码为 {fmt} 失败: {proc.stderr.decode('utf-8', 'ignore')[:200]}")
         return dst.read_bytes(), _FORMAT_MIME[fmt]
 
 
@@ -165,7 +177,8 @@ def audio_speech(req: SpeechRequest):
     if fmt not in _FORMAT_MIME:
         return _error(
             f"不支持的 response_format: '{req.response_format}'。可选: {', '.join(_FORMAT_MIME)}",
-            400, "invalid_format",
+            400,
+            "invalid_format",
         )
 
     try:

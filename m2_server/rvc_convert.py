@@ -9,6 +9,7 @@
 ⚠️ 袋鼠音色的唯一来源就是这一步：TTS 零样本克隆复现不了袋鼠音色
    （2026-08-31 用户 A/B 亲耳判定），别指望 `ref_audio` 能顶替 RVC。
 """
+
 from __future__ import annotations
 
 import atexit
@@ -91,16 +92,20 @@ def _spawn_worker() -> subprocess.Popen:
     err = open(_WORKER_LOG, "a", encoding="utf-8")
     proc = subprocess.Popen(
         [str(RVC_VENV_PY), str(INFER_PY), "--serve"],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err,
-        cwd=str(RVC_ROOT), text=True, encoding="utf-8", bufsize=1,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=err,
+        cwd=str(RVC_ROOT),
+        text=True,
+        encoding="utf-8",
+        bufsize=1,
         creationflags=_NO_WINDOW,
     )
     line = proc.stdout.readline()
     if not line:
         # worker 没打印 READY 就退了（常见的 hung/import 失败）
         proc.wait(timeout=10)
-        raise RvcError(f"RVC worker 启动失败，退出码 {proc.returncode}，"
-                       f"详见 {_WORKER_LOG}")
+        raise RvcError(f"RVC worker 启动失败，退出码 {proc.returncode}，" f"详见 {_WORKER_LOG}")
     head = json.loads(line)
     if not head.get("ready"):
         raise RvcError(f"RVC worker 握手异常: {head}")
@@ -123,7 +128,7 @@ def stop_worker() -> None:
         return
     try:
         if proc.stdin and not proc.stdin.closed:
-            proc.stdin.close()   # worker 的 stdin 循环到 EOF 自己退出
+            proc.stdin.close()  # worker 的 stdin 循环到 EOF 自己退出
         proc.wait(timeout=10)
     except Exception:
         proc.kill()
@@ -137,7 +142,7 @@ def worker_call(task: dict, timeout: float = 300.0) -> dict:
 
     worker 中途死了会自动重启并重试一次——显卡掉线/进程被杀后不该让用户看到报错。
     """
-    with _worker_lock:   # 串行：worker 一次只处理一个任务，避免 GPU 抢显存 OOM
+    with _worker_lock:  # 串行：worker 一次只处理一个任务，避免 GPU 抢显存 OOM
         for attempt in (1, 2):
             proc = _get_worker()
             task = dict(task, id=next(_task_id))
@@ -151,7 +156,7 @@ def worker_call(task: dict, timeout: float = 300.0) -> dict:
             except (BrokenPipeError, ValueError, OSError) as e:
                 if attempt == 1:
                     stop_worker()
-                    _ = _get_worker()   # 重启后重试一轮
+                    _ = _get_worker()  # 重启后重试一轮
                     continue
                 raise RvcError(f"RVC worker 通信失败: {e}")
             if not res.get("ok"):
@@ -164,9 +169,12 @@ def worker_status() -> dict:
     """常驻 worker 的健康状态（给 /api/offlinevc/status 之类的诊断用）。"""
     proc = _worker
     alive = proc is not None and proc.poll() is None
-    return {"enabled": USE_WORKER, "alive": alive,
-            "pid": (proc.pid if alive else None),
-            "log": str(_WORKER_LOG)}
+    return {
+        "enabled": USE_WORKER,
+        "alive": alive,
+        "pid": (proc.pid if alive else None),
+        "log": str(_WORKER_LOG),
+    }
 
 
 def rvc_warmup(voice: str) -> dict:
@@ -177,8 +185,7 @@ def rvc_warmup(voice: str) -> dict:
     if not USE_WORKER:
         raise RvcError("VM_RVC_WORKER=0 时无 worker，没法预热")
     pth, index = resolve_model(voice)
-    return worker_call({"cmd": "warmup", "pth": str(pth), "index": str(index or "")},
-                       timeout=300)
+    return worker_call({"cmd": "warmup", "pth": str(pth), "index": str(index or "")}, timeout=300)
 
 
 def rvc_convert(wav: Path, voice: str, pitch: int = 0, index_rate: float = 0.5) -> Path:
@@ -198,29 +205,57 @@ def rvc_convert(wav: Path, voice: str, pitch: int = 0, index_rate: float = 0.5) 
     out = OUTPUTS_DIR / f"{src.stem}_{voice}.wav"
     if USE_WORKER:
         try:
-            worker_call({"cmd": "convert", "pth": str(pth), "index": str(index or ""),
-                         "input": str(src), "output": str(out),
-                         "pitch": pitch, "index_rate": index_rate}, timeout=900)
+            worker_call(
+                {
+                    "cmd": "convert",
+                    "pth": str(pth),
+                    "index": str(index or ""),
+                    "input": str(src),
+                    "output": str(out),
+                    "pitch": pitch,
+                    "index_rate": index_rate,
+                },
+                timeout=900,
+            )
             return out
         except RvcError as e:
             # worker 起不来（比如显存被占）就退回一次性链路，别让整条发送失败
             print(f"[RVC] worker 失败，退回一次性子进程: {e}")
-    cmd = [str(RVC_VENV_PY), str(INFER_PY),
-           "--pth", str(pth),
-           "--index", str(index) if index else "",
-           "--input", str(src), "--output", str(out),
-           "--pitch", str(pitch), "--index-rate", str(index_rate)]
+    cmd = [
+        str(RVC_VENV_PY),
+        str(INFER_PY),
+        "--pth",
+        str(pth),
+        "--index",
+        str(index) if index else "",
+        "--input",
+        str(src),
+        "--output",
+        str(out),
+        "--pitch",
+        str(pitch),
+        "--index-rate",
+        str(index_rate),
+    ]
     # cwd 必须是 RVC 根：offline_vc_infer 在 load_vc() 之前就 `from infer.audio import ...`
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
-                       encoding="utf-8", errors="replace", cwd=str(RVC_ROOT))
+    r = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=1800,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(RVC_ROOT),
+    )
     if r.returncode != 0 or not out.exists():
         tail = (r.stderr or r.stdout or "").strip().splitlines()[-3:]
         raise RvcError("RVC 换声失败: " + " | ".join(tail)[-400:])
     return out
 
 
-def rvc_convert_logged(wav: Path, voice: str, pitch: int = 0, index_rate: float = 0.5,
-                       log=print) -> Path:
+def rvc_convert_logged(
+    wav: Path, voice: str, pitch: int = 0, index_rate: float = 0.5, log=print
+) -> Path:
     """带进度日志的版本（命令行/桌宠用）。"""
     pth, index = resolve_model(voice)
     log(f"[RVC] 换声 → {voice}（index={'有' if index else '无'}，rate={index_rate}）")
@@ -228,6 +263,7 @@ def rvc_convert_logged(wav: Path, voice: str, pitch: int = 0, index_rate: float 
     out = rvc_convert(wav, voice, pitch, index_rate)
     try:
         import soundfile as sf
+
         d, sr = sf.read(str(out))
         dur = len(d) / sr
     except Exception:

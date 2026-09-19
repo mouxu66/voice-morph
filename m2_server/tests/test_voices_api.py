@@ -4,6 +4,7 @@
 Windows 文件被 worker 占用时静默失败仍返回 ok:true，用户在 UI 看到"删除失败"
 却无任何错误原因。
 """
+
 import json
 import shutil
 import sys
@@ -18,9 +19,8 @@ import pytest  # noqa: E402
 
 pytest.importorskip("fastapi")
 
-from fastapi import HTTPException  # noqa: E402
-
 import voices_api  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 
 
 @pytest.fixture()
@@ -33,8 +33,7 @@ def voicebank(tmp_path, monkeypatch):
     rvc_root = tmp_path / "rvc"
     rvc_root.mkdir()
     monkeypatch.setattr(voices_api, "VOICEBANK", vb)
-    monkeypatch.setattr(voices_api, "cfg",
-                        SimpleNamespace(MEDIA_DIR=tmp_path, RVC_ROOT=rvc_root))
+    monkeypatch.setattr(voices_api, "cfg", SimpleNamespace(MEDIA_DIR=tmp_path, RVC_ROOT=rvc_root))
     # common.selected_voice() 读全局 config.MEDIA_DIR——一并指向 tmp，
     # 否则它读真实 voicebank 的 selected_voice.json，清悬空逻辑测不到
     monkeypatch.setattr(sys.modules["config"], "MEDIA_DIR", tmp_path)
@@ -48,10 +47,12 @@ def _make_voice(vb: Path, vid: str, *, selected: str | None = None):
     (d / "ft_model" / "model.safetensors").write_bytes(b"x" * 32)
     if selected is not None:
         (vb / "selected_voice.json").write_text(
-            json.dumps({"voice_id": selected}), encoding="utf-8")
+            json.dumps({"voice_id": selected}), encoding="utf-8"
+        )
 
 
 # ---------------- 正常删除 ----------------
+
 
 def test_delete_ok_removes_dir(voicebank):
     _make_voice(voicebank, "v1")
@@ -94,11 +95,11 @@ def test_delete_keeps_selected_of_other_voice(voicebank):
     _make_voice(voicebank, "v1")
     _make_voice(voicebank, "v2", selected="v2")
     asyncio_run(voices_api.delete_voice("v1"))
-    assert json.loads((voicebank / "selected_voice.json").read_text("utf-8")) == {
-        "voice_id": "v2"}
+    assert json.loads((voicebank / "selected_voice.json").read_text("utf-8")) == {"voice_id": "v2"}
 
 
 # ---------------- 异常路径 ----------------
+
 
 def test_delete_404_when_missing(voicebank):
     with pytest.raises(HTTPException) as ei:
@@ -126,9 +127,9 @@ def test_delete_500_reports_locked_files(voicebank, monkeypatch):
     with pytest.raises(HTTPException) as ei:
         asyncio_run(voices_api.delete_voice("v1"))
     assert ei.value.status_code == 500
-    assert calls["n"] == 3                       # 重试 3 次
+    assert calls["n"] == 3  # 重试 3 次
     assert "model.safetensors" in ei.value.detail  # 点名被锁文件
-    assert (voicebank / "v1").exists()           # 目录保留，不静默半删
+    assert (voicebank / "v1").exists()  # 目录保留，不静默半删
 
 
 def test_delete_recovers_after_transient_lock(voicebank, monkeypatch):
@@ -153,8 +154,10 @@ def test_delete_recovers_after_transient_lock(voicebank, monkeypatch):
 
 # ---------------- helpers ----------------
 
+
 def asyncio_run(coro):
     import asyncio
+
     return asyncio.run(coro)
 
 
@@ -164,23 +167,26 @@ async def _noop_await(*a, **kw):
 
 # ---------------- GET /voices 清单：来源标记与中文名 ----------------
 
+
 @pytest.fixture()
 def voices_client(tmp_path, monkeypatch):
     """VOICEBANK / RVC_ROOT 指向临时目录，与真实环境隔离。"""
     import config as cfg
-
     import server
+
     vb = tmp_path / "voicebank"
     vb.mkdir()
     monkeypatch.setattr(voices_api, "VOICEBANK", vb)
     monkeypatch.setattr(cfg, "RVC_ROOT", tmp_path / "rvc")
     from fastapi.testclient import TestClient
+
     return TestClient(server.app), vb
 
 
 def _write_ref(vb, voice_id, display=None):
     """写一个 0.1s 静音参考音频（标准库 wave，避免额外音频依赖）。"""
     import wave
+
     d = vb / voice_id
     d.mkdir(parents=True)
     with wave.open(str(d / "reference.wav"), "wb") as w:
@@ -195,15 +201,18 @@ def _write_ref(vb, voice_id, display=None):
 def _make_rvc_exp(exp, source=None, meta_display=None):
     """在临时 RVC_ROOT 下造实验目录（可带市场 source.json / 自训 meta.json）。"""
     import config as cfg
+
     log_dir = cfg.RVC_ROOT / "logs" / exp
     log_dir.mkdir(parents=True)
-    (log_dir / f"{exp}.pth").write_bytes(b"x")          # 让实验被判定为有产物
+    (log_dir / f"{exp}.pth").write_bytes(b"x")  # 让实验被判定为有产物
     if source is not None:
         (log_dir / "source.json").write_text(
-            f'{{"source": "{source}", "display_name": "卡通·懒羊羊"}}', encoding="utf-8")
+            f'{{"source": "{source}", "display_name": "卡通·懒羊羊"}}', encoding="utf-8"
+        )
     if meta_display is not None:
         (log_dir / "meta.json").write_text(
-            f'{{"display_name": "{meta_display}"}}', encoding="utf-8")
+            f'{{"display_name": "{meta_display}"}}', encoding="utf-8"
+        )
 
 
 def test_voices_empty(voices_client):
@@ -224,13 +233,13 @@ def test_voices_lists_voicebank_entry(voices_client):
 def test_voices_skips_dir_without_reference(voices_client):
     c, vb = voices_client
     _write_ref(vb, "has_ref")
-    (vb / "no_ref").mkdir()                              # 无 reference.wav 不算音色
+    (vb / "no_ref").mkdir()  # 无 reference.wav 不算音色
     assert [v["id"] for v in c.get("/api/voices").json()["voices"]] == ["has_ref"]
 
 
 def test_voices_display_name_falls_back_to_id(voices_client):
     c, vb = voices_client
-    _write_ref(vb, "plain_id")                           # 无 meta.json
+    _write_ref(vb, "plain_id")  # 无 meta.json
     assert c.get("/api/voices").json()["voices"][0]["display_name"] == "plain_id"
 
 
@@ -252,7 +261,7 @@ def test_voices_marks_self_trained_and_meta_name(voices_client):
     assert v["display_name"] == "袋鼠骑士 v2"
     assert v["source"] == ""
 
-    _make_rvc_exp("kangaroo_v2_40k")                     # 无任何标记
+    _make_rvc_exp("kangaroo_v2_40k")  # 无任何标记
     v2 = [x for x in c.get("/api/voices").json()["voices"] if x["id"] == "kangaroo_v2_40k"][0]
     assert v2["display_name"] == "kangaroo_v2_40k"
     assert v2["source"] == ""

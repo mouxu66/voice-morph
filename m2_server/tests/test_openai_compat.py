@@ -12,6 +12,7 @@
 真起 TTS 引擎代价太大（加载 1.7B 模型占显存，测试环境 VM_WARMUP=0 本就不预热），
 所以这里**打桩 synth_wav**，只验协议层；音频内容正确性由 tts_api 自己的测试覆盖。
 """
+
 import sys
 from pathlib import Path
 
@@ -24,7 +25,6 @@ import pytest  # noqa: E402
 pytest.importorskip("fastapi")
 
 import openai_compat as mod  # noqa: E402
-
 
 # ---------------- 路由前缀（回归锁）----------------
 
@@ -73,7 +73,7 @@ def test_exact_voice_id_wins(monkeypatch):
 
 
 def test_no_selected_voice_raises_actionable(monkeypatch):
-    """"default" 但本机没选音色 → 报错要告诉用户去哪选，而不是空指针。"""
+    """ "default" 但本机没选音色 → 报错要告诉用户去哪选，而不是空指针。"""
     _stub_voices(monkeypatch, ["kangaroo"], selected="")
     with pytest.raises(ValueError) as e:
         mod._resolve_voice("default")
@@ -146,8 +146,9 @@ def test_models_endpoint_shape():
 
 def test_speech_empty_input_400_openai_shape(monkeypatch):
     _stub_voices(monkeypatch, ["kangaroo"], selected="kangaroo")
-    r = _client().post("/v1/audio/speech",
-                       json={"model": "tts-1", "input": "   ", "voice": "default"})
+    r = _client().post(
+        "/v1/audio/speech", json={"model": "tts-1", "input": "   ", "voice": "default"}
+    )
     assert r.status_code == 400
     err = r.json()["error"]
     assert set(err) >= {"message", "type", "code"}
@@ -156,8 +157,9 @@ def test_speech_empty_input_400_openai_shape(monkeypatch):
 
 def test_speech_bad_voice_400_lists_ids(monkeypatch):
     _stub_voices(monkeypatch, ["kangaroo"], selected="kangaroo")
-    r = _client().post("/v1/audio/speech",
-                       json={"input": "你好", "voice": "alloy", "response_format": "wav"})
+    r = _client().post(
+        "/v1/audio/speech", json={"input": "你好", "voice": "alloy", "response_format": "wav"}
+    )
     assert r.status_code == 400
     assert r.json()["error"]["code"] == "invalid_voice"
 
@@ -171,8 +173,9 @@ def test_speech_bad_format_400_not_500(monkeypatch):
     response_format 写错的人去查 voice（首版实测就是这个毛病）。
     """
     _stub_voices(monkeypatch, ["kangaroo"], selected="kangaroo")
-    r = _client().post("/v1/audio/speech",
-                       json={"input": "你好", "voice": "default", "response_format": "xyz"})
+    r = _client().post(
+        "/v1/audio/speech", json={"input": "你好", "voice": "default", "response_format": "xyz"}
+    )
     assert r.status_code == 400
     assert r.json()["error"]["code"] == "invalid_format"
     assert "response_format" in r.json()["error"]["message"]
@@ -186,8 +189,9 @@ def test_bad_format_checked_before_synthesis(monkeypatch, tmp_path):
         raise AssertionError("格式非法时不应调用 synth_wav")
 
     monkeypatch.setattr("tts_api.synth_wav", should_not_run)
-    r = _client().post("/v1/audio/speech",
-                       json={"input": "你好", "voice": "default", "response_format": "xyz"})
+    r = _client().post(
+        "/v1/audio/speech", json={"input": "你好", "voice": "default", "response_format": "xyz"}
+    )
     assert r.status_code == 400
 
 
@@ -205,8 +209,10 @@ def test_speech_success_returns_audio_bytes(monkeypatch, tmp_path):
     fake_synth.calls = []
     monkeypatch.setattr("tts_api.synth_wav", fake_synth)
 
-    r = _client().post("/v1/audio/speech",
-                       json={"input": "你好世界", "voice": "kangaroo", "response_format": "wav"})
+    r = _client().post(
+        "/v1/audio/speech",
+        json={"input": "你好世界", "voice": "kangaroo", "response_format": "wav"},
+    )
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("audio/wav")
     assert r.content == b"\x00" * 44 + b"\x11\x22"
@@ -222,8 +228,9 @@ def test_synth_failure_becomes_openai_error(monkeypatch, tmp_path):
 
     monkeypatch.setattr("tts_api.synth_wav", boom)
 
-    r = _client().post("/v1/audio/speech",
-                       json={"input": "你好", "voice": "kangaroo", "response_format": "wav"})
+    r = _client().post(
+        "/v1/audio/speech", json={"input": "你好", "voice": "kangaroo", "response_format": "wav"}
+    )
     assert r.status_code == 500
     err = r.json()["error"]
     assert err["code"] == "synthesis_failed"

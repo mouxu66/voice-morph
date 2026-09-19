@@ -3,13 +3,14 @@
 原先这些逻辑在 rvc_live.py / server.py / offline_vc.py 各写一份，
 抽到此处统一，避免「找权重的规则改了、有的模块还在用旧规则」。
 """
+
 import json
+import logging
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
 import config as cfg
-import logging
-import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ def ensure_infer_pth(voice_id: str) -> Path | None:
     try:
         sys.path.insert(0, str(cfg.RVC_ROOT))
         os.environ["PYTHONPATH"] = str(cfg.RVC_ROOT)
-        os.environ["weight_root"] = str(cfg.RVC_ROOT / "assets" / "weights")
+        os.environ["WEIGHT_ROOT"] = str(cfg.RVC_ROOT / "assets" / "weights")
         from train.process_ckpt import extract_small_model
 
         (cfg.RVC_ROOT / "assets" / "weights").mkdir(parents=True, exist_ok=True)
@@ -159,13 +160,24 @@ def _find_pids_by_cmdline(pattern: str) -> list[int]:
         # PEP 686 计划 3.15 起默认开启）下解码失败使 stdout 变 None，
         # 随后 `.splitlines()` 抛 AttributeError，本函数会静默返回 []（找不到进程）。
         # 见 tests/test_qwen3_tts_shutdown.py 的文本级守卫。
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-             "Where-Object { $_.CommandLine -match '%s' } | "
-             "Select-Object -ExpandProperty ProcessId" % pattern],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
-        ).stdout or ""
+        out = (
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                    f"Where-Object {{ $_.CommandLine -match '{pattern}' }} | "
+                    "Select-Object -ExpandProperty ProcessId",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+            ).stdout
+            or ""
+        )
         return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
     except Exception as e:
         logger.warning("枚举进程失败(pattern=%r): %s", pattern, e)
@@ -177,7 +189,8 @@ def _kill_pids(pids: list[int], label: str = "") -> None:
     tag = f"[{label}] " if label else ""
     for pid in pids:
         try:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, timeout=30)
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=30
+            )
         except Exception as e:
             logger.debug("%s停止进程 %s 失败（可忽略）: %s", tag, pid, e)

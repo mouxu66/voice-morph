@@ -4,6 +4,7 @@
 它就会把「跑完了但结果是空的」报成成功。这里用注入的假 client 把每个
 断言路径锁死；真链路交给 tools/auto_pipeline.py 对着 8000 服务自己跑。
 """
+
 import importlib.util
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ ap = _load()
 
 
 # ---------------- 假 client ----------------
+
 
 class FakeClient:
     """按 path 精确匹配返回；未登记的 path 抛 AssertionError 便于发现漏配。"""
@@ -55,6 +57,7 @@ class FakeClient:
 
 # ---------------- list_materials ----------------
 
+
 def test_list_materials_all():
     c = FakeClient()
     c.gets["/raw_videos"] = {"videos": [{"name": "a.mp4"}, {"name": "b.wav"}]}
@@ -77,6 +80,7 @@ def test_list_materials_empty_dir_fails_later():
 
 # ---------------- wait_pipeline ----------------
 
+
 def _status_seq(statuses):
     it = iter(statuses)
 
@@ -87,11 +91,13 @@ def _status_seq(statuses):
 
 
 def test_wait_pipeline_done_returns_state():
-    poll = _status_seq([
-        {"status": "running", "percent": 10, "message": "提取音轨"},
-        {"status": "running", "percent": 50, "message": "去除背景音乐"},
-        {"status": "done", "clips": 73, "message": "流水线完成"},
-    ])
+    poll = _status_seq(
+        [
+            {"status": "running", "percent": 10, "message": "提取音轨"},
+            {"status": "running", "percent": 50, "message": "去除背景音乐"},
+            {"status": "done", "clips": 73, "message": "流水线完成"},
+        ]
+    )
     st = ap.wait_pipeline(poll, deadline_s=60)
     assert st["clips"] == 73
 
@@ -118,16 +124,19 @@ def test_wait_pipeline_timeout(monkeypatch):
         t["now"] += 999
 
     monkeypatch.setattr(ap.time, "sleep", fake_sleep)
-    poll = _status_seq([
-        {"status": "running", "percent": 1, "message": "x"},
-        {"status": "running", "percent": 2, "message": "x"},
-        {"status": "running", "percent": 3, "message": "x"},
-    ])
+    poll = _status_seq(
+        [
+            {"status": "running", "percent": 1, "message": "x"},
+            {"status": "running", "percent": 2, "message": "x"},
+            {"status": "running", "percent": 3, "message": "x"},
+        ]
+    )
     with pytest.raises(ap.PipelineError, match="超时"):
         ap.wait_pipeline(poll, deadline_s=60)
 
 
 # ---------------- stage_pipeline ----------------
+
 
 def test_stage_pipeline_zero_clips_fails():
     c = FakeClient()
@@ -149,12 +158,17 @@ def test_stage_pipeline_happy():
 
 # ---------------- stage_qc ----------------
 
+
 def test_stage_qc_accumulates_grades():
     c = FakeClient()
     c.posts["/clips/qc?file=a.mp4&spk=true&force=true"] = {
-        "ok": True, "grades": {"A": 10, "B": 5, "C": 2, "D": 1}}
+        "ok": True,
+        "grades": {"A": 10, "B": 5, "C": 2, "D": 1},
+    }
     c.posts["/clips/qc?file=b.mp4&spk=true&force=true"] = {
-        "ok": True, "grades": {"A": 0, "B": 0, "C": 0, "D": 9}}
+        "ok": True,
+        "grades": {"A": 0, "B": 0, "C": 0, "D": 9},
+    }
     grades = ap.stage_qc(c.post, ["a.mp4", "b.mp4"], with_spk=False)
     assert grades == {"A": 10, "B": 5, "C": 2, "D": 10}
 
@@ -163,7 +177,9 @@ def test_stage_qc_diarize_failure_degrades_not_abort():
     """说话人分离失败只降级（质检缺声纹维度），绝不中断无人值守流程。"""
     c = FakeClient()
     c.posts["/clips/qc?file=a.mp4&spk=true&force=true"] = {
-        "ok": True, "grades": {"A": 3, "B": 0, "C": 0, "D": 0}}
+        "ok": True,
+        "grades": {"A": 3, "B": 0, "C": 0, "D": 0},
+    }
 
     def failing_diarize(path, payload=None):
         if "diarize" in path:
@@ -178,12 +194,15 @@ def test_stage_qc_zero_usable_is_reported_not_swallowed():
     """A/B=0 的等级分布要原样返回，由上层断言拦截——不许悄悄放行。"""
     c = FakeClient()
     c.posts["/clips/qc?file=a.mp4&spk=true&force=true"] = {
-        "ok": True, "grades": {"A": 0, "B": 0, "C": 0, "D": 12}}
+        "ok": True,
+        "grades": {"A": 0, "B": 0, "C": 0, "D": 12},
+    }
     grades = ap.stage_qc(c.post, ["a.mp4"], with_spk=False)
     assert grades == {"A": 0, "B": 0, "C": 0, "D": 12}
 
 
 # ---------------- stage_voicebank ----------------
+
 
 def test_voicebank_form_fields():
     c = FakeClient()
@@ -207,6 +226,7 @@ def test_voicebank_zero_picked_fails():
 
 # ---------------- stage_tts_corpus ----------------
 
+
 def test_tts_corpus_incomplete_fails():
     c = FakeClient()
     c.posts["/rvc/dataset/generate"] = {"ok": True, "started": True, "total": 20}
@@ -218,8 +238,7 @@ def test_tts_corpus_incomplete_fails():
 def test_tts_corpus_error_field_fails():
     c = FakeClient()
     c.posts["/rvc/dataset/generate"] = {"ok": True, "started": True, "total": 20}
-    c.gets["/rvc/dataset/status"] = {"running": False, "done": 0, "total": 20,
-                                     "error": "TTS 挂了"}
+    c.gets["/rvc/dataset/status"] = {"running": False, "done": 0, "total": 20, "error": "TTS 挂了"}
     with pytest.raises(ap.PipelineError, match="TTS 挂了"):
         ap.stage_tts_corpus(c.post, c.get, "kangaroo")
 
@@ -239,7 +258,10 @@ def test_tts_corpus_happy(monkeypatch):
     c.posts["/rvc/dataset/generate"] = {"ok": True, "started": True, "total": 20}
     c.gets["/rvc/dataset/status"] = {"running": False, "done": 20, "total": 20}
     c.posts["/rvc/dataset/export?voice_id=kangaroo"] = {
-        "ok": True, "copied": 20, "dest": "D:/RVC/dataset_raw/rvc_dataset"}
+        "ok": True,
+        "copied": 20,
+        "dest": "D:/RVC/dataset_raw/rvc_dataset",
+    }
     monkeypatch.setattr(ap.time, "sleep", lambda s: None)
     r = ap.stage_tts_corpus(c.post, c.get, "kangaroo")
     assert r["exported"] == 20
@@ -247,11 +269,11 @@ def test_tts_corpus_happy(monkeypatch):
 
 # ---------------- stage_train ----------------
 
+
 def test_train_fails_on_nonzero_rc():
     c = FakeClient()
     c.posts["/ft/train?voice_id=kangaroo&epochs=12"] = {"ok": True}
-    c.gets["/ft/train_status?voice_id=kangaroo"] = {
-        "running": False, "rc": 3, "error": "CUDA OOM"}
+    c.gets["/ft/train_status?voice_id=kangaroo"] = {"running": False, "rc": 3, "error": "CUDA OOM"}
     with pytest.raises(ap.PipelineError, match="rc=3"):
         ap.stage_train(c.get, c.post, "kangaroo", 12)
 
@@ -273,6 +295,7 @@ def test_train_not_started_fails():
 
 # ---------------- stage_export_real_clips ----------------
 
+
 class FakeCfg:
     """替换 ap.cfg：MEDIA_DIR 指向 tmp_path，RVC_EXPORT_DIR 指向其子目录。"""
 
@@ -290,12 +313,14 @@ def test_export_real_clips_copies_ab_only(tmp_path, monkeypatch):
     for stem in ("a_A", "a_D", "a_none"):
         (clips / f"{stem}.wav").write_bytes(b"RIFF")
     c = FakeClient()
-    c.gets["/clips"] = {"clips": [
-        {"name": "a_A", "qc": {"grade": "A", "score": 90}},
-        {"name": "a_D", "qc": {"grade": "D", "score": 10}},
-        {"name": "a_none", "qc": {}},
-        {"name": "a_ghost", "qc": {"grade": "A", "score": 95}},
-    ]}
+    c.gets["/clips"] = {
+        "clips": [
+            {"name": "a_A", "qc": {"grade": "A", "score": 90}},
+            {"name": "a_D", "qc": {"grade": "D", "score": 10}},
+            {"name": "a_none", "qc": {}},
+            {"name": "a_ghost", "qc": {"grade": "A", "score": 95}},
+        ]
+    }
     r = ap.stage_export_real_clips(c.get, "kangaroo")
     assert r["exported"] == 1
     dest = fake.RVC_EXPORT_DIR.parent / "kangaroo"
@@ -318,10 +343,19 @@ def test_run_skip_tts_route_exports_real_clips(tmp_path, monkeypatch):
     (tmp_path / "media" / "clips").mkdir(parents=True)
     (tmp_path / "media" / "clips" / "x_A.wav").write_bytes(b"RIFF")
     c.gets["/clips"] = {"clips": [{"name": "x_A", "qc": {"grade": "A"}}]}
-    args = {"file": ["a.mp4"], "voice_id": "auto_voice", "target_s": 30.0,
-            "enhance": False, "with_spk": True, "skip_tts_corpus": True,
-            "exp_name": "", "train": False, "epochs": 12, "dry_run": False,
-            "timeout_s": 60}
+    args = {
+        "file": ["a.mp4"],
+        "voice_id": "auto_voice",
+        "target_s": 30.0,
+        "enhance": False,
+        "with_spk": True,
+        "skip_tts_corpus": True,
+        "exp_name": "",
+        "train": False,
+        "epochs": 12,
+        "dry_run": False,
+        "timeout_s": 60,
+    }
     report = ap.run_pipeline_tool(args, c.get, c.post, c.post_form)
     assert report["stages"]["export_real"]["exported"] == 1
     assert "tts_corpus" not in report["stages"]
@@ -334,7 +368,9 @@ def _happy_client():
     c.posts["/pipeline/run"] = {"ok": True, "started": True}
     c.gets["/pipeline/status"] = {"status": "done", "clips": 73, "message": "ok"}
     c.posts["/clips/qc?file=a.mp4&spk=true&force=true"] = {
-        "ok": True, "grades": {"A": 30, "B": 20, "C": 3, "D": 2}}
+        "ok": True,
+        "grades": {"A": 30, "B": 20, "C": 3, "D": 2},
+    }
     c.posts["/clips/diarize?file=a.mp4"] = {"ok": True}
     return c
 
@@ -347,28 +383,48 @@ def test_run_dry_run_touches_nothing_but_raw_videos():
         seen.append(path)
         return c.post(path, payload)
 
-    args = {"file": None, "voice_id": "auto_voice", "target_s": 30.0,
-            "enhance": False, "with_spk": True, "skip_tts_corpus": False,
-            "exp_name": "", "train": False, "epochs": 12, "dry_run": True,
-            "timeout_s": 60}
+    args = {
+        "file": None,
+        "voice_id": "auto_voice",
+        "target_s": 30.0,
+        "enhance": False,
+        "with_spk": True,
+        "skip_tts_corpus": False,
+        "exp_name": "",
+        "train": False,
+        "epochs": 12,
+        "dry_run": True,
+        "timeout_s": 60,
+    }
     report = ap.run_pipeline_tool(args, c.get, spy_post, c.post_form)
     assert report["dry_run"] is True
-    assert seen == []          # 没有任何 POST
-    assert c.forms == []       # 没有建库
+    assert seen == []  # 没有任何 POST
+    assert c.forms == []  # 没有建库
 
 
 def test_run_aborts_before_voicebank_when_qc_zero():
     """A/B=0 → 建库阶段必须不被执行（宁可不产出，不可产出垃圾参考音）。"""
     c = _happy_client()
     c.posts["/clips/qc?file=a.mp4&spk=true&force=true"] = {
-        "ok": True, "grades": {"A": 0, "B": 0, "C": 0, "D": 55}}
-    args = {"file": ["a.mp4"], "voice_id": "auto_voice", "target_s": 30.0,
-            "enhance": False, "with_spk": True, "skip_tts_corpus": True,
-            "exp_name": "exp", "train": False, "epochs": 12, "dry_run": False,
-            "timeout_s": 60}
+        "ok": True,
+        "grades": {"A": 0, "B": 0, "C": 0, "D": 55},
+    }
+    args = {
+        "file": ["a.mp4"],
+        "voice_id": "auto_voice",
+        "target_s": 30.0,
+        "enhance": False,
+        "with_spk": True,
+        "skip_tts_corpus": True,
+        "exp_name": "exp",
+        "train": False,
+        "epochs": 12,
+        "dry_run": False,
+        "timeout_s": 60,
+    }
     with pytest.raises(ap.PipelineError, match="A/B=0"):
         ap.run_pipeline_tool(args, c.get, c.post, c.post_form)
-    assert c.forms == []          # 没走到建库
+    assert c.forms == []  # 没走到建库
     assert all("voicebank" not in p for p, _ in c.post_calls)
 
 
@@ -376,12 +432,20 @@ def test_run_happy_tts_route():
     c = _happy_client()
     c.posts["/rvc/dataset/generate"] = {"ok": True, "started": True, "total": 20}
     c.gets["/rvc/dataset/status"] = {"running": False, "done": 20, "total": 20}
-    c.posts["/rvc/dataset/export?voice_id=auto_voice"] = {
-        "ok": True, "copied": 20, "dest": "x"}
-    args = {"file": ["a.mp4"], "voice_id": "auto_voice", "target_s": 30.0,
-            "enhance": False, "with_spk": True, "skip_tts_corpus": False,
-            "exp_name": "", "train": False, "epochs": 12, "dry_run": False,
-            "timeout_s": 60}
+    c.posts["/rvc/dataset/export?voice_id=auto_voice"] = {"ok": True, "copied": 20, "dest": "x"}
+    args = {
+        "file": ["a.mp4"],
+        "voice_id": "auto_voice",
+        "target_s": 30.0,
+        "enhance": False,
+        "with_spk": True,
+        "skip_tts_corpus": False,
+        "exp_name": "",
+        "train": False,
+        "epochs": 12,
+        "dry_run": False,
+        "timeout_s": 60,
+    }
     report = ap.run_pipeline_tool(args, c.get, c.post, c.post_form)
     assert set(report["stages"]) == {"pipeline", "qc", "voicebank", "tts_corpus"}
 
@@ -390,13 +454,21 @@ def test_run_train_flag_invokes_ft_train():
     c = _happy_client()
     c.posts["/rvc/dataset/generate"] = {"ok": True, "started": True, "total": 20}
     c.gets["/rvc/dataset/status"] = {"running": False, "done": 20, "total": 20}
-    c.posts["/rvc/dataset/export?voice_id=auto_voice"] = {
-        "ok": True, "copied": 20, "dest": "x"}
+    c.posts["/rvc/dataset/export?voice_id=auto_voice"] = {"ok": True, "copied": 20, "dest": "x"}
     c.posts["/ft/train?voice_id=auto_voice&epochs=12"] = {"ok": True}
     c.gets["/ft/train_status?voice_id=auto_voice"] = {"running": False, "rc": 0}
-    args = {"file": ["a.mp4"], "voice_id": "auto_voice", "target_s": 30.0,
-            "enhance": False, "with_spk": True, "skip_tts_corpus": False,
-            "exp_name": "", "train": True, "epochs": 12, "dry_run": False,
-            "timeout_s": 60}
+    args = {
+        "file": ["a.mp4"],
+        "voice_id": "auto_voice",
+        "target_s": 30.0,
+        "enhance": False,
+        "with_spk": True,
+        "skip_tts_corpus": False,
+        "exp_name": "",
+        "train": True,
+        "epochs": 12,
+        "dry_run": False,
+        "timeout_s": 60,
+    }
     report = ap.run_pipeline_tool(args, c.get, c.post, c.post_form)
     assert report["stages"]["train"]["done"] is True

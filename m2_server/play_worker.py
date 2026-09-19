@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """微信播放常驻 worker（延迟优化，2026-09-10）。
 
 为什么需要
@@ -20,6 +19,7 @@
     {"type":"error","msg":"..."}          失败
 stdin：每行一个 JSON 命令 `{"wav":"/abs/path","lead":0.8,"tail":0.3}`，EOF 退出。
 """
+
 import json
 import sys
 
@@ -58,7 +58,7 @@ def main():
     if idx is None:
         _emit({"type": "error", "msg": f"device_not_found:{KEYWORD}"})
         return
-    _emit({"type": "ready"})          # import 已付过，通知父进程
+    _emit({"type": "ready"})  # import 已付过，通知父进程
     for raw in sys.stdin:
         raw = raw.strip()
         if not raw:

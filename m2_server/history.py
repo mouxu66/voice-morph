@@ -9,6 +9,8 @@
 可按收藏/标签筛选；支持批量删除与批量打包导出 zip。老记录无这两个字段时
 读出来补默认值，不需要迁移历史文件。
 """
+
+import contextlib
 import json
 import os
 import re
@@ -21,16 +23,23 @@ import config as cfg
 
 HISTORY_FILE = cfg.OUTPUTS_DIR / "history.jsonl"
 _MAX_ITEMS = int(os.environ.get("VM_HISTORY_MAX", "2000"))
-_MAX_TAGS = 8                       # 单条记录标签上限（防滥用）
+_MAX_TAGS = 8  # 单条记录标签上限（防滥用）
 _MAX_TAG_LEN = 16
-_TAG_RE = re.compile(r"^[^\s,，;；/\\]{1,%d}$" % _MAX_TAG_LEN)
+_TAG_RE = re.compile(rf"^[^\s,，;；/\\]{{1,{_MAX_TAG_LEN}}}$")
 _KINDS = {"tts", "offlinevc", "audiobook", "fx", "trial", "mine", "seedvc"}
 
 _lock = threading.Lock()
 
 
-def register(kind: str, voice_id: str, wav: str, url: str, duration_s: float,
-            input_text: str = "", params: dict | None = None) -> str:
+def register(
+    kind: str,
+    voice_id: str,
+    wav: str,
+    url: str,
+    duration_s: float,
+    input_text: str = "",
+    params: dict | None = None,
+) -> str:
     """登记一条产出历史，返回记录 id。写失败返回空串（不抛异常，不阻断主流程）。"""
     item_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
     rec = {
@@ -48,9 +57,8 @@ def register(kind: str, voice_id: str, wav: str, url: str, duration_s: float,
     }
     try:
         HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with _lock:
-            with open(HISTORY_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        with _lock, open(HISTORY_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception as e:
         print(f"[history] 登记失败（不影响主流程）: {e}", flush=True)
         return ""
@@ -70,7 +78,7 @@ def _normalize(rec: dict) -> dict:
 def clean_tags(tags) -> list[str]:
     """清洗标签：去空白/去重/过滤非法与超长（>16 字拒收），最多 _MAX_TAGS 个。"""
     out: list[str] = []
-    for t in (tags or []):
+    for t in tags or []:
         t = str(t).strip()
         if not t or not _TAG_RE.match(t) or t in out:
             continue
@@ -102,16 +110,21 @@ def _read_all() -> list[dict]:
 
 def _write_all(items: list[dict]) -> None:
     """把（倒序的）记录列表还原为正序写回。"""
-    with _lock:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            for r in reversed(items):
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    with _lock, open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        for r in reversed(items):
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
-def query(kind: str | None = None, voice_id: str | None = None,
-          from_ts: int | None = None, to_ts: int | None = None,
-          limit: int = 50, offset: int = 0,
-          starred: bool | None = None, tag: str | None = None) -> dict:
+def query(
+    kind: str | None = None,
+    voice_id: str | None = None,
+    from_ts: int | None = None,
+    to_ts: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    starred: bool | None = None,
+    tag: str | None = None,
+) -> dict:
     """按 kind / voice_id / 时间范围 / 收藏 / 标签过滤，ts 倒序分页返回。"""
     limit = max(1, min(int(limit), 100))
     offset = max(0, int(offset))
@@ -132,22 +145,21 @@ def query(kind: str | None = None, voice_id: str | None = None,
             continue
         out.append(r)
     total = len(out)
-    return {"items": out[offset:offset + limit], "total": total,
-            "limit": limit, "offset": offset}
+    return {"items": out[offset : offset + limit], "total": total, "limit": limit, "offset": offset}
 
 
 def all_tags() -> list[dict]:
     """全部标签及其使用次数（次数降序、同名升序），供前端渲染筛选 chips。"""
     counter: dict[str, int] = {}
     for r in _read_all():
-        for t in (r.get("tags") or []):
+        for t in r.get("tags") or []:
             counter[t] = counter.get(t, 0) + 1
-    return [{"tag": t, "count": c}
-            for t, c in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))]
+    return [
+        {"tag": t, "count": c} for t, c in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
 
 
-def set_meta(item_id: str, starred: bool | None = None,
-             tags: list | None = None) -> dict:
+def set_meta(item_id: str, starred: bool | None = None, tags: list | None = None) -> dict:
     """改单条记录的收藏 / 标签（None 表示不改）。返回更新后的记录；不存在返回 {}。"""
     items = _read_all()
     hit = None
@@ -221,7 +233,7 @@ def export_zip(item_ids: list[str]) -> tuple[bytes, list[str], list[str]]:
     import io
     import zipfile
 
-    wanted = {i for i in (item_ids or [])}
+    wanted = set(item_ids or [])
     picked, missing = [], []
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -256,11 +268,7 @@ def _trim() -> None:
         wav = r.get("wav") or ""
         if wav:
             p = cfg.OUTPUTS_DIR / Path(wav).name
-            try:
+            with contextlib.suppress(Exception):
                 p.unlink(missing_ok=True)
-            except Exception:
-                pass
-    try:
+    with contextlib.suppress(Exception):
         _write_all(keep)  # keep 已倒序，_write_all 内部还原正序
-    except Exception:
-        pass

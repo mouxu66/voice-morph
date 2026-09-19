@@ -4,6 +4,7 @@
 换台词必须换这个源句音频 —— 本工具就是干这个的。真跑 TTS 太慢且需 GPU，
 这里只验：重采样到 16k、峰值归一、静音保护、备份 + 原子替换。
 """
+
 import importlib.util
 import sys
 from pathlib import Path
@@ -52,7 +53,16 @@ def test_silent_synth_does_not_overwrite(tmp_path, monkeypatch):
     monkeypatch.setattr(mps, "DEFAULT_OUT", src)
     monkeypatch.setattr(
         "sys.argv",
-        ["make_preview_source.py", "--text", "你好", "--ref", str(src), "--out", str(src), "--no-backup"],
+        [
+            "make_preview_source.py",
+            "--text",
+            "你好",
+            "--ref",
+            str(src),
+            "--out",
+            str(src),
+            "--no-backup",
+        ],
     )
     assert mps.main() == 1
     assert src.read_bytes() == b"ORIGINAL"
@@ -64,8 +74,15 @@ def test_backup_and_atomic_replace(tmp_path, monkeypatch):
     monkeypatch.setattr(mps, "synth", lambda text, ref: (_tone(24000), 24000))
     monkeypatch.setattr(
         "sys.argv",
-        ["make_preview_source.py", "--text", "大家好，这是我的新声音，你觉得怎么样？",
-         "--ref", str(src), "--out", str(src)],
+        [
+            "make_preview_source.py",
+            "--text",
+            "大家好，这是我的新声音，你觉得怎么样？",
+            "--ref",
+            str(src),
+            "--out",
+            str(src),
+        ],
     )
     assert mps.main() == 0
     assert (tmp_path / "preview_source.wav.orig.bak").read_bytes() == b"OLD"

@@ -78,6 +78,7 @@ def ffmpeg_path() -> str:
     """
     if not bare_runner():
         from common import find_ffmpeg
+
         exe = find_ffmpeg()
         if Path(exe).exists() or shutil.which(exe):
             return exe

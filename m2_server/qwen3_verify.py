@@ -1,4 +1,5 @@
 """验证 Qwen3-TTS worker：直接拉起服务 -> /health -> /tts 生成袋鼠音。"""
+
 import json
 import os
 import subprocess
@@ -29,11 +30,11 @@ if not ready:
     raise SystemExit(1)
 
 data = json.dumps(
-    {"text": "大家好，我是袋鼠，现在变声工坊的语音已经换成我啦。",
-     "text_language": "zh"}).encode()
+    {"text": "大家好，我是袋鼠，现在变声工坊的语音已经换成我啦。", "text_language": "zh"}
+).encode()
 req = urllib.request.Request(
-    "http://127.0.0.1:8001/tts", data=data,
-    headers={"Content-Type": "application/json"})
+    "http://127.0.0.1:8001/tts", data=data, headers={"Content-Type": "application/json"}
+)
 wav = urllib.request.urlopen(req, timeout=180).read()
 with open(OUT, "wb") as f:
     f.write(wav)

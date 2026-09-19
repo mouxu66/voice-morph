@@ -13,6 +13,7 @@ md5 就变了，里面多出一条 `tts_x.wav / 1.0s / "微信当前没在运行
 是因为"忘了加隔离"的代价由用户承担（真实历史被污染），autouse 让遗忘不可能发生。
 需要真实路径的用例自己 monkeypatch 回来即可。
 """
+
 import sys
 from pathlib import Path
 
@@ -33,7 +34,7 @@ def _isolate_outputs(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "OUTPUTS_DIR", tmp_path)
     try:
         import wechat_voice as wv
-    except Exception:      # fastapi 等依赖缺失时（用例会自己 importorskip）放行
+    except Exception:  # fastapi 等依赖缺失时（用例会自己 importorskip）放行
         yield tmp_path
         return
     monkeypatch.setattr(wv, "HISTORY_FILE", tmp_path / "wechat_send_history.json")

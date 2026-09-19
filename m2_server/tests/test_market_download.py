@@ -3,6 +3,7 @@
 用本地 ThreadingHTTPServer 提供真实 HTTP 文件（含 Range/206 与慢速源），
 不 mock 网络层，保证续传语义（.part + Range 接续）被真实验证。
 """
+
 import hashlib
 import http.server
 import os
@@ -10,13 +11,12 @@ import threading
 import time
 
 import pytest
-
-from market_download import DownloadManager, MarketError, MAX_BYTES
+from market_download import MAX_BYTES, DownloadManager, MarketError
 
 # 假权重必须以 PyTorch 存档文件头开头（\x80\x02 = pickle 协议 2），
 # 否则过不了 _torch_header_ok 魔数校验（头部校验按设计拒随机字节当权重）。
 _PTH_PREFIX = b"\x80\x02"
-DATA = _PTH_PREFIX + os.urandom(1024 * 1024 - len(_PTH_PREFIX))     # 1MB 假权重
+DATA = _PTH_PREFIX + os.urandom(1024 * 1024 - len(_PTH_PREFIX))  # 1MB 假权重
 SHA = hashlib.sha256(DATA).hexdigest()
 MIRROR_DATA = _PTH_PREFIX + os.urandom(256 * 1024 - len(_PTH_PREFIX))  # 镜像假权重
 
@@ -26,10 +26,10 @@ class _Ctx:
 
     def __init__(self):
         self.files = {"/full.bin": DATA, "/mirror.bin": MIRROR_DATA}
-        self.ranges = []                  # 收到的 Range 头列表
+        self.ranges = []  # 收到的 Range 头列表
         self.requests = {"/fail_main.bin": 0}
-        self.active = 0                   # 当前并发处理中的请求数
-        self.peak = 0                     # 并发峰值（信号量限流断言用）
+        self.active = 0  # 当前并发处理中的请求数
+        self.peak = 0  # 并发峰值（信号量限流断言用）
         self.lock = threading.Lock()
 
 
@@ -37,7 +37,7 @@ class RangeHandler(http.server.BaseHTTPRequestHandler):
     ctx = _Ctx()
     slow_mode = False
 
-    def log_message(self, *a):            # 静默访问日志
+    def log_message(self, *a):  # 静默访问日志
         pass
 
     def _enter(self):
@@ -56,7 +56,7 @@ class RangeHandler(http.server.BaseHTTPRequestHandler):
             if not head_only and self.ctx.requests["/fail_main.bin"] in (1, 2):
                 self.send_error(500)
                 return
-            data = self.ctx.files["/full.bin"]      # 第 3 次起正常（数据同 full）
+            data = self.ctx.files["/full.bin"]  # 第 3 次起正常（数据同 full）
         else:
             data = self.ctx.files.get(path)
         if data is None:
@@ -86,7 +86,7 @@ class RangeHandler(http.server.BaseHTTPRequestHandler):
             for i in range(0, len(body), 5120):
                 if i:
                     time.sleep(0.02)
-                self.wfile.write(body[i:i + 5120])
+                self.wfile.write(body[i : i + 5120])
                 self.wfile.flush()
         else:
             self.wfile.write(body)
@@ -119,9 +119,11 @@ def server_url():
 
 @pytest.fixture()
 def mgr(tmp_path):
-    return DownloadManager(download_dir=tmp_path / "dl",
-                           state_file=tmp_path / "dl" / "downloads.json",
-                           allow_loopback=True)
+    return DownloadManager(
+        download_dir=tmp_path / "dl",
+        state_file=tmp_path / "dl" / "downloads.json",
+        allow_loopback=True,
+    )
 
 
 def _wait(mgr, timeout=20.0):
@@ -141,11 +143,20 @@ def _simulate_interrupted(mgr, name, data):
     part = mgr.download_dir / f"{name}.pth.part"
     part.write_bytes(data[:half])
     mgr._tasks[name] = {
-        "name": name, "filename": f"{name}.pth", "status": "interrupted",
-        "done": half, "total": len(data), "error": "",
-        "dest": str(mgr.download_dir / f"{name}.pth"), "part": str(part),
-        "started_at": "2026-01-01 00:00:00", "updated_at": "2026-01-01 00:00:00",
-        "url": "", "mirror_url": None, "sha256": None, "expected_size": None,
+        "name": name,
+        "filename": f"{name}.pth",
+        "status": "interrupted",
+        "done": half,
+        "total": len(data),
+        "error": "",
+        "dest": str(mgr.download_dir / f"{name}.pth"),
+        "part": str(part),
+        "started_at": "2026-01-01 00:00:00",
+        "updated_at": "2026-01-01 00:00:00",
+        "url": "",
+        "mirror_url": None,
+        "sha256": None,
+        "expected_size": None,
     }
     if name not in mgr._order:
         mgr._order.append(name)
@@ -175,8 +186,9 @@ def test_resume_uses_range_header(mgr, server_url):
     mgr.start("voice_r", f"{server_url}/full.bin")
     st = _wait(mgr)
     assert st["status"] == "done"
-    assert any(r.startswith(f"bytes={len(DATA) // 2}-") for r in RangeHandler.ctx.ranges), \
-        f"expected resume Range, got {RangeHandler.ctx.ranges}"
+    assert any(
+        r.startswith(f"bytes={len(DATA) // 2}-") for r in RangeHandler.ctx.ranges
+    ), f"expected resume Range, got {RangeHandler.ctx.ranges}"
     assert (mgr.download_dir / "voice_r.pth").read_bytes() == DATA
 
 
@@ -234,8 +246,9 @@ def test_cancel_removes_part(mgr, server_url):
 
 
 def test_progress_persisted_to_disk(mgr, server_url):
-    mgr.start("persist_me", f"{server_url}/mirror.bin",
-              sha256=hashlib.sha256(MIRROR_DATA).hexdigest())
+    mgr.start(
+        "persist_me", f"{server_url}/mirror.bin", sha256=hashlib.sha256(MIRROR_DATA).hexdigest()
+    )
     st = _wait(mgr)
     assert st["status"] == "done"
     saved = mgr.state_file.read_text("utf-8")
@@ -266,9 +279,12 @@ def iso_api(monkeypatch, tmp_path):
     导致 test_api_progress_empty / test_api_cancel_without_task 假红）。"""
     import market_api
     from market_install import InstallManager
-    m = DownloadManager(download_dir=tmp_path / "dl",
-                        state_file=tmp_path / "dl" / "downloads.json",
-                        allow_loopback=True)
+
+    m = DownloadManager(
+        download_dir=tmp_path / "dl",
+        state_file=tmp_path / "dl" / "downloads.json",
+        allow_loopback=True,
+    )
     ins = InstallManager(manager=m)
     monkeypatch.setattr(market_api, "get_manager", lambda: m)
     monkeypatch.setattr(market_api, "get_installer", lambda: ins)
@@ -277,8 +293,9 @@ def iso_api(monkeypatch, tmp_path):
 
 def test_api_progress_empty(iso_api):
     pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
     import server
+    from fastapi.testclient import TestClient
+
     resp = TestClient(server.app).get("/api/market/progress")
     assert resp.status_code == 200
     assert resp.json() == {"task": None}
@@ -286,26 +303,32 @@ def test_api_progress_empty(iso_api):
 
 def test_api_rejects_untrusted_domain(iso_api):
     pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
     import server
-    resp = TestClient(server.app).post("/api/market/download", json={
-        "name": "evil", "url": "https://evil.example.com/a.pth"})
+    from fastapi.testclient import TestClient
+
+    resp = TestClient(server.app).post(
+        "/api/market/download", json={"name": "evil", "url": "https://evil.example.com/a.pth"}
+    )
     assert resp.status_code == 409
     assert "白名单" in resp.json().get("detail", "")
 
 
 def test_api_cancel_without_task(iso_api):
     pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
     import server
+    from fastapi.testclient import TestClient
+
     resp = TestClient(server.app).post("/api/market/cancel")
     assert resp.status_code == 409
 
+
 # ---- 2026-09-06 懒羊羊下载失败修复：Xet CDN 子域 + 回退不污染主源 url ----
+
 
 def test_whitelist_allows_hf_subdomains():
     """HF 重定向到 Xet CDN（cas-bridge.xethub.hf.co 等 *.hf.co 子域）必须放行。"""
     from market_download import _validate_url
+
     _validate_url("https://cas-bridge.xethub.hf.co/xet-bridge-us/abc?Expires=1")
     _validate_url("https://cdn-lfs.hf.co/x/y")
     _validate_url("https://huggingface.co/a/b")
@@ -313,8 +336,9 @@ def test_whitelist_allows_hf_subdomains():
 
 def test_whitelist_rejects_lookalike_domains():
     """白名单子域匹配不得放过伪装域（evil-hf.co / hf.co.evil.com）。"""
-    from market_download import _validate_url
     import pytest
+    from market_download import _validate_url
+
     with pytest.raises(MarketError):
         _validate_url("https://evil-hf.co/a.pth")
     with pytest.raises(MarketError):
@@ -346,11 +370,15 @@ def test_mirror_failover_failed_state_keeps_primary_url(mgr, server_url):
 
 # ---- 2026-09-07 信号量文件级并发 ----
 
+
 def test_semaphore_limits_concurrent_downloads(server_url, tmp_path):
     """并发 4 个下载任务，信号量 max_concurrent=3：同时活跃下载 ≤3，全部完成。"""
-    mgr = DownloadManager(download_dir=tmp_path / "dl",
-                          state_file=tmp_path / "dl" / "downloads.json",
-                          allow_loopback=True, max_concurrent=3)
+    mgr = DownloadManager(
+        download_dir=tmp_path / "dl",
+        state_file=tmp_path / "dl" / "downloads.json",
+        allow_loopback=True,
+        max_concurrent=3,
+    )
     RangeHandler.slow_mode = True
     RangeHandler.ctx.active = 0
     RangeHandler.ctx.peak = 0
@@ -363,8 +391,9 @@ def test_semaphore_limits_concurrent_downloads(server_url, tmp_path):
         for i in range(4):
             st = mgr.task_status(f"con_{i}")
             assert st.get("status") == "done", f"con_{i}: {st}"
-        assert 1 < RangeHandler.ctx.peak <= 3, \
-            f"信号量应把并发限到 ≤3，实际峰值 {RangeHandler.ctx.peak}"
+        assert (
+            1 < RangeHandler.ctx.peak <= 3
+        ), f"信号量应把并发限到 ≤3，实际峰值 {RangeHandler.ctx.peak}"
     finally:
         RangeHandler.slow_mode = False
 
@@ -412,9 +441,12 @@ def test_semaphore_queue_no_task_lost(mgr, server_url):
     """信号量排队不丢任务：max_concurrent=1 串行完成 3 个任务，全部 done。"""
     RangeHandler.slow_mode = True
     try:
-        mgr = DownloadManager(download_dir=mgr.download_dir,
-                              state_file=mgr.state_file,
-                              allow_loopback=True, max_concurrent=1)
+        mgr = DownloadManager(
+            download_dir=mgr.download_dir,
+            state_file=mgr.state_file,
+            allow_loopback=True,
+            max_concurrent=1,
+        )
         for i in range(3):
             mgr.start(f"q_{i}", f"{server_url}/mirror.bin")
         deadline = time.time() + 90

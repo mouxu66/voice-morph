@@ -18,6 +18,7 @@
 本文件自己，规则就只得靠白名单绕开自己，那等于没有规则（跟 `test_check_secrets.py`
 同一个坑）。
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -57,11 +58,15 @@ def _local_tokens(ah) -> list[str]:
     path = ROOT / ah.MATERIAL_LIST_FILE
     if not path.exists():
         return []
-    return [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines()
-            if ln.strip() and not ln.strip().startswith("#")]
+    return [
+        ln.strip()
+        for ln in path.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
 
 
 # ---------------- _iter_hits：放行口径 ----------------
+
 
 def test_iter_hits_finds_hardcoded_credential(ah):
     line = _pv("password = ", '"', "hunter2xyz", '"')
@@ -69,19 +74,23 @@ def test_iter_hits_finds_hardcoded_credential(ah):
     assert hits, f"应命中却放行：{line}"
 
 
-@pytest.mark.parametrize("sample,why", [
-    ('password = "<你的密码>"', "尖括号占位符"),
-    ('api_key = "CHANGE_ME"', "约定俗成的占位符"),
-    ("password = os.environ['VM_PW']", "从环境变量读，不是字面量"),
-    ("token = process.env.API_TOKEN", "从环境变量读（TS）"),
-    ("", "空行"),
-])
+@pytest.mark.parametrize(
+    "sample,why",
+    [
+        ('password = "<你的密码>"', "尖括号占位符"),
+        ('api_key = "CHANGE_ME"', "约定俗成的占位符"),
+        ("password = os.environ['VM_PW']", "从环境变量读，不是字面量"),
+        ("token = process.env.API_TOKEN", "从环境变量读（TS）"),
+        ("", "空行"),
+    ],
+)
 def test_iter_hits_lets_placeholders_through(ah, sample, why):
     hits = list(ah._iter_hits(sample, ah.SECRET_RULES))
     assert not hits, f"应放行却命中（{why}）：{sample} → {hits}"
 
 
 # ---------------- _material_rules：分层与字面匹配 ----------------
+
 
 def test_builtin_material_rules_are_only_source_markers(ah):
     """内建规则里不得出现任何具体标题 —— 它是防泄漏的工具，自己不能是泄漏源。"""
@@ -135,6 +144,7 @@ def test_material_list_matches_literally_not_as_regex(ah, tmp_path):
 # 它会逼着人把许可名从合规文档里删掉。所以规则改为要求**文件名语境**。
 # 下面正反两组用例一起钉住这个边界：真文件名照样抓得住，纯平台名/许可名不再误报。
 
+
 def _mk(*parts: str) -> str:
     """把标记拼出来写进测试，别让本文件被自己的规则命中（同 `_pv()` 纪律）。"""
     return "".join(parts)
@@ -147,10 +157,10 @@ _BILI_MARK_LATIN = _mk("bili", "bili")
 @pytest.mark.parametrize(
     "filename",
     [
-        f"《某合集》_{_BILI_MARK}_{_BILI_MARK_LATIN}.mp4",              # 双标记 + 扩展名
-        f"某视频_{_BILI_MARK_LATIN}-20260827-ne4zlou33r.mp4",           # 标记后带平台 id 段
-        f"x_{_BILI_MARK}.flv",                                          # 只有中文标记 + flv
-        f"{_BILI_MARK_LATIN}_某视频.srt",                                # 字幕文件也算下载产物
+        f"《某合集》_{_BILI_MARK}_{_BILI_MARK_LATIN}.mp4",  # 双标记 + 扩展名
+        f"某视频_{_BILI_MARK_LATIN}-20260827-ne4zlou33r.mp4",  # 标记后带平台 id 段
+        f"x_{_BILI_MARK}.flv",  # 只有中文标记 + flv
+        f"{_BILI_MARK_LATIN}_某视频.srt",  # 字幕文件也算下载产物
     ],
 )
 def test_marker_rule_catches_download_filenames(ah, filename):
@@ -161,8 +171,8 @@ def test_marker_rule_catches_download_filenames(ah, filename):
 @pytest.mark.parametrize(
     "text",
     [
-        f"{_BILI_MARK_LATIN} Model Use License Agreement",   # IndexTTS2 的许可名，必须能写
-        f"{_BILI_MARK_LATIN} 团队 / {_BILI_MARK}",            # 归因 / 平台名
+        f"{_BILI_MARK_LATIN} Model Use License Agreement",  # IndexTTS2 的许可名，必须能写
+        f"{_BILI_MARK_LATIN} 团队 / {_BILI_MARK}",  # 归因 / 平台名
         f"参见 {_BILI_MARK} 官网与 www.{_BILI_MARK_LATIN}.com",
     ],
 )
@@ -181,9 +191,11 @@ def test_marker_rule_does_not_fire_on_own_regex_source(ah):
 
 # ---------------- _head_index / _tag：按内容判「HEAD 仍含」 ----------------
 
+
 def test_head_index_maps_fragment_to_head_paths(ah):
-    idx = ah._head_index({"keep.py": "s1", "clean.py": "s2"},
-                         {"s1": "a TOKEN-9 b", "s2": "干净"}, RULE)
+    idx = ah._head_index(
+        {"keep.py": "s1", "clean.py": "s2"}, {"s1": "a TOKEN-9 b", "s2": "干净"}, RULE
+    )
     assert idx == {"TOKEN-9": ["keep.py"]}
 
 
@@ -221,12 +233,13 @@ def test_old_sha_equality_judgement_would_have_misjudged(ah):
     """
     hit_path, hit_sha = "foo.py", "sha_old"
     head = {"bar.py": "sha_new"}
-    assert head.get(hit_path) != hit_sha                    # 老判据：→「仅历史」（错）
+    assert head.get(hit_path) != hit_sha  # 老判据：→「仅历史」（错）
     idx = ah._head_index(head, {"sha_new": "a TOKEN-9 b"}, RULE)
-    assert "HEAD 另处仍含" in ah._tag(hit_path, "TOKEN-9", idx)   # 新判据：→「仍含」（对）
+    assert "HEAD 另处仍含" in ah._tag(hit_path, "TOKEN-9", idx)  # 新判据：→「仍含」（对）
 
 
 # ---------------- _collect_hits：计数与显示模式无关 ----------------
+
 
 def test_hit_count_is_independent_of_verbose(ah):
     """`--verbose` 只该改变**展示**，不该改变**条数**。
@@ -243,7 +256,7 @@ def test_hit_count_is_independent_of_verbose(ah):
     brief = ah._collect_hits(contents, blobs, {}, sections, verbose=False)
     loud = ah._collect_hits(contents, blobs, {}, sections, verbose=True)
     assert set(brief) == set(loud), "去重键不该随 --verbose 变"
-    assert len(brief) == len(loud) == 2            # f1.py 一处（同行两次折叠）+ f2.py 一处
+    assert len(brief) == len(loud) == 2  # f1.py 一处（同行两次折叠）+ f2.py 一处
     key = ("x", "测试规则", "f1.py", "TOKEN-9")
     assert brief[key][0] != loud[key][0], "展示行确实应该不同（否则 verbose 没生效）"
 
@@ -261,17 +274,22 @@ def test_collect_hits_merges_same_fragment_across_blobs(ah):
 
 # ---------------- 非对称降级 ----------------
 
-@pytest.mark.parametrize("n_secret,n_head,expected", [
-    (0, 0, True),      # 只有"仅历史 + 非凭据" → 可以降级
-    (1, 0, False),     # 有凭据命中 → 不接受降级
-    (0, 3, False),     # 「HEAD 仍含」→ 不接受降级（改文件就能解决）
-    (1, 3, False),
-])
+
+@pytest.mark.parametrize(
+    "n_secret,n_head,expected",
+    [
+        (0, 0, True),  # 只有"仅历史 + 非凭据" → 可以降级
+        (1, 0, False),  # 有凭据命中 → 不接受降级
+        (0, 3, False),  # 「HEAD 仍含」→ 不接受降级（改文件就能解决）
+        (1, 3, False),
+    ],
+)
 def test_allow_history_only_is_asymmetric(ah, n_secret, n_head, expected):
     assert ah._waivable(n_secret, n_head) is expected
 
 
 # ---------------- 未提交改动提示 ----------------
+
 
 def test_dirty_note_silent_when_clean(ah):
     assert ah._dirty_note("") is None

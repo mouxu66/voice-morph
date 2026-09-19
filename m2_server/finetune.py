@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """音色微调工坊：录音上传 → 切片转写 → Qwen3-TTS 少样本微调 → 试听 → 入音色库。
 
 流程（对应前端四步）：
@@ -19,6 +18,7 @@
   - 全部落盘 status.json / train_run.log，服务重启可续读状态
   - 锚点参考音频自动选「最长切片」，保证 speaker 嵌入质量
 """
+
 import json
 import os
 import re
@@ -28,13 +28,12 @@ import threading
 import time
 from pathlib import Path
 
-import numpy as np
-import soundfile as sf
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-
 import config as cfg
 import ft_corpus_qc as ftq
-from common import is_valid_voice_id, find_ffmpeg
+import numpy as np
+import soundfile as sf
+from common import find_ffmpeg, is_valid_voice_id
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 router = APIRouter(prefix="/api")
 
@@ -51,10 +50,10 @@ WORKER = "http://127.0.0.1:8001"
 
 # 切句参数（24k 单声道）
 FRAME_MS = 20
-SILENCE_DB_OFF = -38.0     # 低于峰值这么多的帧视为静音（自适应后再放宽）
-MIN_SEG_S = 2.0            # 太短的句子丢弃
-MAX_SEG_S = 12.0           # 训练样本上限
-MIN_GAP_S = 0.35           # 静音多久算句间停顿
+SILENCE_DB_OFF = -38.0  # 低于峰值这么多的帧视为静音（自适应后再放宽）
+MIN_SEG_S = 2.0  # 太短的句子丢弃
+MAX_SEG_S = 12.0  # 训练样本上限
+MIN_GAP_S = 0.35  # 静音多久算句间停顿
 
 CREATE_NEW_CONSOLE = 0x00000010
 
@@ -90,15 +89,18 @@ def _set_status(voice_id: str, **kw):
 
 def _worker_post(path: str, payload: dict, timeout: int = 120):
     from qwen3_tts import post
+
     return json.loads(post(path, payload, timeout=timeout))
 
 
 def _worker_post_bytes(path: str, payload: dict, timeout: int = 300) -> bytes:
     from qwen3_tts import post
+
     return post(path, payload, timeout=timeout)
 
 
 # ---------------- 切句 ----------------
+
 
 def _split_on_silence(x: np.ndarray, sr: int) -> list[tuple[int, int]]:
     """按 RMS 静音切句；阈值取(噪声底+12dB, 固定-38dB)较松者，适配不同麦克风增益。"""
@@ -151,9 +153,22 @@ def _process(voice_id: str, raw_path: Path):
         wav24 = _vdir(voice_id) / "full_24k.wav"
         _set_status(voice_id, stage="processing", message="转码 24kHz 单声道…")
         subprocess.run(
-            [find_ffmpeg(), "-y", "-v", "error", "-i", str(raw_path),
-             "-ar", "24000", "-ac", "1", str(wav24)],
-            check=True, capture_output=True)
+            [
+                find_ffmpeg(),
+                "-y",
+                "-v",
+                "error",
+                "-i",
+                str(raw_path),
+                "-ar",
+                "24000",
+                "-ac",
+                "1",
+                str(wav24),
+            ],
+            check=True,
+            capture_output=True,
+        )
 
         _set_status(voice_id, message="静音切句…")
         x, sr = sf.read(str(wav24), dtype="float32")
@@ -175,8 +190,9 @@ def _process(voice_id: str, raw_path: Path):
             if r.get("error") or not (r.get("text") or "").strip():
                 continue
             rows.append({"audio": str(p).replace("\\", "/"), "text": r["text"].strip()})
-            transcripts.append({"name": p.name, "text": r["text"].strip(),
-                                "quality": r.get("quality")})
+            transcripts.append(
+                {"name": p.name, "text": r["text"].strip(), "quality": r.get("quality")}
+            )
             _set_status(voice_id, transcribed=done)
 
         if len(rows) < 8:
@@ -188,14 +204,20 @@ def _process(voice_id: str, raw_path: Path):
             r["ref_audio"] = anchor["audio"]
         raw_jsonl = _vdir(voice_id) / "train_raw.jsonl"
         raw_jsonl.write_text(
-            "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", "utf-8")
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", "utf-8"
+        )
 
         total_speech = sum(len(sf.read(r["audio"])[0]) / sr for r in rows)
-        _set_status(voice_id, stage="ready", message="处理完成，可开始训练",
-                    clips=len(rows), duration_s=round(dur_total, 1),
-                    speech_s=round(total_speech, 1),
-                    anchor=os.path.basename(anchor["audio"]),
-                    transcripts=transcripts[:8])
+        _set_status(
+            voice_id,
+            stage="ready",
+            message="处理完成，可开始训练",
+            clips=len(rows),
+            duration_s=round(dur_total, 1),
+            speech_s=round(total_speech, 1),
+            anchor=os.path.basename(anchor["audio"]),
+            transcripts=transcripts[:8],
+        )
     except Exception as exc:
         _set_status(voice_id, stage="error", error=str(exc))
 
@@ -235,6 +257,7 @@ def ft_status(voice_id: str):
 
 # ---------------- 训练 ----------------
 
+
 def _decode(line: bytes) -> str:
     """子进程输出优先 utf-8（PYTHONIOENCODING），cmd.exe 等外部输出回退 gbk。"""
     try:
@@ -248,8 +271,13 @@ def _tee_run(cmd: list[str], log_path: Path, cwd: Path | None = None) -> int:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
-    proc = subprocess.Popen(cmd, cwd=str(cwd) if cwd else None, env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
     with open(log_path, "a", encoding="utf-8") as f:
         for line in iter(proc.stdout.readline, b""):
             f.write(_decode(line))
@@ -263,14 +291,25 @@ def _find_train_pid(voice_id: str) -> int | None:
         # GBK），`text=True` 默认按 locale 解 —— 在 UTF-8 模式（PYTHONUTF8=1；
         # PEP 686 计划 3.15 起默认开启）下解码失败使 stdout 变 None，
         # 随后 `.split()` 抛 AttributeError。见 tests/test_qwen3_tts_shutdown.py 的守卫。
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-             "Where-Object { $_.CommandLine -match 'sft_8gb' } | "
-             "Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=15).stdout or ""
-        pids = [int(l) for l in out.split() if l.strip().isdigit()]
+        out = (
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                    "Where-Object { $_.CommandLine -match 'sft_8gb' } | "
+                    "Select-Object -ExpandProperty ProcessId",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+            ).stdout
+            or ""
+        )
+        pids = [int(pid_str) for pid_str in out.split() if pid_str.strip().isdigit()]
         return pids[0] if pids else None
     except Exception:
         return None
@@ -300,8 +339,13 @@ def _selfheal_training(voice_id: str) -> None:
         return
     ck = _latest_ckpt(voice_id)
     if ck:
-        _set_status(voice_id, stage="trained", message="训练完成，可试听/入库（自愈）",
-                    checkpoint=str(ck), error="")
+        _set_status(
+            voice_id,
+            stage="trained",
+            message="训练完成，可试听/入库（自愈）",
+            checkpoint=str(ck),
+            error="",
+        )
     else:
         _set_status(voice_id, stage="error", error="训练进程已退出且无 checkpoint（自愈）")
 
@@ -332,27 +376,48 @@ def _train_job(voice_id: str, epochs: int, init_model: str = ""):
     base_desc = f"续训自 {init_model}" if init_model else "base 全量"
     log.write_text(
         f"=== FT TRAIN {voice_id} {time.strftime('%F %T')} epochs={epochs} "
-        f"init={base_desc} ===\n", "utf-8")
+        f"init={base_desc} ===\n",
+        "utf-8",
+    )
     try:
         # 1) tokenizer 提 codes（阻塞，~30s）
         _set_status(voice_id, stage="training", message="提取音频 codes(tokenizer)…")
         rc = _tee_run(
-            [str(VENV_PY), "-u", str(PREPARE_PY), "--device", "cuda:0",
-             "--tokenizer_model_path", str(TOKENIZER_DIR),
-             "--input_jsonl", str(d / "train_raw.jsonl"),
-             "--output_jsonl", str(d / "train_codes.jsonl")],
-            log, cwd=str(FT_REPO))
+            [
+                str(VENV_PY),
+                "-u",
+                str(PREPARE_PY),
+                "--device",
+                "cuda:0",
+                "--tokenizer_model_path",
+                str(TOKENIZER_DIR),
+                "--input_jsonl",
+                str(d / "train_raw.jsonl"),
+                "--output_jsonl",
+                str(d / "train_codes.jsonl"),
+            ],
+            log,
+            cwd=str(FT_REPO),
+        )
         if rc != 0:
             raise RuntimeError(f"prepare_data 退出码 {rc}，详见 train_run.log")
 
         # 2) sft 训练（detached，训练器自己 tee 到同一日志）
         anchor = _status(voice_id).get("anchor", "")
         anchor_path = str(d / "clips" / anchor).replace("\\", "/") if anchor else ""
-        cmd = [str(VENV_PY), "-u", str(SFT_PY),
-               "--train_jsonl", str(d / "train_codes.jsonl"),
-               "--num_epochs", str(epochs),
-               "--speaker_name", voice_id,
-               "--output_model_path", str(ROOT / "tts_trial" / "ft_output" / voice_id)]
+        cmd = [
+            str(VENV_PY),
+            "-u",
+            str(SFT_PY),
+            "--train_jsonl",
+            str(d / "train_codes.jsonl"),
+            "--num_epochs",
+            str(epochs),
+            "--speaker_name",
+            voice_id,
+            "--output_model_path",
+            str(ROOT / "tts_trial" / "ft_output" / voice_id),
+        ]
         if anchor_path:
             cmd += ["--anchor_ref", anchor_path]
         if init_model:
@@ -361,8 +426,9 @@ def _train_job(voice_id: str, epochs: int, init_model: str = ""):
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUNBUFFERED"] = "1"
-        proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(
+            cmd, cwd=str(ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        )
         _TRAIN[voice_id] = {"pid": proc.pid, "running": True, "rc": None}
 
         def _pump():
@@ -370,6 +436,7 @@ def _train_job(voice_id: str, epochs: int, init_model: str = ""):
                 for line in iter(proc.stdout.readline, b""):
                     f.write(_decode(line))
                     f.flush()
+
         threading.Thread(target=_pump, daemon=True).start()
 
         def _wait():
@@ -379,11 +446,18 @@ def _train_job(voice_id: str, epochs: int, init_model: str = ""):
             if st.get("stage") == "training":
                 ck = _latest_ckpt(voice_id)
                 if rc == 0 and ck:
-                    _set_status(voice_id, stage="trained", message="训练完成，可试听/入库",
-                                checkpoint=str(ck), error="")
+                    _set_status(
+                        voice_id,
+                        stage="trained",
+                        message="训练完成，可试听/入库",
+                        checkpoint=str(ck),
+                        error="",
+                    )
                 else:
-                    _set_status(voice_id, stage="error",
-                                error=f"训练退出码 {rc}，详见 ft 状态页日志")
+                    _set_status(
+                        voice_id, stage="error", error=f"训练退出码 {rc}，详见 ft 状态页日志"
+                    )
+
         threading.Thread(target=_wait, daemon=True).start()
     except Exception as exc:
         _TRAIN[voice_id] = {"pid": None, "running": False, "rc": -1}
@@ -392,6 +466,7 @@ def _train_job(voice_id: str, epochs: int, init_model: str = ""):
 
 # ---------------- 语料体检与剔除（A3：训练前的语料质量闸门）----------------
 
+
 @router.get("/ft/corpus_qc")
 def ft_corpus_qc(voice_id: str, with_spk: bool = False, force: bool = False):
     """微调语料体检：逐条切片打分 → 等级分布 + 问题 Top + 可操作建议。
@@ -399,10 +474,10 @@ def ft_corpus_qc(voice_id: str, with_spk: bool = False, force: bool = False):
     结果落盘 media/ft/<id>/corpus_qc.json（切片数/mtime 指纹未变时直接返回缓存）。
     with_spk=true 额外算声纹一致性（能抓他人声与伴奏残留，但需加载 CAM++，较慢）。
     """
-    _vdir(voice_id)                      # 顺带校验 voice_id 合法性
+    _vdir(voice_id)  # 顺带校验 voice_id 合法性
     try:
         return ftq.build_report(voice_id, with_spk=with_spk, force=force)
-    except Exception as exc:             # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"语料体检失败：{exc}")
 
 
@@ -413,12 +488,17 @@ def ft_corpus_prune(voice_id: str, keep_grades: str = "A,B", min_score: int | No
     st = _status(voice_id)
     if st.get("stage") == "processing":
         raise HTTPException(400, "语料正在处理中，请等待处理完成")
-    training = (bool((_TRAIN.get(voice_id) or {}).get("running"))
-                or _find_train_pid(voice_id) is not None)
+    training = (
+        bool((_TRAIN.get(voice_id) or {}).get("running")) or _find_train_pid(voice_id) is not None
+    )
     grades = [g.strip().upper() for g in (keep_grades or "").split(",") if g.strip()]
     try:
-        res = ftq.prune(voice_id, keep_grades=grades or list(ftq.DEFAULT_KEEP_GRADES),
-                        min_score=min_score, training=training)
+        res = ftq.prune(
+            voice_id,
+            keep_grades=grades or list(ftq.DEFAULT_KEEP_GRADES),
+            min_score=min_score,
+            training=training,
+        )
     except RuntimeError as exc:
         raise HTTPException(400, str(exc))
     return {"ok": True, **res}
@@ -428,8 +508,9 @@ def ft_corpus_prune(voice_id: str, keep_grades: str = "A,B", min_score: int | No
 def ft_corpus_restore(voice_id: str):
     """恢复全部被剔除的切片与样本（clips_rejected → clips，并重选锚点）。"""
     _vdir(voice_id)
-    training = (bool((_TRAIN.get(voice_id) or {}).get("running"))
-                or _find_train_pid(voice_id) is not None)
+    training = (
+        bool((_TRAIN.get(voice_id) or {}).get("running")) or _find_train_pid(voice_id) is not None
+    )
     try:
         res = ftq.restore(voice_id, training=training)
     except RuntimeError as exc:
@@ -451,28 +532,39 @@ def ft_train(voice_id: str, epochs: int = 12, init_from: str = ""):
     # C2 续训：init_from = 已有音色的 voice_id（voicebank ft_model 或最新 ckpt）。
     # 校验放在开跑前，路径解析失败直接 400，不进后台线程。
     init_model = _resolve_init_from(init_from)
-    _set_status(voice_id, init_from=init_model)   # 独立落盘，不随体检失败丢失
+    _set_status(voice_id, init_from=init_model)  # 独立落盘，不随体检失败丢失
 
     # 训练前语料体检（A3）：不阻断训练，但把等级分布与警告落进 status 并返回，
     # 让"这批料里有多少脏样本"在开跑前就可见。体检失败一律静默。
     qc, qc_warning = None, ""
     try:
         rep = ftq.build_report(voice_id)
-        qc = {"count": rep.get("count"), "grades": rep.get("grades"),
-              "ok_count": rep.get("ok_count"), "avg_score": rep.get("avg_score"),
-              "updated_at": rep.get("updated_at")}
+        qc = {
+            "count": rep.get("count"),
+            "grades": rep.get("grades"),
+            "ok_count": rep.get("ok_count"),
+            "avg_score": rep.get("avg_score"),
+            "updated_at": rep.get("updated_at"),
+        }
         bad = int((rep.get("grades") or {}).get("D", 0))
         if bad:
-            qc_warning = (f"语料里有 {bad} 条不合格切片（D 级）会一起进训练集，"
-                          f"建议先做「语料体检」剔除再训练")
+            qc_warning = (
+                f"语料里有 {bad} 条不合格切片（D 级）会一起进训练集，"
+                f"建议先做「语料体检」剔除再训练"
+            )
         _set_status(voice_id, qc=qc, qc_warning=qc_warning)
     except Exception:  # noqa: BLE001 —— 体检失败绝不阻断训练
         pass
 
-    threading.Thread(target=_train_job, args=(voice_id, epochs, init_model),
-                     daemon=True).start()
-    return {"ok": True, "voice_id": voice_id, "epochs": epochs,
-            "init_from": init_model, "qc": qc, "qc_warning": qc_warning}
+    threading.Thread(target=_train_job, args=(voice_id, epochs, init_model), daemon=True).start()
+    return {
+        "ok": True,
+        "voice_id": voice_id,
+        "epochs": epochs,
+        "init_from": init_model,
+        "qc": qc,
+        "qc_warning": qc_warning,
+    }
 
 
 @router.get("/ft/train_status")
@@ -481,12 +573,19 @@ def ft_train_status(voice_id: str):
     st = _status(voice_id)
     tr = _TRAIN.get(voice_id) or {}
     log = d / "train_run.log"
-    res = {"stage": st.get("stage"), "message": st.get("message", ""),
-           "error": st.get("error", ""),
-           "running": bool(tr.get("running")) or _find_train_pid(voice_id) is not None,
-           "rc": tr.get("rc"), "checkpoint": st.get("checkpoint"),
-           "log_tail": [], "loss": None, "epoch": None, "epochs": None,
-           "vram_peak": None}
+    res = {
+        "stage": st.get("stage"),
+        "message": st.get("message", ""),
+        "error": st.get("error", ""),
+        "running": bool(tr.get("running")) or _find_train_pid(voice_id) is not None,
+        "rc": tr.get("rc"),
+        "checkpoint": st.get("checkpoint"),
+        "log_tail": [],
+        "loss": None,
+        "epoch": None,
+        "epochs": None,
+        "vram_peak": None,
+    }
     if not log.exists():
         return res
     lines = log.read_text("utf-8", errors="replace").splitlines()
@@ -494,17 +593,22 @@ def ft_train_status(voice_id: str):
     for ln in reversed(lines):
         m = re.search(r"\[epoch (\d+) step (\d+)\] loss=([\d.]+).*峰值显存=([\d.]+)", ln)
         if m:
-            res["epoch"], res["loss"], res["vram_peak"] = int(m.group(1)), float(m.group(3)), float(m.group(4))
+            res["epoch"], res["loss"], res["vram_peak"] = (
+                int(m.group(1)),
+                float(m.group(3)),
+                float(m.group(4)),
+            )
             break
     m = re.search(r"epochs=(\d+)", lines[0]) if lines else None
     if m:
         res["epochs"] = int(m.group(1))
-    if any("[DONE]" in l for l in lines[-5:]):
+    if any("[DONE]" in line_str for line_str in lines[-5:]):
         res["done"] = True
     return res
 
 
 # ---------------- 试听 / 入库 ----------------
+
 
 def _published_model(voice_id: str) -> Path:
     p = VOICEBANK / voice_id / "ft_model"
@@ -524,14 +628,16 @@ def ft_audition(voice_id: str, text: str):
     ck = _published_model(voice_id)
     ref = VOICEBANK / voice_id / "reference.wav"
     out = {}
-    wav = _worker_post_bytes("/tts_speaker", {
-        "model_dir": str(ck).replace("\\", "/"), "speaker": voice_id, "text": text})
+    wav = _worker_post_bytes(
+        "/tts_speaker", {"model_dir": str(ck).replace("\\", "/"), "speaker": voice_id, "text": text}
+    )
     p1 = OUTPUTS / f"ft_aud_{voice_id}_tuned.wav"
     p1.write_bytes(wav)
     out["tuned_url"] = f"/media/outputs/{p1.name}"
     if ref.exists():
-        wav2 = _worker_post_bytes("/tts", {
-            "ref_audio": str(ref).replace("\\", "/"), "ref_text": "", "text": text})
+        wav2 = _worker_post_bytes(
+            "/tts", {"ref_audio": str(ref).replace("\\", "/"), "ref_text": "", "text": text}
+        )
         p2 = OUTPUTS / f"ft_aud_{voice_id}_xvec.wav"
         p2.write_bytes(wav2)
         out["xvec_url"] = f"/media/outputs/{p2.name}"
@@ -562,10 +668,13 @@ def ft_publish(voice_id: str, display_name: str = ""):
     anchor = st.get("anchor")
     if anchor:
         shutil.copy2(_vdir(voice_id) / "clips" / anchor, vd / "reference.wav")
-    meta = {"display_name": display_name or f"{voice_id}（微调）",
-            "kind": "finetuned", "speaker": voice_id,
-            "model_dir": str(vd / "ft_model").replace("\\", "/"),
-            "published_at": time.strftime("%F %T")}
+    meta = {
+        "display_name": display_name or f"{voice_id}（微调）",
+        "kind": "finetuned",
+        "speaker": voice_id,
+        "model_dir": str(vd / "ft_model").replace("\\", "/"),
+        "published_at": time.strftime("%F %T"),
+    }
     (vd / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), "utf-8")
     _set_status(voice_id, stage="published", message="已入库")
     return {"ok": True, "voice_id": voice_id, "model_dir": meta["model_dir"]}

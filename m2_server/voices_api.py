@@ -2,20 +2,21 @@
 
 自 server.py 拆出（行为不变）；app 装配见 server.py。
 """
+
 import asyncio
+import contextlib
 import json
 import re
 import shutil
 from pathlib import Path
 
+import config as cfg
+from common import MAX_UPLOAD_BYTES, is_valid_voice_id, selected_voice
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
-
-import config as cfg
-from common import MAX_UPLOAD_BYTES, is_valid_voice_id, selected_voice
-from rvc_common import exp_display_name, exp_license, exp_snapshot, exp_source
 from runtime import API_PREFIX, CLIPS_DIR, RAW_DIR, VIDEO_SUFFIXES, VOICEBANK, clip_prefix
+from rvc_common import exp_display_name, exp_license, exp_snapshot, exp_source
 
 router = APIRouter(prefix=API_PREFIX)
 
@@ -47,6 +48,7 @@ def list_voices():
     前端音色页据此展示统一视图；RVC 模型音色额外携带 model_ready / trained_at 等字段。
     """
     from pydub import AudioSegment
+
     items: dict[str, dict] = {}
 
     # 来源 1：音色库档案
@@ -92,8 +94,10 @@ def list_voices():
                 **snap,
             }
 
-    voices = sorted(items.values(),
-                    key=lambda v: (not v.get("model_ready"), not v.get("has_reference", True), v["id"]))
+    voices = sorted(
+        items.values(),
+        key=lambda v: (not v.get("model_ready"), not v.get("has_reference", True), v["id"]),
+    )
     return {"voices": voices}
 
 
@@ -118,10 +122,8 @@ async def delete_voice(voice_id: str):
         source = "rvc_logs"
     # 删除的是当前选中音色 → 先清选中记录，避免 selected_voice.json 悬空引用
     if selected_voice() == voice_id:
-        try:
+        with contextlib.suppress(OSError):
             (VOICEBANK / "selected_voice.json").unlink()
-        except OSError:
-            pass
     # rmtree 是阻塞 IO，丢进线程池避免卡住事件循环；Windows 句柄释放有延迟，重试 3 次
     last_err: OSError | None = None
     for attempt in range(3):
@@ -144,6 +146,7 @@ def _voicebank_guidance() -> str:
     """建库自动优选拿不到切片时，结合已有质检结果给「原因 + 下一步建议」（P2-1）。"""
     try:
         import clip_qc
+
         items = clip_qc.load_all().values()
     except Exception:  # noqa: BLE001
         items = []
@@ -151,14 +154,19 @@ def _voicebank_guidance() -> str:
         return "没有可自动优选的切片：请先对素材运行流水线，再对它做一次切片质检。"
     total = len(items)
     from collections import Counter
+
     grades = Counter(it.get("grade") for it in items)
     ok = grades.get("A", 0) + grades.get("B", 0)
     if ok == 0:
-        return (f"质检无可用切片（共 {total} 条，D 级 {grades.get('D', 0)} 条，"
-                f"多为他人声/伴奏残留）：建议换一段目标说话人清晰的素材后重试。")
+        return (
+            f"质检无可用切片（共 {total} 条，D 级 {grades.get('D', 0)} 条，"
+            f"多为他人声/伴奏残留）：建议换一段目标说话人清晰的素材后重试。"
+        )
     dur = sum(it.get("duration_s", 0.0) for it in items if it.get("grade") in ("A", "B"))
-    return (f"质检可用切片仅 {ok}/{total} 条，总时长 {dur:.1f}s，不足以自动优选："
-            f"建议增加素材时长，或调低自动优选目标秒数后重试。")
+    return (
+        f"质检可用切片仅 {ok}/{total} 条，总时长 {dur:.1f}s，不足以自动优选："
+        f"建议增加素材时长，或调低自动优选目标秒数后重试。"
+    )
 
 
 @router.post("/voicebank")
@@ -178,7 +186,8 @@ async def create_voicebank(voice_id: str, request: Request):
     if not clips and auto:
         try:
             import clip_qc
-            clips = clip_qc.recommend(target_s)[0]   # 只要片段名，推荐总时长此处不用
+
+            clips = clip_qc.recommend(target_s)[0]  # 只要片段名，推荐总时长此处不用
         except Exception:  # noqa: BLE001
             clips = []
         if not clips:
@@ -201,13 +210,12 @@ async def create_voicebank(voice_id: str, request: Request):
             # P2-5：可选 DeepFilterNet 模型增强，进一步清掉切片残留噪声/BGM
             try:
                 from audio_enhance import enhance_file
+
                 tmp = out_dir / f"_enh_{name}.wav"
                 enhance_file(p, tmp)
                 seg = AudioSegment.from_wav(str(tmp))
-                try:
+                with contextlib.suppress(Exception):
                     tmp.unlink()
-                except Exception:
-                    pass
             except Exception:
                 seg = AudioSegment.from_wav(str(p))
         else:
@@ -229,21 +237,28 @@ async def create_voicebank(voice_id: str, request: Request):
             meta = {}
     if RAW_DIR.exists():
         sources = sorted(
-            f.name for f in RAW_DIR.iterdir()
+            f.name
+            for f in RAW_DIR.iterdir()
             if f.suffix.lower() in VIDEO_SUFFIXES
-            and any(name.startswith(clip_prefix(f.stem)) or name.startswith(f.stem[:12]) for name in clips)
+            and any(
+                name.startswith(clip_prefix(f.stem)) or name.startswith(f.stem[:12])
+                for name in clips
+            )
         )
         if sources:
             meta["sources"] = sources
-    try:
+    with contextlib.suppress(Exception):
         meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
     # 删除旧的音色向量缓存，下次自动重新提取
     (out_dir / "reference_se.npy").unlink(missing_ok=True)
 
-    return {"ok": True, "voice_id": voice_id, "duration_s": round(len(merged) / 1000, 1),
-            "auto": auto, "picked": len(clips)}
+    return {
+        "ok": True,
+        "voice_id": voice_id,
+        "duration_s": round(len(merged) / 1000, 1),
+        "auto": auto,
+        "picked": len(clips),
+    }
 
 
 # ---------------- 音色包导出 / 导入 ----------------
@@ -301,17 +316,23 @@ async def import_voice_pack(file: UploadFile = File(...), overwrite: bool = Fals
     import zipfile
 
     if (file.size or 0) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"音色包过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝导入")
+        raise HTTPException(
+            status_code=413, detail=f"音色包过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝导入"
+        )
     raw = await file.read()
     if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"音色包过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝导入")
+        raise HTTPException(
+            status_code=413, detail=f"音色包过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝导入"
+        )
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="不是有效的 zip 音色包")
     names = zf.namelist()
     if "voicepack/reference.wav" not in names or "voicepack/meta.json" not in names:
-        raise HTTPException(status_code=400, detail="缺少 voicepack/reference.wav 或 meta.json，不是音色包")
+        raise HTTPException(
+            status_code=400, detail="缺少 voicepack/reference.wav 或 meta.json，不是音色包"
+        )
     try:
         meta = json.loads(zf.read("voicepack/meta.json").decode("utf-8"))
     except Exception:
@@ -321,7 +342,9 @@ async def import_voice_pack(file: UploadFile = File(...), overwrite: bool = Fals
         raise HTTPException(status_code=400, detail="包内 voice_id 非法")
     dest = VOICEBANK / voice_id
     if dest.exists() and not overwrite:
-        raise HTTPException(status_code=409, detail=f"音色 [{voice_id}] 已存在；如需覆盖请勾选覆盖导入")
+        raise HTTPException(
+            status_code=409, detail=f"音色 [{voice_id}] 已存在；如需覆盖请勾选覆盖导入"
+        )
 
     await run_in_threadpool(lambda: shutil.rmtree(dest, True) if dest.exists() else None)
     # 包内 rvc/ 权重还原到 RVC 整合包 logs/<voice_id>/（实时变声直接可用）；整合包缺失则跳过并提示
@@ -330,12 +353,12 @@ async def import_voice_pack(file: UploadFile = File(...), overwrite: bool = Fals
     for name in names:
         if not name.startswith("voicepack/") or name.endswith("/"):
             continue
-        rel = name[len("voicepack/"):]
+        rel = name[len("voicepack/") :]
         # 逐项防路径穿越：档案文件白名单 + rvc/ 一层子目录
         is_rvc = bool(re.match(r"^rvc/[A-Za-z0-9_.-]+$", rel))
         if not is_rvc and rel not in _PACK_FILES:
             continue
-        target = (rvc_log_dir / rel[len("rvc/"):]) if is_rvc else (dest / rel)
+        target = (rvc_log_dir / rel[len("rvc/") :]) if is_rvc else (dest / rel)
         if is_rvc:
             if not cfg.RVC_ROOT.exists():
                 continue
@@ -353,6 +376,13 @@ async def import_voice_pack(file: UploadFile = File(...), overwrite: bool = Fals
         meta.pop("model_dir", None)
         meta["import_note"] = "微调权重未随包携带，已降级为声纹克隆"
     kind = str(meta.get("kind") or "clone")
-    (dest / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"ok": True, "voice_id": voice_id, "kind": kind, "rvc_files": rvc_restored,
-            "display_name": meta.get("display_name") or voice_id}
+    (dest / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return {
+        "ok": True,
+        "voice_id": voice_id,
+        "kind": kind,
+        "rvc_files": rvc_restored,
+        "display_name": meta.get("display_name") or voice_id,
+    }

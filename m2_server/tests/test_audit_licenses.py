@@ -11,6 +11,7 @@
 2. **双向严格**：漏登记失败，**残留条目也失败**（否则文档会慢慢攒一堆"看着像在维护"
    的死条目）。两个方向都要有用例。
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -90,9 +91,7 @@ def _notices(deps: list[str], obligations: list[str] | None = None) -> str:
 # 否则每条正向用例都会因为"缺载荷"而红 —— 那样测的就不是登记逻辑了。
 def _payload_files(fonts: list[str]) -> dict[str, str]:
     """构造 (载荷文件名 → 内容)，清单与原文的版权行**自洽**（漂移用例另行破坏）。"""
-    files: dict[str, str] = {
-        "PROJECT-LICENSE.txt": "MIT License\n\nCopyright (c) 2026 demo\n"
-    }
+    files: dict[str, str] = {"PROJECT-LICENSE.txt": "MIT License\n\nCopyright (c) 2026 demo\n"}
     components = [
         {
             "id": "project-license",
@@ -151,7 +150,9 @@ def make_root(
         notices if notices is not None else _notices(deps), encoding="utf-8"
     )
     if payload is not False:  # 传 False 表示"故意不写载荷"
-        write_payload(tmp_path, payload if payload is not None else _payload_files(["@fontsource/inter"]))
+        write_payload(
+            tmp_path, payload if payload is not None else _payload_files(["@fontsource/inter"])
+        )
     return tmp_path
 
 
@@ -376,7 +377,11 @@ def test_asset_without_attribution_obligation_is_reported(tool, tmp_path):
 
 def test_asset_trigger_is_satisfied_by_obligation_line(tool, tmp_path):
     """登记了署名义务且资产确实存在 → 绿。"""
-    root = make_root(tmp_path, MATCHING, notices=_notices(MATCHING, [*ALWAYS, "ofl-font-notice", "openmoji-attribution"]))
+    root = make_root(
+        tmp_path,
+        MATCHING,
+        notices=_notices(MATCHING, [*ALWAYS, "ofl-font-notice", "openmoji-attribution"]),
+    )
     _put_asset(root, "m2_server/assets/market_imgs/openmoji-rocket.png")
     assert tool.audit(root)["ok"], tool.audit(root)["errors"]
 
@@ -450,11 +455,14 @@ def test_packaged_weight_is_reported(tool, tmp_path):
     assert any("红线 §4.1" in e for e in result["errors"])
 
 
-@pytest.mark.parametrize("rel", [
-    "m2_server/__pycache__/hubert_base.pt",
-    "m2_server/tests/fixture.pth",
-    "m2_server/data/cache.onnx",
-])
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "m2_server/__pycache__/hubert_base.pt",
+        "m2_server/tests/fixture.pth",
+        "m2_server/data/cache.onnx",
+    ],
+)
 def test_excluded_parts_do_not_trigger(tool, tmp_path, rel):
     """`__pycache__` / `tests` / `data` 本来就不进包（filter 排除了），不该误报。
 
@@ -519,7 +527,9 @@ def test_dev_dependencies_are_not_declared(tool, tmp_path):
 
 def test_missing_package_json_is_tolerated(tool, tmp_path):
     (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
-    (tmp_path / "THIRD_PARTY_NOTICES.md").write_text(_notices(["python:requests"]), encoding="utf-8")
+    (tmp_path / "THIRD_PARTY_NOTICES.md").write_text(
+        _notices(["python:requests"]), encoding="utf-8"
+    )
     write_payload(tmp_path, _payload_files([]))
     assert tool.audit(tmp_path)["ok"]
 
@@ -594,7 +604,9 @@ def _make_sync_root(tmp_path: Path) -> Path:
     ):
         d = nm / pkg
         d.mkdir(parents=True)
-        (d / "package.json").write_text(json.dumps({"name": pkg, "version": "5.3.0"}), encoding="utf-8")
+        (d / "package.json").write_text(
+            json.dumps({"name": pkg, "version": "5.3.0"}), encoding="utf-8"
+        )
         (d / "LICENSE").write_text(
             f"Copyright {year} The {stem} Project Authors (https://example.invalid)\n\n"
             "This Font Software is licensed under the SIL Open Font License, Version 1.1.\n",
@@ -609,7 +621,9 @@ def test_sync_writes_payload_then_check_passes(sync, tmp_path):
     assert sync.run(root, check=True) == 1  # 还没生成 → 漂移
     assert sync.run(root, check=False) == 0
     assert sync.run(root, check=True) == 0
-    manifest = json.loads((root / "web" / "public" / "licenses" / "index.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (root / "web" / "public" / "licenses" / "index.json").read_text(encoding="utf-8")
+    )
     names = {c["name"] for c in manifest["components"]}
     assert "@fontsource/inter" in names
     assert manifest["components"][0]["copyright"].startswith("Copyright")

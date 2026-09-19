@@ -14,8 +14,10 @@
   - 单文件 ≤ 50MB；zip 解压强制 resolve() 后位于目标皮肤目录内（防 zip slip）
   - skin.json 字段白名单校验（状态 key / 帧数 / id），非法即失败回滚
 """
+
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import threading
@@ -24,7 +26,6 @@ import zipfile
 from pathlib import Path
 
 import requests
-
 from pet_skin_build import (
     SkinBuildError,
     build_skin,
@@ -43,7 +44,7 @@ DEFAULT_SKIN = "furina"
 CHUNK_SIZE = 256 * 1024
 CONNECT_TIMEOUT = 15
 READ_TIMEOUT = 60
-MAX_SOURCE_BYTES = 50 * 1024 * 1024   # 单源文件上限 50MB
+MAX_SOURCE_BYTES = 50 * 1024 * 1024  # 单源文件上限 50MB
 MAX_REDIRECTS = 5
 
 # 皮肤素材源域名白名单（重定向每一跳都要过）
@@ -51,7 +52,7 @@ PET_ALLOWED_HOSTS = {
     "github.com",
     "raw.githubusercontent.com",
     "codeload.github.com",
-    "githubusercontent.com",   # 用户头像/直链
+    "githubusercontent.com",  # 用户头像/直链
     "opengameart.org",
     "www.opengameart.org",
 }
@@ -60,7 +61,7 @@ PET_ALLOWED_HOSTS = {
 _APPLIED_LOCK = threading.Lock()
 
 # ---- 外置清单（ext）：GitHub 扫描器「扫描即上线」的落盘清单 ----
-EXT_FILE = OUT / "pet-scan-ext.json"          # [{id,name,category,license,...discovery}, ...]
+EXT_FILE = OUT / "pet-scan-ext.json"  # [{id,name,category,license,...discovery}, ...]
 _EXT_LOCK = threading.Lock()
 
 
@@ -101,19 +102,27 @@ def remove_ext_item(skin_id: str) -> bool:
         EXT_FILE.write_text(json.dumps(rest, ensure_ascii=False, indent=2), "utf-8")
     return True
 
+
 # ---- 多任务安装队列（≤MAX_CONCURRENT 并发下载/转换，其余排队，可取消） ----
-MAX_CONCURRENT_INSTALLS = 2            # 同时下载/转换数
+MAX_CONCURRENT_INSTALLS = 2  # 同时下载/转换数
 _TASK_LOCK = threading.Lock()
-_TASKS: dict[str, dict] = {}           # skin_id -> 任务状态（含 cancel 标记）
-_ALL_IDS: list[str] = []               # 创建顺序（旧→新，托盘展示顺序）
-_QUEUE: list[str] = []                 # 排队中的 skin_id（FIFO）
-_RUNNING = 0                           # 当前实际运行的 worker 数
+_TASKS: dict[str, dict] = {}  # skin_id -> 任务状态（含 cancel 标记）
+_ALL_IDS: list[str] = []  # 创建顺序（旧→新，托盘展示顺序）
+_QUEUE: list[str] = []  # 排队中的 skin_id（FIFO）
+_RUNNING = 0  # 当前实际运行的 worker 数
 
 _ACTIVE_STATUSES = {"downloading", "installing"}
 _NON_TERMINAL = {"queued", "downloading", "installing"}
 
-EMPTY_TASK = {"skin_id": "", "status": "idle", "phase": "", "message": "", "percent": 0,
-              "error": "", "cancel": False}
+EMPTY_TASK = {
+    "skin_id": "",
+    "status": "idle",
+    "phase": "",
+    "message": "",
+    "percent": 0,
+    "error": "",
+    "cancel": False,
+}
 
 
 class PetMarketError(Exception):
@@ -123,7 +132,7 @@ class PetMarketError(Exception):
 # ---------------- manifest（素材均许可干净可分发） ----------------
 # pixel-* 系列：CanFlyhang/Desktop-Pixel-Pet（MIT）程序化像素宠物 JSON，
 # 经 pixel-json 适配器（pet_skin_build.py）转换成皮肤包。
-_PIX_URL = ("https://raw.githubusercontent.com/CanFlyhang/Desktop-Pixel-Pet/main/assets/pets/{}")
+_PIX_URL = "https://raw.githubusercontent.com/CanFlyhang/Desktop-Pixel-Pet/main/assets/pets/{}"
 
 
 def _pixel_item(sid: str, name: str, desc: str, src: str) -> dict:
@@ -137,7 +146,7 @@ def _pixel_item(sid: str, name: str, desc: str, src: str) -> dict:
         "source_type": "pixel-json",
         "bundle": False,
         "source_urls": [_PIX_URL.format(src)],
-        "meta": {"frameW": 0, "frameH": 0},   # 转换时按 JSON size 回填
+        "meta": {"frameW": 0, "frameH": 0},  # 转换时按 JSON size 回填
     }
 
 
@@ -167,7 +176,9 @@ def get_manifest() -> list[dict]:
                 "https://raw.githubusercontent.com/anjiemo/IdeDesktopPetSprite/master/src/main/resources/pets/gel-slime.png",
             ],
             "meta": {
-                "frameW": 192, "frameH": 208, "cols": 8,
+                "frameW": 192,
+                "frameH": 208,
+                "cols": 8,
                 "row_map": {"idle": 0, "listen": 1, "play": 2, "build": 2, "think": 4, "error": 3},
             },
         },
@@ -184,7 +195,9 @@ def get_manifest() -> list[dict]:
                 "https://raw.githubusercontent.com/ROTl24/pet-github/main/pet/spritesheet.webp",
             ],
             "meta": {
-                "frameW": 192, "frameH": 208, "cols": 8,
+                "frameW": 192,
+                "frameH": 208,
+                "cols": 8,
                 "row_map": {"idle": 0, "listen": 1, "play": 2, "build": 2, "think": 4, "error": 3},
             },
         },
@@ -201,20 +214,60 @@ def get_manifest() -> list[dict]:
                 "https://opengameart.org/sites/default/files/cat%20sprite.zip",
             ],
             "meta": {
-                "gif_map": {"idle": "cat idle.gif", "play": "cat walking.gif", "build": "cat walking.gif",
-                            "listen": "cat idle.gif", "think": "cat idle.gif", "error": "cat walking.gif"},
-                "frameW": 0, "frameH": 0,   # 下载后按实际帧数推算
+                "gif_map": {
+                    "idle": "cat idle.gif",
+                    "play": "cat walking.gif",
+                    "build": "cat walking.gif",
+                    "listen": "cat idle.gif",
+                    "think": "cat idle.gif",
+                    "error": "cat walking.gif",
+                },
+                "frameW": 0,
+                "frameH": 0,  # 下载后按实际帧数推算
             },
         },
-        _pixel_item("pixel-capybara", "卡皮巴拉", "CC 像素卡皮巴拉（水豚），二次元以外的治愈系像素宠物，轻微呼吸动画。",
-                    "pixel_capybara.json"),
-        _pixel_item("pixel-bubble-slime", "泡泡史莱姆", "半透明泡泡质感史莱姆宠，像素呼吸动画。", "pixel_bubble_slime.json"),
-        _pixel_item("pixel-matcha-bear", "抹茶小熊", "抹茶配色小熊，绿色治愈系像素宠物。", "pixel_matcha_bear.json"),
-        _pixel_item("pixel-ice-penguin", "小企鹅", "蓝白配色小企鹅，南极治愈系像素宠物。", "pixel_ice_penguin.json"),
-        _pixel_item("pixel-energetic-duck", "元气小鸭", "鹅黄色元气小鸭，活泼的像素宠物。", "pixel_energetic_duck.json"),
-        _pixel_item("pixel-cyber-cat", "赛博猫", "霓虹赛博风格像素猫，工业感配色。", "pixel_cyber_cat.json"),
-        _pixel_item("pixel-lucky-koi", "幸运锦鲤", "红白锦鲤像素宠物，寓意好运。", "pixel_lucky_koi.json"),
-        _pixel_item("pixel-neon-fox", "霓虹狐", "紫色霓虹系小狐狸，夜间氛围像素宠物。", "pixel_neon_fox.json"),
+        _pixel_item(
+            "pixel-capybara",
+            "卡皮巴拉",
+            "CC 像素卡皮巴拉（水豚），二次元以外的治愈系像素宠物，轻微呼吸动画。",
+            "pixel_capybara.json",
+        ),
+        _pixel_item(
+            "pixel-bubble-slime",
+            "泡泡史莱姆",
+            "半透明泡泡质感史莱姆宠，像素呼吸动画。",
+            "pixel_bubble_slime.json",
+        ),
+        _pixel_item(
+            "pixel-matcha-bear",
+            "抹茶小熊",
+            "抹茶配色小熊，绿色治愈系像素宠物。",
+            "pixel_matcha_bear.json",
+        ),
+        _pixel_item(
+            "pixel-ice-penguin",
+            "小企鹅",
+            "蓝白配色小企鹅，南极治愈系像素宠物。",
+            "pixel_ice_penguin.json",
+        ),
+        _pixel_item(
+            "pixel-energetic-duck",
+            "元气小鸭",
+            "鹅黄色元气小鸭，活泼的像素宠物。",
+            "pixel_energetic_duck.json",
+        ),
+        _pixel_item(
+            "pixel-cyber-cat", "赛博猫", "霓虹赛博风格像素猫，工业感配色。", "pixel_cyber_cat.json"
+        ),
+        _pixel_item(
+            "pixel-lucky-koi", "幸运锦鲤", "红白锦鲤像素宠物，寓意好运。", "pixel_lucky_koi.json"
+        ),
+        _pixel_item(
+            "pixel-neon-fox",
+            "霓虹狐",
+            "紫色霓虹系小狐狸，夜间氛围像素宠物。",
+            "pixel_neon_fox.json",
+        ),
     ]
 
 
@@ -278,14 +331,17 @@ def installed_skins() -> list[dict]:
             skin = load_skin(d)
         except Exception:
             continue
-        out.append({
-            "id": d.name, "name": skin.get("name") or d.name,
-            "category": skin.get("category") or "其他",
-            "license": skin.get("license") or "",
-            "attribution": skin.get("attribution") or "",
-            "applied": d.name == applied,
-            "preview": f"/api/pet-market/image/{d.name}",
-        })
+        out.append(
+            {
+                "id": d.name,
+                "name": skin.get("name") or d.name,
+                "category": skin.get("category") or "其他",
+                "license": skin.get("license") or "",
+                "attribution": skin.get("attribution") or "",
+                "applied": d.name == applied,
+                "preview": f"/api/pet-market/image/{d.name}",
+            }
+        )
     return out
 
 
@@ -316,8 +372,12 @@ def applied_skin() -> dict:
             ensure_bundle(item)
         d = skin_dir(sid)
     skin = load_skin(d)
-    return {"id": d.name, "frameW": int(skin["frameW"]), "frameH": int(skin["frameH"]),
-            "states": skin.get("states") or {}}
+    return {
+        "id": d.name,
+        "frameW": int(skin["frameW"]),
+        "frameH": int(skin["frameH"]),
+        "states": skin.get("states") or {},
+    }
 
 
 def sheet_file(skin_id: str, name: str) -> Path:
@@ -351,8 +411,13 @@ def _download_to(url: str, dst: Path, box: dict) -> None:
     headers = {}
     while True:
         _validate_url(url)
-        resp = requests.get(url, stream=True, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                            allow_redirects=False, headers=headers)
+        resp = requests.get(
+            url,
+            stream=True,
+            timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+            allow_redirects=False,
+            headers=headers,
+        )
         if resp.status_code in (301, 302, 303, 307, 308):
             loc = resp.headers.get("Location")
             resp.close()
@@ -406,13 +471,25 @@ def _make_preview(skin_dir: Path) -> None:
         if not idle:
             return
         fw, fh = int(skin["frameW"]), int(skin["frameH"])
-        from common import find_ffmpeg
         import subprocess
+
+        from common import find_ffmpeg
+
         subprocess.run(
-            [find_ffmpeg(), "-y", "-i", str(skin_dir / idle["sheet"]),
-             "-vf", f"crop={fw}:{fh}:0:0", "-frames:v", "1",
-             str(skin_dir / "preview.png")],
-            capture_output=True, timeout=120)
+            [
+                find_ffmpeg(),
+                "-y",
+                "-i",
+                str(skin_dir / idle["sheet"]),
+                "-vf",
+                f"crop={fw}:{fh}:0:0",
+                "-frames:v",
+                "1",
+                str(skin_dir / "preview.png"),
+            ],
+            capture_output=True,
+            timeout=120,
+        )
     except Exception:
         pass
 
@@ -435,8 +512,14 @@ def progress() -> dict:
     同档内按创建顺序。
     """
     with _TASK_LOCK:
-        prio = {"downloading": 0, "installing": 0, "queued": 1, "done": 2,
-                "cancelled": 2, "failed": 2}
+        prio = {
+            "downloading": 0,
+            "installing": 0,
+            "queued": 1,
+            "done": 2,
+            "cancelled": 2,
+            "failed": 2,
+        }
         items = []
         for k in _ALL_IDS:
             t = _TASKS.get(k)
@@ -484,8 +567,13 @@ def _install_worker(skin_id: str) -> None:
         item = find_manifest_item(skin_id)
         if item is None:
             raise PetMarketError("清单中无此皮肤")
-        task.update(status="downloading", phase="下载素材", message=f"正在下载 {item['name']}",
-                    percent=5, error="")
+        task.update(
+            status="downloading",
+            phase="下载素材",
+            message=f"正在下载 {item['name']}",
+            percent=5,
+            error="",
+        )
         tmp = PET_SKINS_DIR / f".tmp-{skin_id}"
         if tmp.exists():
             shutil.rmtree(tmp, ignore_errors=True)
@@ -493,8 +581,13 @@ def _install_worker(skin_id: str) -> None:
         src_dir.mkdir(parents=True, exist_ok=True)
 
         if item.get("bundle"):
-            task.update(status="installing", phase="物化内置皮肤", message="正在准备内置皮肤",
-                        percent=60, error="")
+            task.update(
+                status="installing",
+                phase="物化内置皮肤",
+                message="正在准备内置皮肤",
+                percent=60,
+                error="",
+            )
             ensure_bundle(item)
         else:
             urls = item.get("source_urls") or []
@@ -507,16 +600,26 @@ def _install_worker(skin_id: str) -> None:
                 name = Path(urllib.parse.urlparse(url).path).name or f"src{i}"
                 dst = src_dir / name
                 task.update(percent=5 + i * 30 // max(1, len(urls)))
-                _download_to(url, dst, task)   # box=task：取消标记实时生效
+                _download_to(url, dst, task)  # box=task：取消标记实时生效
                 saved.append(dst)
-            task.update(status="installing", phase="生成皮肤包", message="转换动画为皮肤包",
-                        percent=75, error="")
+            task.update(
+                status="installing",
+                phase="生成皮肤包",
+                message="转换动画为皮肤包",
+                percent=75,
+                error="",
+            )
 
             meta = dict(item.get("meta") or {})
-            meta.update({"id": skin_id, "name": item.get("name") or skin_id,
-                         "category": item.get("category") or "其他",
-                         "license": item.get("license") or "unknown",
-                         "attribution": item.get("attribution") or ""})
+            meta.update(
+                {
+                    "id": skin_id,
+                    "name": item.get("name") or skin_id,
+                    "category": item.get("category") or "其他",
+                    "license": item.get("license") or "unknown",
+                    "attribution": item.get("attribution") or "",
+                }
+            )
             if item["source_type"] == "gif-multi":
                 # 解 zip 后把解出文件作为 gif 源
                 zips = [p for p in saved if p.suffix.lower() == ".zip"]
@@ -548,8 +651,7 @@ def _install_worker(skin_id: str) -> None:
         else:
             task.update(status="failed", phase="失败", message="", percent=0, error=str(exc))
     except Exception as exc:  # noqa: BLE001 - 兜底，避免安装线程崩溃
-        task.update(status="failed", phase="失败", message="", percent=0,
-                    error=f"安装异常: {exc}")
+        task.update(status="failed", phase="失败", message="", percent=0, error=f"安装异常: {exc}")
     finally:
         tmp = PET_SKINS_DIR / f".tmp-{skin_id}"
         shutil.rmtree(tmp, ignore_errors=True)
@@ -569,8 +671,15 @@ def install(skin_id: str) -> dict:
         cur = _TASKS.get(skin_id)
         if cur and cur["status"] in _NON_TERMINAL:
             raise PetMarketError(f"「{skin_id}」已在任务中（排队或进行中）")
-        task = {"skin_id": skin_id, "status": "queued", "phase": "排队", "message": "",
-                "percent": 0, "error": "", "cancel": False}
+        task = {
+            "skin_id": skin_id,
+            "status": "queued",
+            "phase": "排队",
+            "message": "",
+            "percent": 0,
+            "error": "",
+            "cancel": False,
+        }
         _TASKS[skin_id] = task
         _ALL_IDS.append(skin_id)
         _QUEUE.append(skin_id)
@@ -590,10 +699,8 @@ def cancel(skin_id: str) -> dict:
             raise PetMarketError("任务已结束，无法取消")
         if task["status"] == "queued":
             task.update(status="cancelled", phase="已取消", message="", percent=0, error="")
-            try:
+            with contextlib.suppress(ValueError):
                 _QUEUE.remove(skin_id)
-            except ValueError:
-                pass
             return dict(task)
         # downloading/installing
         task["cancel"] = True
@@ -616,8 +723,8 @@ def search(query: str = "", category: str = "") -> list[dict]:
             continue
         if q:
             hay = " ".join(
-                str(m.get(k) or "") for k in
-                ("id", "name", "description", "category", "attribution", "license")
+                str(m.get(k) or "")
+                for k in ("id", "name", "description", "category", "attribution", "license")
             ).lower()
             if q not in hay:
                 continue
@@ -654,13 +761,24 @@ def detail(skin_id: str) -> dict:
         if lic.exists():
             license_text = lic.read_text("utf-8", errors="replace")[:8000]
     return {
-        "item": {k: item.get(k) for k in
-                 ("id", "name", "category", "license", "attribution", "description",
-                  "source_type", "bundle")},
+        "item": {
+            k: item.get(k)
+            for k in (
+                "id",
+                "name",
+                "category",
+                "license",
+                "attribution",
+                "description",
+                "source_type",
+                "bundle",
+            )
+        },
         "source_urls": item.get("source_urls") or [],
         "installed": d is not None,
         "applied": load_applied() == skin_id,
-        "frameW": frameW, "frameH": frameH,
+        "frameW": frameW,
+        "frameH": frameH,
         "states": states,
         "license_text": license_text,
     }
@@ -678,7 +796,7 @@ def apply(skin_id: str) -> dict:
             d = ensure_bundle(item)
         else:
             raise
-    load_skin(d)   # 校验 skin.json 合法
+    load_skin(d)  # 校验 skin.json 合法
     save_applied(skin_id)
     return {"applied": skin_id}
 
@@ -709,7 +827,5 @@ def ensure_default_bundle() -> None:
     item = find_manifest_item(DEFAULT_SKIN)
     if item is None:
         return
-    try:
+    with contextlib.suppress(Exception):  # noqa: BLE001 - 启动兜底
         ensure_bundle(item)
-    except Exception:  # noqa: BLE001 - 启动兜底
-        pass

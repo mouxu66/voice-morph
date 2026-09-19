@@ -15,6 +15,7 @@
 QueryFullProcessImageNameW + TerminateProcess），保证分发到别的机器也不炸。
 """
 
+import contextlib
 import logging
 import os
 import re
@@ -45,13 +46,14 @@ _NEW_GROUP = 0x00000200 if os.name == "nt" else 0
 
 _WM_CLOSE = 0x0010
 
-try:      # 可选依赖：没有就走 ctypes
+try:  # 可选依赖：没有就走 ctypes
     import psutil
-except Exception:            # pragma: no cover - 取决于运行环境
+except Exception:  # pragma: no cover - 取决于运行环境
     psutil = None
 
 
 # ---------------- 进程枚举 ----------------
+
 
 def _name_ok(name: str) -> bool:
     return (name or "").lower() in PROC_NAMES
@@ -69,10 +71,15 @@ def list_wechat_processes() -> list[dict]:
                 info = p.info
                 if not _name_ok(info.get("name") or ""):
                     continue
-                out.append({"pid": int(info["pid"]), "name": info.get("name") or "",
-                            "exe": info.get("exe") or ""})
+                out.append(
+                    {
+                        "pid": int(info["pid"]),
+                        "name": info.get("name") or "",
+                        "exe": info.get("exe") or "",
+                    }
+                )
             return sorted(out, key=lambda d: d["pid"])
-        except Exception as e:      # pragma: no cover - 取决于运行环境
+        except Exception as e:  # pragma: no cover - 取决于运行环境
             logger.debug("[wechat_proc] psutil 枚举失败，退 ctypes: %s", e)
     return _list_wechat_processes_ctypes()
 
@@ -103,7 +110,7 @@ def _list_wechat_processes_ctypes() -> list[dict]:
             pid = int(arr[i])
             if pid <= 0:
                 continue
-            h = k32.OpenProcess(0x1000, False, pid)      # PROCESS_QUERY_LIMITED_INFORMATION
+            h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
             if not h:
                 continue
             try:
@@ -116,12 +123,13 @@ def _list_wechat_processes_ctypes() -> list[dict]:
             finally:
                 k32.CloseHandle(h)
         return sorted(out, key=lambda d: d["pid"])
-    except Exception as e:      # pragma: no cover - 取决于运行环境
+    except Exception as e:  # pragma: no cover - 取决于运行环境
         logger.warning("[wechat_proc] ctypes 枚举进程失败: %s", e)
         return []
 
 
 # ---------------- 窗口枚举 ----------------
+
 
 def enum_wechat_windows() -> list[dict]:
     """枚举微信的顶层可见窗口：``[{"hwnd","pid","area","exe"}]``，按面积从大到小。
@@ -153,8 +161,9 @@ def enum_wechat_windows() -> list[dict]:
                     area = 0
                     if user32.GetWindowRect(hwnd, ctypes.byref(r)):
                         area = max(0, r.right - r.left) * max(0, r.bottom - r.top)
-                    hits.append({"hwnd": int(hwnd), "pid": int(pid.value),
-                                 "area": area, "exe": buf.value})
+                    hits.append(
+                        {"hwnd": int(hwnd), "pid": int(pid.value), "area": area, "exe": buf.value}
+                    )
             k32.CloseHandle(h)
         return True
 
@@ -172,6 +181,7 @@ def _window_is_iconic(hwnd: int) -> bool:
     if os.name != "nt":
         return False
     import ctypes
+
     return bool(ctypes.windll.user32.IsIconic(hwnd))
 
 
@@ -193,18 +203,22 @@ def find_wechat_hwnd() -> int:
         raise RuntimeError("微信没有在运行：请先打开微信并登录、进入聊天窗口，再重试发送")
     if not wins:
         raise RuntimeError(
-            "微信在运行（pid: %s）但没有任何可见窗口——多半被关进了托盘："
-            "请点开微信主窗口、进入聊天界面后重试"
-            % ", ".join(str(p["pid"]) for p in procs[:3]))
+            "微信在运行（pid: {}）但没有任何可见窗口——多半被关进了托盘："
+            "请点开微信主窗口、进入聊天界面后重试".format(
+                ", ".join(str(p["pid"]) for p in procs[:3])
+            )
+        )
     if wins[0]["area"] < MIN_CHAT_AREA and not _window_is_iconic(wins[0]["hwnd"]):
         raise RuntimeError(
             "微信主窗口没就绪（最大窗口 %dpx²，正常聊天窗口约 2,000,000px²）："
             "要么还停在登录页（先扫码登录），要么开着的是无关小窗——"
-            "请把微信聊天窗口打开后重试" % wins[0]["area"])
+            "请把微信聊天窗口打开后重试" % wins[0]["area"]
+        )
     return wins[0]["hwnd"]
 
 
 # ---------------- 主程序定位 ----------------
+
 
 def resolve_wechat_exe() -> Path | None:
     """定位微信主程序：环境变量 → 运行中的进程 → 注册表 App Paths → 常见安装目录。"""
@@ -233,7 +247,7 @@ def _registry_exe() -> Path | None:
     """注册表 App Paths 里登记的微信路径（读不到就 None）。"""
     try:
         import winreg
-    except ImportError:      # pragma: no cover - 非 Windows
+    except ImportError:  # pragma: no cover - 非 Windows
         return None
     sub = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"
     for exe in ("Weixin.exe", "WeChat.exe"):
@@ -249,6 +263,7 @@ def _registry_exe() -> Path | None:
 
 
 # ---------------- 杀 / 拉起 / 等就绪 ----------------
+
 
 def kill_wechat(grace_s: float = 2.5, poll: float = 0.25) -> dict:
     """关掉微信所有主进程。先在主窗口发 WM_CLOSE 给一次体面退出的机会，超时再强杀。
@@ -267,9 +282,10 @@ def kill_wechat(grace_s: float = 2.5, poll: float = 0.25) -> dict:
     if wins:
         try:
             import ctypes
+
             ctypes.windll.user32.PostMessageW(wins[0]["hwnd"], _WM_CLOSE, 0, 0)
             graceful = True
-        except Exception as e:      # pragma: no cover
+        except Exception as e:  # pragma: no cover
             logger.debug("[wechat_proc] PostMessage WM_CLOSE 失败: %s", e)
 
     deadline = time.time() + max(0.0, grace_s)
@@ -296,21 +312,21 @@ def _force_kill(pids: list[int]) -> None:
         for pid in pids:
             try:
                 p = psutil.Process(pid)
-                for ch in p.children(recursive=True):     # 先子后父，避免父先死导致子成孤儿
-                    try:
+                for ch in p.children(recursive=True):  # 先子后父，避免父先死导致子成孤儿
+                    with contextlib.suppress(Exception):
                         ch.kill()
-                    except Exception:
-                        pass
                 p.kill()
             except Exception:
                 pass
         return
-    for pid in pids:      # 无 psutil：taskkill /T 连子孙一起
-        try:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, timeout=20, creationflags=_NO_WINDOW)
-        except Exception:
-            pass
+    for pid in pids:  # 无 psutil：taskkill /T 连子孙一起
+        with contextlib.suppress(Exception):
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                timeout=20,
+                creationflags=_NO_WINDOW,
+            )
 
 
 def start_wechat(exe: Path | str, args: list[str] | None = None) -> int:
@@ -324,8 +340,10 @@ def start_wechat(exe: Path | str, args: list[str] | None = None) -> int:
         raise RuntimeError(f"微信主程序不存在: {exe}")
     try:
         proc = subprocess.Popen(
-            [str(exe)] + list(args or []), cwd=str(exe.parent),
-            close_fds=True, creationflags=_DETACHED | _NEW_GROUP,
+            [str(exe)] + list(args or []),
+            cwd=str(exe.parent),
+            close_fds=True,
+            creationflags=_DETACHED | _NEW_GROUP,
         )
     except Exception as e:
         raise RuntimeError(f"拉起微信失败（{exe}）: {e}") from e
@@ -333,8 +351,9 @@ def start_wechat(exe: Path | str, args: list[str] | None = None) -> int:
     return int(proc.pid)
 
 
-def wait_wechat_ready(timeout_s: float = 90.0, min_area: int | None = None,
-                      poll: float = 0.5) -> dict:
+def wait_wechat_ready(
+    timeout_s: float = 90.0, min_area: int | None = None, poll: float = 0.5
+) -> dict:
     """等微信主窗口出现且面积达标（= 不在登录页）。
 
     返回 ``{"hwnd","pid","area","waited_s"}``；超时抛 RuntimeError 并区分两种情形：
@@ -348,15 +367,19 @@ def wait_wechat_ready(timeout_s: float = 90.0, min_area: int | None = None,
         if wins:
             best_area = max(best_area, wins[0]["area"])
             if wins[0]["area"] >= min_area:
-                return {"hwnd": wins[0]["hwnd"], "pid": wins[0]["pid"],
-                        "area": wins[0]["area"], "waited_s": round(time.time() - t0, 1)}
+                return {
+                    "hwnd": wins[0]["hwnd"],
+                    "pid": wins[0]["pid"],
+                    "area": wins[0]["area"],
+                    "waited_s": round(time.time() - t0, 1),
+                }
         if time.time() - t0 >= timeout_s:
             if not list_wechat_processes():
-                raise RuntimeError(
-                    f"微信进程没起来（等了 {timeout_s:.0f}s），请手动打开微信后重试")
+                raise RuntimeError(f"微信进程没起来（等了 {timeout_s:.0f}s），请手动打开微信后重试")
             raise RuntimeError(
                 f"微信窗口 {timeout_s:.0f}s 内未就绪（最大窗口 {best_area}px² < {min_area}，"
-                "疑似停在登录页）；请先在微信里完成登录，再重试发送")
+                "疑似停在登录页）；请先在微信里完成登录，再重试发送"
+            )
         time.sleep(poll)
 
 
@@ -378,8 +401,7 @@ def input_device_probe() -> dict:
     """
     if not _KVCOMM.is_dir():
         return {"device": None, "file": None, "hits": 0}
-    files = sorted(_KVCOMM.glob("*_input.statistic"),
-                   key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted(_KVCOMM.glob("*_input.statistic"), key=lambda p: p.stat().st_mtime, reverse=True)
     for f in files[:8]:
         try:
             blob = f.read_bytes()
@@ -397,10 +419,10 @@ def _device_from_blob(blob: bytes) -> str | None:
     if i < 0:
         return None
     j = blob.find(b"end_record", i)
-    seg = blob[i:(j if j > i else i + 2048)]
+    seg = blob[i : (j if j > i else i + 2048)]
     for h in _DEV_LINE.findall(seg):
         s = h.decode("utf-8", "replace").strip()
-        if "(" in s and ")" in s:      # 设备名必带括号后缀，用它挡住假阳性
+        if "(" in s and ")" in s:  # 设备名必带括号后缀，用它挡住假阳性
             return s
     return None
 

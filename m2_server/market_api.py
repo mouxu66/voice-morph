@@ -10,22 +10,27 @@
   - GET  /api/market/installed   已安装音色 id 列表（前端标"已装"角标）
   - POST /api/market/cancel      取消下载 / 安装（可按任务名精准取消）
 """
+
 import re
 
+import market_images
+import market_preview
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
-
-import market_images
-from runtime import API_PREFIX
-from market_download import get_manager, MarketError
-from market_install import get_installer, InstallError
+from market_download import MarketError, get_manager
+from market_install import InstallError, get_installer
 from market_manifest import get_manifest
-import market_preview
-from market_search import search, repo_files_hf, repo_files_ms
-from market_search import hf_resolve, ms_resolve
-from market_search import readme_summary
 from market_search import HF_API as HF_BASE
+from market_search import (
+    hf_resolve,
+    ms_resolve,
+    readme_summary,
+    repo_files_hf,
+    repo_files_ms,
+    search,
+)
+from pydantic import BaseModel, Field
+from runtime import API_PREFIX
 
 router = APIRouter(prefix=API_PREFIX)
 
@@ -33,7 +38,9 @@ router = APIRouter(prefix=API_PREFIX)
 class DownloadRequest(BaseModel):
     name: str = Field(..., description="任务名/权重名（不含扩展名与路径分隔符）")
     url: str = Field(..., description="主下载直链（域名须在白名单内）")
-    mirror_url: str | None = Field(None, description="可选镜像直链（同文件的另一通道，主源失败自动回退）")
+    mirror_url: str | None = Field(
+        None, description="可选镜像直链（同文件的另一通道，主源失败自动回退）"
+    )
     sha256: str | None = Field(None, description="可选 SHA256（提供则下载完成后强校验）")
     expected_size: int | None = Field(None, description="可选期望字节数")
 
@@ -56,7 +63,9 @@ class InstallRequest(BaseModel):
 class PreviewRequest(BaseModel):
     voice_id: str = Field(..., description="要生成试听的市场音色 ID")
     download: FileSlot | None = Field(
-        None, description="音色未安装时的权重直链（先下载到市场缓存再转换，之后安装免重复下载）；已安装可省略")
+        None,
+        description="音色未安装时的权重直链（先下载到市场缓存再转换，之后安装免重复下载）；已安装可省略",
+    )
 
 
 @router.get("/market/manifest")
@@ -79,7 +88,9 @@ def market_image(name: str):
     if p is None:
         raise HTTPException(status_code=404, detail="image not found")
     media = _IMG_MEDIA.get(p.suffix.lower().lstrip("."), "application/octet-stream")
-    return FileResponse(str(p), media_type=media, headers={"Cache-Control": "public, max-age=86400"})
+    return FileResponse(
+        str(p), media_type=media, headers={"Cache-Control": "public, max-age=86400"}
+    )
 
 
 @router.get("/market/search")
@@ -115,20 +126,30 @@ def market_repo(repo: str = "", platform: str = "hf", recursive: bool = False):
                     f["mirror_url"] = hf_resolve(repo, f["path"], "https://huggingface.co")
     except MarketError as exc:
         raise HTTPException(404, f"仓库不可用: {exc}")
-    return {"repo": repo, "platform": platform, "files": files,
-            "readme": readme_summary(repo, platform)}
+    return {
+        "repo": repo,
+        "platform": platform,
+        "files": files,
+        "readme": readme_summary(repo, platform),
+    }
 
 
 @router.post("/market/install")
 def market_install(req: InstallRequest):
     """一键安装音色到 RVC 音色库：并行下载 pth + index → 落位 logs/assets。"""
-    dl = {"url": req.download.url, "mirror_url": req.download.mirror_url,
-          "sha256": req.download.sha256}
+    dl = {
+        "url": req.download.url,
+        "mirror_url": req.download.mirror_url,
+        "sha256": req.download.sha256,
+    }
     idx = {"url": req.index.url, "mirror_url": req.index.mirror_url} if req.index else None
     try:
         st = get_installer().run(
-            voice_id=req.voice_id, download=dl, index=idx,
-            display_name=req.display_name, manifest_id=req.manifest_id,
+            voice_id=req.voice_id,
+            download=dl,
+            index=idx,
+            display_name=req.display_name,
+            manifest_id=req.manifest_id,
             overwrite=req.overwrite,
         )
     except InstallError as exc:
@@ -204,8 +225,15 @@ def market_preview_trigger(req: PreviewRequest):
     已安装音色忽略 download，直接用本地模型。
     """
     vid = req.voice_id.strip()
-    dl = ({"url": req.download.url, "mirror_url": req.download.mirror_url,
-           "sha256": req.download.sha256} if req.download else None)
+    dl = (
+        {
+            "url": req.download.url,
+            "mirror_url": req.download.mirror_url,
+            "sha256": req.download.sha256,
+        }
+        if req.download
+        else None
+    )
     return market_preview.generate(vid, download=dl)
 
 
@@ -217,8 +245,11 @@ def market_download(req: DownloadRequest):
     """
     try:
         st = get_manager().start(
-            name=req.name, url=req.url, mirror_url=req.mirror_url,
-            sha256=req.sha256, expected_size=req.expected_size,
+            name=req.name,
+            url=req.url,
+            mirror_url=req.mirror_url,
+            sha256=req.sha256,
+            expected_size=req.expected_size,
         )
     except MarketError as exc:
         raise HTTPException(status_code=409, detail=str(exc))

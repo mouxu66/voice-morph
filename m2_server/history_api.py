@@ -1,21 +1,21 @@
 """变声任务历史（作品库）端点（FRD F3 + B1 收藏/标签/批量导出）。
 
-    GET    /api/history              列表（kind/voice_id/时间/收藏/标签 过滤 + 分页）
-    GET    /api/history/tags         全部标签及使用次数
-    PATCH  /api/history/{item_id}    改收藏 / 改标签
-    POST   /api/history/bulk_delete  批量删除
-    POST   /api/history/export       勾选导出 zip（POST 便于传长 id 列表）
-    DELETE /api/history/{item_id}    删单条
+GET    /api/history              列表（kind/voice_id/时间/收藏/标签 过滤 + 分页）
+GET    /api/history/tags         全部标签及使用次数
+PATCH  /api/history/{item_id}    改收藏 / 改标签
+POST   /api/history/bulk_delete  批量删除
+POST   /api/history/export       勾选导出 zip（POST 便于传长 id 列表）
+DELETE /api/history/{item_id}    删单条
 """
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
 
+from fastapi import APIRouter, HTTPException
 from history import all_tags as _all_tags
 from history import bulk_delete as _bulk_delete
 from history import delete as _delete
 from history import export_zip as _export_zip
 from history import query as _query
 from history import set_meta as _set_meta
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api")
 
@@ -41,16 +41,29 @@ def history_tags():
 
 
 @router.get("/history")
-def history_list(kind: str | None = None, voice_id: str | None = None,
-                 from_ts: int | None = None, to_ts: int | None = None,
-                 limit: int = 50, offset: int = 0,
-                 starred: bool | None = None, tag: str | None = None):
+def history_list(
+    kind: str | None = None,
+    voice_id: str | None = None,
+    from_ts: int | None = None,
+    to_ts: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    starred: bool | None = None,
+    tag: str | None = None,
+):
     """查询产出历史：?kind=&voice_id=&from=&to=&starred=&tag=&limit=&offset=，ts 倒序分页。"""
     if limit <= 0 or limit > 100:
         raise HTTPException(status_code=400, detail="limit 须在 1~100 之间")
-    return _query(kind=kind, voice_id=voice_id, from_ts=from_ts,
-                  to_ts=to_ts, limit=limit, offset=offset,
-                  starred=starred, tag=tag)
+    return _query(
+        kind=kind,
+        voice_id=voice_id,
+        from_ts=from_ts,
+        to_ts=to_ts,
+        limit=limit,
+        offset=offset,
+        starred=starred,
+        tag=tag,
+    )
 
 
 @router.patch("/history/{item_id}")

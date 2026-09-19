@@ -28,6 +28,7 @@
 `torch.inference_mode().__enter__()` 会在语句结束析构时立刻退出模式，
 autograd 记录 StaticCache 的 in-place index_copy_，图永久累积直接爆显存。
 """
+
 import gc
 import traceback
 from collections import OrderedDict
@@ -145,8 +146,7 @@ class FastVoiceCloneEngine:
         """
         idx = self.hist.view(1, -1)
         gathered = logits.gather(1, idx)
-        penalized = torch.where(gathered < 0, gathered / self.rp_in,
-                                gathered * self.rp_in)
+        penalized = torch.where(gathered < 0, gathered / self.rp_in, gathered * self.rp_in)
         valid = (self._hist_pos < self.hist_len_in).view(1, -1)
         return logits.scatter(1, idx, torch.where(valid, penalized, gathered))
 
@@ -155,32 +155,50 @@ class FastVoiceCloneEngine:
     # ------------------------------------------------------------------
     def _frame_body(self, do_sample, top_k, sub_do_sample, sub_top_k):
         tok = self.tok_in
-        last_id_hidden = self.talker.model.codec_embedding(tok)          # (1,1,H)
-        pin = torch.cat((self.past_hidden_in, last_id_hidden), dim=1)    # (1,2,H)
+        last_id_hidden = self.talker.model.codec_embedding(tok)  # (1,1,H)
+        pin = torch.cat((self.past_hidden_in, last_id_hidden), dim=1)  # (1,2,H)
         out = self.predictor.forward(
-            inputs_embeds=pin, past_key_values=self.pred_cache, use_cache=True,
-            cache_position=self._cp_prefill, generation_steps=0,
-            output_attentions=False, output_hidden_states=False)
+            inputs_embeds=pin,
+            past_key_values=self.pred_cache,
+            use_cache=True,
+            cache_position=self._cp_prefill,
+            generation_steps=0,
+            output_attentions=False,
+            output_hidden_states=False,
+        )
         c = [tok, self._sample_pred(out.logits[:, -1, :], sub_do_sample, sub_top_k)]
-        for i in range(1, self.ng - 1):                                  # 14 步 decode
+        for i in range(1, self.ng - 1):  # 14 步 decode
             out = self.predictor.forward(
-                input_ids=c[i], generation_steps=i, past_key_values=self.pred_cache,
-                use_cache=True, cache_position=self._cp_decode[i - 1],
-                output_attentions=False, output_hidden_states=False)
+                input_ids=c[i],
+                generation_steps=i,
+                past_key_values=self.pred_cache,
+                use_cache=True,
+                cache_position=self._cp_decode[i - 1],
+                output_attentions=False,
+                output_hidden_states=False,
+            )
             c.append(self._sample_pred(out.logits[:, -1, :], sub_do_sample, sub_top_k))
-        codes = torch.cat(c, dim=-1)                                     # (1,NG)
+        codes = torch.cat(c, dim=-1)  # (1,NG)
         codec_hiddens = torch.cat(
             [last_id_hidden]
-            + [self.predictor.model.codec_embedding[j](codes[:, j + 1:j + 2])
-               for j in range(self.ng - 1)], dim=1)
+            + [
+                self.predictor.model.codec_embedding[j](codes[:, j + 1 : j + 2])
+                for j in range(self.ng - 1)
+            ],
+            dim=1,
+        )
         frame_emb = codec_hiddens.sum(dim=1, keepdim=True) + self.text_embed_in
         out = self.talker.model(
-            inputs_embeds=frame_emb, past_key_values=self.talker_cache, use_cache=True,
-            cache_position=self.t_cp_in, output_attentions=False,
-            output_hidden_states=False)
-        h = out.last_hidden_state                                        # (1,1,H)
-        logits = self.talker.codec_head(h)[:, 0, :].float()              # (1,V)
-        logits = self._rep_penalty(logits)                               # HF 顺序：先惩罚
+            inputs_embeds=frame_emb,
+            past_key_values=self.talker_cache,
+            use_cache=True,
+            cache_position=self.t_cp_in,
+            output_attentions=False,
+            output_hidden_states=False,
+        )
+        h = out.last_hidden_state  # (1,1,H)
+        logits = self.talker.codec_head(h)[:, 0, :].float()  # (1,V)
+        logits = self._rep_penalty(logits)  # HF 顺序：先惩罚
         logits = logits.masked_fill(self.suppress_mask, NEG_INF)
         logits = logits.masked_fill(self.eos_only_mask & ~self.eos_allowed, NEG_INF)
         next_tok = self._sample_talker(logits, do_sample, top_k)
@@ -233,8 +251,11 @@ class FastVoiceCloneEngine:
         talker.generate = _stub
         try:
             self.model.generate_voice_clone(
-                text=[text], language=[language],
-                voice_clone_prompt=voice_clone_prompt, **gen_kwargs)
+                text=[text],
+                language=[language],
+                voice_clone_prompt=voice_clone_prompt,
+                **gen_kwargs,
+            )
             raise FallbackToSlow("prefill 捕获桩未被触发")
         except _Captured as cap:
             kw = cap.kwargs
@@ -272,8 +293,7 @@ class FastVoiceCloneEngine:
         im = torch.inference_mode()
         im.__enter__()
         try:
-            kw = self._capture_prefill(texts[0], langs[0], voice_clone_prompt,
-                                       gen_kwargs)
+            kw = self._capture_prefill(texts[0], langs[0], voice_clone_prompt, gen_kwargs)
             embeds = kw["inputs_embeds"]
             mask = kw["attention_mask"]
             trailing = kw["trailing_text_hidden"]
@@ -295,7 +315,8 @@ class FastVoiceCloneEngine:
 
             if top_p < 1.0 or sub_top_p < 1.0:
                 raise FallbackToSlow(
-                    f"top_p<1.0 未支持 (top_p={top_p}, subtalker_top_p={sub_top_p})")
+                    f"top_p<1.0 未支持 (top_p={top_p}, subtalker_top_p={sub_top_p})"
+                )
             if temperature <= 0 or sub_temp <= 0:
                 raise FallbackToSlow("temperature<=0 未支持")
 
@@ -315,11 +336,16 @@ class FastVoiceCloneEngine:
 
             # ---- prefill（eager，写 StaticCache 0..L-1） ----
             out = self.talker.forward(
-                inputs_embeds=embeds, attention_mask=mask,
-                past_key_values=self.talker_cache, trailing_text_hidden=trailing,
-                tts_pad_embed=pad, generation_step=-1, use_cache=True,
+                inputs_embeds=embeds,
+                attention_mask=mask,
+                past_key_values=self.talker_cache,
+                trailing_text_hidden=trailing,
+                tts_pad_embed=pad,
+                generation_step=-1,
+                use_cache=True,
                 output_hidden_states=False,
-                cache_position=torch.arange(L, device=self.dev))
+                cache_position=torch.arange(L, device=self.dev),
+            )
             logits0 = out.logits[:, -1, :].float()
             logits0 = logits0.masked_fill(self.suppress_mask, NEG_INF)
             if min_new >= 1:
@@ -361,8 +387,7 @@ class FastVoiceCloneEngine:
             codes_for_decode = torch.cat([rc, codes], dim=0)
         else:
             rc, codes_for_decode = None, codes
-        wavs, sr = self.model.model.speech_tokenizer.decode(
-            [{"audio_codes": codes_for_decode}])
+        wavs, sr = self.model.model.speech_tokenizer.decode([{"audio_codes": codes_for_decode}])
         wav = wavs[0]
         if rc is not None:
             ref_len, total = int(rc.shape[0]), int(codes_for_decode.shape[0])

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """试音间（Audition Room）：同一个声音，一次试完一批音色。
 
 产品语义：一段试音音频（或一句文字）当"考题"，一次挂上多个音色，串行跑完并排听
@@ -29,6 +28,8 @@ id（TTS 克隆要参考音），靠 rvc_convert.rvc_voice_candidates 反向求�
 缓存：产物文件名由 (模式|源|文本|pitch|index_rate) 的哈希决定 —— 同样的参数再点
 一次直接复用已有 wav，不重跑推理（批量试音每个 1~3 分钟，重复跑很贵）。
 """
+
+import contextlib
 import hashlib
 import json
 import logging
@@ -39,17 +40,16 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
-from pydantic import BaseModel
-
 import config as cfg
 from ab_chain import _preprocess16k, _rvc_link
 from common import MAX_UPLOAD_BYTES, is_valid_voice_id
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from market_manifest import find_manifest_item
 from market_preview import BUILTIN_SRC, _ensure_staged, _find_index, _find_pth
+from pydantic import BaseModel
+from runtime import API_PREFIX, OUT, gpu_holder_reason, hold_gpu, release_gpu
 from rvc_common import ensure_infer_pth
 from rvc_convert import rvc_voice_candidates
-from runtime import (API_PREFIX, OUT, gpu_holder_reason, hold_gpu, release_gpu)
 
 router = APIRouter(prefix=API_PREFIX)
 
@@ -79,9 +79,9 @@ _CANCEL = threading.Event()
 
 AUDITION_STATE: dict = {
     "task_id": "",
-    "running": False,        # 只表示「推理阶段」在跑；打分阶段另有 scoring
-    "status": "idle",        # idle | running | done | cancelled | error
-    "mode": "",              # audio | text
+    "running": False,  # 只表示「推理阶段」在跑；打分阶段另有 scoring
+    "status": "idle",  # idle | running | done | cancelled | error
+    "mode": "",  # audio | text
     "total": 0,
     "finished": 0,
     "current": "",
@@ -90,8 +90,8 @@ AUDITION_STATE: dict = {
     "error": "",
     "source_name": "",
     "text": "",
-    "results": [],           # 逐个追加，前端轮询即可看到结果陆续出来
-    "scoring": False,        # 结果都出来后，附加的客观分还在后台算
+    "results": [],  # 逐个追加，前端轮询即可看到结果陆续出来
+    "scoring": False,  # 结果都出来后，附加的客观分还在后台算
     "score_finished": 0,
     "score_total": 0,
 }
@@ -205,39 +205,60 @@ def _score_batch(jobs: list[dict]) -> dict:
     try:
         jobs_p.write_text(json.dumps(jobs, ensure_ascii=False), encoding="utf-8")
         cmd = [sys.executable, str(SCORE_PY), "--jobs", str(jobs_p), "--out", str(out_p)]
-        r = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=SCORE_TIMEOUT, encoding="utf-8", errors="replace",
-                           cwd=str(cfg.ROOT))
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=SCORE_TIMEOUT,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(cfg.ROOT),
+        )
         if out_p.exists():
             data = json.loads(out_p.read_text(encoding="utf-8"))
             if isinstance(data, dict) and "__error__" not in data:
                 return data
-            return {j["key"]: {"secs": None, "nats": None,
-                               "score_error": str(data.get("__error__") or "打分失败")}
-                    for j in jobs}
+            return {
+                j["key"]: {
+                    "secs": None,
+                    "nats": None,
+                    "score_error": str(data.get("__error__") or "打分失败"),
+                }
+                for j in jobs
+            }
         tail = (r.stderr or r.stdout or "").strip().splitlines()[-3:]
-        return {j["key"]: {"secs": None, "nats": None,
-                           "score_error": "打分进程未产出结果：" + (" | ".join(tail)[-300:] or "无输出")}
-                for j in jobs}
+        return {
+            j["key"]: {
+                "secs": None,
+                "nats": None,
+                "score_error": "打分进程未产出结果：" + (" | ".join(tail)[-300:] or "无输出"),
+            }
+            for j in jobs
+        }
     except subprocess.TimeoutExpired:
-        return {j["key"]: {"secs": None, "nats": None,
-                           "score_error": f"打分超时（>{SCORE_TIMEOUT}s），已跳过"}
-                for j in jobs}
+        return {
+            j["key"]: {
+                "secs": None,
+                "nats": None,
+                "score_error": f"打分超时（>{SCORE_TIMEOUT}s），已跳过",
+            }
+            for j in jobs
+        }
     except Exception as e:  # noqa: BLE001
-        return {j["key"]: {"secs": None, "nats": None, "score_error": f"打分失败：{e}"}
-                for j in jobs}
+        return {
+            j["key"]: {"secs": None, "nats": None, "score_error": f"打分失败：{e}"} for j in jobs
+        }
     finally:
         for p in (jobs_p, out_p):
-            try:
+            with contextlib.suppress(Exception):
                 p.unlink(missing_ok=True)
-            except Exception:
-                pass
 
 
 def _duration_s(out: Path) -> "float | None":
     """产物时长（只读文件头，不解码），顺带当作"产物是否完好"的廉价校验。"""
     try:
         import soundfile as sf
+
         info = sf.info(str(out))
         return round(info.frames / info.samplerate, 1) if info.samplerate else None
     except Exception:
@@ -247,8 +268,9 @@ def _duration_s(out: Path) -> "float | None":
 # ---------------- 单件试音 ----------------
 
 
-def _convert_with_worker(pth: Path, index: str, src: Path, out: Path,
-                         pitch: int, index_rate: float) -> bool:
+def _convert_with_worker(
+    pth: Path, index: str, src: Path, out: Path, pitch: int, index_rate: float
+) -> bool:
     """走常驻 worker 换声；worker 不可用 / 被 `VM_RVC_WORKER=0` 关掉时返回 False。
 
     为什么必须优先走 worker（2026-09-19 实测，这是本功能最大的一处性能差）：
@@ -265,12 +287,21 @@ def _convert_with_worker(pth: Path, index: str, src: Path, out: Path,
     """
     try:
         from rvc_convert import USE_WORKER, worker_call
+
         if not USE_WORKER:
             return False
-        worker_call({"cmd": "convert", "pth": str(pth), "index": index or "",
-                     "input": str(src), "output": str(out),
-                     "pitch": int(pitch), "index_rate": float(index_rate)},
-                    timeout=1800)
+        worker_call(
+            {
+                "cmd": "convert",
+                "pth": str(pth),
+                "index": index or "",
+                "input": str(src),
+                "output": str(out),
+                "pitch": int(pitch),
+                "index_rate": float(index_rate),
+            },
+            timeout=1800,
+        )
         return out.exists()
     except Exception:  # noqa: BLE001
         # worker 崩了不能把结果吞掉 —— 回退一次性子进程（慢但能出），
@@ -278,16 +309,18 @@ def _convert_with_worker(pth: Path, index: str, src: Path, out: Path,
         return False
 
 
-def _cache_path(voice_id: str, mode: str, src: Path | None, text: str,
-                pitch: int, index_rate: float) -> Path:
+def _cache_path(
+    voice_id: str, mode: str, src: Path | None, text: str, pitch: int, index_rate: float
+) -> Path:
     """产物路径 = 参数哈希。同样参数重复点不会重跑推理（结果直接复用）。"""
     key = f"{mode}|{src.name if src else ''}|{text}|{pitch}|{index_rate}"
     h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
     return AUDITION_DIR / f"aud_{voice_id}_{h}.wav"
 
 
-def _try_one(voice_id: str, mode: str, src: Path | None, text: str,
-             pitch: int, index_rate: float) -> tuple[Path, bool, str]:
+def _try_one(
+    voice_id: str, mode: str, src: Path | None, text: str, pitch: int, index_rate: float
+) -> tuple[Path, bool, str]:
     """试音一个音色 → (产物路径, 是否命中缓存, 实际走的引擎)。
 
     engine 取值：cache（复用旧产物）/ tts（文字合成）/ worker（常驻引擎）/
@@ -304,9 +337,11 @@ def _try_one(voice_id: str, mode: str, src: Path | None, text: str,
         if not vb:
             raise RuntimeError(
                 f"音色 [{_display_name(voice_id)}] 没有参考音，无法用文字合成"
-                f"（市场 RVC 权重只能换音色；要输字请先训练一个音色）")
+                f"（市场 RVC 权重只能换音色；要输字请先训练一个音色）"
+            )
         ref = cfg.MEDIA_DIR / "voicebank" / vb / "reference.wav"
         from qwen3_tts import tts as qwen_tts
+
         data = qwen_tts(text, ref_audio=str(ref), ref_text="", voice_id=vb)
         tmp = out.with_suffix(".tmp")
         tmp.write_bytes(data)
@@ -321,8 +356,7 @@ def _try_one(voice_id: str, mode: str, src: Path | None, text: str,
     # 常驻引擎优先（快 6 倍，见 _convert_with_worker 的实测数据），失败才回退子进程
     if _convert_with_worker(pth, index, src, out, pitch, index_rate):
         return out, False, "worker"
-    _rvc_link(voice_id, src, out, pth=pth, index=index,
-              pitch=pitch, index_rate=index_rate)
+    _rvc_link(voice_id, src, out, pth=pth, index=index, pitch=pitch, index_rate=index_rate)
     return out, False, "subprocess"
 
 
@@ -372,19 +406,22 @@ def _score_pass(task_id: str) -> None:
     """
     try:
         snap = _snapshot()
-        pending = [r for r in snap["results"]
-                   if r.get("status") == "done" and r.get("url")]
+        pending = [r for r in snap["results"] if r.get("status") == "done" and r.get("url")]
         if not pending:
             return
         _mark(scoring=True, score_finished=0, score_total=len(pending))
-        jobs = [{"key": r["voice_id"],
-                 "wav": str(AUDITION_DIR / Path(r["url"]).name),
-                 "ref": str(_ref_for(r["voice_id"]) or "")}
-                for r in pending]
+        jobs = [
+            {
+                "key": r["voice_id"],
+                "wav": str(AUDITION_DIR / Path(r["url"]).name),
+                "ref": str(_ref_for(r["voice_id"]) or ""),
+            }
+            for r in pending
+        ]
         scores = _score_batch(jobs)
         for r in pending:
             if not _same_task(task_id):
-                return          # 已经换了一轮任务，这批分作废
+                return  # 已经换了一轮任务，这批分作废
             s = scores.get(r["voice_id"]) or {}
             entry = dict(r)
             entry["secs"] = s.get("secs")
@@ -394,15 +431,22 @@ def _score_pass(task_id: str) -> None:
             with _STATE_LOCK:
                 AUDITION_STATE["score_finished"] = AUDITION_STATE.get("score_finished", 0) + 1
     except Exception:  # noqa: BLE001
-        pass          # 打分是附加信息，任何异常都不该影响已经出来的结果
+        pass  # 打分是附加信息，任何异常都不该影响已经出来的结果
     finally:
         if _same_task(task_id):
             _mark(scoring=False)
 
 
-def _worker(task_id: str, voice_ids: list[str], mode: str,
-            src: Path | None, text: str, pitch: int, index_rate: float,
-            score: bool = True) -> None:
+def _worker(
+    task_id: str,
+    voice_ids: list[str],
+    mode: str,
+    src: Path | None,
+    text: str,
+    pitch: int,
+    index_rate: float,
+    score: bool = True,
+) -> None:
     # 打分与否、以及"要不要收引擎"，都在 finally 里定下来；
     # will_score 要在 finally 之后用，所以先声明在函数作用域。
     will_score = False
@@ -411,16 +455,32 @@ def _worker(task_id: str, voice_ids: list[str], mode: str,
         # CUDA 上下文，后面的 RVC 子进程会 cuDNN 崩（见 audition_score.py）。
         for idx, vid in enumerate(voice_ids):
             if _CANCEL.is_set():
-                _mark(status="cancelled", current="", current_name="",
-                      message=f"已取消（完成 {idx}/{len(voice_ids)}）")
+                _mark(
+                    status="cancelled",
+                    current="",
+                    current_name="",
+                    message=f"已取消（完成 {idx}/{len(voice_ids)}）",
+                )
                 break
             name = _display_name(vid)
-            _mark(current=vid, current_name=name,
-                  message=f"正在试音「{name}」（{idx + 1}/{len(voice_ids)}）…")
-            entry = {"voice_id": vid, "display_name": name, "status": "running",
-                     "url": "", "secs": None, "nats": None, "duration_s": None,
-                     "error": "", "score_error": "", "from_cache": False,
-                     "engine": ""}
+            _mark(
+                current=vid,
+                current_name=name,
+                message=f"正在试音「{name}」（{idx + 1}/{len(voice_ids)}）…",
+            )
+            entry = {
+                "voice_id": vid,
+                "display_name": name,
+                "status": "running",
+                "url": "",
+                "secs": None,
+                "nats": None,
+                "duration_s": None,
+                "error": "",
+                "score_error": "",
+                "from_cache": False,
+                "engine": "",
+            }
             _set_result(entry)
             try:
                 out, cached, engine = _try_one(vid, mode, src, text, pitch, index_rate)
@@ -431,14 +491,23 @@ def _worker(task_id: str, voice_ids: list[str], mode: str,
                 entry["duration_s"] = _duration_s(out)
                 try:
                     from history import register as history_register
-                    history_register("trial", vid, out.name, entry["url"],
-                                     entry.get("duration_s") or 0.0,
-                                     input_text=text or "",
-                                     params={"mode": mode, "pitch": pitch,
-                                             "index_rate": index_rate,
-                                             "source": src.name if src else ""})
+
+                    history_register(
+                        "trial",
+                        vid,
+                        out.name,
+                        entry["url"],
+                        entry.get("duration_s") or 0.0,
+                        input_text=text or "",
+                        params={
+                            "mode": mode,
+                            "pitch": pitch,
+                            "index_rate": index_rate,
+                            "source": src.name if src else "",
+                        },
+                    )
                 except Exception:
-                    pass          # 登记失败不影响试音结果
+                    pass  # 登记失败不影响试音结果
             except Exception as e:  # noqa: BLE001
                 entry["status"] = "failed"
                 entry["error"] = str(e)
@@ -446,8 +515,12 @@ def _worker(task_id: str, voice_ids: list[str], mode: str,
             with _STATE_LOCK:
                 AUDITION_STATE["finished"] = idx + 1
         else:
-            _mark(status="done", current="", current_name="",
-                  message=f"试音完成（{len(voice_ids)} 个）")
+            _mark(
+                status="done",
+                current="",
+                current_name="",
+                message=f"试音完成（{len(voice_ids)} 个）",
+            )
     except Exception as e:  # noqa: BLE001
         _mark(status="error", error=str(e), message="试音中断")
     finally:
@@ -465,8 +538,7 @@ def _worker(task_id: str, voice_ids: list[str], mode: str,
         snap = _snapshot()
         will_score = bool(score) and snap["status"] == "done"
         if will_score:
-            pending = [r for r in snap["results"]
-                       if r.get("status") == "done" and r.get("url")]
+            pending = [r for r in snap["results"] if r.get("status") == "done" and r.get("url")]
             will_score = bool(pending)
             if will_score:
                 _mark(scoring=True, score_finished=0, score_total=len(pending))
@@ -481,6 +553,7 @@ def _worker(task_id: str, voice_ids: list[str], mode: str,
         #   相比"每个音色都重新 load_vc"的子进程路径仍然快一个数量级。
         try:
             from rvc_convert import stop_worker
+
             stop_worker()
             logger.debug("[audition] 已收掉常驻引擎，给打分子进程让出内存")
         except Exception:
@@ -502,23 +575,27 @@ def audition_env():
     live_exp = ""
     try:
         from rvc_live import _live_proc_alive, _state
+
         live_running = bool(_live_proc_alive())
         live_exp = str((_state.get("train") or {}).get("exp") or "")
     except Exception:
         pass
     try:
         from cascade import _cascade_alive
+
         cascade_running = bool(_cascade_alive())
     except Exception:
         pass
     try:
         from offline_vc import OFFLINEVC_STATE
+
         offline_running = bool(OFFLINEVC_STATE.get("running"))
     except Exception:
         pass
     tts_worker = False
     try:
         from qwen3_tts import worker_alive
+
         tts_worker = bool(worker_alive())
     except Exception:
         pass
@@ -526,6 +603,7 @@ def audition_env():
     rvc_worker = {"enabled": False, "alive": False, "pid": None}
     try:
         from rvc_convert import worker_status
+
         rvc_worker = worker_status()
     except Exception:
         pass
@@ -533,6 +611,7 @@ def audition_env():
     total = used = None
     try:
         from rvc_live import _gpu_snapshot
+
         snap = _gpu_snapshot()
         total, used = snap.get("gpu_total_mb"), snap.get("gpu_used_mb")
     except Exception:
@@ -540,6 +619,7 @@ def audition_env():
     min_free = 2048
     try:
         from rvc_live import MIN_LIVE_FREE_VRAM_MB
+
         min_free = int(MIN_LIVE_FREE_VRAM_MB)
     except Exception:
         pass
@@ -547,20 +627,27 @@ def audition_env():
 
     holder = gpu_holder_reason()
     if not holder:
-        for running, why in ((live_running, "实时变声正在运行"),
-                             (cascade_running, "级联变声正在运行"),
-                             (offline_running, "离线变声任务正在运行")):
+        for running, why in (
+            (live_running, "实时变声正在运行"),
+            (cascade_running, "级联变声正在运行"),
+            (offline_running, "离线变声任务正在运行"),
+        ):
             if running:
                 holder = why
                 break
     low_vram = free is not None and free < min_free
     return {
-        "live_running": live_running, "live_exp": live_exp,
-        "cascade_running": cascade_running, "offline_running": offline_running,
+        "live_running": live_running,
+        "live_exp": live_exp,
+        "cascade_running": cascade_running,
+        "offline_running": offline_running,
         "tts_worker": tts_worker,
         "rvc_worker": rvc_worker,
-        "gpu_total_mb": total, "gpu_used_mb": used, "gpu_free_mb": free,
-        "min_free_vram_mb": min_free, "low_vram": low_vram,
+        "gpu_total_mb": total,
+        "gpu_used_mb": used,
+        "gpu_free_mb": free,
+        "min_free_vram_mb": min_free,
+        "low_vram": low_vram,
         "busy_reason": holder,
         # 离线批量能否开跑（实时/级联/离线在跑或显存不足都不行）
         "batch_ready": not holder and not low_vram,
@@ -573,18 +660,24 @@ def audition_env():
 def audition_sources():
     """试音间里已备好的源音频（最近在前），供前端复用/展示。"""
     import soundfile as sf
+
     items = []
-    files = sorted(AUDITION_DIR.glob("src_*.wav"), key=lambda p: p.stat().st_mtime,
-                   reverse=True)
+    files = sorted(AUDITION_DIR.glob("src_*.wav"), key=lambda p: p.stat().st_mtime, reverse=True)
     for p in files[:SRC_KEEP]:
         try:
             info = sf.info(str(p))
             dur = round(info.frames / info.samplerate, 1) if info.samplerate else 0.0
         except Exception:
             dur = 0.0
-        items.append({"source_id": p.stem, "url": f"/api/media/outputs/audition/{p.name}",
-                      "duration_s": dur, "builtin": p.stem == "src_builtin",
-                      "created_at": int(p.stat().st_mtime)})
+        items.append(
+            {
+                "source_id": p.stem,
+                "url": f"/api/media/outputs/audition/{p.name}",
+                "duration_s": dur,
+                "builtin": p.stem == "src_builtin",
+                "created_at": int(p.stat().st_mtime),
+            }
+        )
     return {"sources": items}
 
 
@@ -610,13 +703,11 @@ def _prune_sources(keep_id: str = "") -> None:
     if len(files) <= SRC_HARD_CAP:
         return
     protected = {keep_id, _active_source_id(), "src_builtin"}
-    for p in files[:len(files) - SRC_KEEP]:
+    for p in files[: len(files) - SRC_KEEP]:
         if p.stem in protected:
             continue
-        try:
+        with contextlib.suppress(Exception):
             p.unlink(missing_ok=True)
-        except Exception:
-            pass
 
 
 def _store_source(raw: bytes, suffix: str) -> dict:
@@ -630,43 +721,51 @@ def _store_source(raw: bytes, suffix: str) -> dict:
     try:
         _preprocess16k(raw_path, out_path)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=400,
-                            detail=f"音频无法识别（支持 wav/mp3/m4a/ogg/webm 等）：{e}")
+        raise HTTPException(
+            status_code=400, detail=f"音频无法识别（支持 wav/mp3/m4a/ogg/webm 等）：{e}"
+        )
     finally:
-        try:
+        with contextlib.suppress(Exception):
             raw_path.unlink(missing_ok=True)
-        except Exception:
-            pass
     try:
         import soundfile as sf
+
         info = sf.info(str(out_path))
         dur = info.frames / info.samplerate if info.samplerate else 0.0
     except Exception:
         dur = 0.0
     if dur < MIN_SOURCE_S:
         out_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400,
-                            detail=f"音频太短（{dur:.1f}s），至少要说满 {MIN_SOURCE_S:.0f} 秒")
+        raise HTTPException(
+            status_code=400, detail=f"音频太短（{dur:.1f}s），至少要说满 {MIN_SOURCE_S:.0f} 秒"
+        )
     if dur > MAX_SOURCE_S:
         out_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400,
-                            detail=f"音频太长（{dur:.0f}s），试音间请用 {MAX_SOURCE_S:.0f} 秒以内的片段"
-                                   f"（每个音色要单独跑一遍，源太长会等到很久）")
+        raise HTTPException(
+            status_code=400,
+            detail=f"音频太长（{dur:.0f}s），试音间请用 {MAX_SOURCE_S:.0f} 秒以内的片段"
+            f"（每个音色要单独跑一遍，源太长会等到很久）",
+        )
     _prune_sources(keep_id=src_id)
-    return {"source_id": src_id, "url": f"/api/media/outputs/audition/{out_path.name}",
-            "duration_s": round(dur, 1)}
+    return {
+        "source_id": src_id,
+        "url": f"/api/media/outputs/audition/{out_path.name}",
+        "duration_s": round(dur, 1),
+    }
 
 
 @router.post("/audition/source")
 async def audition_source(file: UploadFile = File(...)):
     """上传/录音落成试音音频（同一段素材会被所有选中音色共用）。"""
     if (file.size or 0) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413,
-                            detail=f"文件过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB")
+        raise HTTPException(
+            status_code=413, detail=f"文件过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB"
+        )
     raw = await file.read()
     if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413,
-                            detail=f"文件过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB")
+        raise HTTPException(
+            status_code=413, detail=f"文件过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB"
+        )
     if not raw:
         raise HTTPException(status_code=400, detail="上传内容为空")
     suffix = Path(file.filename or "a.wav").suffix.lower() or ".wav"
@@ -690,12 +789,17 @@ def audition_source_builtin():
             raise HTTPException(status_code=500, detail=f"内置源句转码失败：{e}")
     try:
         import soundfile as sf
+
         info = sf.info(str(dst))
         dur = round(info.frames / info.samplerate, 1) if info.samplerate else 0.0
     except Exception:
         dur = 0.0
-    return {"source_id": dst.stem, "url": f"/api/media/outputs/audition/{dst.name}",
-            "duration_s": dur, "builtin": True}
+    return {
+        "source_id": dst.stem,
+        "url": f"/api/media/outputs/audition/{dst.name}",
+        "duration_s": dur,
+        "builtin": True,
+    }
 
 
 class TryRequest(BaseModel):
@@ -718,7 +822,7 @@ def audition_try(req: TryRequest):
     voice_ids: list[str] = []
     for v in req.voice_ids:
         v = (v or "").strip()
-        if v and v not in voice_ids:       # 去重但保序：用户多选时不该重复跑
+        if v and v not in voice_ids:  # 去重但保序：用户多选时不该重复跑
             voice_ids.append(v)
     if not voice_ids:
         raise HTTPException(status_code=400, detail="请至少选择一个音色")
@@ -752,24 +856,29 @@ def audition_try(req: TryRequest):
         raise HTTPException(status_code=409, detail=f"{busy}，请先等它结束（避免争抢显卡）")
     try:
         from rvc_live import _live_proc_alive
+
         if _live_proc_alive():
-            raise HTTPException(status_code=409,
-                                detail="实时变声正在运行，请先停止再批量试音（避免争抢显卡）")
+            raise HTTPException(
+                status_code=409, detail="实时变声正在运行，请先停止再批量试音（避免争抢显卡）"
+            )
     except HTTPException:
         raise
     except Exception:
         pass
     try:
         from cascade import _cascade_alive
+
         if _cascade_alive():
-            raise HTTPException(status_code=409,
-                                detail="级联变声正在运行，请先停止再批量试音（避免争抢显卡）")
+            raise HTTPException(
+                status_code=409, detail="级联变声正在运行，请先停止再批量试音（避免争抢显卡）"
+            )
     except HTTPException:
         raise
     except Exception:
         pass
     try:
         from offline_vc import OFFLINEVC_STATE
+
         if OFFLINEVC_STATE.get("running"):
             raise HTTPException(status_code=409, detail="离线变声任务正在运行，请先等它完成")
     except HTTPException:
@@ -785,16 +894,45 @@ def audition_try(req: TryRequest):
 
     _CANCEL.clear()
     task_id = f"aud_{int(time.time() * 1000)}"
-    _mark(task_id=task_id, running=True, status="running", mode=mode,
-          total=len(voice_ids), finished=0, current="", current_name="",
-          message="排队中…", error="", results=[],
-          scoring=False, score_finished=0, score_total=0,
-          source_name=src.name if src else "", text=text)
-    threading.Thread(target=_worker, daemon=True,
-                     args=(task_id, voice_ids, mode, src, text,
-                           int(req.pitch), float(req.index_rate), bool(req.score))).start()
-    return {"ok": True, "task_id": task_id, "total": len(voice_ids), "mode": mode,
-            "score": bool(req.score)}
+    _mark(
+        task_id=task_id,
+        running=True,
+        status="running",
+        mode=mode,
+        total=len(voice_ids),
+        finished=0,
+        current="",
+        current_name="",
+        message="排队中…",
+        error="",
+        results=[],
+        scoring=False,
+        score_finished=0,
+        score_total=0,
+        source_name=src.name if src else "",
+        text=text,
+    )
+    threading.Thread(
+        target=_worker,
+        daemon=True,
+        args=(
+            task_id,
+            voice_ids,
+            mode,
+            src,
+            text,
+            int(req.pitch),
+            float(req.index_rate),
+            bool(req.score),
+        ),
+    ).start()
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "total": len(voice_ids),
+        "mode": mode,
+        "score": bool(req.score),
+    }
 
 
 @router.get("/audition/task")
@@ -838,6 +976,7 @@ def audition_history(limit: int = 50):
     limit = max(1, min(int(limit), 100))
     try:
         from history import query as history_query
+
         return history_query(kind="trial", limit=limit)
     except Exception:
         return {"items": [], "total": 0, "limit": limit, "offset": 0}

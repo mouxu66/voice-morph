@@ -159,6 +159,10 @@ interface ElectronBridge {
   setupRunWizard?: () => Promise<{ changed: boolean } & SetupStatus>;
   setupReset?: () => Promise<{ ok: boolean } & SetupStatus>;
   setupShowConfig?: () => Promise<{ ok: boolean; path: string }>;
+  // ---- 构建监听器 ----
+  buildWatchStart?: () => Promise<{ success: boolean; message: string; pid?: number; timestamp: number }>;
+  buildWatchStop?: () => Promise<{ success: boolean; message: string; timestamp: number }>;
+  buildWatchStatus?: () => Promise<{ isRunning: boolean; pid: number | null; scriptPath: string; hasScript: boolean }>;
   // ---- 自动更新 ----
   appVersion?: () => Promise<string>;
   updateCheck?: () => Promise<UpdateCheck>;
@@ -312,6 +316,14 @@ export async function showSetupConfig(): Promise<void> {
   }
 }
 
+/** 构建监听器状态 */
+export type BuildWatchStatus = {
+  isRunning: boolean;
+  pid: number | null;
+  scriptPath: string;
+  hasScript: boolean;
+};
+
 // ---------------- 自动扫描 / 下载指引 ----------------
 
 /** 是否能自动扫描本机（桌面壳内才有；网页模式返回 false，UI 隐藏扫描入口） */
@@ -347,9 +359,44 @@ export async function scanSetup(kinds?: SetupKind[]): Promise<ScanResult | null>
 export async function openGuideLink(kind: SetupKind, index: number): Promise<boolean> {
   if (!electron?.setupOpenGuideLink) return false;
   try {
-    const r = await electron.setupOpenGuideLink(kind, index);
-    return Boolean(r?.ok);
+    return await electron.setupOpenGuideLink(kind, index);
+    return false;
   } catch {
     return false;
+  }
+}
+
+// ---------------- 构建监听器 ----------------
+
+/** 是否能使用构建监听器（桌面壳内才有） */
+export const hasBuildWatch = Boolean(electron?.buildWatchStatus);
+
+/** 启动构建监听器 */
+export async function startBuildWatch(): Promise<{ success: boolean; message: string; pid?: number } | null> {
+  if (!electron?.buildWatchStart) return null;
+  try {
+    return await electron.buildWatchStart();
+  } catch {
+    return null;
+  }
+}
+
+/** 停止构建监听器 */
+export async function stopBuildWatch(): Promise<{ success: boolean; message: string } | null> {
+  if (!electron?.buildWatchStop) return null;
+  try {
+    return await electron.buildWatchStop();
+  } catch {
+    return null;
+  }
+}
+
+/** 查询构建监听器状态 */
+export async function getBuildWatchStatus(): Promise<BuildWatchStatus | null> {
+  if (!electron?.buildWatchStatus) return null;
+  try {
+    return await electron.buildWatchStatus();
+  } catch {
+    return null;
   }
 }

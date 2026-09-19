@@ -25,6 +25,7 @@ v3 变更（2026-09-08）：
 启动：
     D:/变声/tts_trial/venv312/Scripts/python.exe qwen3_tts_service.py
 """
+
 import asyncio
 import gc
 import io
@@ -43,11 +44,15 @@ from faster_qwen3_tts import FasterQwen3TTS
 
 try:
     import config as _cfg
+
     MODEL_DIR = str(_cfg.QWEN_MODEL_DIR)
 except ImportError:  # 直接运行 worker（cwd 非 m2_server）时回退环境变量/相对默认
     MODEL_DIR = os.environ.get(
         "VM_QWEN_MODEL_DIR",
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tts_models", "qwen3-tts-1.7b-base")))
+        os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "tts_models", "qwen3-tts-1.7b-base")
+        ),
+    )
 WHISPER_SIZE = os.environ.get("VM_WHISPER_SIZE", "small")
 
 app = FastAPI(title="Qwen3-TTS 通用音色 worker (faster-qwen3-tts)")
@@ -72,8 +77,13 @@ _STREAM_CHUNK = int(os.environ.get("VM_TTS_CHUNK", "12"))
 def _load():
     global MODEL
     MODEL = FasterQwen3TTS.from_pretrained(
-        MODEL_DIR, device="cuda", dtype=torch.bfloat16,
-        attn_implementation="sdpa", max_seq_len=4096, qwentts_use_fa=False)
+        MODEL_DIR,
+        device="cuda",
+        dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+        max_seq_len=4096,
+        qwentts_use_fa=False,
+    )
     # 捕获 predictor/talker CUDA 图，消除首句/首包开销（等价于旧 fast_tts 引擎的作用）
     MODEL.warmup()
 
@@ -81,14 +91,14 @@ def _load():
 @app.get("/health")
 def health():
     warmed = bool(MODEL is not None and getattr(MODEL, "_warmed_up", False))
-    return {"status": "ok", "version": 7, "tts_engine": "faster-qwen3-tts",
-            "warmed_up": warmed}
+    return {"status": "ok", "version": 7, "tts_engine": "faster-qwen3-tts", "warmed_up": warmed}
 
 
 def _get_whisper():
     global WHISPER
     if WHISPER is None:
         from faster_whisper import WhisperModel
+
         WHISPER = WhisperModel(WHISPER_SIZE, device="cuda", compute_type="float16")
     return WHISPER
 
@@ -103,11 +113,9 @@ def _transcribe(path: str, vad_filter: bool = True, fast: bool = False) -> dict:
     fast=True 供级联实时链路：短句（0.5~6s）用 beam_size=1 + 免时间戳，
     解码耗时约降一半以上；切片转写/质检等离线场景仍走默认高质量参数。
     """
-    kw = dict(language="zh", vad_filter=vad_filter,
-              initial_prompt="以下是简体中文。\n")
+    kw = {"language": "zh", "vad_filter": vad_filter, "initial_prompt": "以下是简体中文。\n"}
     if fast:
-        kw.update(beam_size=1, best_of=1, condition_on_previous_text=False,
-                  without_timestamps=True)
+        kw.update(beam_size=1, best_of=1, condition_on_previous_text=False, without_timestamps=True)
     with _GPU_LOCK:
         segments, _info = _get_whisper().transcribe(path, **kw)
     texts, logprobs, nospeech = [], [], []
@@ -131,7 +139,8 @@ def _speaker_embedding(path: str) -> np.ndarray:
     """
     with _GPU_LOCK:
         items = MODEL.model.create_voice_clone_prompt(
-            ref_audio=path, ref_text=".", x_vector_only_mode=True)
+            ref_audio=path, ref_text=".", x_vector_only_mode=True
+        )
     item = items[0] if isinstance(items, (list, tuple)) else items
     emb = item.ref_spk_embedding
     if torch.is_tensor(emb):
@@ -149,8 +158,7 @@ async def analyze(req: Request):
     每簇代表切片 = 质量分最高且靠近簇质心的成员。
     """
     body = await req.json()
-    return await asyncio.get_running_loop().run_in_executor(
-        None, lambda: _analyze_blocking(body))
+    return await asyncio.get_running_loop().run_in_executor(None, lambda: _analyze_blocking(body))
 
 
 def _analyze_blocking(body: dict) -> dict:
@@ -162,14 +170,22 @@ def _analyze_blocking(body: dict) -> dict:
     entries = []
     errors: list[str] = []
     import traceback
+
     for c in clips:
         try:
             tr = _transcribe(c["path"])
             if not tr["text"] or len(tr["text"]) < 4:
                 continue  # 无有效人声/太短的切片不参与
             emb = _speaker_embedding(c["path"])
-            entries.append({"name": c["name"], "path": c["path"], "text": tr["text"],
-                            "quality": tr["quality"], "emb": emb})
+            entries.append(
+                {
+                    "name": c["name"],
+                    "path": c["path"],
+                    "text": tr["text"],
+                    "quality": tr["quality"],
+                    "emb": emb,
+                }
+            )
         except Exception as e:
             tb = traceback.format_exc()
             print(f"[analyze] FAIL {c['name']}: {e}\n{tb}", flush=True)
@@ -195,21 +211,31 @@ def _analyze_blocking(body: dict) -> dict:
     for ci, members in enumerate(clusters):
         center = np.mean([entries[j]["emb"] for j in members], axis=0)
         center /= max(np.linalg.norm(center), 1e-6)
-        ranked = sorted(members, key=lambda j: (
-            -float(np.dot(entries[j]["emb"], center)), -entries[j]["quality"]))
-        out.append({
-            "cluster": ci,
-            "size": len(members),
-            "members": [entries[j]["name"] for j in ranked],
-            "rep": {"name": entries[ranked[0]]["name"],
+        ranked = sorted(
+            members,
+            key=lambda j: (-float(np.dot(entries[j]["emb"], center)), -entries[j]["quality"]),
+        )
+        out.append(
+            {
+                "cluster": ci,
+                "size": len(members),
+                "members": [entries[j]["name"] for j in ranked],
+                "rep": {
+                    "name": entries[ranked[0]]["name"],
                     "path": entries[ranked[0]]["path"],
-                    "text": entries[ranked[0]]["text"]},
-        })
+                    "text": entries[ranked[0]]["text"],
+                },
+            }
+        )
     out.sort(key=lambda c: -c["size"])
     if min_cluster_size > 1:
         out = [c for c in out if c["size"] >= min_cluster_size]
-    return {"clusters": out, "kept": len(entries), "elapsed_s": round(time.time() - t0, 1),
-            "errors": errors[:5]}
+    return {
+        "clusters": out,
+        "kept": len(entries),
+        "elapsed_s": round(time.time() - t0, 1),
+        "errors": errors[:5],
+    }
 
 
 def _trim_ref(ref_audio: str, ref_text: str) -> tuple:
@@ -227,8 +253,9 @@ def _trim_ref(ref_audio: str, ref_text: str) -> tuple:
     if dur <= REF_MAX_S:
         return ref_audio, ref_text
     n = int(REF_MAX_S * sr)
-    tmp = os.path.join(os.path.dirname(ref_audio),
-                       f"_trim_{int(time.time() * 1000)}_{os.getpid()}.wav")
+    tmp = os.path.join(
+        os.path.dirname(ref_audio), f"_trim_{int(time.time() * 1000)}_{os.getpid()}.wav"
+    )
     sf.write(tmp, d[:n], sr, format="WAV")
     if ref_text:
         keep = max(int(len(ref_text) * REF_MAX_S / dur), 4)
@@ -240,15 +267,15 @@ def _trim_ref(ref_audio: str, ref_text: str) -> tuple:
 def _gen_kwargs(body: dict) -> dict:
     """透传生成参数白名单：faster API 不支持 use_cache 等旧字段，只放它认的。"""
     out = {}
-    for k in ("do_sample", "max_new_tokens", "top_k", "temperature",
-              "top_p", "repetition_penalty"):
+    for k in ("do_sample", "max_new_tokens", "top_k", "temperature", "top_p", "repetition_penalty"):
         if body.get(k) is not None:
             out[k] = body[k]
     return out
 
 
-def _tts_blocking(text: str, language: str, ref_audio: str, ref_text: str,
-                  gen_kwargs: dict) -> tuple:
+def _tts_blocking(
+    text: str, language: str, ref_audio: str, ref_text: str, gen_kwargs: dict
+) -> tuple:
     """同步 GPU 推理（由端点放进线程池执行）：直接走 faster 原生 generate_voice_clone。
 
     faster 后端自带 CUDA Graph 加速（warmup 已捕获），等价旧 fast_tts 引擎且零额外依赖。
@@ -256,8 +283,13 @@ def _tts_blocking(text: str, language: str, ref_audio: str, ref_text: str,
     """
     with _GPU_LOCK:
         wavs, sr = MODEL.generate_voice_clone(
-            text=text, language=language, ref_audio=ref_audio, ref_text=ref_text,
-            xvec_only=not (ref_text or "").strip(), **gen_kwargs)
+            text=text,
+            language=language,
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            xvec_only=not (ref_text or "").strip(),
+            **gen_kwargs,
+        )
         return wavs, sr, True
 
 
@@ -295,9 +327,14 @@ def _split_segments(text: str, max_chars: int = _SEG_MAX_CHARS) -> list:
     return out
 
 
-def _tts_style_blocking(text: str, language: str, style_audio: str,
-                        style_text: str, gen_kwargs: dict,
-                        seg_chars: int = _SEG_MAX_CHARS):
+def _tts_style_blocking(
+    text: str,
+    language: str,
+    style_audio: str,
+    style_text: str,
+    gen_kwargs: dict,
+    seg_chars: int = _SEG_MAX_CHARS,
+):
     """风格参考 ICL 合成：音频未带文字稿则先 whisper 转写，再按段复用同一
     短风格参考逐段生成并拼接。返回 (wav, sr, n_segs, fast_used)。
 
@@ -337,6 +374,7 @@ async def emb(req: Request):
         return {"dim": int(e.shape[0]), "emb": e.tolist()}
     except Exception as exc:
         import traceback
+
         print(f"[emb] FAIL {path}: {exc}\n{traceback.format_exc()}", flush=True)
         return {"error": str(exc)}
 
@@ -365,17 +403,22 @@ async def tts(req: Request):
     if style_ref.strip() and os.path.isfile(style_ref):
         seg = seg_chars if seg_chars > 0 else _SEG_MAX_CHARS
         wavs, sr, n_segs, fast_used = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: _tts_style_blocking(text, language, style_ref, style_text,
-                                              gen_kwargs, seg))
+            None,
+            lambda: _tts_style_blocking(text, language, style_ref, style_text, gen_kwargs, seg),
+        )
     else:
         # GPU 推理放线程池执行：async 端点里同步推理会堵死整个事件循环
         # （级联流式时 /health /transcribe /状态查询全卡死，坑 5）
         wavs, sr, fast_used = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: _tts_blocking(text, language, ref_audio, ref_text, gen_kwargs))
+            None, lambda: _tts_blocking(text, language, ref_audio, ref_text, gen_kwargs)
+        )
     buf = io.BytesIO()
     sf.write(buf, wavs[0], sr, format="WAV")
-    return Response(content=buf.getvalue(), media_type="audio/wav",
-                    headers={"X-Fast-TTS": "1" if fast_used else "0"})
+    return Response(
+        content=buf.getvalue(),
+        media_type="audio/wav",
+        headers={"X-Fast-TTS": "1" if fast_used else "0"},
+    )
 
 
 def _frame_pcm(arr: "np.ndarray") -> bytes:
@@ -422,14 +465,26 @@ async def tts_stream(req: Request):
     def gen_sync():
         with _GPU_LOCK:
             for audio_chunk, _sr, _timing in MODEL.generate_voice_clone_streaming(
-                    text=text, language=language, ref_audio=ref, ref_text=rt,
-                    chunk_size=chunk_size, xvec_only=xvec_only, **gen_kwargs):
+                text=text,
+                language=language,
+                ref_audio=ref,
+                ref_text=rt,
+                chunk_size=chunk_size,
+                xvec_only=xvec_only,
+                **gen_kwargs,
+            ):
                 yield _frame_pcm(audio_chunk)
 
     return StreamingResponse(
-        gen_sync(), media_type="application/octet-stream",
-        headers={"X-Sample-Rate": "24000", "X-Format": "f32le",
-                 "X-Fast-TTS": "1", "Cache-Control": "no-store"})
+        gen_sync(),
+        media_type="application/octet-stream",
+        headers={
+            "X-Sample-Rate": "24000",
+            "X-Format": "f32le",
+            "X-Fast-TTS": "1",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.post("/transcribe")
@@ -443,9 +498,11 @@ async def transcribe_ep(req: Request):
         return {"error": f"文件不存在: {path}"}
     try:
         return await asyncio.get_running_loop().run_in_executor(
-            None, lambda: _transcribe(path, vad_filter, fast))
+            None, lambda: _transcribe(path, vad_filter, fast)
+        )
     except Exception as exc:
         import traceback
+
         print(f"[transcribe] FAIL {path}: {exc}\n{traceback.format_exc()}", flush=True)
         return {"error": str(exc)}
 
@@ -460,8 +517,13 @@ def _get_custom_model(model_dir: str):
     if os.path.normpath(model_dir) == os.path.normpath(MODEL_DIR):
         if MODEL is None:
             MODEL = FasterQwen3TTS.from_pretrained(
-                MODEL_DIR, device="cuda", dtype=torch.bfloat16,
-                attn_implementation="sdpa", max_seq_len=4096, qwentts_use_fa=False)
+                MODEL_DIR,
+                device="cuda",
+                dtype=torch.bfloat16,
+                attn_implementation="sdpa",
+                max_seq_len=4096,
+                qwentts_use_fa=False,
+            )
             MODEL.warmup()
         return MODEL
     if _ALT_MODEL["dir"] == os.path.normpath(model_dir) and _ALT_MODEL["model"] is not None:
@@ -474,8 +536,13 @@ def _get_custom_model(model_dir: str):
     gc.collect()
     torch.cuda.empty_cache()
     m = FasterQwen3TTS.from_pretrained(
-        model_dir, device="cuda", dtype=torch.bfloat16,
-        attn_implementation="sdpa", max_seq_len=4096, qwentts_use_fa=False)
+        model_dir,
+        device="cuda",
+        dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+        max_seq_len=4096,
+        qwentts_use_fa=False,
+    )
     m.warmup()
     _ALT_MODEL.update(dir=os.path.normpath(model_dir), model=m)
     return m
@@ -504,13 +571,18 @@ async def tts_speaker(req: Request):
     if not os.path.isdir(model_dir):
         return Response(f"model_dir 不存在: {model_dir}".encode(), status_code=400)
     wavs, sr = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: _tts_speaker_blocking(model_dir, speaker, text, language))
+        None, lambda: _tts_speaker_blocking(model_dir, speaker, text, language)
+    )
     buf = io.BytesIO()
     sf.write(buf, wavs[0], sr, format="WAV")
-    return Response(content=buf.getvalue(), media_type="audio/wav",
-                    headers={"X-Model-Slot": "custom" if _ALT_MODEL["dir"] else "base"})
+    return Response(
+        content=buf.getvalue(),
+        media_type="audio/wav",
+        headers={"X-Model-Slot": "custom" if _ALT_MODEL["dir"] else "base"},
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="127.0.0.1", port=8001)

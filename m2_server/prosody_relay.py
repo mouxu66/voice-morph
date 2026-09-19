@@ -13,6 +13,7 @@
 代价：ASR + TTS 串行约 1~3s，且 ASR 出错会直接改变说话内容（实时链路已按
 句切块，说错一句只影响那一句）。
 """
+
 from pathlib import Path
 
 import config as cfg
@@ -65,8 +66,12 @@ def transcribe(path: str | Path) -> str:
     return str(res.get("text") or "").strip()
 
 
-def relay(input_path: str | Path, voice_id: str, out_path: str | Path | None = None,
-          language: str = "Chinese") -> Path:
+def relay(
+    input_path: str | Path,
+    voice_id: str,
+    out_path: str | Path | None = None,
+    language: str = "Chinese",
+) -> Path:
     """把源音频重说一遍：ASR → TTS，输出中继 wav（音色仍是 TTS 的，待 RVC 转换）。
 
     返回输出路径；转写为空或 TTS 失败时抛 RuntimeError，由调用方决定是报错
@@ -82,8 +87,7 @@ def relay(input_path: str | Path, voice_id: str, out_path: str | Path | None = N
 
     ref_audio = resolve_ref_audio(voice_id)
     ref_text = resolve_ref_text(voice_id)
-    wav_bytes = qwen3_tts.tts(text, ref_audio, ref_text, language=language,
-                              voice_id=voice_id)
+    wav_bytes = qwen3_tts.tts(text, ref_audio, ref_text, language=language, voice_id=voice_id)
     if not wav_bytes:
         raise RuntimeError("TTS 返回空音频")
 

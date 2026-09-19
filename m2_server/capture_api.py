@@ -3,24 +3,30 @@
 自 server.py 拆出（行为不变）；复用 pipeline_api.pipeline_job 与 mine_api._mine_worker_thread。
 app 装配见 server.py。
 """
+
 import threading
 import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-
 from mine_api import _mine_worker_thread
 from pipeline_api import pipeline_job
-from runtime import (API_PREFIX, CAPTURE_STATE, PIPELINE_STATE, RAW_DIR,
-                     pipeline_cancel, update_pipeline)
+from pydantic import BaseModel
+from runtime import (
+    API_PREFIX,
+    CAPTURE_STATE,
+    PIPELINE_STATE,
+    RAW_DIR,
+    pipeline_cancel,
+    update_pipeline,
+)
 
 router = APIRouter(prefix=API_PREFIX)
 
 
 class CaptureLoopbackRequest(BaseModel):
-    seconds: float = 15.0   # 录制时长（3~120 秒）
-    auto: bool = True       # 录完自动跑 流水线（demucs 去BGM+切片）+ 音色挖掘
+    seconds: float = 15.0  # 录制时长（3~120 秒）
+    auto: bool = True  # 录完自动跑 流水线（demucs 去BGM+切片）+ 音色挖掘
 
 
 def _capture_auto_worker(files: list[Path]):
@@ -29,7 +35,7 @@ def _capture_auto_worker(files: list[Path]):
         pipeline_job(files)
         if PIPELINE_STATE.get("status") == "done":
             _mine_worker_thread()
-    except Exception as e:   # 后台流程：记录即可，不中断服务
+    except Exception as e:  # 后台流程：记录即可，不中断服务
         print(f"[capture] 自动解析/挖掘失败: {e}")
 
 
@@ -63,10 +69,22 @@ def capture_loopback(req: CaptureLoopbackRequest | None = None):
     if not req.auto:
         return {"ok": True, "file": name, "seconds": seconds, "auto": False}
     if PIPELINE_STATE["running"]:
-        return {"ok": True, "file": name, "seconds": seconds, "auto": False,
-                "note": "流水线忙，已保存素材但未自动挖掘"}
+        return {
+            "ok": True,
+            "file": name,
+            "seconds": seconds,
+            "auto": False,
+            "note": "流水线忙，已保存素材但未自动挖掘",
+        }
     pipeline_cancel.clear()
-    update_pipeline(running=True, status="running", step="prepare",
-                    message="准备解析内录素材…", percent=1, clips=0, error="")
+    update_pipeline(
+        running=True,
+        status="running",
+        step="prepare",
+        message="准备解析内录素材…",
+        percent=1,
+        clips=0,
+        error="",
+    )
     threading.Thread(target=_capture_auto_worker, args=([dest],), daemon=True).start()
     return {"ok": True, "file": name, "seconds": seconds, "auto": True}

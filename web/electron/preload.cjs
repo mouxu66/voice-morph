@@ -41,6 +41,14 @@ contextBridge.exposeInMainWorld("electron", {
   /** 在资源管理器中定位 config.json */
   setupShowConfig: () => ipcRenderer.invoke("setup:show-config"),
 
+  // ---- 构建监听器 ----
+  /** 启动自动构建监听器 */
+  buildWatchStart: () => ipcRenderer.invoke("build-watch:start"),
+  /** 停止自动构建监听器 */
+  buildWatchStop: () => ipcRenderer.invoke("build-watch:stop"),
+  /** 查询监听器状态 */
+  buildWatchStatus: () => ipcRenderer.invoke("build-watch:status"),
+
   // ---- 应用自动更新 ----
   appVersion: () => ipcRenderer.invoke("app:version"),
   /** 检查更新：返回 { ok, configured, hasUpdate, current, latest, reason } */

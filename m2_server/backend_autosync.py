@@ -17,6 +17,7 @@ web/dist；voice-morph-desktop/resources/backend 下另有一份兜底副本，�
 失败绝不抛出、绝不阻塞启动：同步跑在 daemon 线程里，任何异常只记日志。
 设置环境变量 VM_BACKEND_AUTOSYNC=0 可整体关闭。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -72,7 +73,9 @@ def _prune_empty_dirs(dst: Path, src: Path) -> int:
     """镜像清理：删掉副本中"源里已不存在"的空目录，返回删除数。"""
     removed = 0
     # 自底向上：先处理深层
-    dirs = sorted((p for p in dst.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True)
+    dirs = sorted(
+        (p for p in dst.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True
+    )
     for d in dirs:
         rel = d.relative_to(dst)
         if (src / rel).is_dir():
@@ -150,7 +153,10 @@ def sync_backend_copy(project_root: Path) -> dict:
             if any(stat.values()):
                 logger.info(
                     "[autosync] %s -> %s: 更新 %d, 清理 %d%s",
-                    src_rel, dst_name, stat["copied"], stat["deleted"],
+                    src_rel,
+                    dst_name,
+                    stat["copied"],
+                    stat["deleted"],
                     f", 失败 {stat['errors']}" if stat["errors"] else "",
                 )
             result["pairs"][dst_name] = stat

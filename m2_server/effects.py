@@ -8,6 +8,7 @@
 用途：离线变声、级联输出、TTS 产物的「最后一公里」加工
 （例：目标音色 + 教堂混响 / 老电话 / 机器人 / 广播电台感）。
 """
+
 import math
 from pathlib import Path
 
@@ -21,6 +22,7 @@ except ImportError:
 
 
 # ---------------- 基础工具 ----------------
+
 
 def _mono(x: np.ndarray) -> np.ndarray:
     if x.ndim > 1:
@@ -46,12 +48,13 @@ def _norm(x: np.ndarray, peak: float = 0.97) -> np.ndarray:
 
 # ---------------- 各效果实现 ----------------
 
+
 def fx_reverb(x: np.ndarray, sr: int, p: dict) -> np.ndarray:
     """Schroeder 混响：4 comb + 2 allpass。room 越大衰减越慢、湿声越多。"""
-    room = _f(p, "room", 0.5, 0.05, 0.95)      # 房间尺寸 → 衰减/预延迟
+    room = _f(p, "room", 0.5, 0.05, 0.95)  # 房间尺寸 → 衰减/预延迟
     wet = _f(p, "wet", 0.35, 0.0, 1.0)
-    damp = _f(p, "damp", 0.3, 0.0, 0.9)        # 高频阻尼（软墙面感）
-    rt60 = 0.3 + room * 4.2                    # 0.3s~4.5s
+    damp = _f(p, "damp", 0.3, 0.0, 0.9)  # 高频阻尼（软墙面感）
+    rt60 = 0.3 + room * 4.2  # 0.3s~4.5s
 
     # comb：按 rt60 反推反馈系数 g = 10^(-3*L/(sr*rt60))
     delays_ms = [29.7, 37.1, 41.1, 43.7]
@@ -108,7 +111,7 @@ def fx_echo(x: np.ndarray, sr: int, p: dict) -> np.ndarray:
     fb = feedback
     while tap < len(buf) and fb > 0.01:
         src = tap - n
-        seg = buf[src: src + (len(buf) - tap)] * fb
+        seg = buf[src : src + (len(buf) - tap)] * fb
         buf[tap:] += seg
         tap += n
         fb *= feedback
@@ -162,8 +165,7 @@ def fx_pitch(x: np.ndarray, sr: int, p: dict) -> np.ndarray:
     semitones = _f(p, "semitones", 0.0, -12.0, 12.0)
     if abs(semitones) < 0.05:
         return x
-    y = librosa.effects.pitch_shift(y=x.astype(np.float32), sr=sr,
-                                    n_steps=semitones)
+    y = librosa.effects.pitch_shift(y=x.astype(np.float32), sr=sr, n_steps=semitones)
     return _norm(np.asarray(y, dtype=np.float32))
 
 
@@ -242,38 +244,91 @@ def fx_limiter(x: np.ndarray, sr: int, p: dict) -> np.ndarray:
 
 CATALOG: dict = {
     "reverb": {
-        "name": "混响", "icon": "reverb",
+        "name": "混响",
+        "icon": "reverb",
         "desc": "空间感（房间到大教堂）",
         "params": [
-            {"key": "room", "label": "房间尺寸", "min": 0.05, "max": 0.95, "step": 0.05, "default": 0.5},
-            {"key": "wet", "label": "湿声比例", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.35},
-            {"key": "damp", "label": "高频阻尼", "min": 0.0, "max": 0.9, "step": 0.05, "default": 0.3},
+            {
+                "key": "room",
+                "label": "房间尺寸",
+                "min": 0.05,
+                "max": 0.95,
+                "step": 0.05,
+                "default": 0.5,
+            },
+            {
+                "key": "wet",
+                "label": "湿声比例",
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.05,
+                "default": 0.35,
+            },
+            {
+                "key": "damp",
+                "label": "高频阻尼",
+                "min": 0.0,
+                "max": 0.9,
+                "step": 0.05,
+                "default": 0.3,
+            },
         ],
         "fx": fx_reverb,
     },
     "echo": {
-        "name": "回声", "icon": "echo",
+        "name": "回声",
+        "icon": "echo",
         "desc": "山谷/体育场的重复回声",
         "params": [
-            {"key": "delay_s", "label": "延迟(秒)", "min": 0.02, "max": 2.0, "step": 0.02, "default": 0.25},
-            {"key": "feedback", "label": "反馈", "min": 0.0, "max": 0.9, "step": 0.05, "default": 0.35},
-            {"key": "wet", "label": "湿声比例", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.4},
+            {
+                "key": "delay_s",
+                "label": "延迟(秒)",
+                "min": 0.02,
+                "max": 2.0,
+                "step": 0.02,
+                "default": 0.25,
+            },
+            {
+                "key": "feedback",
+                "label": "反馈",
+                "min": 0.0,
+                "max": 0.9,
+                "step": 0.05,
+                "default": 0.35,
+            },
+            {
+                "key": "wet",
+                "label": "湿声比例",
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.05,
+                "default": 0.4,
+            },
         ],
         "fx": fx_echo,
     },
     "eq": {
-        "name": "均衡器", "icon": "eq",
+        "name": "均衡器",
+        "icon": "eq",
         "desc": "三段 EQ：低/中/高频增减",
         "params": [
             {"key": "low_db", "label": "低频(dB)", "min": -18, "max": 18, "step": 1, "default": 0},
             {"key": "mid_db", "label": "中频(dB)", "min": -18, "max": 18, "step": 1, "default": 0},
-            {"key": "mid_hz", "label": "中频点(Hz)", "min": 200, "max": 6000, "step": 100, "default": 1200},
+            {
+                "key": "mid_hz",
+                "label": "中频点(Hz)",
+                "min": 200,
+                "max": 6000,
+                "step": 100,
+                "default": 1200,
+            },
             {"key": "high_db", "label": "高频(dB)", "min": -18, "max": 18, "step": 1, "default": 0},
         ],
         "fx": fx_eq,
     },
     "pitch": {
-        "name": "变调", "icon": "pitch",
+        "name": "变调",
+        "icon": "pitch",
         "desc": "升降温润度/卡通感（半音）",
         "params": [
             {"key": "semitones", "label": "半音", "min": -12, "max": 12, "step": 0.5, "default": 0},
@@ -281,66 +336,122 @@ CATALOG: dict = {
         "fx": fx_pitch,
     },
     "speed": {
-        "name": "变速", "icon": "speed",
+        "name": "变速",
+        "icon": "speed",
         "desc": "语速快慢（不变调）",
         "params": [
-            {"key": "rate", "label": "速度倍率", "min": 0.5, "max": 2.0, "step": 0.05, "default": 1.0},
+            {
+                "key": "rate",
+                "label": "速度倍率",
+                "min": 0.5,
+                "max": 2.0,
+                "step": 0.05,
+                "default": 1.0,
+            },
         ],
         "fx": fx_speed,
     },
     "telephone": {
-        "name": "电话音", "icon": "telephone",
+        "name": "电话音",
+        "icon": "telephone",
         "desc": "老座机/对讲机质感",
         "params": [
-            {"key": "drive", "label": "失真度", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.4},
+            {
+                "key": "drive",
+                "label": "失真度",
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.05,
+                "default": 0.4,
+            },
         ],
         "fx": fx_telephone,
     },
     "robot": {
-        "name": "机器人", "icon": "robot",
+        "name": "机器人",
+        "icon": "robot",
         "desc": "环形调制机械音",
         "params": [
             {"key": "freq", "label": "载波(Hz)", "min": 20, "max": 400, "step": 5, "default": 55},
-            {"key": "mix", "label": "混合比", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.85},
+            {
+                "key": "mix",
+                "label": "混合比",
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.05,
+                "default": 0.85,
+            },
         ],
         "fx": fx_robot,
     },
     "tremolo": {
-        "name": "颤音", "icon": "tremolo",
+        "name": "颤音",
+        "icon": "tremolo",
         "desc": "振幅波动（警笛/老电台）",
         "params": [
-            {"key": "rate", "label": "频率(Hz)", "min": 0.5, "max": 20.0, "step": 0.5, "default": 5.0},
+            {
+                "key": "rate",
+                "label": "频率(Hz)",
+                "min": 0.5,
+                "max": 20.0,
+                "step": 0.5,
+                "default": 5.0,
+            },
             {"key": "depth", "label": "深度", "min": 0.0, "max": 1.0, "step": 0.05, "default": 0.6},
         ],
         "fx": fx_tremolo,
     },
     "chorus": {
-        "name": "合唱", "icon": "chorus",
+        "name": "合唱",
+        "icon": "chorus",
         "desc": "单声源变厚（群感）",
         "params": [
             {"key": "depth_ms", "label": "深度(ms)", "min": 1, "max": 20, "step": 1, "default": 6},
-            {"key": "rate", "label": "摆速(Hz)", "min": 0.1, "max": 5.0, "step": 0.1, "default": 0.8},
+            {
+                "key": "rate",
+                "label": "摆速(Hz)",
+                "min": 0.1,
+                "max": 5.0,
+                "step": 0.1,
+                "default": 0.8,
+            },
             {"key": "voices", "label": "声部数", "min": 1, "max": 6, "step": 1, "default": 3},
         ],
         "fx": fx_chorus,
     },
     "limiter": {
-        "name": "限幅器", "icon": "limiter",
+        "name": "限幅器",
+        "icon": "limiter",
         "desc": "电平控制（放链尾防爆音）",
         "params": [
-            {"key": "ceiling", "label": "上限", "min": 0.5, "max": 1.0, "step": 0.01, "default": 0.95},
+            {
+                "key": "ceiling",
+                "label": "上限",
+                "min": 0.5,
+                "max": 1.0,
+                "step": 0.01,
+                "default": 0.95,
+            },
             {"key": "gain_db", "label": "增益(dB)", "min": -12, "max": 12, "step": 1, "default": 0},
         ],
         "fx": fx_limiter,
     },
 }
 
+
 # 无参目录（给前端的纯净版，不含函数）
 def catalog_meta() -> list[dict]:
     out = []
     for k, v in CATALOG.items():
-        out.append({"type": k, "name": v["name"], "icon": v["icon"],
-                    "desc": v["desc"], "params": v["params"]})
+        out.append(
+            {
+                "type": k,
+                "name": v["name"],
+                "icon": v["icon"],
+                "desc": v["desc"],
+                "params": v["params"],
+            }
+        )
     return out
 
 
@@ -366,12 +477,11 @@ def apply_chain(x: np.ndarray, sr: int, chain: list[dict]) -> tuple[np.ndarray, 
 
 # ---------------- FastAPI router ----------------
 
+import config as cfg  # noqa: E402
+import soundfile as sf  # noqa: E402
+from common import MAX_UPLOAD_BYTES  # noqa: E402
 from fastapi import APIRouter, File, HTTPException, UploadFile  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
-
-import config as cfg  # noqa: E402
-from common import MAX_UPLOAD_BYTES  # noqa: E402
-import soundfile as sf  # noqa: E402
 
 router = APIRouter(prefix="/api/effects")
 
@@ -390,6 +500,7 @@ async def effects_apply(file: UploadFile = File(...), chain: str = "[]"):
     空链直接返回原文件（前端预览直通用）。任一效果失败只跳过该环节。
     """
     import json as _json
+
     try:
         steps = _json.loads(chain or "[]")
         if not isinstance(steps, list):
@@ -398,14 +509,19 @@ async def effects_apply(file: UploadFile = File(...), chain: str = "[]"):
         raise HTTPException(status_code=400, detail=f"chain 解析失败: {e}")
 
     if (file.size or 0) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝处理")
+        raise HTTPException(
+            status_code=413, detail=f"音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝处理"
+        )
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="空文件")
     if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝处理")
+        raise HTTPException(
+            status_code=413, detail=f"音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝处理"
+        )
     try:
         import io
+
         data, sr = sf.read(io.BytesIO(raw), dtype="float32", always_2d=False)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"音频读取失败: {e}")
@@ -418,8 +534,15 @@ async def effects_apply(file: UploadFile = File(...), chain: str = "[]"):
     sf.write(str(out_path), out, sr, subtype="PCM_16")
 
     from history import register as history_register
-    history_register("fx", "", out_path.name, f"/api/media/outputs/{out_path.name}",
-                     len(out) / sr, params={"chain": steps})
+
+    history_register(
+        "fx",
+        "",
+        out_path.name,
+        f"/api/media/outputs/{out_path.name}",
+        len(out) / sr,
+        params={"chain": steps},
+    )
 
     headers = {"X-Fx-Skipped": "; ".join(skipped) or "0"}
     return FileResponse(str(out_path), media_type="audio/wav", headers=headers)
@@ -428,4 +551,5 @@ async def effects_apply(file: UploadFile = File(...), chain: str = "[]"):
 async def _run_chain_threadpool(data, sr, steps):
     """DSP 在线程池跑，避免长音频阻塞事件循环（对齐 worker 的坑 5 教训）。"""
     from fastapi.concurrency import run_in_threadpool
+
     return await run_in_threadpool(apply_chain, data, sr, steps)

@@ -10,6 +10,7 @@
 所以两个方向都要钉住。另见 `tools/check.py` 的 `_bare_runner_env()` ——
 它负责把资源**真摘掉**（PATH 层面），本文件只管探测口径。
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -47,8 +48,7 @@ def test_root_conftest_is_the_one_under_test():
     本文件会以 `AttributeError` 的形式整片红 —— 那条报错完全指不出真因。
     所以在这里正面确认加载到的是根那份、且四个被测函数都在。
     """
-    assert Path(conftest.__file__).resolve() == \
-        Path(__file__).resolve().parents[1] / "conftest.py"
+    assert Path(conftest.__file__).resolve() == Path(__file__).resolve().parents[1] / "conftest.py"
     for fn in ("bare_runner", "ffmpeg_path", "missing_local", "_on_ci"):
         assert callable(getattr(conftest, fn)), f"根 conftest 里没有 {fn}"
 

@@ -1,4 +1,5 @@
 """F5 微信语音自动重试单测（mock 掉 ctypes / 音频 / 播放）。"""
+
 import json
 import sys
 from pathlib import Path
@@ -26,8 +27,10 @@ def isolate(tmp_path, monkeypatch):
 
 def _make_wav(tmp_path, name="tts_x.wav"):
     import io
+
     import numpy as np
     import soundfile as sf
+
     buf = io.BytesIO()
     sf.write(buf, np.zeros(1600, dtype=np.float32), 16000, format="WAV")
     p = tmp_path / name
@@ -36,6 +39,7 @@ def _make_wav(tmp_path, name="tts_x.wav"):
 
 
 # ---------------- _safe_restore ----------------
+
 
 def test_safe_restore_ok(monkeypatch):
     monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
@@ -51,6 +55,7 @@ def test_safe_restore_fallback_to_reset(monkeypatch):
         if a == "restore":
             raise RuntimeError("restore boom")
         return {"ok": True}
+
     monkeypatch.setattr(wv, "_run_audio", fake)
     ok, err = wv._safe_restore()
     assert ok is True
@@ -61,6 +66,7 @@ def test_safe_restore_fallback_to_reset(monkeypatch):
 def test_safe_restore_both_fail(monkeypatch):
     def fake(a):
         raise RuntimeError("boom")
+
     monkeypatch.setattr(wv, "_run_audio", fake)
     ok, err = wv._safe_restore()
     assert ok is False
@@ -71,16 +77,19 @@ def test_restore_async_writes_back_to_history(monkeypatch, tmp_path):
     """_restore_async 应调用 _safe_restore 并把结果写回发送历史最后一条。"""
     monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))
     hist_file = tmp_path / "wechat_send_history.json"
-    hist_file.write_text(json.dumps([{"wav": "tts_x.wav", "duration_s": 1.0,
-                                      "ts": 1, "outcome": "ok"}]), encoding="utf-8")
+    hist_file.write_text(
+        json.dumps([{"wav": "tts_x.wav", "duration_s": 1.0, "ts": 1, "outcome": "ok"}]),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(wv, "HISTORY_FILE", hist_file)
-    wv._restore_async()          # 直接调用（即后台线程实体），同步跑完
+    wv._restore_async()  # 直接调用（即后台线程实体），同步跑完
     data = json.loads(hist_file.read_text("utf-8"))
     assert data[-1]["restored"] is True
     assert data[-1].get("restore_error", "MISSING") == ""
 
 
 # ---------------- _do_send 成功 / 降级 / 失败 ----------------
+
 
 class _FakeProc:
     """假播放子进程：绝不能让单测真的去启动 RVC venv 播音频。"""
@@ -94,18 +103,20 @@ class _FakeProc:
     def wait(self, timeout=None):
         return 0
 
+
 def test_do_send_success_outcome_ok(tmp_path, monkeypatch):
     _make_wav(tmp_path)
     monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
     monkeypatch.setattr(wv, "_foreground_wechat", lambda: None)
     monkeypatch.setattr(wv, "_trigger_record", lambda *a, **k: None)
-    monkeypatch.setattr(wv, "_finish_record", lambda: True)   # 点击发送成功
+    monkeypatch.setattr(wv, "_finish_record", lambda: True)  # 点击发送成功
     monkeypatch.setattr(wv, "_start_play", lambda w: _FakeProc())
     monkeypatch.setattr(wv, "_wait_play_start", lambda p, t=40.0: True)
     monkeypatch.setattr(wv, "_wait_play_done", lambda p, d: None)
     monkeypatch.setattr(wv, "_wav_duration", lambda p: 1.0)
     monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))
     from wechat_voice import SendVoiceReq
+
     res = wv._do_send(SendVoiceReq(wav="tts_x.wav"))
     assert res["ok"] is True
     assert res["outcome"] == "ok"
@@ -119,7 +130,9 @@ def test_do_send_failure_auto_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(wv, "AUTO_FALLBACK", True)
     monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
     # 新结构：前台化+定位+按下都并入 _trigger_record，失败注入点改为它
-    monkeypatch.setattr(wv, "_trigger_record", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("微信窗口找不到")))
+    monkeypatch.setattr(
+        wv, "_trigger_record", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("微信窗口找不到"))
+    )
     monkeypatch.setattr(wv, "_finish_record", lambda: None)
     monkeypatch.setattr(wv, "_start_play", lambda w: _FakeProc())
     monkeypatch.setattr(wv, "_wait_play_start", lambda p, t=40.0: True)
@@ -129,6 +142,7 @@ def test_do_send_failure_auto_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(wv, "_key", lambda *a, **k: None)
     monkeypatch.setattr(wv, "_guided_fallback", lambda w, d, s: {"steps": ["已降级"], "hint": "h"})
     from wechat_voice import SendVoiceReq
+
     res = wv._do_send(SendVoiceReq(wav="tts_x.wav"))
     assert res["outcome"] == "manual_fallback"
     assert res["ok"] is True
@@ -139,20 +153,25 @@ def test_do_send_failure_no_fallback(tmp_path, monkeypatch):
     _make_wav(tmp_path)
     monkeypatch.setattr(wv, "AUTO_FALLBACK", False)
     monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
-    monkeypatch.setattr(wv, "_trigger_record", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        wv, "_trigger_record", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     monkeypatch.setattr(wv, "_finish_record", lambda: None)
     monkeypatch.setattr(wv, "_wav_duration", lambda p: 1.0)
     monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))
     from wechat_voice import SendVoiceReq
+
     res = wv._do_send(SendVoiceReq(wav="tts_x.wav"))
     assert res.status_code == 500
     body = res.body  # JSONResponse.body
     import json
+
     data = json.loads(body)
     assert data["outcome"] == "failed"
 
 
 # ---------------- history outcome ----------------
+
 
 def test_append_history_with_outcome(tmp_path):
     wav = _make_wav(tmp_path)
@@ -167,13 +186,16 @@ def test_append_history_with_outcome(tmp_path):
 def test_send_history_backfills_old_outcome(tmp_path):
     """旧记录无 outcome 字段 → 补默认 ok。"""
     import json
+
     (tmp_path / "wechat_send_history.json").write_text(
-        json.dumps([{"wav": "a.wav", "duration_s": 1.0, "ts": 1}]), encoding="utf-8")
+        json.dumps([{"wav": "a.wav", "duration_s": 1.0, "ts": 1}]), encoding="utf-8"
+    )
     items = wv.send_history()["items"]
     assert items[0]["outcome"] == "ok"
 
 
 # ---------------- 录音环境告警落库（2026-09-18 静音事故） ----------------
+
 
 def test_append_history_records_binding_warning(tmp_path):
     """告警必须随记录落库。
@@ -204,9 +226,15 @@ def test_do_send_persists_env_warning(monkeypatch, tmp_path):
     """
     wav = _make_wav(tmp_path, "tts_1789724088659_kangaroo_v2.wav")
     warn = "微信上次录音用的是「麦克风阵列 (Senary Audio)」而不是 VB-Audio Virtual Cable"
-    monkeypatch.setattr(wv, "_prepare_recording_env", lambda: {
-        "kind": "recording_env", "summary": f"麦克风已切到 CABLE Output；⚠ {warn}",
-        "warning": warn})
+    monkeypatch.setattr(
+        wv,
+        "_prepare_recording_env",
+        lambda: {
+            "kind": "recording_env",
+            "summary": f"麦克风已切到 CABLE Output；⚠ {warn}",
+            "warning": warn,
+        },
+    )
     monkeypatch.setattr(wv, "_wav_duration", lambda p: 5.4)
     monkeypatch.setattr(wv, "_start_play", lambda p: None)
     monkeypatch.setattr(wv, "_wait_play_start", lambda p: True)
@@ -227,8 +255,9 @@ def test_do_send_persists_env_warning(monkeypatch, tmp_path):
     monkeypatch.setattr(wv, "_mic_point", lambda r: (10, 10))
 
     from wechat_voice import SendVoiceReq
+
     res = wv._do_send(SendVoiceReq(wav=wav.name))
 
     assert res["outcome"] == "ok"
-    assert "⚠" in " ".join(res["steps"])          # 响应里照旧带告警
-    assert wv.send_history()["items"][-1]["warning"] == warn   # 历史里也必须留痕
+    assert "⚠" in " ".join(res["steps"])  # 响应里照旧带告警
+    assert wv.send_history()["items"][-1]["warning"] == warn  # 历史里也必须留痕

@@ -9,6 +9,7 @@ TTS 侧的故障面与实时变声**完全不同**（后者查声卡，这里查
   2. 模型缺失时**不**再报进程项 —— 否则用户看到两条红，不知道该做哪个动作
   3. 没有参考音的音色（市场装的 RVC 权重）必须给出去哪条路才对的具体指引
 """
+
 import sys
 from pathlib import Path
 
@@ -29,13 +30,18 @@ def by_key(report, key):
 
 def build(**over):
     """默认全绿，按需覆盖单项。"""
-    kw = dict(
-        model_ok=True, model_detail="/models/qwen3-tts-1.7b-base",
-        tokenizer_ok=True, worker_alive=True,
-        voice_id="kangaroo", ref_ok=True, ref_detail="参考音就位：reference.wav",
-        out_writable=True, out_detail="/outputs（可写）",
-        tokenizer_detail="/models/qwen3-tts-tokenizer-12hz",
-    )
+    kw = {
+        "model_ok": True,
+        "model_detail": "/models/qwen3-tts-1.7b-base",
+        "tokenizer_ok": True,
+        "worker_alive": True,
+        "voice_id": "kangaroo",
+        "ref_ok": True,
+        "ref_detail": "参考音就位：reference.wav",
+        "out_writable": True,
+        "out_detail": "/outputs（可写）",
+        "tokenizer_detail": "/models/qwen3-tts-tokenizer-12hz",
+    }
     kw.update(over)
     return mod.build_tts_chain_report(**kw)
 
@@ -95,7 +101,7 @@ def test_out_dir_not_writable():
     r = build(out_writable=False, out_detail="/outputs 不可写：磁盘满")
     it = by_key(r, "out_dir")
     assert it["ok"] is False
-    assert it.get("warn") is not True     # 这条是硬阻断，不是告警
+    assert it.get("warn") is not True  # 这条是硬阻断，不是告警
     assert "磁盘" in it["detail"] or "磁盘" in it["hint"]
 
 
@@ -110,6 +116,7 @@ def test_items_are_frontend_compatible():
 def test_endpoint_probes_and_passes_through(monkeypatch):
     """端点层：确认探测结果被透传（用 monkeypatch 顶掉真实磁盘/进程探测）。"""
     import config as cfg
+
     monkeypatch.setattr(cfg, "QWEN_MODEL_DIR", Path("/nonexistent-model"))
     monkeypatch.setattr(cfg, "QWEN_TOKENIZER_DIR", Path("/nonexistent-tok"))
     monkeypatch.setattr(mod, "_probe_out_dir", lambda: (True, "/outputs（可写）"))

@@ -20,6 +20,7 @@
 手法：造一个最小仓库 + 本地裸远端，把**真实钩子**装进去，并把 `tools/check.py`
 换成"立刻成功"的桩 —— 这样能只测钩子的控制流，不必真跑 6 分钟的全量门禁。
 """
+
 from __future__ import annotations
 
 import os
@@ -43,8 +44,9 @@ def _run(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.Comp
     `UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f`（表现为
     PytestUnhandledThreadExceptionWarning，输出还可能被截断）。显式钉死才与机器无关。
     """
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", env=env)
+    return subprocess.run(
+        args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env
+    )
 
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -107,13 +109,13 @@ def test_pre_push_survives_unresolvable_upstream(repo_with_hook: Path):
     # 造出 "配置里有上游、但 refs/remotes/origin/master 不存在" 的状态
     _git(["config", "branch.master.remote", "origin"], repo)
     _git(["config", "branch.master.merge", "refs/heads/master"], repo)
-    assert _git(["for-each-ref", "refs/remotes"], repo).stdout.strip() == "", \
-        "前置条件：不应存在远程跟踪引用"
+    assert (
+        _git(["for-each-ref", "refs/remotes"], repo).stdout.strip() == ""
+    ), "前置条件：不应存在远程跟踪引用"
 
     r = _run(["git", "push", "origin", "master"], repo, env=_hook_env())
     assert r.returncode == 0, (
-        "上游不可解析时钩子不应中止推送。\n"
-        f"stdout={r.stdout}\nstderr={r.stderr}"
+        "上游不可解析时钩子不应中止推送。\n" f"stdout={r.stdout}\nstderr={r.stderr}"
     )
     # 确认确实推上去了，而不是"钩子早退跳过了一切"
     assert "master" in _git(["ls-remote", str(repo.parent / "remote.git")], repo).stdout

@@ -8,6 +8,7 @@ NameError —— 异常处理器自己炸掉，契约失效。
 
 本文件锁死这两条失败路径：**不抛异常、返回安全值**。
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -27,6 +28,7 @@ def test_find_pids_returns_empty_when_enumeration_fails(monkeypatch):
 
 def test_find_pids_parses_pids_from_stdout(monkeypatch):
     """正常路径：只取纯数字行，忽略报错文本。"""
+
     class _R:
         stdout = "1234\r\n\r\n6789\nnot a pid\n"
 
@@ -45,5 +47,5 @@ def test_kill_pids_survives_taskkill_failure(monkeypatch):
         return None
 
     monkeypatch.setattr(rvc_common.subprocess, "run", fake_run)
-    rvc_common._kill_pids([111, 222], label="test")   # 不应抛异常
+    rvc_common._kill_pids([111, 222], label="test")  # 不应抛异常
     assert len(calls) == 2, "第一个失败后仍应继续杀剩下的进程"

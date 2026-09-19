@@ -3,6 +3,7 @@
 只覆盖纯逻辑（关键词匹配 / 信号生成 / 注册表取值兜底），
 不做真实音频 IO —— 那需要真实声卡且会占住设备。
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -47,8 +48,8 @@ def test_tone_shape_and_nonzero(diag):
     buf = diag._tone(sr, ch, sec)
     assert buf.shape == (sr * sec, ch)
     assert buf.dtype == np.float32
-    assert np.abs(buf).max() > 1e-3          # 有信号
-    assert np.abs(buf).max() <= 1.0          # 未削波
+    assert np.abs(buf).max() > 1e-3  # 有信号
+    assert np.abs(buf).max() <= 1.0  # 未削波
 
 
 def test_tone_is_silent_free_edge(diag):

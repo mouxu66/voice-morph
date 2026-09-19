@@ -2,6 +2,7 @@
 
 全部本地：monkeypatch 隔离 outputs，zip 直接断言字节内容，不碰网络。
 """
+
 import io
 import json
 import sys
@@ -12,12 +13,11 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+import config as cfg  # noqa: E402
+import history  # noqa: E402
 import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-
-import config as cfg  # noqa: E402
-import history  # noqa: E402
 from history_api import router  # noqa: E402
 
 
@@ -68,7 +68,7 @@ def test_set_meta_star_and_tags_roundtrip(isolated):
     hid = history.query()["items"][0]["id"]
     rec = history.set_meta(hid, starred=True, tags=["比赛", " 袋鼠 ", "比赛", "x" * 40])
     assert rec["starred"] is True
-    assert rec["tags"] == ["比赛", "袋鼠"]           # 去重、去空白、超长拒收
+    assert rec["tags"] == ["比赛", "袋鼠"]  # 去重、去空白、超长拒收
     assert history.query(starred=True)["total"] == 1
     assert history.query(starred=False)["total"] == 0
     assert history.query(tag="比赛")["total"] == 1
@@ -78,7 +78,7 @@ def test_set_meta_none_keeps_field(isolated):
     _reg(_mk_wav(isolated, "n.wav"))
     hid = history.query()["items"][0]["id"]
     history.set_meta(hid, tags=["tag1"])
-    rec = history.set_meta(hid, starred=True)       # 只改收藏
+    rec = history.set_meta(hid, starred=True)  # 只改收藏
     assert rec["tags"] == ["tag1"] and rec["starred"] is True
 
 
@@ -139,13 +139,13 @@ def test_api_bulk_delete(client, isolated):
 def test_api_export_zip(client, isolated):
     n1, n2 = _mk_wav(isolated, "e1.wav"), _mk_wav(isolated, "e2.wav")
     ids = [_reg(n1), _reg(n2)]
-    (isolated / n2).unlink()                        # 模拟文件已被清理
+    (isolated / n2).unlink()  # 模拟文件已被清理
 
     r = client.post("/api/history/export", json={"ids": ids})
     assert r.status_code == 200
-    assert r.headers["x-missing-files"] == "1"      # 缺失文件计数透出
+    assert r.headers["x-missing-files"] == "1"  # 缺失文件计数透出
     zf = zipfile.ZipFile(io.BytesIO(r.content))
-    assert zf.namelist() == [n1]                    # 缺失的跳过，不炸
+    assert zf.namelist() == [n1]  # 缺失的跳过，不炸
     assert zf.read(n1) == (b"RIFF" + n1.encode())
 
     # 全缺失 → 404；空 ids → 400

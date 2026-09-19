@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """音频增强后处理：DeepFilterNet3 模型级降噪/增强（升级替代 afftdn）。
 
 覆盖三处入口（ROADMAP P2-5）：
@@ -16,6 +15,7 @@
   - StreamEnhancer：实时流式增强器（单流单线程），供麦克风入口
   - available()：探测模型可用性（不可用返回 False，调用方回退/关闭增强）
 """
+
 import threading
 from pathlib import Path
 
@@ -29,9 +29,9 @@ _model_lock = threading.Lock()
 # 实现：out = lim*dry + (1-lim)*enhanced，lim = 10^(-atten_lim/20)。
 # 越小越保守（弱人声几乎不伤、噪声残留多）；None = 不限（压得最狠）。
 ATTEN_LIM_PRESETS: dict[str, float | None] = {
-    "light": 6.0,      # 轻 · 保弱声：最多压 6dB，弱人声/远场声安全
+    "light": 6.0,  # 轻 · 保弱声：最多压 6dB，弱人声/远场声安全
     "standard": 12.0,  # 标准：最多压 12dB（默认档）
-    "strong": None,    # 强力：不限，模型默认行为（原"一刀切"效果）
+    "strong": None,  # 强力：不限，模型默认行为（原"一刀切"效果）
 }
 
 
@@ -49,6 +49,7 @@ def _get_model():
         with _model_lock:
             if _model is None:
                 from deepfilter_stream import DeepFilterModel
+
                 _model = DeepFilterModel()
     return _model
 
@@ -81,7 +82,7 @@ def enhance_file(src, dst, atten_lim_db: float | None = None) -> Path:
     chunk = den.frame_size * 8  # 每块喂若干帧，摊薄 Python 开销
     outs = []
     for i in range(0, len(data), chunk):
-        y = den.process(data[i:i + chunk], sr)
+        y = den.process(data[i : i + chunk], sr)
         if y.size:
             outs.append(y)
     tail = den.flush()
@@ -129,5 +130,5 @@ class FrameRealigner:
         if n == 0:
             return []
         frames = np.array_split(self.buf[: n * self.frame_n], n)
-        self.buf = self.buf[n * self.frame_n:]
+        self.buf = self.buf[n * self.frame_n :]
         return frames

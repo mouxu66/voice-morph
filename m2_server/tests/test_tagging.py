@@ -1,4 +1,5 @@
 """F2 素材自动打标单测（mock 掉 ffmpeg / worker，只测分析逻辑）。"""
+
 import sys
 from pathlib import Path
 
@@ -9,7 +10,6 @@ if str(_ROOT) not in sys.path:
 import numpy as np
 import pytest  # noqa: E402
 import soundfile as sf  # noqa: E402
-
 import tagging  # noqa: E402
 
 
@@ -22,7 +22,7 @@ def test_analyze_full_speech(tmp_path):
     t = np.arange(16000, dtype=np.float32) / 16000
     tone = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
     # 前 0.6s 有声 + 后 0.4s 静音 → 有停顿节奏，非连续音乐
-    speech = np.concatenate([tone[: 9600], np.zeros(6400, dtype=np.float32)])
+    speech = np.concatenate([tone[:9600], np.zeros(6400, dtype=np.float32)])
     # 写 tmp_path 而非源码目录：以前写 tagging 模块旁边，测试被中断（如全量跑崩，
     # finally 没跑到）就会在仓库里留下 _test_*.wav —— 2026-09-18 实测残留了三个。
     wav = tmp_path / "_test_tone.wav"
@@ -60,6 +60,7 @@ def test_analyze_continuous_low_speech_is_bgm(tmp_path):
 def test_detect_lang_zh(monkeypatch):
     class _Resp:
         pass
+
     monkeypatch.setattr(tagging, "_detect_lang", lambda wav: "zh")
     assert tagging._detect_lang(Path("x.wav")) == "zh"
 
@@ -77,13 +78,21 @@ def test_tag_video_ffmpeg_fail(tmp_path, monkeypatch):
 def test_tag_video_success(tmp_path, monkeypatch):
     """打标成功：分析 + 语言（worker mock）合入 meta。"""
     monkeypatch.setattr(tagging, "_extract_audio", lambda v, o: True)
-    monkeypatch.setattr(tagging, "_analyze", lambda wav: {
-        "duration_s": 2.0, "loudness_dbfs": -10.0, "speech_ratio": 0.9, "has_bgm": False})
+    monkeypatch.setattr(
+        tagging,
+        "_analyze",
+        lambda wav: {
+            "duration_s": 2.0,
+            "loudness_dbfs": -10.0,
+            "speech_ratio": 0.9,
+            "has_bgm": False,
+        },
+    )
     monkeypatch.setattr(tagging, "_detect_lang", lambda wav: "zh")
     fake = tmp_path / "a.mp4"
     fake.write_bytes(b"x")
     m = tagging.tag_video(fake, tmp_dir=tmp_path)
-    assert m["tagging"] is False          # 已完成
+    assert m["tagging"] is False  # 已完成
     assert m["lang"] == "zh"
     assert m["duration_s"] == 2.0
     assert "tag_error" not in m
@@ -92,8 +101,10 @@ def test_tag_video_success(tmp_path, monkeypatch):
 def test_tag_video_analyze_error(tmp_path, monkeypatch):
     """分析抛异常 → 捕获为 tag_error，不崩溃。"""
     monkeypatch.setattr(tagging, "_extract_audio", lambda v, o: True)
+
     def boom(wav):
         raise RuntimeError("boom")
+
     monkeypatch.setattr(tagging, "_analyze", boom)
     fake = tmp_path / "a.mp4"
     fake.write_bytes(b"x")

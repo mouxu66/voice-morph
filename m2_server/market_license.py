@@ -27,6 +27,7 @@ G4 的修法因此是"**把回读做成自动的，并把'上游未标注'这个
 - **不抛异常**：探测是安装的收尾步骤，网络问题不该让用户装不上音色。
 - `get` 可注入，单测不碰网络。
 """
+
 from __future__ import annotations
 
 import time
@@ -39,9 +40,9 @@ HF_API_BASE = "https://hf-mirror.com"
 MS_API_BASE = "https://modelscope.cn"
 
 #: 探测结果的三态。语义必须分清，否则"没读通"会被当成"上游没标"而写进溯源文件。
-SOURCE_MODEL_CARD = "model-card"      # 读到了许可字段（哪怕值特殊）
-SOURCE_UNLABELED = "unlabeled"        # 读通了，但上游确实没标
-SOURCE_UNREACHABLE = "unreachable"    # 没读通（网络/接口变化），沿用兜底文案
+SOURCE_MODEL_CARD = "model-card"  # 读到了许可字段（哪怕值特殊）
+SOURCE_UNLABELED = "unlabeled"  # 读通了，但上游确实没标
+SOURCE_UNREACHABLE = "unreachable"  # 没读通（网络/接口变化），沿用兜底文案
 
 
 def _as_license(value) -> str:

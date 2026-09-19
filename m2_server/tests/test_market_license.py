@@ -12,11 +12,11 @@
 夹具里两段 payload 的**形状来自 2026-09-14 的真实响应**（已记进
 `THIRD_PARTY_NOTICES.md` §5 G4）：两个上游仓库都**没有**标注许可。
 """
+
 from __future__ import annotations
 
-import pytest
-
 import market_license as ml
+import pytest
 
 #: 真实响应形状：hf-mirror 返回 200，但没有 cardData，tags 只有 region:us
 HF_UNLABELED = {
@@ -31,7 +31,12 @@ HF_UNLABELED = {
 MS_UNLABELED = {
     "Code": 200,
     "Success": True,
-    "Data": {"Name": "hudddd/Retrieval-based-Voice", "License": "", "LicenseName": "", "LicenseLink": ""},
+    "Data": {
+        "Name": "hudddd/Retrieval-based-Voice",
+        "License": "",
+        "LicenseName": "",
+        "LicenseLink": "",
+    },
 }
 
 
@@ -53,15 +58,18 @@ def _get(payload):
 
 
 # ------------------------------------------------------------------ parser
-@pytest.mark.parametrize("value,expect", [
-    ("mit", "mit"),
-    ("  apache-2.0  ", "apache-2.0"),
-    (["cc-by-nc-4.0"], "cc-by-nc-4.0"),          # HF 的 cardData.license 见过 list
-    (["mit", "cc0-1.0"], "mit, cc0-1.0"),
-    ([], ""),
-    (None, ""),
-    ("", ""),
-])
+@pytest.mark.parametrize(
+    "value,expect",
+    [
+        ("mit", "mit"),
+        ("  apache-2.0  ", "apache-2.0"),
+        (["cc-by-nc-4.0"], "cc-by-nc-4.0"),  # HF 的 cardData.license 见过 list
+        (["mit", "cc0-1.0"], "mit, cc0-1.0"),
+        ([], ""),
+        (None, ""),
+        ("", ""),
+    ],
+)
 def test_parse_hf_license_handles_shapes(value, expect):
     """`cardData.license` 的类型不固定，写死成 str 会在某些仓库静默变空。"""
     assert ml.parse_hf_license({"cardData": {"license": value}}) == expect
@@ -120,12 +128,15 @@ def test_probe_distinguishes_unlabeled_from_unreachable():
     assert ml.probe(_entry("hf"), get=get)["license_source"] == ml.SOURCE_UNREACHABLE
 
 
-@pytest.mark.parametrize("payload", [
-    RuntimeError("timeout"),          # 网络挂了
-    ValueError("bad json"),           # 响应不是 JSON
-    ["不是对象"],                      # 响应是数组
-    None,                             # 空响应
-])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        RuntimeError("timeout"),  # 网络挂了
+        ValueError("bad json"),  # 响应不是 JSON
+        ["不是对象"],  # 响应是数组
+        None,  # 空响应
+    ],
+)
 def test_probe_never_raises_and_keeps_fallback(payload):
     """探测是安装收尾步骤，任何异常都必须被吸收 —— 否则网络抖动会让用户装不上音色。"""
     get, _ = _get(payload)
@@ -155,10 +166,13 @@ def test_describe_spells_out_where_the_license_came_from():
     """三态在 UI 上必须说人话，否则"上游未标注"会被读成"已确认可用"。"""
     fallback = "仅供个人学习研究，勿商用"
     assert "读自模型卡" in ml.describe(
-        {"license": "mit", "license_source": ml.SOURCE_MODEL_CARD}, fallback)
+        {"license": "mit", "license_source": ml.SOURCE_MODEL_CARD}, fallback
+    )
     text = ml.describe({"license": "", "license_source": ml.SOURCE_UNLABELED}, fallback)
     assert "上游未标注许可" in text and "保留所有权利" in text
-    assert "未能读取" in ml.describe({"license": "", "license_source": ml.SOURCE_UNREACHABLE}, fallback)
+    assert "未能读取" in ml.describe(
+        {"license": "", "license_source": ml.SOURCE_UNREACHABLE}, fallback
+    )
 
 
 # ------------------------------------------------------------------ 离线保证
@@ -179,13 +193,20 @@ def test_source_json_records_license_once_installed(tmp_path, monkeypatch):
 
     monkeypatch.setattr(market_install.cfg, "RVC_ROOT", tmp_path)
     mgr = market_install.InstallManager.__new__(market_install.InstallManager)
-    mgr.write_source("v1", "demo/001", "演示音色", {
-        "license": "", "license_source": ml.SOURCE_UNLABELED,
-        "license_repo": "chaye741/RVC-Voice-Models",
-        "license_endpoint": "https://hf-mirror.com/api/models/chaye741/RVC-Voice-Models",
-        "license_checked_at": "2026-09-14 21:00:00",
-    })
+    mgr.write_source(
+        "v1",
+        "demo/001",
+        "演示音色",
+        {
+            "license": "",
+            "license_source": ml.SOURCE_UNLABELED,
+            "license_repo": "chaye741/RVC-Voice-Models",
+            "license_endpoint": "https://hf-mirror.com/api/models/chaye741/RVC-Voice-Models",
+            "license_checked_at": "2026-09-14 21:00:00",
+        },
+    )
     import json
+
     data = json.loads((tmp_path / "logs" / "v1" / "source.json").read_text("utf-8"))
     assert data["source"] == "market"
     assert data["license_source"] == "unlabeled"
@@ -194,8 +215,9 @@ def test_source_json_records_license_once_installed(tmp_path, monkeypatch):
 
 def test_write_source_without_license_fields_still_works(tmp_path, monkeypatch):
     """探测失败（返回 None）时不能把 source.json 写坏 —— 溯源标记比许可信息更重要。"""
-    import market_install
     import json
+
+    import market_install
 
     monkeypatch.setattr(market_install.cfg, "RVC_ROOT", tmp_path)
     mgr = market_install.InstallManager.__new__(market_install.InstallManager)
@@ -208,6 +230,7 @@ def test_write_source_without_license_fields_still_works(tmp_path, monkeypatch):
 def test_exp_license_exposes_only_market_installs(tmp_path, monkeypatch):
     """自训音色没有 source.json → 不该冒出一个空的许可行给前端。"""
     import json
+
     import rvc_common
 
     monkeypatch.setattr(rvc_common.cfg, "RVC_ROOT", tmp_path)
@@ -218,10 +241,19 @@ def test_exp_license_exposes_only_market_installs(tmp_path, monkeypatch):
     assert rvc_common.exp_license("self_trained") == {}
 
     (logs / "from_market").mkdir(parents=True)
-    (logs / "from_market" / "source.json").write_text(json.dumps({
-        "source": "market", "display_name": "市场", "license": "",
-        "license_source": "unlabeled", "license_checked_at": "2026-09-14 21:00:00",
-    }, ensure_ascii=False), encoding="utf-8")
+    (logs / "from_market" / "source.json").write_text(
+        json.dumps(
+            {
+                "source": "market",
+                "display_name": "市场",
+                "license": "",
+                "license_source": "unlabeled",
+                "license_checked_at": "2026-09-14 21:00:00",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     got = rvc_common.exp_license("from_market")
     assert got["license_source"] == "unlabeled"
     assert got["source_license"] == ""

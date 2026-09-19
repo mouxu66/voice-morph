@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """磁盘占用统计与选择性清理（B2）。
 
 背景：市场下载缓存、解析切片、历史产物、QC 缓存、日志各自膨胀，而此前只有
@@ -12,6 +11,7 @@
     的 _link_or_copy），删了会让实时变声失效，而且因为共享数据块并不真的省空间。
   - 清理只删文件、不删目录结构（目录本身几 KB，留着不影响）。
 """
+
 import shutil
 import time
 from pathlib import Path
@@ -75,8 +75,11 @@ _TARGETS: dict[str, tuple[str, str, object, bool]] = {
     "market_previews": (
         "市场自动试听",
         "装完自动合成的演示音频；删掉后市场卡片会回到「未试听」，可随时重生成。",
-        lambda: [p for p in _glob_files(_market_dir(), ["*_preview.wav", "*_preview.json"])
-                 if p.name != "downloads.json"],
+        lambda: [
+            p
+            for p in _glob_files(_market_dir(), ["*_preview.wav", "*_preview.json"])
+            if p.name != "downloads.json"
+        ],
         True,
     ),
     "outputs_wav": (
@@ -125,8 +128,17 @@ _TARGETS: dict[str, tuple[str, str, object, bool]] = {
     ),
 }
 
-_ORDER = ["market_downloads", "market_previews", "outputs_wav", "qc_cache",
-          "clips", "ft_corpus", "logs", "rvc_weights", "voicebank"]
+_ORDER = [
+    "market_downloads",
+    "market_previews",
+    "outputs_wav",
+    "qc_cache",
+    "clips",
+    "ft_corpus",
+    "logs",
+    "rvc_weights",
+    "voicebank",
+]
 
 
 def scan(target_keys: list[str] | None = None) -> list[dict]:
@@ -137,18 +149,27 @@ def scan(target_keys: list[str] | None = None) -> list[dict]:
         label, desc, getter, cleanable = _TARGETS[k]
         files = getter()  # type: ignore[operator]
         total, count = _size_of(files)
-        out.append({
-            "key": k, "label": label, "desc": desc, "cleanable": cleanable,
-            "bytes": total, "files": count,
-        })
+        out.append(
+            {
+                "key": k,
+                "label": label,
+                "desc": desc,
+                "cleanable": cleanable,
+                "bytes": total,
+                "files": count,
+            }
+        )
     return out
 
 
 def disk_usage() -> list[dict]:
     """各挂载点（去重）的剩余空间：outputs / media / RVC 所在盘。"""
     seen: dict[str, dict] = {}
-    for label, path in (("产物目录", cfg.OUTPUTS_DIR), ("素材目录", cfg.MEDIA_DIR),
-                        ("RVC 整合包", cfg.RVC_ROOT)):
+    for label, path in (
+        ("产物目录", cfg.OUTPUTS_DIR),
+        ("素材目录", cfg.MEDIA_DIR),
+        ("RVC 整合包", cfg.RVC_ROOT),
+    ):
         try:
             drive = Path(path.resolve().anchor) or str(path)
             total, used, free = shutil.disk_usage(str(path))
@@ -157,8 +178,11 @@ def disk_usage() -> list[dict]:
         if drive in seen:
             continue
         seen[drive] = {
-            "path": str(path), "drive": drive,
-            "total_bytes": total, "used_bytes": used, "free_bytes": free,
+            "path": str(path),
+            "drive": drive,
+            "total_bytes": total,
+            "used_bytes": used,
+            "free_bytes": free,
             "used_percent": round(used / total * 100, 1) if total else 0.0,
             "label": label,
         }
@@ -195,13 +219,22 @@ def clean(target_keys: list[str]) -> dict:
     if "outputs_wav" in (target_keys or []):
         try:
             import history
-            gone = [r["id"] for r in history._read_all()
-                    if r.get("wav") and not (cfg.OUTPUTS_DIR / Path(r["wav"]).name).exists()]
+
+            gone = [
+                r["id"]
+                for r in history._read_all()
+                if r.get("wav") and not (cfg.OUTPUTS_DIR / Path(r["wav"]).name).exists()
+            ]
             if gone:
                 history.bulk_delete(gone, keep_file=True)
         except Exception as e:  # noqa: BLE001 —— 历史清理失败不影响已释放的空间
             errors.append({"file": "history.jsonl", "error": str(e)})
 
-    return {"ok": not errors, "freed_bytes": freed, "removed_files": removed,
-            "skipped": skipped, "errors": errors[:20],
-            "cleaned_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    return {
+        "ok": not errors,
+        "freed_bytes": freed,
+        "removed_files": removed,
+        "skipped": skipped,
+        "errors": errors[:20],
+        "cleaned_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }

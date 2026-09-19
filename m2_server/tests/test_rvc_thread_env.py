@@ -6,6 +6,7 @@
   2. VM_LIVE_OMP_THREADS=0 必须能关掉（保留历史行为的对照开关）
   3. 返回的是**待合并**字典，绝不直接改本进程 os.environ
 """
+
 import os
 import sys
 from pathlib import Path
@@ -75,9 +76,9 @@ def test_merge_pattern_overrides_inherited(monkeypatch):
     inherited = {"OMP_NUM_THREADS": "16", "PATH": "/x"}
     merged = {**inherited, **rvc_live._thread_env()}
     assert merged["OMP_NUM_THREADS"] == "2"
-    assert merged["PATH"] == "/x"      # 其余继承变量不受影响
+    assert merged["PATH"] == "/x"  # 其余继承变量不受影响
 
 
 def test_default_is_two():
     """默认值必须是 2（实测最优点），别被谁改成 1 —— 单线程下 FAISS 搜索可能成延迟瓶颈。"""
-    assert rvc_live.OMP_THREADS == int(os.environ.get("VM_LIVE_OMP_THREADS", "2"))
+    assert int(os.environ.get("VM_LIVE_OMP_THREADS", "2")) == rvc_live.OMP_THREADS

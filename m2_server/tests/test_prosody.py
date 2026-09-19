@@ -3,13 +3,13 @@
 背景：RVC 只换音色、保留源音频韵律；想换语气必须先把韵律重铸
 （ASR 转文字 → TTS 用目标音色的参考音重新合成），即本模块职责。
 """
+
 import io
 import wave
 
-import pytest
-
 import config as cfg
 import prosody_relay
+import pytest
 from rvc_common import find_index
 
 
@@ -66,11 +66,15 @@ def test_relay_rewrites_audio(relay_env, monkeypatch):
     src.write_bytes(_wav_bytes())
 
     captured = {}
-    monkeypatch.setattr(prosody_relay.qwen3_tts, "transcribe",
-                        lambda path: {"text": "今天天气不错"})
-    monkeypatch.setattr(prosody_relay.qwen3_tts, "tts",
-                        lambda text, ref_audio, ref_text, **kw: captured.update(
-                            text=text, ref_audio=ref_audio) or _wav_bytes())
+    monkeypatch.setattr(
+        prosody_relay.qwen3_tts, "transcribe", lambda path: {"text": "今天天气不错"}
+    )
+    monkeypatch.setattr(
+        prosody_relay.qwen3_tts,
+        "tts",
+        lambda text, ref_audio, ref_text, **kw: captured.update(text=text, ref_audio=ref_audio)
+        or _wav_bytes(),
+    )
 
     out = prosody_relay.relay(src, "merg_004")
     assert out.is_file()
@@ -93,8 +97,9 @@ def test_relay_surfaces_asr_error(relay_env, monkeypatch):
     _, tmp_path = relay_env
     src = tmp_path / "src.wav"
     src.write_bytes(_wav_bytes())
-    monkeypatch.setattr(prosody_relay.qwen3_tts, "transcribe",
-                        lambda path: {"error": "whisper 未加载"})
+    monkeypatch.setattr(
+        prosody_relay.qwen3_tts, "transcribe", lambda path: {"error": "whisper 未加载"}
+    )
     with pytest.raises(RuntimeError, match="whisper 未加载"):
         prosody_relay.relay(src, "merg_004")
 
@@ -112,12 +117,14 @@ def test_find_index(tmp_path, monkeypatch):
 
 def test_offlinevc_run_rejects_bad_prosody():
     """prosody 只接受 keep/relay；非法值在动工前就 400，不浪费后面几十秒推理。"""
+    import server
     from fastapi.testclient import TestClient
 
-    import server
     client = TestClient(server.app)
-    resp = client.post("/api/offlinevc/run",
-                       data={"voice_id": "x", "prosody": "bogus"},
-                       files={"file": ("a.wav", b"RIFF", "audio/wav")})
+    resp = client.post(
+        "/api/offlinevc/run",
+        data={"voice_id": "x", "prosody": "bogus"},
+        files={"file": ("a.wav", b"RIFF", "audio/wav")},
+    )
     assert resp.status_code == 400
     assert "prosody" in resp.json()["detail"]

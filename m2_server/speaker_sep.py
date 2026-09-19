@@ -13,6 +13,7 @@
 `damo/speech_campplus_sv_zh-cn_16k-common` 均 Apache-2.0，免认证、国内直连，
 首跑自动下载模型并缓存（~/.cache/modelscope），之后离线可用。
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -21,7 +22,6 @@ import threading
 from pathlib import Path
 
 import numpy as np
-
 from common import find_ffmpeg
 
 _DIAR_MODEL = "iic/speech_campplus_speaker-diarization_common"
@@ -36,6 +36,7 @@ _SV = None
 
 # ---------- 模型单例（lazy，首次联网下载后缓存） ----------
 
+
 def _get_diar():
     """CAM++ 完整 diarization pipeline 单例。"""
     global _DIAR
@@ -44,6 +45,7 @@ def _get_diar():
             if _DIAR is None:
                 from modelscope.pipelines import pipeline
                 from modelscope.utils.constant import Tasks
+
                 _DIAR = pipeline(task=Tasks.speaker_diarization, model=_DIAR_MODEL)
     return _DIAR
 
@@ -56,22 +58,27 @@ def _get_sv():
             if _SV is None:
                 from modelscope.pipelines import pipeline
                 from modelscope.utils.constant import Tasks
+
                 _SV = pipeline(task=Tasks.speaker_verification, model=_SV_MODEL)
     return _SV
 
 
 # ---------- 音频 IO / 重采样 ----------
 
+
 def _read16k(path: Path) -> np.ndarray:
     """读音频为 16k 单声道 float32 numpy 数组。"""
     import soundfile as sf
+
     a, fs = sf.read(str(path), dtype="float32")
     if a.ndim == 2:
         a = a[:, 0]
     if fs == _FS:
         return a
     from math import gcd
+
     from scipy.signal import resample_poly
+
     g = gcd(_FS, fs)
     return resample_poly(a, _FS // g, fs // g).astype(np.float32)
 
@@ -86,7 +93,8 @@ def _resample16k(audio: Path) -> Path:
     ff = find_ffmpeg()
     r = subprocess.run(
         [ff, "-y", "-i", str(audio), "-vn", "-ac", "1", "-ar", str(_FS), str(tmp)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if r.returncode != 0:
         raise RuntimeError(f"音频重采样失败({audio.name}): {r.stderr.strip()[-300:]}")
@@ -111,6 +119,7 @@ def _sv_embed(audio16k: np.ndarray):
 
 
 # ---------- 主流程 ----------
+
 
 def analyze_audio(audio: Path, clip_paths: list[Path] | None = None) -> dict:
     """对整条人声音轨做说话人分离，推荐主说话人，可选为切片分派说话人。
@@ -207,7 +216,8 @@ def analyze_clips(clip_paths: list[Path]) -> dict:
     if not rows:
         raise RuntimeError(
             "该素材没有可用于说话人分析的切片（切片过短或读取失败）。"
-            "建议：换一段人声清晰、无伴奏的素材重新走流水线。")
+            "建议：换一段人声清晰、无伴奏的素材重新走流水线。"
+        )
 
     n = len(rows)
     emb = np.stack([r["emb"] for r in rows])  # (n, 192)，L2 归一化
@@ -215,8 +225,10 @@ def analyze_clips(clip_paths: list[Path]) -> dict:
     # HDBSCAN 聚类；依赖缺失或聚类退化时退化为单簇（全部算作同一个说话人）
     try:
         from hdbscan import HDBSCAN
-        labels = HDBSCAN(min_cluster_size=max(2, n // 4), min_samples=1,
-                         metric="euclidean").fit_predict(emb)
+
+        labels = HDBSCAN(
+            min_cluster_size=max(2, n // 4), min_samples=1, metric="euclidean"
+        ).fit_predict(emb)
         labels = np.asarray(labels, dtype=int)
     except Exception:  # noqa: BLE001
         labels = np.zeros(n, dtype=int)
@@ -233,7 +245,7 @@ def analyze_clips(clip_paths: list[Path]) -> dict:
     # 重新编号 0..K-1，按时长降序；主说话人 = 时长最长
     dur: dict[int, float] = {}
     cnt: dict[int, int] = {}
-    for r, lb in zip(rows, labels):
+    for r, lb in zip(rows, labels, strict=False):
         dur[lb] = dur.get(lb, 0.0) + r["dur"]
         cnt[lb] = cnt.get(lb, 0) + 1
     order = sorted(dur, key=lambda s: dur[s], reverse=True)
@@ -242,21 +254,32 @@ def analyze_clips(clip_paths: list[Path]) -> dict:
     total = sum(dur.values()) or 1e-9
 
     speakers = [
-        {"id": remap[spk], "label": f"说话人{i + 1}", "duration": round(dur[spk], 2),
-         "segment_count": cnt[spk], "ratio": round(dur[spk] / total, 3),
-         "is_main": remap[spk] == main_spk}
+        {
+            "id": remap[spk],
+            "label": f"说话人{i + 1}",
+            "duration": round(dur[spk], 2),
+            "segment_count": cnt[spk],
+            "ratio": round(dur[spk] / total, 3),
+            "is_main": remap[spk] == main_spk,
+        }
         for i, spk in enumerate(order)
     ]
     label_of = {remap[spk]: f"说话人{i + 1}" for i, spk in enumerate(order)}
 
-    clips = [{"name": r["name"], "spk": remap[lb]} for r, lb in zip(rows, labels)]
+    clips = [{"name": r["name"], "spk": remap[lb]} for r, lb in zip(rows, labels, strict=False)]
     done = {r["name"] for r in rows}
     clips += [{"name": p.stem, "spk": None} for p in clip_paths if p.stem not in done]
 
     segments = [
-        {"start": 0.0, "end": round(r["dur"], 2), "duration": round(r["dur"], 2),
-         "spk": remap[lb], "label": label_of[remap[lb]], "is_main": remap[lb] == main_spk}
-        for r, lb in zip(rows, labels)
+        {
+            "start": 0.0,
+            "end": round(r["dur"], 2),
+            "duration": round(r["dur"], 2),
+            "spk": remap[lb],
+            "label": label_of[remap[lb]],
+            "is_main": remap[lb] == main_spk,
+        }
+        for r, lb in zip(rows, labels, strict=False)
     ]
 
     return {
@@ -302,7 +325,7 @@ def _assign_clips(clip_paths: list[Path], sound16: Path, segs: list[list]) -> li
     return out
 
 
-def main_center(audio: Path) -> tuple[int | None, "np.ndarray | None", dict]:
+def main_center(audio: Path) -> tuple[int | None, np.ndarray | None, dict]:
     """返回（主说话人 id，其中心声纹，元信息），供切片质检做"说话人一致性"判定。
 
     主说话人 = 有效语音总时长最长者；中心声纹 = 其各分段 pcm 的 CAM++ 声纹均值

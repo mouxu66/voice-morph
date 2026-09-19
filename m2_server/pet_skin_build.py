@@ -22,6 +22,7 @@
 webp 编码复用 common.find_ffmpeg()（完整 build 才有 libwebp muxer）。
 本模块不依赖 API/网络（下载在 pet_market.py），可被 CLI 与单测直接调用。
 """
+
 from __future__ import annotations
 
 import json
@@ -90,10 +91,22 @@ def _ffprobe() -> str:
 
 def probe_size(path: Path) -> tuple[int, int]:
     """用 ffprobe 探测图片/视频宽度×高度。"""
-    out = json.loads(_run_capture([
-        _ffprobe(), "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height", "-of", "json", str(path),
-    ]))
+    out = json.loads(
+        _run_capture(
+            [
+                _ffprobe(),
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "json",
+                str(path),
+            ]
+        )
+    )
     streams = out.get("streams") or []
     if not streams:
         raise SkinBuildError(f"无法探测媒体信息: {path.name}")
@@ -102,28 +115,63 @@ def probe_size(path: Path) -> tuple[int, int]:
 
 def probe_frames(path: Path) -> int:
     """探测动画帧数（gif/webp/apng 用 nb_frames，缺省回退 -count_frames）。"""
-    cmd = [_ffprobe(), "-v", "error", "-select_streams", "v:0",
-           "-show_entries", "stream=nb_frames", "-of", "default=nw=1:nk=1", str(path)]
+    cmd = [
+        _ffprobe(),
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=nb_frames",
+        "-of",
+        "default=nw=1:nk=1",
+        str(path),
+    ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     n = (r.stdout or "").strip()
     if n.isdigit() and int(n) > 0:
         return int(n)
     r2 = subprocess.run(
-        [_ffprobe(), "-v", "error", "-count_frames", "-select_streams", "v:0",
-         "-show_entries", "stream=nb_read_frames", "-of", "default=nw=1:nk=1", str(path)],
-        capture_output=True, text=True, timeout=300)
+        [
+            _ffprobe(),
+            "-v",
+            "error",
+            "-count_frames",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=nb_read_frames",
+            "-of",
+            "default=nw=1:nk=1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
     n2 = (r2.stdout or "").strip()
     if n2.isdigit() and int(n2) > 0:
         return int(n2)
     return 1
 
 
-def cut_atlas_row(atlas: Path, out: Path, row: int, frame_w: int, frame_h: int,
-                  cols: int) -> None:
+def cut_atlas_row(atlas: Path, out: Path, row: int, frame_w: int, frame_h: int, cols: int) -> None:
     """把 atlas 的第 row 行切成横向 strip（该行本来就是『列数量帧横向排开』）。"""
-    cmd = [find_ffmpeg(), "-y", "-i", str(atlas),
-           "-vf", f"crop={cols * frame_w}:{frame_h}:0:{row * frame_h}",
-           "-c:v", "libwebp", "-lossless", "0", "-q:v", "80", str(out)]
+    cmd = [
+        find_ffmpeg(),
+        "-y",
+        "-i",
+        str(atlas),
+        "-vf",
+        f"crop={cols * frame_w}:{frame_h}:0:{row * frame_h}",
+        "-c:v",
+        "libwebp",
+        "-lossless",
+        "0",
+        "-q:v",
+        "80",
+        str(out),
+    ]
     _run(cmd)
 
 
@@ -135,27 +183,58 @@ def _gif_to_strip(src: Path, out: Path) -> None:
     """
     n = probe_frames(src)
     w, h = probe_size(src)
-    w = max(2, w - (w % 2))   # hstack 需要偶数宽
+    w = max(2, w - (w % 2))  # hstack 需要偶数宽
     h = max(2, h - (h % 2))
     if n > MAX_GIF_FRAMES or n * w > 16000:
         # 预告片式长 gif（如 repo demo 动图 227 帧）不适合做皮肤：提前人话报错，
         # 别等 hstack 拼出十几万像素宽的滤镜图再吐 Invalid argument。
         raise SkinBuildError(
             f"gif 帧数过多（{n} 帧 × {w}px，横条总宽 {n * w}px）"
-            f"不适合转成皮肤动画（上限 {MAX_GIF_FRAMES} 帧）")
+            f"不适合转成皮肤动画（上限 {MAX_GIF_FRAMES} 帧）"
+        )
     if n <= 1:
-        cmd = [find_ffmpeg(), "-y", "-i", str(src), "-vf", f"scale={w}:{h}",
-               "-frames:v", "1", "-c:v", "libwebp", "-lossless", "0", "-q:v", "80", str(out)]
+        cmd = [
+            find_ffmpeg(),
+            "-y",
+            "-i",
+            str(src),
+            "-vf",
+            f"scale={w}:{h}",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "libwebp",
+            "-lossless",
+            "0",
+            "-q:v",
+            "80",
+            str(out),
+        ]
         _run(cmd, timeout=900)
         return
     split_out = "".join(f"[b{i}]" for i in range(n))
     pick = "".join(
-        f"[b{i}]trim=end_frame=1,setpts=PTS-STARTPTS,scale={w}:{h}[f{i}];" for i in range(n))
+        f"[b{i}]trim=end_frame=1,setpts=PTS-STARTPTS,scale={w}:{h}[f{i}];" for i in range(n)
+    )
     stack_in = "".join(f"[f{i}]" for i in range(n))
-    fc = (f"[0:v]scale={w}:{h},split={n}{split_out};"
-          f"{pick}{stack_in}hstack=inputs={n}[out]")
-    cmd = [find_ffmpeg(), "-y", "-i", str(src), "-filter_complex", fc,
-           "-map", "[out]", "-c:v", "libwebp", "-lossless", "0", "-q:v", "80", str(out)]
+    fc = f"[0:v]scale={w}:{h},split={n}{split_out};" f"{pick}{stack_in}hstack=inputs={n}[out]"
+    cmd = [
+        find_ffmpeg(),
+        "-y",
+        "-i",
+        str(src),
+        "-filter_complex",
+        fc,
+        "-map",
+        "[out]",
+        "-c:v",
+        "libwebp",
+        "-lossless",
+        "0",
+        "-q:v",
+        "80",
+        str(out),
+    ]
     _run(cmd, timeout=900)
 
 
@@ -240,13 +319,12 @@ def pack_gif_skin(gifs: list[Path], out_dir: Path, meta: dict) -> dict[str, dict
         _gif_to_strip(p, out)
         w, h = probe_size(out)
         sizes.append((w, h))
-        if fw and fh:
-            frames = max(1, w // fw)
-        else:
-            frames = probe_frames(p)
+        frames = max(1, w // fw) if fw and fh else probe_frames(p)
         rows[state] = {"sheet": sheet, "frames": frames, "dur": durs.get(state, DEFAULT_DUR[state])}
     if sizes:
-        max_fw = max(s[0] for s in sizes) // max((r.get("frames") or 1) for r in rows.values() if r.get("frames"))
+        max_fw = max(s[0] for s in sizes) // max(
+            (r.get("frames") or 1) for r in rows.values() if r.get("frames")
+        )
         if not fw:
             meta["frameW"] = max_fw or 32
         if not fh:
@@ -271,7 +349,11 @@ def pack_existing_skin(state_files: dict, out_dir: Path, meta: dict) -> dict[str
         sheet = f"{state}.webp"
         shutil.copyfile(src, out_dir / sheet)
         w, _h = probe_size(src)
-        rows[state] = {"sheet": sheet, "frames": max(1, w // fw), "dur": durs.get(state, DEFAULT_DUR[state])}
+        rows[state] = {
+            "sheet": sheet,
+            "frames": max(1, w // fw),
+            "dur": durs.get(state, DEFAULT_DUR[state]),
+        }
     return rows
 
 
@@ -290,6 +372,7 @@ def _pixjson_load(path: Path) -> dict:
 def _pixjson_frame_rgba(frame: dict, size: list[int], palette: dict):
     """一行「palette key 网格」→ (h, w, 4) uint8 RGBA（未知 key 透明）。"""
     import numpy as np
+
     w, h = int(size[0]), int(size[1])
     arr = np.zeros((h, w, 4), dtype=np.uint8)
     rows = frame.get("pixels") or []
@@ -306,6 +389,7 @@ def _pixjson_frame_rgba(frame: dict, size: list[int], palette: dict):
 def _pixjson_to_strip(frames, indices: list[int], size: list[int]) -> bytes:
     """若干 RGBA 帧横向 hstack → strip 原始字节（宽 = 帧宽 × 帧数）。"""
     import numpy as np
+
     chosen = [frames[i] for i in indices]
     strip = np.hstack(chosen) if len(chosen) > 1 else chosen[0]
     return strip.tobytes()
@@ -328,14 +412,32 @@ def pack_pixjson_skin(src: Path, out_dir: Path, meta: dict) -> dict[str, dict]:
     frames = [_pixjson_frame_rgba(f, size, data["palette"]) for f in data["frames"]]
     durs = {k: float(v) for k, v in (meta.get("durations") or DEFAULT_DUR).items()}
     n = len(frames)
-    one, rest = [0], list(range(max(1, n - 1), n))   # play 用首帧，error 用尾帧
+    one, rest = [0], list(range(max(1, n - 1), n))  # play 用首帧，error 用尾帧
 
     def _encode(indices: list[int], fname: str) -> int:
         raw = _pixjson_to_strip(frames, indices, size)
         w = fw * len(indices)
-        cmd = [find_ffmpeg(), "-y", "-f", "rawvideo", "-pix_fmt", "rgba",
-               "-s", f"{w}x{fh}", "-i", "-", "-frames:v", "1",
-               "-c:v", "libwebp", "-lossless", "0", "-q:v", "80", str(out_dir / fname)]
+        cmd = [
+            find_ffmpeg(),
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-s",
+            f"{w}x{fh}",
+            "-i",
+            "-",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "libwebp",
+            "-lossless",
+            "0",
+            "-q:v",
+            "80",
+            str(out_dir / fname),
+        ]
         p = subprocess.run(cmd, input=raw, capture_output=True, timeout=600)
         if p.returncode != 0:
             raise SkinBuildError(f"pixel-json webp 编码失败 {fname}: {(p.stderr or '')[-300:]}")
@@ -343,12 +445,28 @@ def pack_pixjson_skin(src: Path, out_dir: Path, meta: dict) -> dict[str, dict]:
 
     rows: dict[str, dict] = {}
     idle_frames = _encode(list(range(n)), "idle.webp")
-    rows["idle"] = {"sheet": "idle.webp", "frames": idle_frames, "dur": durs.get("idle", DEFAULT_DUR["idle"])}
-    rows["think"] = {"sheet": "idle.webp", "frames": idle_frames, "dur": durs.get("think", DEFAULT_DUR["think"])}
+    rows["idle"] = {
+        "sheet": "idle.webp",
+        "frames": idle_frames,
+        "dur": durs.get("idle", DEFAULT_DUR["idle"]),
+    }
+    rows["think"] = {
+        "sheet": "idle.webp",
+        "frames": idle_frames,
+        "dur": durs.get("think", DEFAULT_DUR["think"]),
+    }
     play_frames = _encode(one, "play.webp")
-    rows["play"] = {"sheet": "play.webp", "frames": play_frames, "dur": durs.get("play", DEFAULT_DUR["play"])}
+    rows["play"] = {
+        "sheet": "play.webp",
+        "frames": play_frames,
+        "dur": durs.get("play", DEFAULT_DUR["play"]),
+    }
     err_frames = _encode(rest if rest else [0], "error.webp")
-    rows["error"] = {"sheet": "error.webp", "frames": err_frames, "dur": durs.get("error", DEFAULT_DUR["error"])}
+    rows["error"] = {
+        "sheet": "error.webp",
+        "frames": err_frames,
+        "dur": durs.get("error", DEFAULT_DUR["error"]),
+    }
     # listen → idle、build → play：skin.json 省略，渲染层回退
     meta["frameW"] = fw
     meta["frameH"] = fh
@@ -361,8 +479,11 @@ def write_skin_json(out_dir: Path, meta: dict, rows: dict[str, dict]) -> None:
     for state in SKIN_STATE_KEYS:
         r = rows.get(state) or {}
         if r.get("sheet"):
-            states[state] = {"sheet": r["sheet"], "frames": int(r["frames"]),
-                             "dur": float(r["dur"])}
+            states[state] = {
+                "sheet": r["sheet"],
+                "frames": int(r["frames"]),
+                "dur": float(r["dur"]),
+            }
     skin = {
         "id": meta["id"],
         "name": meta.get("name") or meta["id"],
@@ -383,10 +504,17 @@ def copy_license(out_dir: Path, meta: dict) -> None:
     if not attr and not lic:
         return
     (out_dir / "LICENSE").write_text(
-        "\n".join([f"来源: {attr}", f"许可: {lic}", "",
-                   "本皮肤素材来自第三方开源项目，按上方许可使用与再分发。",
-                   "随应用分发时保留本文件与 skin.json 中的 attribution/license 字段。"]),
-        "utf-8")
+        "\n".join(
+            [
+                f"来源: {attr}",
+                f"许可: {lic}",
+                "",
+                "本皮肤素材来自第三方开源项目，按上方许可使用与再分发。",
+                "随应用分发时保留本文件与 skin.json 中的 attribution/license 字段。",
+            ]
+        ),
+        "utf-8",
+    )
 
 
 def load_skin(skin_dir: Path) -> dict:
@@ -399,8 +527,11 @@ def load_skin(skin_dir: Path) -> dict:
     for key, val in (skin.get("states") or {}).items():
         if key not in SKIN_STATE_KEYS or not val.get("sheet"):
             continue
-        states[key] = {"sheet": str(val["sheet"]), "frames": max(1, int(val.get("frames") or 1)),
-                       "dur": max(0.2, float(val.get("dur") or 1.0))}
+        states[key] = {
+            "sheet": str(val["sheet"]),
+            "frames": max(1, int(val.get("frames") or 1)),
+            "dur": max(0.2, float(val.get("dur") or 1.0)),
+        }
     for key, fb in STATE_FALLBACK.items():
         if key not in states and fb in states:
             states[key] = dict(states[fb])

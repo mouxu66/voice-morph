@@ -4,6 +4,7 @@
 自动走现有流水线（demucs 去 BGM → 静音切片）与音色挖掘。
 内录抓的是声卡数字信号，质量与原音源一致（无房间混响/噪声损失）。
 """
+
 import wave
 from pathlib import Path
 
@@ -40,8 +41,12 @@ def record_loopback(seconds: float, out_path: Path) -> Path:
         chunk = 512
         frames: list[bytes] = []
         with p.open(
-            format=pyaudio.paInt16, channels=channels, rate=rate,
-            frames_per_buffer=chunk, input=True, input_device_index=dev["index"],
+            format=pyaudio.paInt16,
+            channels=channels,
+            rate=rate,
+            frames_per_buffer=chunk,
+            input=True,
+            input_device_index=dev["index"],
         ) as stream:
             total = int(rate / chunk * seconds)
             for _ in range(total):

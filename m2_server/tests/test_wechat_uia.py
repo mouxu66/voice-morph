@@ -2,6 +2,7 @@
 
 覆盖：PE 解析、RVA 缓存、热激活状态机、配置开关、控件查询的安全降级。
 """
+
 import sys
 from pathlib import Path
 
@@ -11,8 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import wechat_uia as u
 
-
 # ---------------- 假控件 ----------------
+
 
 class FakeRect:
     def __init__(self, box):
@@ -57,16 +58,20 @@ def _clear_state():
 
 # ---------------- 纯函数 ----------------
 
-@pytest.mark.parametrize("name,expected", [
-    ('语音15"秒', 15.0),
-    ('语音1"秒', 1.0),
-    ('语音60"秒', 60.0),
-    ('语音 8" 秒', 8.0),
-    ('语音7″秒', 7.0),
-    (None, None),
-    ("", None),
-    ("没有秒数", None),
-])
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ('语音15"秒', 15.0),
+        ('语音1"秒', 1.0),
+        ('语音60"秒', 60.0),
+        ('语音 8" 秒', 8.0),
+        ("语音7″秒", 7.0),
+        (None, None),
+        ("", None),
+        ("没有秒数", None),
+    ],
+)
 def test_duration_from_message(name, expected):
     assert u.duration_from_message(name) == expected
 
@@ -78,8 +83,8 @@ def test_rect_of_and_center():
 
 
 def test_rect_of_degenerate_returns_none():
-    assert u.rect_of(FakeCtrl(box=(10, 20, 10, 20))) is None   # 零面积
-    assert u.rect_of(FakeCtrl(box=None)) is None               # 抛异常
+    assert u.rect_of(FakeCtrl(box=(10, 20, 10, 20))) is None  # 零面积
+    assert u.rect_of(FakeCtrl(box=None)) is None  # 抛异常
 
 
 def test_pe_sections_rejects_garbage():
@@ -88,8 +93,16 @@ def test_pe_sections_rejects_garbage():
 
 
 def test_section_lookup():
-    secs = [{"name": ".text", "rva": 0x1000, "vsize": 0x2000, "raw_size": 0x2000,
-             "raw_ptr": 0x400, "chars": u.IMAGE_SCN_MEM_EXECUTE}]
+    secs = [
+        {
+            "name": ".text",
+            "rva": 0x1000,
+            "vsize": 0x2000,
+            "raw_size": 0x2000,
+            "raw_ptr": 0x400,
+            "chars": u.IMAGE_SCN_MEM_EXECUTE,
+        }
+    ]
     assert u._section_for_rva(secs, 0x1500)["name"] == ".text"
     assert u._section_for_rva(secs, 0x9000) is None
     assert u._offset_to_rva(secs, 0x500) == 0x1100
@@ -103,14 +116,15 @@ def test_scan_gate_rva_missing_file(tmp_path):
 
 # ---------------- RVA 缓存 ----------------
 
+
 def test_rva_cache_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(u, "_rva_cache_path", tmp_path / "gate.json")
     dll = Path("C:/x/Weixin.dll")
-    assert u._load_cached_rva(dll, 100, 5.0) is None      # 未写过
+    assert u._load_cached_rva(dll, 100, 5.0) is None  # 未写过
     u._save_cached_rva(dll, 100, 5.0, 0xAD19668)
     assert u._load_cached_rva(dll, 100, 5.0) == 0xAD19668
-    assert u._load_cached_rva(dll, 101, 5.0) is None      # size 变了
-    assert u._load_cached_rva(dll, 100, 99.0) is None     # mtime 变了（升级微信）
+    assert u._load_cached_rva(dll, 101, 5.0) is None  # size 变了
+    assert u._load_cached_rva(dll, 100, 99.0) is None  # mtime 变了（升级微信）
     assert u._load_cached_rva(dll, 100, 5.0) == 0xAD19668  # 原记录没被破坏
 
 
@@ -124,6 +138,7 @@ def test_rva_cache_survives_corrupt_file(tmp_path, monkeypatch):
 
 
 # ---------------- 热激活状态机 ----------------
+
 
 def test_ensure_active_disabled_by_env(monkeypatch):
     monkeypatch.setattr(u, "UIA_ENABLED", False)
@@ -166,8 +181,11 @@ def test_ensure_active_writes_byte_and_succeeds(monkeypatch, tmp_path):
     mem = {"v": 0}
     monkeypatch.setattr(u, "read_byte", lambda pid, addr: mem["v"])
     writes = []
-    monkeypatch.setattr(u, "write_byte",
-                        lambda pid, addr, v: (writes.append((addr, v)), mem.__setitem__("v", v), True)[-1])
+    monkeypatch.setattr(
+        u,
+        "write_byte",
+        lambda pid, addr, v: (writes.append((addr, v)), mem.__setitem__("v", v), True)[-1],
+    )
     monkeypatch.setattr(u, "_root_class", lambda hwnd: u.CLASS_MAIN)
 
     assert u.ensure_active() is True
@@ -225,6 +243,7 @@ def test_ensure_active_tree_not_materialized(monkeypatch, tmp_path):
 
 # ---------------- 控件查询的降级行为 ----------------
 
+
 def test_queries_return_none_without_root(monkeypatch):
     monkeypatch.setattr(u, "_root", lambda: None)
     assert u.input_field_rect() is None
@@ -275,7 +294,7 @@ def test_latest_voice_message_picks_lowest(monkeypatch):
     """多条语音时取最靠下（最新）的那条，而不是树序最后一条。"""
     a = FakeCtrl(box=(0, 100, 10, 110), class_name=u.CLASS_VOICE_MSG, name='语音60"秒')
     b = FakeCtrl(box=(0, 900, 10, 910), class_name=u.CLASS_VOICE_MSG, name='语音6"秒')
-    root = FakeCtrl(children=[b, a])          # 树序故意把新的放前面
+    root = FakeCtrl(children=[b, a])  # 树序故意把新的放前面
     monkeypatch.setattr(u, "_root", lambda: root)
     assert u.latest_voice_message() == '语音6"秒'
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """离线变声推理（由 m2_server/offline_vc.py 用 D:\\RVC\\.venv 的 python 跑）。
 
 两条链路共用本模块的加载/转换实现：
@@ -15,13 +14,15 @@
         --input <16k以下任意wav> --output <48k wav> [--pitch 0] [--index-rate 0.5]
     python offline_vc_infer.py --serve            # 常驻 worker，见 serve() 文档
 """
+
 import argparse
+import contextlib
 import os
 import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:            # 仅为下方字符串注解提供类型名，运行时零开销
+if TYPE_CHECKING:  # 仅为下方字符串注解提供类型名，运行时零开销
     import numpy as np
 
 
@@ -50,7 +51,7 @@ class RvcEngine:
 
     vc: object
     tgt_sr: int
-    index: str          # 已校验存在；空串 = 不做特征检索
+    index: str  # 已校验存在；空串 = 不做特征检索
     if_f0: int
     version: str
     pth: str
@@ -69,7 +70,6 @@ def load_vc(pth: str, index: str = "") -> RvcEngine:
     sys.argv = [sys.argv[0]]
     try:
         import torch
-
         from configs.config import Config
         from infer.module.models import (
             SynthesizerTrnMs256NSFsid,
@@ -114,12 +114,19 @@ def load_vc(pth: str, index: str = "") -> RvcEngine:
     finally:
         sys.argv = saved_argv
 
-    return RvcEngine(vc=vc, tgt_sr=tgt_sr, index=index if (index and os.path.exists(index)) else "",
-                     if_f0=if_f0, version=version, pth=pth)
+    return RvcEngine(
+        vc=vc,
+        tgt_sr=tgt_sr,
+        index=index if (index and os.path.exists(index)) else "",
+        if_f0=if_f0,
+        version=version,
+        pth=pth,
+    )
 
 
-def convert_audio(engine: RvcEngine, audio: "np.ndarray", pitch: int = 0,
-                  index_rate: float = 0.5) -> "np.ndarray":
+def convert_audio(
+    engine: RvcEngine, audio: "np.ndarray", pitch: int = 0, index_rate: float = 0.5
+) -> "np.ndarray":
     """把 16k float 音频转成目标音色，返回后处理后的 float32 数组（engine.tgt_sr）。
 
     级联实时链路对每一句 TTS 输出调用一次；模型常驻，故无逐次加载开销。
@@ -131,9 +138,21 @@ def convert_audio(engine: RvcEngine, audio: "np.ndarray", pitch: int = 0,
     if audio_max > 1:
         audio_in = audio_in / audio_max
     audio_out = engine.vc.pipeline.pipeline(
-        engine.vc.hubert_model, engine.vc.net_g, 0, audio_in, [0.0, 0.0, 0.0], pitch,
-        "rmvpe", engine.index, index_rate if engine.index else 0.0,
-        engine.if_f0, engine.tgt_sr, 0, 0.25, engine.version, 0.33,
+        engine.vc.hubert_model,
+        engine.vc.net_g,
+        0,
+        audio_in,
+        [0.0, 0.0, 0.0],
+        pitch,
+        "rmvpe",
+        engine.index,
+        index_rate if engine.index else 0.0,
+        engine.if_f0,
+        engine.tgt_sr,
+        0,
+        0.25,
+        engine.version,
+        0.33,
     )
     return postprocess_audio(audio_out.astype("float32"), engine.tgt_sr)
 
@@ -164,7 +183,7 @@ def main():
     import soundfile as sf
 
     sf.write(args.output, y, engine.tgt_sr)
-    print("OK %.2fs @%dHz" % (len(y) / engine.tgt_sr, engine.tgt_sr))
+    print(f"OK {len(y) / engine.tgt_sr:.2f}s @{engine.tgt_sr}Hz")
 
 
 def postprocess_audio(y, out_sr):
@@ -180,7 +199,7 @@ def postprocess_audio(y, out_sr):
 
     y = np.asarray(y, dtype=np.float32)
     # RMS 归一到 -18 dBFS（响度锚点）
-    rms = float(np.sqrt((y ** 2).mean()))
+    rms = float(np.sqrt((y**2).mean()))
     if rms > 1e-9:
         y = y / rms * (10 ** (-18 / 20))
     # 轻微低通去刺耳高频；低采样率模型（如 22.05k）时截止不得贴 Nyquist
@@ -215,10 +234,8 @@ def serve() -> int:
     import time
 
     for stream in (sys.stdin, sys.stdout):
-        try:
+        with contextlib.suppress(Exception):
             stream.reconfigure(encoding="utf-8", newline="\n")
-        except Exception:
-            pass
     setup_env()  # 必须先于任何 infer.* 导入（chdir + sys.path）
 
     cache: dict[tuple[str, str], RvcEngine] = {}
@@ -260,25 +277,32 @@ def serve() -> int:
                 dst = os.path.abspath(task["output"])
                 audio_in = load_audio(src, 16000)
                 t1 = time.time()
-                y = convert_audio(engine, audio_in, int(task.get("pitch", 0)),
-                                  float(task.get("index_rate", 0.5)))
+                y = convert_audio(
+                    engine, audio_in, int(task.get("pitch", 0)), float(task.get("index_rate", 0.5))
+                )
                 conv_s = time.time() - t1
                 import soundfile as sf
 
                 sf.write(dst, y, engine.tgt_sr)
-                emit({"id": tid, "ok": True, "output": dst,
-                      "duration": round(len(y) / engine.tgt_sr, 2), "sr": engine.tgt_sr,
-                      "load_s": round(load_s, 2), "convert_s": round(conv_s, 2)})
+                emit(
+                    {
+                        "id": tid,
+                        "ok": True,
+                        "output": dst,
+                        "duration": round(len(y) / engine.tgt_sr, 2),
+                        "sr": engine.tgt_sr,
+                        "load_s": round(load_s, 2),
+                        "convert_s": round(conv_s, 2),
+                    }
+                )
             except Exception as e:  # 单个任务失败不得拖垮 worker
                 emit({"id": tid, "ok": False, "error": str(e)[:400]})
     except KeyboardInterrupt:
         pass
     finally:
         # 显存要还给系统：worker 可能长期占着 GPU 却无人调用
-        try:
+        with contextlib.suppress(Exception):
             cache.clear()
-        except Exception:
-            pass
     return 0
 
 

@@ -1,6 +1,7 @@
 import { Check, Compass, Download, Eye, EyeOff, FolderOpen, HardDrive, LayoutGrid, Moon, Monitor, Palette, Scale, Sparkles, Sun, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { ThemeMode } from "@/theme"
+import { BuildWatchControl } from "@/components/BuildWatchControl"
 
 /**
  * 设置抽屉。
@@ -119,6 +120,10 @@ export function SettingsPanel({
           <Group title="维护" hint="模型、引擎与磁盘占用都在本机，不上传。">
             <Row icon={<FolderOpen className="h-4 w-4" />} label="模型与引擎配置" onClick={() => jump(onOpenModel)} />
             <Row icon={<HardDrive className="h-4 w-4" />} label="存储占用与清理" onClick={() => jump(onOpenStorage)} />
+          </Group>
+
+          <Group title="开发工具" hint="前端自动构建监听器。修改代码后自动编译并同步到应用。">
+            <BuildWatchControl />
           </Group>
 
           <Group title="关于">

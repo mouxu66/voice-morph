@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """启动预热：把「点一下要等一分多钟」压到十几秒。
 
 ## 为什么需要这个模块（2026-09-10 实测，RTX 5060 8GB）
@@ -22,16 +21,24 @@ RVC 侧靠 `rvc_convert.rvc_warmup()` 把模型预先 load 进常驻 worker
 全部在**后台线程**跑：不阻塞 uvicorn 启动，期间来请求也不会被拖住。
 开关 `VM_WARMUP=0` 关闭（排查显存问题时用）。
 """
+
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
 
 ENABLED = os.environ.get("VM_WARMUP", "1") != "0"
 
-_state: dict = {"running": False, "done": False, "steps": [], "started_at": 0.0,
-                "finished_at": 0.0, "error": ""}
+_state: dict = {
+    "running": False,
+    "done": False,
+    "steps": [],
+    "started_at": 0.0,
+    "finished_at": 0.0,
+    "error": "",
+}
 _lock = threading.Lock()
 
 
@@ -42,14 +49,16 @@ def status() -> dict:
 
 def _note(step: str, seconds: float, ok: bool = True, detail: str = "") -> None:
     with _lock:
-        _state["steps"].append({"step": step, "seconds": round(seconds, 2),
-                                "ok": ok, "detail": detail})
+        _state["steps"].append(
+            {"step": step, "seconds": round(seconds, 2), "ok": ok, "detail": detail}
+        )
 
 
 def _warm_tts() -> None:
     try:
         from qwen3_tts import ensure_worker
-        ensure_worker()   # 内部轮询 /health，直到模型加载 + warmup 完成
+
+        ensure_worker()  # 内部轮询 /health，直到模型加载 + warmup 完成
     except Exception as e:
         _note("TTS worker", 0.0, False, str(e)[:200])
         raise
@@ -58,7 +67,8 @@ def _warm_tts() -> None:
 
 
 def _warm_rvc() -> None:
-    from rvc_convert import rvc_warmup, resolve_rvc_voice
+    from rvc_convert import resolve_rvc_voice, rvc_warmup
+
     voice = resolve_rvc_voice(os.environ.get("VM_WARMUP_VOICE", "kangaroo"))
     if not voice:
         _note("RVC", 0.0, False, "没找到可预热的音色（跳过）")
@@ -70,6 +80,7 @@ def _warm_play_worker() -> None:
     """预热常驻播放 worker：把 numpy/sounddevice/soundfile 的冷导入付在启动时，
     之后每条语音只收播放命令，省 ~2.5-3s（与 RVC 常驻 worker 同理）。"""
     from wechat_voice import _get_play_worker
+
     proc = _get_play_worker()
     if proc is None:
         # _get_play_worker 内部已记 warning 并回退一次性；预热阶段不抛，记一步即可
@@ -109,9 +120,7 @@ def start_background(delay_s: float = 2.0) -> None:
 
     def _runner() -> None:
         time.sleep(delay_s)
-        try:
+        with contextlib.suppress(Exception):
             run()
-        except Exception:
-            pass
 
     threading.Thread(target=_runner, name="warmup", daemon=True).start()

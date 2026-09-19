@@ -1,8 +1,8 @@
-# -*- coding: utf-8 -*-
 """集中配置：所有外部路径/默认值从环境变量读取，未设置时回退到项目内默认。
 
 开源部署时只需设环境变量（VM_ 前缀），源码里不再有机器专属硬编码。
 """
+
 import os
 from pathlib import Path
 
@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # 真实环境变量优先于 .env；未安装 dotenv 或文件不存在则静默跳过。
 try:
     from dotenv import load_dotenv
+
     load_dotenv(ROOT / ".env")
 except Exception:
     pass
@@ -47,6 +48,7 @@ RVC_ROOT = _path("VM_RVC_ROOT", Path("D:/RVC"))
 # 2026-09-13 前这里写的是作者本人的音色名（他 08-29 A/B 选出的最佳音色）——
 # 对开源用户而言那是一个必然不存在的实验名，且属于私人音色指纹。
 RVC_DEFAULT_EXP = _str("VM_RVC_EXP", "")
+
 
 def _resolve_default_ref() -> Path:
     """兜底参考音：哪个音色都没有自己的参考音频时（市场下载的多半如此）用它，
@@ -95,7 +97,9 @@ API_TOKEN = _str("VM_API_TOKEN", "")
 
 # ---------------- RVC 训练语料 ----------------
 # 语料模板文件（每行一句），可经 VM_RVC_TEXTS_FILE 覆盖为任意音色专用语料
-_RVC_TEXTS_FILE = _path("VM_RVC_TEXTS_FILE", Path(__file__).resolve().parent / "data" / "rvc_texts.txt")
+_RVC_TEXTS_FILE = _path(
+    "VM_RVC_TEXTS_FILE", Path(__file__).resolve().parent / "data" / "rvc_texts.txt"
+)
 
 # 内置默认 20 句（与历史行为一致），仅当语料文件缺失时回退
 _DEFAULT_RVC_TEXTS = [
@@ -125,5 +129,9 @@ _DEFAULT_RVC_TEXTS = [
 def load_rvc_texts() -> list[str]:
     """读取 RVC 训练语料；文件存在则按行返回，缺失时回退内置默认 20 句。"""
     if _RVC_TEXTS_FILE.exists():
-        return [ln.strip() for ln in _RVC_TEXTS_FILE.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        return [
+            ln.strip()
+            for ln in _RVC_TEXTS_FILE.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
     return list(_DEFAULT_RVC_TEXTS)

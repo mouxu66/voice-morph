@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """微调语料体检与一键剔除（A3）：训练前的语料质量闸门。
 
 背景：`clip_qc`（P1-1）已经会给**流水线切片**打分，但微调工坊（/ft）的训练入口
@@ -24,6 +23,7 @@
   - 声纹维度（with_spk）默认关闭：需加载 CAM++，且中心声纹由"无 spk 打分里最
     好的 3 条"均值而来，避免锚点本身是脏样本时把中心带偏。
 """
+
 from __future__ import annotations
 
 import json
@@ -44,6 +44,7 @@ DEFAULT_KEEP_GRADES = ("A", "B")
 
 
 # ---------------- 路径 ----------------
+
 
 def ft_dir(voice_id: str) -> Path:
     return Path(cfg.MEDIA_DIR) / "ft" / voice_id
@@ -89,6 +90,7 @@ def rejected_paths(voice_id: str) -> list[Path]:
 
 # ---------------- 状态读写 ----------------
 
+
 def _read_status(voice_id: str) -> dict:
     p = status_path(voice_id)
     if p.exists():
@@ -105,8 +107,7 @@ def _write_status(voice_id: str, **kw) -> dict:
     st = _read_status(voice_id)
     st.update(kw)
     st["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    (d / "status.json").write_text(
-        json.dumps(st, ensure_ascii=False, indent=1), "utf-8")
+    (d / "status.json").write_text(json.dumps(st, ensure_ascii=False, indent=1), "utf-8")
     return st
 
 
@@ -137,6 +138,7 @@ def _stem_of(row: dict) -> str:
 
 
 # ---------------- 打分 ----------------
+
 
 def _fingerprint(paths: list[Path]) -> str:
     if not paths:
@@ -170,6 +172,7 @@ def _spk_center(paths: list[Path]):
     for p in paths:
         try:
             import clip_qc
+
             it = clip_qc.score_clip(p)
         except Exception:  # noqa: BLE001
             continue
@@ -201,16 +204,21 @@ def _reason_key(reason: str) -> str:
 def _advice(grades: dict, ok_count: int, total_s: float, rejected: int) -> list[str]:
     out = []
     if grades.get("D", 0):
-        out.append(f"{grades['D']} 条切片不合格（D 级），建议先「一键剔除」再训练"
-                   f"——脏样本是克隆失败/鬼叫的主要来源")
+        out.append(
+            f"{grades['D']} 条切片不合格（D 级），建议先「一键剔除」再训练"
+            f"——脏样本是克隆失败/鬼叫的主要来源"
+        )
     if grades.get("C", 0):
         out.append(f"{grades['C']} 条切片勉强可用（C 级），语料充足时可一并剔除换取更干净的训练集")
     if ok_count < MIN_TRAIN_SAMPLES:
-        out.append(f"可用切片仅 {ok_count} 条（建议 ≥{MIN_TRAIN_SAMPLES} 条），"
-                   f"剔除前请先补录，否则训练会因样本不足失败")
+        out.append(
+            f"可用切片仅 {ok_count} 条（建议 ≥{MIN_TRAIN_SAMPLES} 条），"
+            f"剔除前请先补录，否则训练会因样本不足失败"
+        )
     if 0 < total_s < MIN_TRAIN_SECONDS:
-        out.append(f"有效语音 {total_s:.0f}s（建议 ≥{MIN_TRAIN_SECONDS:.0f}s），"
-                   f"语料偏少时微调收益有限")
+        out.append(
+            f"有效语音 {total_s:.0f}s（建议 ≥{MIN_TRAIN_SECONDS:.0f}s），" f"语料偏少时微调收益有限"
+        )
     if rejected:
         out.append(f"已剔除 {rejected} 条（存于 clips_rejected，可随时恢复）")
     if not out:
@@ -245,9 +253,15 @@ def build_report(voice_id: str, with_spk: bool = False, force: bool = False) -> 
         try:
             clips[p.stem] = clip_qc.score_clip(p, center)
         except Exception as e:  # noqa: BLE001
-            clips[p.stem] = {"name": p.stem, "score": 0, "grade": "D",
-                             "reasons": [f"质检异常（{type(e).__name__}）"],
-                             "duration_s": 0.0, "spk_sim": None, "metrics": {}}
+            clips[p.stem] = {
+                "name": p.stem,
+                "score": 0,
+                "grade": "D",
+                "reasons": [f"质检异常（{type(e).__name__}）"],
+                "duration_s": 0.0,
+                "spk_sim": None,
+                "metrics": {},
+            }
 
     grades = {"A": 0, "B": 0, "C": 0, "D": 0}
     reasons: dict[str, int] = {}
@@ -263,8 +277,9 @@ def build_report(voice_id: str, with_spk: bool = False, force: bool = False) -> 
             reasons[k] = reasons.get(k, 0) + 1
 
     n = len(clips)
-    top_reasons = [{"reason": k, "count": v}
-                   for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])[:5]]
+    top_reasons = [
+        {"reason": k, "count": v} for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])[:5]
+    ]
 
     payload = {
         "voice_id": voice_id,
@@ -278,20 +293,21 @@ def build_report(voice_id: str, with_spk: bool = False, force: bool = False) -> 
         "total_s": round(total_s, 1),
         "rejected_count": len(rejected_paths(voice_id)),
         "top_reasons": top_reasons,
-        "advice": _advice(grades, grades["A"] + grades["B"], total_s,
-                          len(rejected_paths(voice_id))),
+        "advice": _advice(
+            grades, grades["A"] + grades["B"], total_s, len(rejected_paths(voice_id))
+        ),
         "clips": clips,
     }
     try:
         report_path(voice_id).parent.mkdir(parents=True, exist_ok=True)
-        report_path(voice_id).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=1), "utf-8")
+        report_path(voice_id).write_text(json.dumps(payload, ensure_ascii=False, indent=1), "utf-8")
     except Exception:  # noqa: BLE001
         pass  # 落盘失败不影响本次返回
     return payload
 
 
 # ---------------- 剔除 / 恢复 ----------------
+
 
 def _mutable_or_raise(voice_id: str, training: bool = False) -> None:
     """处理中 / 训练中不允许改语料（后台线程正在读写同样的文件）。"""
@@ -305,6 +321,7 @@ def _mutable_or_raise(voice_id: str, training: bool = False) -> None:
 def _durations(rows: list[dict]) -> float:
     """统计样本总时长（读 wav，失败按 0 计）。"""
     import soundfile as sf
+
     total = 0.0
     for r in rows:
         try:
@@ -338,8 +355,12 @@ def _apply_anchor(rows: list[dict], anchor: str | None) -> list[dict]:
     return rows
 
 
-def prune(voice_id: str, keep_grades=DEFAULT_KEEP_GRADES, min_score: int | None = None,
-          training: bool = False) -> dict:
+def prune(
+    voice_id: str,
+    keep_grades=DEFAULT_KEEP_GRADES,
+    min_score: int | None = None,
+    training: bool = False,
+) -> dict:
     """把低分切片移入 clips_rejected，并从训练集中摘掉对应样本。
 
     keep_grades: 保留的等级（默认 A/B）；min_score: 额外的最低分门槛。
@@ -362,8 +383,15 @@ def prune(voice_id: str, keep_grades=DEFAULT_KEEP_GRADES, min_score: int | None 
             drop_stems.add(name)
 
     if not drop_stems:
-        return {"voice_id": voice_id, "kept": len(rows), "moved": 0,
-                "moved_names": [], "rows": len(rows), "anchor": None, "warning": ""}
+        return {
+            "voice_id": voice_id,
+            "kept": len(rows),
+            "moved": 0,
+            "moved_names": [],
+            "rows": len(rows),
+            "anchor": None,
+            "warning": "",
+        }
 
     rej_dir = rejected_dir(voice_id)
     rej_dir.mkdir(parents=True, exist_ok=True)
@@ -383,8 +411,11 @@ def prune(voice_id: str, keep_grades=DEFAULT_KEEP_GRADES, min_score: int | None 
 
     # 被剔除的样本另存一份，恢复时才能拿回转写文本
     if drop_rows:
-        old_rej = [r for r in _read_jsonl(rejected_jsonl(voice_id))
-                   if _stem_of(r) not in {_stem_of(r2) for r2 in drop_rows}]
+        old_rej = [
+            r
+            for r in _read_jsonl(rejected_jsonl(voice_id))
+            if _stem_of(r) not in {_stem_of(r2) for r2 in drop_rows}
+        ]
         _write_jsonl(rejected_jsonl(voice_id), old_rej + drop_rows)
 
     anchor = _pick_anchor(keep_rows)
@@ -394,8 +425,10 @@ def prune(voice_id: str, keep_grades=DEFAULT_KEEP_GRADES, min_score: int | None 
     speech_s = _durations(keep_rows)
     warning = ""
     if len(keep_rows) < MIN_TRAIN_SAMPLES:
-        warning = (f"剔除后仅剩 {len(keep_rows)} 条样本（训练需 ≥{MIN_TRAIN_SAMPLES} 条），"
-                   f"请补录或点「恢复」撤回本次剔除")
+        warning = (
+            f"剔除后仅剩 {len(keep_rows)} 条样本（训练需 ≥{MIN_TRAIN_SAMPLES} 条），"
+            f"请补录或点「恢复」撤回本次剔除"
+        )
 
     _write_status(
         voice_id,
@@ -403,15 +436,25 @@ def prune(voice_id: str, keep_grades=DEFAULT_KEEP_GRADES, min_score: int | None 
         speech_s=round(speech_s, 1),
         anchor=(Path(anchor).name if anchor else None),
         rejected=len(rejected_paths(voice_id)),
-        qc={"grades": report.get("grades"), "avg_score": report.get("avg_score"),
-            "updated_at": report.get("updated_at")},
+        qc={
+            "grades": report.get("grades"),
+            "avg_score": report.get("avg_score"),
+            "updated_at": report.get("updated_at"),
+        },
     )
     build_report(voice_id, force=True)
 
-    return {"voice_id": voice_id, "kept": len(keep_rows), "moved": len(moved),
-            "moved_names": moved, "rows": len(keep_rows),
-            "speech_s": round(speech_s, 1), "anchor": anchor,
-            "rejected": len(rejected_paths(voice_id)), "warning": warning}
+    return {
+        "voice_id": voice_id,
+        "kept": len(keep_rows),
+        "moved": len(moved),
+        "moved_names": moved,
+        "rows": len(keep_rows),
+        "speech_s": round(speech_s, 1),
+        "anchor": anchor,
+        "rejected": len(rejected_paths(voice_id)),
+        "warning": warning,
+    }
 
 
 def restore(voice_id: str, training: bool = False) -> dict:
@@ -427,7 +470,7 @@ def restore(voice_id: str, training: bool = False) -> dict:
     restored: list[str] = []
     for p in rej_paths:
         dst = cdir / p.name
-        if dst.exists():      # 同名已存在（例如重新处理产生过同名切片）→ 保留现役
+        if dst.exists():  # 同名已存在（例如重新处理产生过同名切片）→ 保留现役
             continue
         try:
             shutil.move(str(p), str(dst))
@@ -440,8 +483,10 @@ def restore(voice_id: str, training: bool = False) -> dict:
     add = [r for r in rej_rows if _stem_of(r) not in have]
     rows += add
     # 未恢复的（文件被占用/同名冲突）留在 rejected 清单里
-    _write_jsonl(rejected_jsonl(voice_id),
-                 [r for r in rej_rows if _stem_of(r) not in {_stem_of(a) for a in add}])
+    _write_jsonl(
+        rejected_jsonl(voice_id),
+        [r for r in rej_rows if _stem_of(r) not in {_stem_of(a) for a in add}],
+    )
 
     anchor = _pick_anchor(rows)
     rows = _apply_anchor(rows, anchor)
@@ -458,7 +503,12 @@ def restore(voice_id: str, training: bool = False) -> dict:
     build_report(voice_id, force=True)
     report = load_report(voice_id) or {}
 
-    return {"voice_id": voice_id, "restored": len(restored), "rows": len(rows),
-            "speech_s": round(speech_s, 1), "anchor": anchor,
-            "rejected": len(rejected_paths(voice_id)),
-            "grades": report.get("grades", {})}
+    return {
+        "voice_id": voice_id,
+        "restored": len(restored),
+        "rows": len(rows),
+        "speech_s": round(speech_s, 1),
+        "anchor": anchor,
+        "rejected": len(rejected_paths(voice_id)),
+        "grades": report.get("grades", {}),
+    }

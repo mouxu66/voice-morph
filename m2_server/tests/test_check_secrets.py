@@ -11,6 +11,7 @@
 ⚠️ 本文件里的"样本行"一律用 `_lit()` 拼出来，**不直接写出完整样本**——否则仓库自检
 会命中本文件自己，规则就只得靠白名单绕开自己，那等于没有规则。
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -62,15 +63,19 @@ def _pv(*parts: str) -> str:
 
 # ---------------- 正例：必须命中 ----------------
 
-@pytest.mark.parametrize("line", [
-    _lit("password", "hunter2xyz"),
-    _lit("$CertPassword", "s3cret-pass"),
-    _lit("$env:CSC_KEY_PASSWORD", "certpass123"),
-    _lit("client_secret", "topsecretvalue"),
-    _lit("authToken", "t0ken-value-9"),
-    _lit("apiKey", "abcdef123456", sep=":"),
-    _json("apikey", "k-abcdef12345"),
-])
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        _lit("password", "hunter2xyz"),
+        _lit("$CertPassword", "s3cret-pass"),
+        _lit("$env:CSC_KEY_PASSWORD", "certpass123"),
+        _lit("client_secret", "topsecretvalue"),
+        _lit("authToken", "t0ken-value-9"),
+        _lit("apiKey", "abcdef123456", sep=":"),
+        _json("apikey", "k-abcdef12345"),
+    ],
+)
 def test_flags_hardcoded_credentials(cs, line):
     hits = cs.scan_text(line, "sample.ps1")
     assert hits, f"应命中却放行：{line}"
@@ -91,25 +96,29 @@ def test_reports_file_and_line(cs):
 
 # ---------------- 反例：必须放行 ----------------
 
-@pytest.mark.parametrize("line,why", [
-    ("$env:CSC_KEY_PASSWORD = '<你的 pfx 密码>'", "尖括号占位符"),
-    ('$CertPassword = "填你的 pfx 密码"', "中文占位符"),
-    ('password = "CHANGE_ME"', "约定俗成的占位符"),
-    ('clientSecret = "your-client-secret"', "your- 占位符"),
-    ('apiKey = ""', "空值（前端未配置）"),
-    ('password = os.environ["VM_PW"]', "从环境变量读，不是字面量"),
-    ("token = process.env.API_TOKEN", "从环境变量读（TS）"),
-    ('$env:PASSWORD = $secret', "变量赋值"),
-    ('key = "Enter"', "裸 key 不是敏感词（否则全是噪音）"),
-    ('bypass = "true"', "bypass 里含 pass，但不是密码"),
-    ('secretName = "my-secret"', "敏感词不在末尾 → 普通配置名"),
-    ('tokenExpiry = "3600s"', "敏感词不在末尾 → 普通配置名"),
-    ('timeout = 30', "数字不是字符串字面量"),
-    ('password = "ab"', "太短，当占位符放过"),
-    ("# " + _lit("password", "hunter2xyz"), "Python/sh 注释行不拦"),
-    ("// " + _lit("apiKey", "abcdef123456", sep=":"), "JS/TS 注释行不拦"),
-    ('', "空行"),
-])
+
+@pytest.mark.parametrize(
+    "line,why",
+    [
+        ("$env:CSC_KEY_PASSWORD = '<你的 pfx 密码>'", "尖括号占位符"),
+        ('$CertPassword = "填你的 pfx 密码"', "中文占位符"),
+        ('password = "CHANGE_ME"', "约定俗成的占位符"),
+        ('clientSecret = "your-client-secret"', "your- 占位符"),
+        ('apiKey = ""', "空值（前端未配置）"),
+        ('password = os.environ["VM_PW"]', "从环境变量读，不是字面量"),
+        ("token = process.env.API_TOKEN", "从环境变量读（TS）"),
+        ("$env:PASSWORD = $secret", "变量赋值"),
+        ('key = "Enter"', "裸 key 不是敏感词（否则全是噪音）"),
+        ('bypass = "true"', "bypass 里含 pass，但不是密码"),
+        ('secretName = "my-secret"', "敏感词不在末尾 → 普通配置名"),
+        ('tokenExpiry = "3600s"', "敏感词不在末尾 → 普通配置名"),
+        ("timeout = 30", "数字不是字符串字面量"),
+        ('password = "ab"', "太短，当占位符放过"),
+        ("# " + _lit("password", "hunter2xyz"), "Python/sh 注释行不拦"),
+        ("// " + _lit("apiKey", "abcdef123456", sep=":"), "JS/TS 注释行不拦"),
+        ("", "空行"),
+    ],
+)
 def test_allows_placeholders_and_non_secrets(cs, line, why):
     hits = cs.scan_text(line, "sample.ps1")
     assert not hits, f"应放行却命中（{why}）：{line} → {hits}"
@@ -117,14 +126,14 @@ def test_allows_placeholders_and_non_secrets(cs, line, why):
 
 # ---------------- 仓库自检：真门禁 ----------------
 
+
 def test_repo_has_no_hardcoded_credentials(cs):
     """整个入库范围不得有硬编码凭据。这是本测试存在的主要理由。"""
     try:
         files = cs.repo_files()
-    except Exception as exc:                      # 没有 git（源码包解压等）→ 跳过，别假红
+    except Exception as exc:  # 没有 git（源码包解压等）→ 跳过，别假红
         pytest.skip(f"无法取入库文件列表：{exc}")
     hits = cs.scan_paths(files)
-    assert not hits, (
-        "入库范围发现硬编码凭据（规则与对策见 tools/check_secrets.py）：\n  "
-        + "\n  ".join(hits)
-    )
+    assert (
+        not hits
+    ), "入库范围发现硬编码凭据（规则与对策见 tools/check_secrets.py）：\n  " + "\n  ".join(hits)

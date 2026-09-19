@@ -17,6 +17,7 @@
   换图最多延迟半天）→ 失败回退 raw.githubusercontent.com。
   VM_MARKET_IMG_REPO 环境变量可换库；设为空则禁用远程层（只用打包图）。
 """
+
 import json
 import os
 import re
@@ -25,7 +26,6 @@ import time
 from pathlib import Path
 
 import requests
-
 from config import OUTPUTS_DIR
 from runtime import API_PREFIX
 
@@ -33,8 +33,8 @@ CACHE_DIR = OUTPUTS_DIR / "market" / "imgs_cache"
 ASSET_DIR = Path(__file__).resolve().parent / "assets" / "market_imgs"
 REVISION_FILE = CACHE_DIR / ".revision"
 
-SYNC_TTL = 6 * 3600                      # 远程清单刷新间隔（秒）
-_HTTP_TIMEOUT = (5, 30)                  # (连接, 读取) 超时
+SYNC_TTL = 6 * 3600  # 远程清单刷新间隔（秒）
+_HTTP_TIMEOUT = (5, 30)  # (连接, 读取) 超时
 _IMG_EXTS = ("png", "jpg", "jpeg", "webp")
 
 _REPO = os.environ.get("VM_MARKET_IMG_REPO", "mouxu66/voice-market-assets").strip()
@@ -113,8 +113,13 @@ def sync_remote(force: bool = False) -> dict:
 
 
 def _snapshot() -> dict:
-    return {"last_sync": _state["last_sync"], "revision": _state["revision"],
-            "ok": _state["ok"], "error": _state["error"], "downloaded": _state["downloaded"]}
+    return {
+        "last_sync": _state["last_sync"],
+        "revision": _state["revision"],
+        "ok": _state["ok"],
+        "error": _state["error"],
+        "downloaded": _state["downloaded"],
+    }
 
 
 def _sync_locked() -> None:
@@ -128,8 +133,9 @@ def _sync_locked() -> None:
     if last_revision is None and REVISION_FILE.is_file():
         last_revision = REVISION_FILE.read_text("utf-8").strip()
     if revision == last_revision and revision:
-        _state.update(ok=True, error="", revision=revision or None, last_sync=time.time(),
-                      downloaded=0)
+        _state.update(
+            ok=True, error="", revision=revision or None, last_sync=time.time(), downloaded=0
+        )
         REVISION_FILE.write_text(revision, "utf-8")
         return
     downloaded = 0
@@ -138,17 +144,23 @@ def _sync_locked() -> None:
         rel = str(rel).lstrip("/")
         ext = Path(rel).suffix.lower().lstrip(".")
         # 先验证（vid 白名单 + 相对路径 + 扩展名），再下载——脏条目不发请求
-        if not re.fullmatch(r"[a-z0-9_]{1,64}", vid) or not rel or ".." in rel \
-                or ext not in _IMG_EXTS:
+        if (
+            not re.fullmatch(r"[a-z0-9_]{1,64}", vid)
+            or not rel
+            or ".." in rel
+            or ext not in _IMG_EXTS
+        ):
             continue
-        content = _http_get(_CDN_TPL.format(repo=_REPO, path=rel)) \
-            or _http_get(_FALLBACK_TPL.format(repo=_REPO, path=rel))
+        content = _http_get(_CDN_TPL.format(repo=_REPO, path=rel)) or _http_get(
+            _FALLBACK_TPL.format(repo=_REPO, path=rel)
+        )
         if content is None:
             continue
         (CACHE_DIR / f"{vid}.{ext}").write_bytes(content)
         downloaded += 1
-    _state.update(ok=True, error="", revision=revision or None, last_sync=time.time(),
-                  downloaded=downloaded)
+    _state.update(
+        ok=True, error="", revision=revision or None, last_sync=time.time(), downloaded=downloaded
+    )
     REVISION_FILE.write_text(revision, "utf-8")
 
 

@@ -15,6 +15,7 @@
 本模块被 m2_server 下多个入口复用（demo_convert / gptsovits_tts），
 避免多处重复、签名不一致的 monkey-patch。
 """
+
 from __future__ import annotations
 
 import importlib.metadata
@@ -49,17 +50,31 @@ def patch_torchaudio_load() -> None:
     if getattr(ta.load, "_patched_by_soundfile", False):
         return
 
-    def _load(path, frame_offset=0, num_frames=-1, normalize=True,
-              channels_first=True, format=None, buffer=None, num_channels=None,
-              **_kw):
+    def _load(
+        path,
+        frame_offset=0,
+        num_frames=-1,
+        normalize=True,
+        channels_first=True,
+        format=None,
+        buffer=None,
+        num_channels=None,
+        **_kw,
+    ):
         # num_frames<=0 表示读全部；soundfile 约定用 -1（不能传 None）
         frames = int(num_frames) if num_frames is not None and num_frames > 0 else -1
         if buffer is not None:
-            data, sr = sf.read(io.BytesIO(buffer), start=int(frame_offset),
-                               frames=frames, dtype="float32", always_2d=True)
+            data, sr = sf.read(
+                io.BytesIO(buffer),
+                start=int(frame_offset),
+                frames=frames,
+                dtype="float32",
+                always_2d=True,
+            )
         else:
-            data, sr = sf.read(str(path), start=int(frame_offset),
-                               frames=frames, dtype="float32", always_2d=True)
+            data, sr = sf.read(
+                str(path), start=int(frame_offset), frames=frames, dtype="float32", always_2d=True
+            )
         wav = torch.from_numpy(data.T.copy())
         if not channels_first:
             wav = wav.T

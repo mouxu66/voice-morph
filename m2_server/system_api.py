@@ -2,11 +2,11 @@
 
 自 server.py 拆出（行为不变）；app 装配见 server.py。
 """
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
 
 import config as cfg
 import storage
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 from rvc_common import find_pth
 
 router = APIRouter(prefix="/api")
@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api")
 @router.get("/health")
 def health():
     import torch
+
     return {"status": "ok", "cuda": torch.cuda.is_available()}
 
 
@@ -26,46 +27,65 @@ def diagnose():
     后端能响应本接口本身就说明「本地推理服务」已在线（故 backend 项恒 ok）。
     """
     import shutil
+
     import torch
 
     items: list[dict] = []
 
     # 1) 本地推理服务（能响应 /diagnose 说明本身已在线）
-    items.append({
-        "key": "backend", "ok": True, "label": "本地推理服务",
-        "detail": f"已连接 · 端口 {cfg.SERVER_PORT}", "hint": "",
-    })
+    items.append(
+        {
+            "key": "backend",
+            "ok": True,
+            "label": "本地推理服务",
+            "detail": f"已连接 · 端口 {cfg.SERVER_PORT}",
+            "hint": "",
+        }
+    )
 
     # 2) ffmpeg（音频预处理/导出依赖）
     ff = shutil.which("ffmpeg")
     if ff:
         items.append({"key": "ffmpeg", "ok": True, "label": "ffmpeg", "detail": ff, "hint": ""})
     else:
-        items.append({
-            "key": "ffmpeg", "ok": False, "label": "ffmpeg",
-            "detail": "未在 PATH 中找到 ffmpeg",
-            "hint": "安装 ffmpeg 并加入 PATH；Windows 可用 `winget install ffmpeg` 或 `scoop install ffmpeg`。",
-        })
+        items.append(
+            {
+                "key": "ffmpeg",
+                "ok": False,
+                "label": "ffmpeg",
+                "detail": "未在 PATH 中找到 ffmpeg",
+                "hint": "安装 ffmpeg 并加入 PATH；Windows 可用 `winget install ffmpeg` 或 `scoop install ffmpeg`。",
+            }
+        )
 
     # 3) Qwen3-TTS 模型 + 分词器
     qwen_ok = cfg.QWEN_MODEL_DIR.exists() and (cfg.QWEN_MODEL_DIR / "config.json").exists()
     tok_ok = cfg.QWEN_TOKENIZER_DIR.exists()
     if qwen_ok and tok_ok:
-        items.append({
-            "key": "tts_models", "ok": True, "label": "Qwen3-TTS 模型/分词器",
-            "detail": str(cfg.QWEN_MODEL_DIR), "hint": "",
-        })
+        items.append(
+            {
+                "key": "tts_models",
+                "ok": True,
+                "label": "Qwen3-TTS 模型/分词器",
+                "detail": str(cfg.QWEN_MODEL_DIR),
+                "hint": "",
+            }
+        )
     else:
         miss = []
         if not qwen_ok:
             miss.append("模型目录缺失或没有 config.json")
         if not tok_ok:
             miss.append("分词器目录缺失")
-        items.append({
-            "key": "tts_models", "ok": False, "label": "Qwen3-TTS 模型/分词器",
-            "detail": "；".join(miss),
-            "hint": f"确认 VM_QWEN_MODEL_DIR（{cfg.QWEN_MODEL_DIR}）与 VM_QWEN_TOKENIZER_DIR（{cfg.QWEN_TOKENIZER_DIR}）已下载解压到位。",
-        })
+        items.append(
+            {
+                "key": "tts_models",
+                "ok": False,
+                "label": "Qwen3-TTS 模型/分词器",
+                "detail": "；".join(miss),
+                "hint": f"确认 VM_QWEN_MODEL_DIR（{cfg.QWEN_MODEL_DIR}）与 VM_QWEN_TOKENIZER_DIR（{cfg.QWEN_TOKENIZER_DIR}）已下载解压到位。",
+            }
+        )
 
     # 4) RVC 整合包根目录（实时变声依赖）
     if cfg.RVC_ROOT.exists():
@@ -75,18 +95,26 @@ def diagnose():
             or (cfg.RVC_ROOT / "logs").exists()
             or (cfg.RVC_ROOT / "tools").exists()
         )
-        items.append({
-            "key": "rvc_root", "ok": True, "label": "RVC 整合包",
-            "detail": str(cfg.RVC_ROOT)
-            + ("" if looks else "（未识别到 rvc/logs 等典型子目录，请确认路径正确）"),
-            "hint": "" if looks else "该目录缺少 RVC 典型结构，实时变声可能无法工作。",
-        })
+        items.append(
+            {
+                "key": "rvc_root",
+                "ok": True,
+                "label": "RVC 整合包",
+                "detail": str(cfg.RVC_ROOT)
+                + ("" if looks else "（未识别到 rvc/logs 等典型子目录，请确认路径正确）"),
+                "hint": "" if looks else "该目录缺少 RVC 典型结构，实时变声可能无法工作。",
+            }
+        )
     else:
-        items.append({
-            "key": "rvc_root", "ok": False, "label": "RVC 整合包",
-            "detail": f"目录不存在：{cfg.RVC_ROOT}",
-            "hint": "设置环境变量 VM_RVC_ROOT 指向 RVC 整合包根目录（含 rvc/infer/tools 等）。实时变声依赖它。",
-        })
+        items.append(
+            {
+                "key": "rvc_root",
+                "ok": False,
+                "label": "RVC 整合包",
+                "detail": f"目录不存在：{cfg.RVC_ROOT}",
+                "hint": "设置环境变量 VM_RVC_ROOT 指向 RVC 整合包根目录（含 rvc/infer/tools 等）。实时变声依赖它。",
+            }
+        )
 
     # 5) 默认音色 RVC 权重（pth + index）
     # 未配置默认音色时**不能**拿空实验名去 rvc_exp_dirs()：那会拼出 RVC_ROOT/logs，
@@ -94,26 +122,39 @@ def diagnose():
     # 注意：这里**不能**用早返回 —— 下面还有第 6 项（GPU/CUDA）、以及末尾的汇总，
     # 早返回会静默丢掉那几行（本改动第一版就是这毛病，靠读函数尾才发现）。
     if not cfg.RVC_DEFAULT_EXP:
-        items.append({
-            "key": "rvc_weights", "ok": False, "label": "RVC 权重（未指定音色）",
-            "detail": "尚未指定默认音色（VM_RVC_EXP 为空）",
-            "hint": "先在「音色库」创建音色并训练，或设置 VM_RVC_EXP 指定默认音色。无权重时实时变声不可用，但 TTS/离线变声仍可用。",
-        })
+        items.append(
+            {
+                "key": "rvc_weights",
+                "ok": False,
+                "label": "RVC 权重（未指定音色）",
+                "detail": "尚未指定默认音色（VM_RVC_EXP 为空）",
+                "hint": "先在「音色库」创建音色并训练，或设置 VM_RVC_EXP 指定默认音色。无权重时实时变声不可用，但 TTS/离线变声仍可用。",
+            }
+        )
     else:
         weights_dir = cfg.rvc_exp_dirs(cfg.RVC_DEFAULT_EXP)[0]
         pth = find_pth(cfg.RVC_DEFAULT_EXP, weights_dir)
         idx = next(weights_dir.glob("added_*.index"), None) if weights_dir.exists() else None
         if pth and idx:
-            items.append({
-                "key": "rvc_weights", "ok": True, "label": f"RVC 权重（{cfg.RVC_DEFAULT_EXP}）",
-                "detail": str(pth), "hint": "",
-            })
+            items.append(
+                {
+                    "key": "rvc_weights",
+                    "ok": True,
+                    "label": f"RVC 权重（{cfg.RVC_DEFAULT_EXP}）",
+                    "detail": str(pth),
+                    "hint": "",
+                }
+            )
         else:
-            items.append({
-                "key": "rvc_weights", "ok": False, "label": f"RVC 权重（{cfg.RVC_DEFAULT_EXP}）",
-                "detail": f"未找到训练好的 .pth 或 .index（{weights_dir}）",
-                "hint": "该音色还没训练 RVC 模型：先在「音色微调」生成语料并训练，或在 RVC 整合包里完成训练。无权重时实时变声不可用，但 TTS/离线变声仍可用。",
-            })
+            items.append(
+                {
+                    "key": "rvc_weights",
+                    "ok": False,
+                    "label": f"RVC 权重（{cfg.RVC_DEFAULT_EXP}）",
+                    "detail": f"未找到训练好的 .pth 或 .index（{weights_dir}）",
+                    "hint": "该音色还没训练 RVC 模型：先在「音色微调」生成语料并训练，或在 RVC 整合包里完成训练。无权重时实时变声不可用，但 TTS/离线变声仍可用。",
+                }
+            )
 
     # 6) GPU / CUDA（仅告警，不阻断 CPU 推理）
     cuda = torch.cuda.is_available()
@@ -124,11 +165,16 @@ def diagnose():
             dev = "未知 GPU"
         items.append({"key": "cuda", "ok": True, "label": "GPU / CUDA", "detail": dev, "hint": ""})
     else:
-        items.append({
-            "key": "cuda", "ok": False, "warn": True, "label": "GPU / CUDA",
-            "detail": "未检测到可用 GPU，将退回 CPU 推理（非常慢）",
-            "hint": "确认已安装对应 CUDA 版本的 PyTorch 且显卡驱动正常；可运行 `nvidia-smi` 验证。",
-        })
+        items.append(
+            {
+                "key": "cuda",
+                "ok": False,
+                "warn": True,
+                "label": "GPU / CUDA",
+                "detail": "未检测到可用 GPU，将退回 CPU 推理（非常慢）",
+                "hint": "确认已安装对应 CUDA 版本的 PyTorch 且显卡驱动正常；可运行 `nvidia-smi` 验证。",
+            }
+        )
 
     return {"all_ok": all(i["ok"] for i in items), "cuda": cuda, "items": items}
 
@@ -156,6 +202,7 @@ def system_warmup():
     前端可据此提示"首次合成较慢"/"已就绪"。未就绪不影响使用，只是第一下慢。
     """
     from warmup import status
+
     return status()
 
 

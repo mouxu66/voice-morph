@@ -1,4 +1,5 @@
 """effects.py DSP 效果链单测（纯 numpy/scipy，无 GPU/网络依赖）。"""
+
 import sys
 from pathlib import Path
 
@@ -13,7 +14,6 @@ pytest.importorskip("scipy")
 
 import effects  # noqa: E402
 
-
 SR = 16000
 
 
@@ -23,6 +23,7 @@ def _tone(dur=1.0, sr=SR, freq=440.0):
 
 
 # ---------------- apply_chain 通用行为 ----------------
+
 
 def test_empty_chain_returns_original():
     x = _tone()
@@ -64,7 +65,7 @@ def test_failing_effect_skipped_not_abort():
     out, skipped = effects.apply_chain(x, SR, chain)
     assert skipped == []
     assert out.shape == x.shape
-    assert np.all(np.isfinite(out))          # 无 NaN/Inf
+    assert np.all(np.isfinite(out))  # 无 NaN/Inf
 
 
 def test_chain_order_matters():
@@ -72,19 +73,24 @@ def test_chain_order_matters():
     a, _ = effects.apply_chain(x, SR, [{"type": "reverb", "params": {"wet": 0.6}}])
     b, _ = effects.apply_chain(a, SR, [{"type": "reverb", "params": {"wet": 0.6}}])
     # 两个不同顺序/叠加应产生不同结果（至少二次叠加明显更湿）
-    double, _ = effects.apply_chain(x, SR, [
-        {"type": "reverb", "params": {"wet": 0.6}},
-        {"type": "reverb", "params": {"wet": 0.6}},
-    ])
+    double, _ = effects.apply_chain(
+        x,
+        SR,
+        [
+            {"type": "reverb", "params": {"wet": 0.6}},
+            {"type": "reverb", "params": {"wet": 0.6}},
+        ],
+    )
     assert not np.allclose(double, a, atol=1e-4)
 
 
 # ---------------- 单效果：长度 / 有限 / 不削波 ----------------
 
+
 def _assert_sane(out, x):
     assert out.shape[0] == x.shape[0] or out.ndim == 1  # 长度保持或单声道
     assert np.all(np.isfinite(out))
-    assert float(np.max(np.abs(out))) <= 1.0 + 1e-6     # _norm 防削波
+    assert float(np.max(np.abs(out))) <= 1.0 + 1e-6  # _norm 防削波
 
 
 @pytest.mark.parametrize("fx_type", list(effects.CATALOG.keys()))
@@ -110,7 +116,7 @@ def test_catalog_meta_has_no_fx_key():
     meta = effects.catalog_meta()
     assert meta
     for m in meta:
-        assert "fx" not in m               # 前端目录不携带函数
+        assert "fx" not in m  # 前端目录不携带函数
         assert m["type"] in effects.CATALOG
         assert isinstance(m["params"], list)
 
@@ -123,6 +129,7 @@ def test_param_clamped_to_bounds():
 
 
 # ---------------- 特定效果语义 ----------------
+
 
 def test_speed_identity_at_rate_1():
     x = _tone()
@@ -142,6 +149,8 @@ def test_pitch_identity_at_0():
 
 def test_echo_changes_signal():
     x = _tone(0.5)
-    out, _ = effects.apply_chain(x, SR, [{"type": "echo", "params": {"delay_s": 0.1, "feedback": 0.5}}])
-    assert out.shape[0] == x.shape[0]       # 时长不变（buf 超出部分截断）
+    out, _ = effects.apply_chain(
+        x, SR, [{"type": "echo", "params": {"delay_s": 0.1, "feedback": 0.5}}]
+    )
+    assert out.shape[0] == x.shape[0]  # 时长不变（buf 超出部分截断）
     assert not np.allclose(out, x, atol=1e-3)  # 回声确实叠加了

@@ -1,4 +1,5 @@
 """common.py 公共工具单测（音色 ID 校验 / 上传限制 / 音色档案读取）。"""
+
 import json
 import sys
 from pathlib import Path
@@ -12,17 +13,16 @@ import pytest  # noqa: E402
 pytest.importorskip("fastapi")
 
 import config as cfg  # noqa: E402
-from fastapi import HTTPException  # noqa: E402
-
 from common import (  # noqa: E402
     MAX_UPLOAD_BYTES,
     is_valid_voice_id,
     selected_voice,
     voice_ref,
 )
-
+from fastapi import HTTPException  # noqa: E402
 
 # ---------------- is_valid_voice_id ----------------
+
 
 def test_valid_voice_ids():
     for vid in ("abc", "ABC123", "a_b-c", "meituan_rat"):
@@ -31,13 +31,13 @@ def test_valid_voice_ids():
 
 def test_invalid_voice_ids():
     for vid in (
-        "",                    # 空串
-        "../etc",              # 路径穿越
-        "a/b",                 # 斜杠
-        "a\\b",                # 反斜杠
-        "a b",                 # 空格
-        "中文",                # 非 ASCII
-        "a.b",                 # 点（文件名分隔符）
+        "",  # 空串
+        "../etc",  # 路径穿越
+        "a/b",  # 斜杠
+        "a\\b",  # 反斜杠
+        "a b",  # 空格
+        "中文",  # 非 ASCII
+        "a.b",  # 点（文件名分隔符）
         "..",
         "a?b",
         "a*b",
@@ -53,6 +53,7 @@ def test_upload_limit_sane():
 
 # ---------------- voice_ref / selected_voice（用 monkeypatch 隔离路径） ----------------
 
+
 def _fake_voicebank(tmp_path):
     """在 tmp 下搭一个最小 voicebank 目录，返回其路径。"""
     vb = tmp_path / "voicebank"
@@ -66,7 +67,7 @@ def test_voice_ref_returns_audio_and_text(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "MEDIA_DIR", _fake_voicebank(tmp_path).parent)
     ref, text = voice_ref("abc")
     assert ref.name == "reference.wav"
-    assert text == "你好世界"        # strip 后返回
+    assert text == "你好世界"  # strip 后返回
 
 
 def test_voice_ref_invalid_id_raises_400(tmp_path, monkeypatch):
@@ -90,8 +91,7 @@ def test_selected_voice_missing_file_returns_empty(tmp_path, monkeypatch):
 
 def test_selected_voice_reads_json(tmp_path, monkeypatch):
     vb = _fake_voicebank(tmp_path)
-    (vb / "selected_voice.json").write_text(
-        json.dumps({"voice_id": "abc"}), encoding="utf-8")
+    (vb / "selected_voice.json").write_text(json.dumps({"voice_id": "abc"}), encoding="utf-8")
     monkeypatch.setattr(cfg, "MEDIA_DIR", vb.parent)
     assert selected_voice() == "abc"
 

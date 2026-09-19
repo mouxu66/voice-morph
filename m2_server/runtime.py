@@ -5,6 +5,7 @@ server.py 拆分后，原先定义在 server.py 里的路径常量 / 全局状�
 注意：PIPELINE_STATE / MINE_STATE / CAPTURE_STATE 是**原地共享的 dict**，
 所有模块必须通过 `.update()` 或项赋值修改，禁止整体重新赋值（会断开共享）。
 """
+
 import re
 import threading
 from pathlib import Path
@@ -39,14 +40,14 @@ def clip_prefix(video_stem: str) -> str:
 # ---- 流水线运行状态（供前端轮询分步进度/取消；capture 自动流程也复用）----
 PIPELINE_STATE = {
     "running": False,
-    "status": "idle",        # idle | running | done | cancelled | error
+    "status": "idle",  # idle | running | done | cancelled | error
     "step": "",
     "message": "",
     "percent": 0,
     "clips": 0,
     "error": "",
-    "file": "",          # 当前正在处理的素材名（失败可诊断用）
-    "qc": {},          # 流水线跑完后的切片质检汇总（clip_qc.score_prefixes 产出）
+    "file": "",  # 当前正在处理的素材名（失败可诊断用）
+    "qc": {},  # 流水线跑完后的切片质检汇总（clip_qc.score_prefixes 产出）
 }
 pipeline_cancel = threading.Event()
 pipeline_lock = threading.Lock()
@@ -61,10 +62,10 @@ def update_pipeline(**kw):
 # ---- 音色挖掘状态（mine_api 专用；capture 的自动流程也会触发挖掘）----
 MINE_STATE: dict = {
     "running": False,
-    "stage": "",       # idle | running | done | error
+    "stage": "",  # idle | running | done | error
     "message": "",
     "kept": 0,
-    "clusters": [],    # [{cluster,size,members,rep:{name,path,text}}]
+    "clusters": [],  # [{cluster,size,members,rep:{name,path,text}}]
 }
 # 试听句池：与素材视频内容无关的全新句子（试听音色迁移能力，避免"复读原视频"）
 PREVIEW_TEXTS = [
@@ -86,7 +87,7 @@ CAPTURE_STATE: dict = {"recording": False, "message": "", "file": ""}
 # 用户在试音间开了批量任务、又去离线变声页点一下，两个推理进程就会撞在一起。
 # 这里给「长任务」一个统一登记位：占用方 hold_gpu，其余路径统一查 gpu_holder_reason()。
 _EXCLUSIVE_LOCK = threading.Lock()
-EXCLUSIVE_TASKS: dict = {}          # 任务名 → 可读占用说明
+EXCLUSIVE_TASKS: dict = {}  # 任务名 → 可读占用说明
 
 
 def hold_gpu(name: str, reason: str) -> bool:

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """市场音色安装后自动试听（A2）。
 
 流程：用内置干净中文人声源句（assets/preview_source.wav，魔搭官方模型的中文
@@ -27,16 +26,17 @@ voicebank 参考音（唯一音色=袋鼠）截取，RVC 是 voice-to-voice，�
     - 实时变声 / 级联变声 / 离线变声任一在跑 → 标记 skipped（它们正在占用 RVC GPU 环境）
     - 源句/输出做 RMS 静音校验，静音按 failed 处理（绝不把无声 wav 标成 ready）
 """
+
+import contextlib
 import json
 import subprocess
 import threading
 import time
 from pathlib import Path
 
+import config as cfg
 import numpy as np
 import soundfile as sf
-
-import config as cfg
 from runtime import VOICEBANK
 
 # 静音判定阈值：正常语音 RMS 远大于此；数字静音/近静音均视为无声
@@ -46,9 +46,9 @@ _MIN_RMS = 1e-3
 _BACKOFF_S = 20
 
 # 输出质量关阈值（A2 健壮性增强，2026-09-10）：防"有声但废"的破音/截断/NaN 漏过
-_QUALITY_MIN_DUR = 0.5     # 试听短于此（秒）→ 视为截断/异常
-_QUALITY_MAX_DUR = 60.0    # 试听长于此（秒）→ 异常
-_QUALITY_CLIP_RATIO = 0.02 # 峰值>0.995 的样本占比超此 → 削顶破音
+_QUALITY_MIN_DUR = 0.5  # 试听短于此（秒）→ 视为截断/异常
+_QUALITY_MAX_DUR = 60.0  # 试听长于此（秒）→ 异常
+_QUALITY_CLIP_RATIO = 0.02  # 峰值>0.995 的样本占比超此 → 削顶破音
 
 # 源句台词 —— 仅文档用途，改这个常量**不会**改变试听音频。
 # 试听是 RVC voice-to-voice：听到的内容由 assets/preview_source.wav 决定，与文本无关。
@@ -119,10 +119,18 @@ def status(voice_id: str) -> dict:
 def _mark(voice_id: str, st: str, error: str = "", src_fp: str | None = None):
     # 未显式传指纹时保留原值：failed/skipped/generating 不该抹掉已有指纹
     fp = src_fp if src_fp is not None else str(_read_sidecar(voice_id).get("src_fp") or "")
-    _sidecar(voice_id).write_text(json.dumps({
-        "status": st, "error": error, "src_fp": fp,
-        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }, ensure_ascii=False), encoding="utf-8")
+    _sidecar(voice_id).write_text(
+        json.dumps(
+            {
+                "status": st,
+                "error": error,
+                "src_fp": fp,
+                "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 # ---------------- 源句缓存 ----------------
@@ -159,10 +167,10 @@ def _stale(voice_id: str) -> bool:
     """试听是否过期：无指纹（指纹机制之前的旧缓存）或源句指纹变了 → 需重新生成。"""
     fp = str(_read_sidecar(voice_id).get("src_fp") or "")
     if not fp:
-        return True                      # 旧缓存无法确认源句，一律重生成
+        return True  # 旧缓存无法确认源句，一律重生成
     cur = _current_source_path()
     if cur is None:
-        return False                     # 源句还没就绪，不因此判过期（避免反复重试）
+        return False  # 源句还没就绪，不因此判过期（避免反复重试）
     return fp != _source_fingerprint(cur)
 
 
@@ -208,7 +216,7 @@ def _quality_ok(path: Path) -> tuple[bool, str]:
     clip_ratio = float(np.mean(np.abs(x) > 0.995))
     if clip_ratio > _QUALITY_CLIP_RATIO:
         return False, f"输出存在明显削顶（破音，占比{clip_ratio:.1%}）"
-    if float(np.sqrt(np.mean(x ** 2))) <= _MIN_RMS:
+    if float(np.sqrt(np.mean(x**2))) <= _MIN_RMS:
         return False, "静音（RMS 过低）"
     return True, ""
 
@@ -219,18 +227,18 @@ def _extract_ref_segment(ref: Path, out: Path, want_s: float = 5.0) -> None:
     if x.ndim > 1:
         x = x.mean(axis=1)
     x = np.asarray(x, dtype=np.float32)
-    trim = max(1, len(x) // 10)               # 丢头尾各 10%
+    trim = max(1, len(x) // 10)  # 丢头尾各 10%
     core = x[trim:-trim] if len(x) > 2 * trim else x
     want = int(want_s * sr)
     if len(core) <= want:
         seg = core
-    else:                                      # 取中段
+    else:  # 取中段
         start = (len(core) - want) // 2
-        seg = core[start:start + want]
+        seg = core[start : start + want]
     peak = float(np.max(np.abs(seg))) if seg.size else 0.0
     if peak > 0:
-        seg = seg * (0.7 / peak)               # 归一到约 -3dB，避免源句过轻
-    tmp = out.with_name(out.stem + "_tmp.wav")   # 保持 .wav 扩展名，soundfile 靠它识别格式
+        seg = seg * (0.7 / peak)  # 归一到约 -3dB，避免源句过轻
+    tmp = out.with_name(out.stem + "_tmp.wav")  # 保持 .wav 扩展名，soundfile 靠它识别格式
     sf.write(str(tmp), seg, sr)
     tmp.replace(out)
 
@@ -247,11 +255,17 @@ def _ensure_source() -> Path:
     cached = _src_wav()
     if cached.exists() and _audible(cached):
         return cached
-    refs = sorted((p for p in VOICEBANK.iterdir() if p.is_dir() and (p / "reference.wav").exists()),
-                  key=lambda p: p.name) if VOICEBANK.is_dir() else []
+    refs = (
+        sorted(
+            (p for p in VOICEBANK.iterdir() if p.is_dir() and (p / "reference.wav").exists()),
+            key=lambda p: p.name,
+        )
+        if VOICEBANK.is_dir()
+        else []
+    )
     if not refs:
         raise RuntimeError("本机没有可用于截取试听源句的参考音色（音色库为空），请先自建一个音色")
-    for vb in refs:                            # 第一个参考音全静音时顺延下一个
+    for vb in refs:  # 第一个参考音全静音时顺延下一个
         ref = vb / "reference.wav"
         if not _audible(ref):
             continue
@@ -271,24 +285,28 @@ def _gpu_busy() -> str:
     """RVC GPU 环境是否被占用；返回占用说明，空闲返回空串。"""
     try:
         from rvc_live import _live_proc_alive
+
         if _live_proc_alive():
             return "实时变声正在运行"
     except Exception:
         pass
     try:
         from cascade import _cascade_alive
+
         if _cascade_alive():
             return "级联变声正在运行"
     except Exception:
         pass
     try:
         from offline_vc import OFFLINEVC_STATE
+
         if OFFLINEVC_STATE.get("running"):
             return "离线变声任务正在运行"
     except Exception:
         pass
     try:
         from runtime import gpu_holder_reason
+
         reason = gpu_holder_reason()
         if reason:
             return reason
@@ -308,8 +326,8 @@ def _find_pth(voice_id: str):
     w = cfg.RVC_ROOT / "assets" / "weights" / f"{voice_id}.pth"
     if w.exists():
         return w
-    l = cfg.RVC_ROOT / "logs" / voice_id / f"{voice_id}.pth"
-    return l if l.exists() else None
+    log = cfg.RVC_ROOT / "logs" / voice_id / f"{voice_id}.pth"
+    return log if log.exists() else None
 
 
 def generate(voice_id: str, download: dict | None = None) -> dict:
@@ -335,10 +353,8 @@ def generate(voice_id: str, download: dict | None = None) -> dict:
 
 def try_auto_preview(voice_id: str):
     """安装收尾自动触发（fire-and-forget，任何异常不外抛，不阻塞安装）。"""
-    try:
+    with contextlib.suppress(Exception):
         generate(voice_id)
-    except Exception:
-        pass
 
 
 def _worker(voice_id: str):
@@ -391,15 +407,20 @@ def _ensure_staged(voice_id: str, download: dict) -> Path:
     - 缺失 → 用 DownloadManager 起一个 preview_<id> 任务下载（白名单/断点
       续传/信号量限流与安装同链路，进度同样进下载托盘），轮询到 done。
     """
-    from market_download import get_manager, _torch_header_ok
+    from market_download import _torch_header_ok, get_manager
+
     mgr = get_manager()
     staged = mgr.download_dir / f"{voice_id}.pth"
     if staged.exists() and _torch_header_ok(staged):
         return staged
     name = f"preview_{voice_id}"
-    mgr.start(name=name, url=download.get("url") or "",
-              mirror_url=download.get("mirror_url"),
-              sha256=download.get("sha256"), filename=f"{voice_id}.pth")
+    mgr.start(
+        name=name,
+        url=download.get("url") or "",
+        mirror_url=download.get("mirror_url"),
+        sha256=download.get("sha256"),
+        filename=f"{voice_id}.pth",
+    )
     deadline = time.time() + 3600
     while time.time() < deadline:
         st = mgr.task_status(name)
@@ -416,8 +437,9 @@ def _ensure_staged(voice_id: str, download: dict) -> Path:
     return staged
 
 
-def _do_generate(voice_id: str, pth_override: Path | None = None,
-                 index_override: str | None = None):
+def _do_generate(
+    voice_id: str, pth_override: Path | None = None, index_override: str | None = None
+):
     """执行一次试听转换并落 sidecar。
 
     pth_override/index_override：未安装音色用市场暂存权重转换时由 _worker_pre
@@ -449,18 +471,36 @@ def _do_generate(voice_id: str, pth_override: Path | None = None,
         return
     out = _out_wav(voice_id)
     index = index_override if index_override is not None else _find_index(voice_id)
-    cmd = [str(RVC_VENV_PY), str(INFER_PY),
-           "--pth", str(pth),
-           "--index", index,
-           "--input", str(src), "--output", str(out),
-           "--pitch", str(_PITCH), "--index-rate", str(_INDEX_RATE)]
+    cmd = [
+        str(RVC_VENV_PY),
+        str(INFER_PY),
+        "--pth",
+        str(pth),
+        "--index",
+        index,
+        "--input",
+        str(src),
+        "--output",
+        str(out),
+        "--pitch",
+        str(_PITCH),
+        "--index-rate",
+        str(_INDEX_RATE),
+    ]
     # B（2026-09-10）：瞬态失败自愈——RVC 子进程偶发 CUDA/OOM 崩溃，重试一次再下定论
     r = None
     last_err = "无错误输出"
     for attempt in range(2):
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
-                               encoding="utf-8", errors="replace", cwd=str(cfg.RVC_ROOT))
+            r = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(cfg.RVC_ROOT),
+            )
             if r.returncode == 0 and out.exists():
                 break
             tail = (r.stderr or r.stdout or "").strip().splitlines()[-3:]
@@ -470,19 +510,15 @@ def _do_generate(voice_id: str, pth_override: Path | None = None,
         if attempt < 1:
             time.sleep(1.5)
     if r is None or r.returncode != 0 or not out.exists():
-        try:
+        with contextlib.suppress(Exception):
             out.unlink(missing_ok=True)
-        except Exception:
-            pass
         _mark(voice_id, "failed", last_err)
         return
     # A（2026-09-10）：输出质量关——防"有声但废"（破音/削顶/截断/NaN）漏过纯响度检查
     ok, why = _quality_ok(out)
     if not ok:
-        try:
+        with contextlib.suppress(Exception):
             out.unlink(missing_ok=True)
-        except Exception:
-            pass
         _mark(voice_id, "failed", f"试听质量不合格：{why}")
         return
     # 记下本次使用的源句指纹：下次源句一换，这个缓存就自动失效并重生成

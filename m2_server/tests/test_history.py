@@ -1,4 +1,5 @@
 """history.py 变声任务持久化单测（用 monkeypatch 隔离 outputs 目录）。"""
+
 import sys
 from pathlib import Path
 
@@ -6,10 +7,9 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-import pytest  # noqa: E402
-
 import config as cfg  # noqa: E402
 import history  # noqa: E402
+import pytest  # noqa: E402
 
 
 @pytest.fixture
@@ -23,7 +23,9 @@ def isolated(tmp_path, monkeypatch):
 
 
 def test_register_and_query(isolated):
-    hid = history.register("tts", "abc", "tts_1.wav", "/api/media/outputs/tts_1.wav", 2.5, input_text="你好")
+    hid = history.register(
+        "tts", "abc", "tts_1.wav", "/api/media/outputs/tts_1.wav", 2.5, input_text="你好"
+    )
     assert hid
     res = history.query()
     assert res["total"] == 1
@@ -83,7 +85,7 @@ def test_delete_record_and_file(isolated):
     item = history.query()["items"][0]
     res = history.delete(item["id"], keep_file=False)
     assert res["ok"] is True
-    assert res["file_gone"] is False          # 文件存在并被删除
+    assert res["file_gone"] is False  # 文件存在并被删除
     assert history.query()["total"] == 0
     assert not (isolated / "tts_x.wav").exists()
 

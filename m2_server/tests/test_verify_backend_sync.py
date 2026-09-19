@@ -8,6 +8,7 @@
 
 测试策略：全部在 `tmp_path` 里构造 src/dst，不碰真实副本。
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -40,6 +41,7 @@ vbs = _load_verify_module()
 
 # ---------------------------------------------------------------- _ignore_reason
 
+
 @pytest.mark.parametrize(
     "rel, should_ignore",
     [
@@ -47,11 +49,11 @@ vbs = _load_verify_module()
         ("m2_server/server.py", False),
         ("tools/doctor.py", False),
         ("web_dist/index.html", False),
-        ("m2_server/tests/test_foo.py", True),          # 测试目录
+        ("m2_server/tests/test_foo.py", True),  # 测试目录
         ("m2_server/.pytest_cache/v/cache/nodeids", True),  # pytest 缓存
-        ("tools/desktop-control/out/shot-1.png", True),     # 运行产物
-        ("tools/desktop-control/cdp.py", True),             # 开发期工具
-        ("tools/wx_green_judge_check.py", True),            # 开发期工具
+        ("tools/desktop-control/out/shot-1.png", True),  # 运行产物
+        ("tools/desktop-control/cdp.py", True),  # 开发期工具
+        ("tools/wx_green_judge_check.py", True),  # 开发期工具
         ("web/electron/pet/pet.html.bak-20260917-195316", True),  # 备份
     ],
 )
@@ -75,6 +77,7 @@ def test_production_file_is_not_ignored():
 
 
 # ---------------------------------------------------------------- _diff_pair
+
 
 def _make(root: Path, files: dict[str, str]) -> None:
     for rel, content in files.items():
@@ -129,16 +132,22 @@ def test_diff_pair_absent_dst_dir(tmp_path):
 
 def test_ignorable_diffs_do_not_count_as_prod(tmp_path):
     """测试目录 / 缓存的差异只能进 ign_*，不能污染生产代码计数。"""
-    _make(tmp_path / "src", {
-        "a.py": "x",
-        "tests/test_t.py": "v1",
-        ".pytest_cache/v/cache/nodeids": "v1",
-    })
-    _make(tmp_path / "dst", {
-        "a.py": "x",
-        "tests/test_t.py": "v2",              # 内容不同（可忽略）
-        # .pytest_cache 整个缺失（可忽略）
-    })
+    _make(
+        tmp_path / "src",
+        {
+            "a.py": "x",
+            "tests/test_t.py": "v1",
+            ".pytest_cache/v/cache/nodeids": "v1",
+        },
+    )
+    _make(
+        tmp_path / "dst",
+        {
+            "a.py": "x",
+            "tests/test_t.py": "v2",  # 内容不同（可忽略）
+            # .pytest_cache 整个缺失（可忽略）
+        },
+    )
     res = vbs._diff_pair(tmp_path, "src", tmp_path, "dst")
     assert vbs._prod_bad(res) == 0, "可忽略项的差异不该计入生产代码"
     assert res["ign_changed"] == ["tests/test_t.py"]

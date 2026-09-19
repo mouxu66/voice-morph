@@ -12,6 +12,7 @@
 备份文件位于 %LOCALAPPDATA%/rvc_audio_backup.txt，首次 apply 时写入。
 巡检只处理「有备份但无变声进程」这一种残留（绝不擅改用户手动设置）。
 """
+
 import json
 import os
 import shutil
@@ -21,7 +22,6 @@ import time
 from pathlib import Path
 
 from fastapi import APIRouter
-
 from runtime import API_PREFIX, ROOT
 
 router = APIRouter(prefix=API_PREFIX)
@@ -44,10 +44,21 @@ def _run_audio_config(action: str) -> dict:
         return {"ok": False, "error": "未找到 PowerShell，无法调整音频设备"}
     try:
         proc = subprocess.run(
-            [exe, "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-File", str(_AUDIO_PS1), "-action", action],
-            capture_output=True, text=True, timeout=30,
-            encoding="utf-8", errors="replace",
+            [
+                exe,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(_AUDIO_PS1),
+                "-action",
+                action,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            encoding="utf-8",
+            errors="replace",
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "音频配置脚本执行超时（30s）"}
@@ -117,12 +128,18 @@ def build_send_chain_report(diag: dict, stale: bool) -> dict:
     devices = diag.get("devices") if isinstance(diag, dict) else None
     if not (isinstance(diag, dict) and diag.get("ok")) or devices is None:
         return {
-            "ok": False, "all_ok": False, "stale": stale,
-            "items": [{
-                "key": "diag", "ok": False, "label": "音频设备枚举",
-                "detail": str((diag or {}).get("error") or "未能枚举音频端点"),
-                "hint": "确认本机 PowerShell 可用（pwsh 或 powershell），重启本应用后再试。",
-            }],
+            "ok": False,
+            "all_ok": False,
+            "stale": stale,
+            "items": [
+                {
+                    "key": "diag",
+                    "ok": False,
+                    "label": "音频设备枚举",
+                    "detail": str((diag or {}).get("error") or "未能枚举音频端点"),
+                    "hint": "确认本机 PowerShell 可用（pwsh 或 powershell），重启本应用后再试。",
+                }
+            ],
         }
 
     renders = [d for d in devices if d.get("flow") == 0]
@@ -132,69 +149,111 @@ def build_send_chain_report(diag: dict, stale: bool) -> dict:
 
     # 1) 虚拟声卡是否安装（变声链路的物理前提）
     if has_cable_in and has_cable_out:
-        items.append({
-            "key": "cable", "ok": True, "label": "虚拟声卡（VB-CABLE）",
-            "detail": "已安装：CABLE Input（播放侧）+ CABLE Output（录音侧）", "hint": "",
-        })
+        items.append(
+            {
+                "key": "cable",
+                "ok": True,
+                "label": "虚拟声卡（VB-CABLE）",
+                "detail": "已安装：CABLE Input（播放侧）+ CABLE Output（录音侧）",
+                "hint": "",
+            }
+        )
     else:
         miss = []
         if not has_cable_in:
             miss.append("播放端 CABLE Input")
         if not has_cable_out:
             miss.append("录音端 CABLE Output")
-        items.append({
-            "key": "cable", "ok": False, "label": "虚拟声卡（VB-CABLE）",
-            "detail": "未检测到 " + "、".join(miss),
-            "hint": "到 VB-Audio 官网免费下载安装 Virtual Cable，装完重启本应用再检测。",
-        })
+        items.append(
+            {
+                "key": "cable",
+                "ok": False,
+                "label": "虚拟声卡（VB-CABLE）",
+                "detail": "未检测到 " + "、".join(miss),
+                "hint": "到 VB-Audio 官网免费下载安装 Virtual Cable，装完重启本应用再检测。",
+            }
+        )
 
     # 2) 默认录音设备是否已是变声声卡（微信/QQ/游戏「选哪个麦克风」的关键）
     default_cap = next((d for d in captures if 0 in (d.get("roles") or [])), None)
     if default_cap is None:
-        items.append({
-            "key": "default_capture", "ok": False, "label": "默认录音设备",
-            "detail": "未找到当前默认录音设备",
-            "hint": "检查 Windows「声音设置 → 输入」里是否选择了设备。",
-        })
+        items.append(
+            {
+                "key": "default_capture",
+                "ok": False,
+                "label": "默认录音设备",
+                "detail": "未找到当前默认录音设备",
+                "hint": "检查 Windows「声音设置 → 输入」里是否选择了设备。",
+            }
+        )
     elif has_cable_out and _name_has(default_cap.get("name"), "cable output"):
-        items.append({
-            "key": "default_capture", "ok": True, "label": "默认录音设备",
-            "detail": f"{default_cap.get('name')}（= 变声声卡，默认已就位）", "hint": "",
-        })
+        items.append(
+            {
+                "key": "default_capture",
+                "ok": True,
+                "label": "默认录音设备",
+                "detail": f"{default_cap.get('name')}（= 变声声卡，默认已就位）",
+                "hint": "",
+            }
+        )
     else:
-        items.append({
-            "key": "default_capture", "ok": False, "label": "默认录音设备",
-            "detail": f"当前默认录音是「{default_cap.get('name')}」，还不是变声声卡",
-            "hint": "点「一键最优」把默认录音切到 CABLE Output；或在微信/QQ/游戏的麦克风设置里手动选「CABLE Output」。",
-        })
+        items.append(
+            {
+                "key": "default_capture",
+                "ok": False,
+                "label": "默认录音设备",
+                "detail": f"当前默认录音是「{default_cap.get('name')}」，还不是变声声卡",
+                "hint": "点「一键最优」把默认录音切到 CABLE Output；或在微信/QQ/游戏的麦克风设置里手动选「CABLE Output」。",
+            }
+        )
 
     # 3) 默认播放设备（防"开了变声本机就听不到声音"）
     default_ren = next((d for d in renders if 0 in (d.get("roles") or [])), None)
     if default_ren is None:
-        items.append({
-            "key": "default_render", "ok": False, "warn": True, "label": "默认播放设备",
-            "detail": "未找到当前默认播放设备",
-            "hint": "检查 Windows「声音设置 → 输出」里是否选择了设备。",
-        })
+        items.append(
+            {
+                "key": "default_render",
+                "ok": False,
+                "warn": True,
+                "label": "默认播放设备",
+                "detail": "未找到当前默认播放设备",
+                "hint": "检查 Windows「声音设置 → 输出」里是否选择了设备。",
+            }
+        )
     elif has_cable_in and _name_has(default_ren.get("name"), "cable input"):
-        items.append({
-            "key": "default_render", "ok": False, "warn": True, "label": "默认播放设备",
-            "detail": f"当前默认播放是「{default_ren.get('name')}」（虚拟声卡），本机听不到声音",
-            "hint": "点「恢复默认设备」或手动把播放切回真实扬声器/耳机；实时变声时建议戴耳机防回声。",
-        })
+        items.append(
+            {
+                "key": "default_render",
+                "ok": False,
+                "warn": True,
+                "label": "默认播放设备",
+                "detail": f"当前默认播放是「{default_ren.get('name')}」（虚拟声卡），本机听不到声音",
+                "hint": "点「恢复默认设备」或手动把播放切回真实扬声器/耳机；实时变声时建议戴耳机防回声。",
+            }
+        )
     else:
-        items.append({
-            "key": "default_render", "ok": True, "label": "默认播放设备",
-            "detail": f"{default_ren.get('name')}（真实扬声器/耳机，正常）", "hint": "",
-        })
+        items.append(
+            {
+                "key": "default_render",
+                "ok": True,
+                "label": "默认播放设备",
+                "detail": f"{default_ren.get('name')}（真实扬声器/耳机，正常）",
+                "hint": "",
+            }
+        )
 
     # 4) 备份残留（上次变声异常退出的告警，不阻断）
     if stale:
-        items.append({
-            "key": "stale_backup", "ok": False, "warn": True, "label": "设备配置残留",
-            "detail": "上次变声的设备备份尚未还原（可能异常退出）",
-            "hint": "点「恢复默认设备」一键还原；不处理也不影响下次变声（下次会重新备份）。",
-        })
+        items.append(
+            {
+                "key": "stale_backup",
+                "ok": False,
+                "warn": True,
+                "label": "设备配置残留",
+                "detail": "上次变声的设备备份尚未还原（可能异常退出）",
+                "hint": "点「恢复默认设备」一键还原；不处理也不影响下次变声（下次会重新备份）。",
+            }
+        )
 
     return {"ok": True, "all_ok": all(i["ok"] for i in items), "stale": stale, "items": items}
 
@@ -216,6 +275,7 @@ def _backup_exists() -> bool:
 def _any_voice_alive() -> bool:
     from cascade import _cascade_alive
     from rvc_live import _live_proc_alive
+
     return bool(_cascade_alive() or _live_proc_alive())
 
 

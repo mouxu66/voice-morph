@@ -3,24 +3,24 @@
 - 清单/直链构造/搜索解析：纯本地（monkeypatch requests.get，不碰真实网络）
 - 安装编排：本地 ThreadingHTTPServer 提供 pth/index，验证落位到模拟 RVC 目录
 """
+
 import http.server
 import os
 import threading
 import time
 import urllib.parse
 
+import config
+import market_search as ms
 import pytest
-
 from market_download import ALLOWED_HOSTS, DownloadManager, MarketError
 from market_install import InstallError, InstallManager
 from market_manifest import get_manifest
-import market_search as ms
-import config
 
 # 伪权重须过 _torch_header_ok 魔数校验：以 pickle 协议 2 头部 \x80\x02 开头
-PTH_DATA = b"\x80\x02" + os.urandom(512 * 1024 - 2)          # 512KB 伪权重
-IDX_DATA = os.urandom(64 * 1024)           # 64KB 伪索引
-MIRROR_DATA = b"\x80\x02" + os.urandom(128 * 1024 - 2)       # 镜像文件（内容刻意不同，也过魔数校验）
+PTH_DATA = b"\x80\x02" + os.urandom(512 * 1024 - 2)  # 512KB 伪权重
+IDX_DATA = os.urandom(64 * 1024)  # 64KB 伪索引
+MIRROR_DATA = b"\x80\x02" + os.urandom(128 * 1024 - 2)  # 镜像文件（内容刻意不同，也过魔数校验）
 
 
 class _Ctx:
@@ -54,7 +54,7 @@ class RangeHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    do_GET = lambda self: self._serve()      # noqa: E731
+    do_GET = lambda self: self._serve()  # noqa: E731
 
 
 @pytest.fixture(scope="module")
@@ -68,9 +68,11 @@ def server_url():
 
 @pytest.fixture()
 def mgr(tmp_path):
-    return DownloadManager(download_dir=tmp_path / "dl",
-                           state_file=tmp_path / "dl" / "downloads.json",
-                           allow_loopback=True)
+    return DownloadManager(
+        download_dir=tmp_path / "dl",
+        state_file=tmp_path / "dl" / "downloads.json",
+        allow_loopback=True,
+    )
 
 
 @pytest.fixture()
@@ -135,12 +137,22 @@ def test_ms_resolve_url():
 # ---------------- 搜索（monkeypatch 掉网络） ----------------
 def _fake_get_json(url, **params):
     if "/api/models" in url and params.get("search"):
-        return [{"id": "juuxn/rvc-demo", "downloads": 5, "likes": 2, "tags": ["rvc"],
-                 "cardData": {"language": ["zh"]}, "lastModified": "2026-01-01T00:00:00"},
-                {"id": "other/filler", "downloads": 0, "likes": 0, "tags": [], "lastModified": ""}]
+        return [
+            {
+                "id": "juuxn/rvc-demo",
+                "downloads": 5,
+                "likes": 2,
+                "tags": ["rvc"],
+                "cardData": {"language": ["zh"]},
+                "lastModified": "2026-01-01T00:00:00",
+            },
+            {"id": "other/filler", "downloads": 0, "likes": 0, "tags": [], "lastModified": ""},
+        ]
     if "/api/models/juuxn/rvc-demo/tree/main" in url:
-        return [{"type": "file", "path": "demo.pth", "size": 100, "lfs": {"sha256": "abc"}},
-                {"type": "file", "path": "added.index", "size": 50, "lfs": {}}]
+        return [
+            {"type": "file", "path": "demo.pth", "size": 100, "lfs": {"sha256": "abc"}},
+            {"type": "file", "path": "added.index", "size": 50, "lfs": {}},
+        ]
     if "/tree/main" in url:
         return []
     raise AssertionError(f"unexpected request: {url} params={params}")
@@ -156,21 +168,35 @@ def test_search_hf_parses_items(monkeypatch, server_url):
 
 def test_hf_desc_zh_helpers():
     """英文元数据 → 中文简介（类型/能力/协议/语言）。"""
-    zh = ms._zh_tags(["rvc", "license:mit", "en", "ja", "region:us",
-                      "text-generation-inference", "arxiv:2409.123"])
+    zh = ms._zh_tags(
+        [
+            "rvc",
+            "license:mit",
+            "en",
+            "ja",
+            "region:us",
+            "text-generation-inference",
+            "arxiv:2409.123",
+        ]
+    )
     assert "RVC 变声" in zh and "MIT 协议" in zh and "地区 · 美国" in zh
-    assert all("english" != s for s in zh), "语言标签不应进标签数组"
-    m = {"pipeline_tag": "audio-to-audio", "tags": ["rvc", "license:mit", "en", "ja"],
-         "cardData": {"description": "RVC voice model pack"}}
+    assert all(s != "english" for s in zh), "语言标签不应进标签数组"
+    m = {
+        "pipeline_tag": "audio-to-audio",
+        "tags": ["rvc", "license:mit", "en", "ja"],
+        "cardData": {"description": "RVC voice model pack"},
+    }
     d = ms.make_hf_desc(m, zh)
     assert "音频转换" in d and "语言 英语/日语" in d and "RVC voice model pack" in d
 
 
 def test_strip_markdown_and_readme_summary(monkeypatch):
     """README 纯文本化与摘要（frontmatter/图片/链接剥除 + 10 分钟缓存）。"""
-    md = ("---\nlanguage: zh\nlibrary_name: rvc\n---\n# 懒羊羊音色\n\n"
-          "![banner](https://x/y.png)\n这是一个 [懒羊羊](https://example.com) 的 RVC 音色。\n\n"
-          "## 使用说明\n\n1. 下载 .pth\n2. 放进 weights")
+    md = (
+        "---\nlanguage: zh\nlibrary_name: rvc\n---\n# 懒羊羊音色\n\n"
+        "![banner](https://x/y.png)\n这是一个 [懒羊羊](https://example.com) 的 RVC 音色。\n\n"
+        "## 使用说明\n\n1. 下载 .pth\n2. 放进 weights"
+    )
     clean = ms._strip_markdown(md)
     assert "banner" not in clean and "y.png" not in clean
     assert "懒羊羊" in clean
@@ -185,7 +211,9 @@ def test_strip_markdown_and_readme_summary(monkeypatch):
     monkeypatch.setattr(ms, "_readme_raw", fake_raw)
     first = ms.readme_summary("someone/lazy-voice", "hf")
     assert first and "懒羊羊" in first and "RVC 音色" in first
-    monkeypatch.setattr(ms, "_readme_raw", lambda p, r: (_ for _ in ()).throw(AssertionError("不应二次拉取")))
+    monkeypatch.setattr(
+        ms, "_readme_raw", lambda p, r: (_ for _ in ()).throw(AssertionError("不应二次拉取"))
+    )
     second = ms.readme_summary("someone/lazy-voice", "hf")
     assert second == first and calls.get("someone/lazy-voice") == 1, "应命中缓存"
     assert ms.readme_summary("someone/nonexistent", "hf") is None
@@ -205,16 +233,18 @@ class _FakeResp:
 
 def test_strip_markdown_variants():
     """markdown 剥除：frontmatter/图片/链接/强调/表格/代码块/空行压缩。"""
-    md = ("---\nlanguage: zh\n---\n"
-          "# 标题一\n\n"
-          "## 标题二\n\n"
-          "粗体 **强调** 与 *斜体*\n\n"
-          "- 无序一\n- 无序二\n\n"
-          "| 列A | 列B |\n| --- | --- |\n| a1 | b1 |\n\n"
-          "```python\nprint('hi')\n```\n\n"
-          "链接 [说明文字](https://x/y) 保留文本\n\n"
-          "图片 ![alt](https://x/img.png) 应消失\n\n"
-          "多行\n\n\n\n空行压缩")
+    md = (
+        "---\nlanguage: zh\n---\n"
+        "# 标题一\n\n"
+        "## 标题二\n\n"
+        "粗体 **强调** 与 *斜体*\n\n"
+        "- 无序一\n- 无序二\n\n"
+        "| 列A | 列B |\n| --- | --- |\n| a1 | b1 |\n\n"
+        "```python\nprint('hi')\n```\n\n"
+        "链接 [说明文字](https://x/y) 保留文本\n\n"
+        "图片 ![alt](https://x/img.png) 应消失\n\n"
+        "多行\n\n\n\n空行压缩"
+    )
     clean = ms._strip_markdown(md)
     assert "language:" not in clean, "frontmatter 应剥除"
     assert "banner" not in clean
@@ -230,7 +260,7 @@ def test_strip_markdown_variants():
 
 def test_strip_markdown_missing_frontmatter_close():
     """无闭合 frontmatter 不误删正文（正则要求成对 ---）。"""
-    md = "---\nlanguage: zh\n正文第一行\n正文第二行"   # 只有开头 ---，无闭合
+    md = "---\nlanguage: zh\n正文第一行\n正文第二行"  # 只有开头 ---，无闭合
     clean = ms._strip_markdown(md)
     assert "正文第一行" in clean and "正文第二行" in clean
 
@@ -250,20 +280,24 @@ def test_readme_raw_hf_fallback_master(monkeypatch):
     monkeypatch.setattr(ms.requests, "get", fake_get)
     text = ms._readme_raw("hf", "some/repo")
     assert text == "# Old readme\nmaster content"
-    assert calls == [f"{ms.HF_API}/some/repo/raw/main/README.md",
-                     f"{ms.HF_API}/some/repo/raw/master/README.md"]
+    assert calls == [
+        f"{ms.HF_API}/some/repo/raw/main/README.md",
+        f"{ms.HF_API}/some/repo/raw/master/README.md",
+    ]
 
 
 def test_readme_raw_hf_none_on_all_404(monkeypatch):
-    monkeypatch.setattr(ms.requests, "get",
-                        lambda *a, **k: _FakeResp(404))
+    monkeypatch.setattr(ms.requests, "get", lambda *a, **k: _FakeResp(404))
     assert ms._readme_raw("hf", "some/repo") is None
 
 
 def test_readme_raw_modelscope_structures(monkeypatch):
     """魔搭 readme API 的多种返回结构解析。"""
-    monkeypatch.setattr(ms, "_get_json",
-                        lambda url, **kw: {"Code": 200, "Data": {"ModelReadme": "# 模型说明\n说明文本"}})
+    monkeypatch.setattr(
+        ms,
+        "_get_json",
+        lambda url, **kw: {"Code": 200, "Data": {"ModelReadme": "# 模型说明\n说明文本"}},
+    )
     assert "说明文本" in ms._readme_raw("modelscope", "a/b")
     monkeypatch.setattr(ms, "_get_json", lambda url, **kw: {"Data": "裸字符串正文"})
     assert ms._readme_raw("modelscope", "a/b") == "裸字符串正文"
@@ -305,12 +339,26 @@ def test_search_ms_path_resolution(monkeypatch):
 
     def fake(url, **params):
         if "/api/v1/models/" in url and "/repo" not in url:
-            return {"Code": 200, "Data": {"Path": "someone/demo-voice",
-                                          "Name": "demo-voice", "ChineseName": "演示音色",
-                                          "Downloads": 9, "Likes": 1, "Task": "text-to-speech"}}
+            return {
+                "Code": 200,
+                "Data": {
+                    "Path": "someone/demo-voice",
+                    "Name": "demo-voice",
+                    "ChineseName": "演示音色",
+                    "Downloads": 9,
+                    "Likes": 1,
+                    "Task": "text-to-speech",
+                },
+            }
         if "/repo/files" in url:
-            return {"Code": 200, "Data": {"Files": [
-                {"Path": "models/demo/demo.pth", "Type": "blob", "Size": 100, "Sha256": "x"}]}}
+            return {
+                "Code": 200,
+                "Data": {
+                    "Files": [
+                        {"Path": "models/demo/demo.pth", "Type": "blob", "Size": 100, "Sha256": "x"}
+                    ]
+                },
+            }
         raise AssertionError(f"unexpected: {url}")
 
     monkeypatch.setattr(ms, "_get_json", fake)
@@ -322,6 +370,7 @@ def test_search_ms_path_resolution(monkeypatch):
 def test_search_ms_fallback_to_manifest(monkeypatch):
     def boom(url, **params):
         raise MarketError("x")
+
     monkeypatch.setattr(ms, "_get_json", boom)
     r = ms.search_ms("懒羊羊")
     assert r["items"], "清单过滤应能命中魔搭懒羊羊条目"
@@ -337,8 +386,12 @@ def test_search_all_merges(monkeypatch):
 # ---------------- 安装编排（端到端本地 HTTP） ----------------
 def test_install_full_flow(server_url, mgr, fake_rvc):
     ins = InstallManager(manager=mgr)
-    st = ins.run("test_voice", download={"url": f"{server_url}/v.pth"},
-                 index={"url": f"{server_url}/v.index"}, display_name="测试音色")
+    st = ins.run(
+        "test_voice",
+        download={"url": f"{server_url}/v.pth"},
+        index={"url": f"{server_url}/v.index"},
+        display_name="测试音色",
+    )
     assert st["install"]["status"] in ("queued", "downloading_pth")
     st = _wait_install(ins)
     assert st["install"]["status"] == "installed", st
@@ -366,13 +419,24 @@ def test_install_resumes_partial_part(server_url, mgr, fake_rvc):
     part = mgr.download_dir / "resume_voice.pth.part"
     part.parent.mkdir(parents=True, exist_ok=True)
     part.write_bytes(PTH_DATA[:half])
-    mgr.set_meta(install={"voice_id": "resume_voice", "status": "downloading_pth",
-                          "message": "中断", "phase": "下载权重", "percent": 30.0,
-                          "started_at": "2026-01-01 00:00:00", "updated_at": "2026-01-01 00:00:00",
-                          "error": ""})
+    mgr.set_meta(
+        install={
+            "voice_id": "resume_voice",
+            "status": "downloading_pth",
+            "message": "中断",
+            "phase": "下载权重",
+            "percent": 30.0,
+            "started_at": "2026-01-01 00:00:00",
+            "updated_at": "2026-01-01 00:00:00",
+            "error": "",
+        }
+    )
     ins = InstallManager(manager=mgr)
-    ins.run("resume_voice", download={"url": f"{server_url}/v.pth"},
-            index={"url": f"{server_url}/v.index"})
+    ins.run(
+        "resume_voice",
+        download={"url": f"{server_url}/v.pth"},
+        index={"url": f"{server_url}/v.index"},
+    )
     st = _wait_install(ins)
     assert st["install"]["status"] == "installed"
     assert (fake_rvc / "logs" / "resume_voice" / "resume_voice.pth").read_bytes() == PTH_DATA
@@ -422,10 +486,15 @@ def test_install_faileld_cleans_part(server_url, mgr, fake_rvc):
 def test_install_writes_source_json(server_url, mgr, fake_rvc):
     """安装完成后落 source.json，记录市场来源与 manifest 溯源。"""
     import json as _json
+
     ins = InstallManager(manager=mgr)
-    ins.run("src_voice", download={"url": f"{server_url}/v.pth"},
-            index={"url": f"{server_url}/v.index"}, display_name="演示音色",
-            manifest_id="demo/001")
+    ins.run(
+        "src_voice",
+        download={"url": f"{server_url}/v.pth"},
+        index={"url": f"{server_url}/v.index"},
+        display_name="演示音色",
+        manifest_id="demo/001",
+    )
     _wait_install(ins)
     src = _json.loads((fake_rvc / "logs" / "src_voice" / "source.json").read_text("utf-8"))
     assert src["source"] == "market"
@@ -438,11 +507,15 @@ def test_install_writes_source_json(server_url, mgr, fake_rvc):
 def test_uninstall_market_voice_removes_everything(server_url, mgr, fake_rvc):
     """市场音色卸载：logs 目录 + weights + 下载缓存全部清除。"""
     ins = InstallManager(manager=mgr)
-    ins.run("kill_me", download={"url": f"{server_url}/v.pth"},
-            index={"url": f"{server_url}/v.index"}, manifest_id="demo/002")
+    ins.run(
+        "kill_me",
+        download={"url": f"{server_url}/v.pth"},
+        index={"url": f"{server_url}/v.index"},
+        manifest_id="demo/002",
+    )
     _wait_install(ins)
     cache_pth = mgr.download_dir / "kill_me.pth"
-    assert cache_pth.exists()                  # 下载缓存落盘
+    assert cache_pth.exists()  # 下载缓存落盘
     res = ins.uninstall("kill_me")
     assert not (fake_rvc / "logs" / "kill_me").exists()
     assert not (fake_rvc / "assets" / "weights" / "kill_me.pth").exists()
@@ -483,8 +556,9 @@ def test_uninstall_after_market_uninstall_reinstallable(server_url, mgr, fake_rv
 # ---------------- API 壳 ----------------
 def _api_client():
     pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
     import server
+    from fastapi.testclient import TestClient
+
     return TestClient(server.app)
 
 
@@ -497,6 +571,7 @@ def test_api_manifest_ok():
 def test_manifest_attaches_local_images():
     """有本地配图的条目自动挂 /api/market/image/ 相对路径（角色图 + OpenMoji 图标）。"""
     import market_manifest as mm
+
     items = mm.get_manifest()
     with_img = [i for i in items if i.get("image")]
     assert with_img, "精选清单应有配图条目"
@@ -514,7 +589,7 @@ def test_api_market_image_serves_and_guards():
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("image/png")
     assert len(resp.content) > 1000
-    assert client.get("/api/market/image/lanyangyang.png").status_code == 200   # 兼容旧格式
+    assert client.get("/api/market/image/lanyangyang.png").status_code == 200  # 兼容旧格式
     assert client.get("/api/market/image/definitely_missing").status_code == 404
     assert client.get("/api/market/image/definitely_missing.png").status_code == 404
     # %2F/%2e 穿越变体：不会命中图片路由（顶多落 SPA catch-all 返回 HTML），绝不回图片/源码
@@ -531,8 +606,9 @@ def test_api_installed_ok():
 
 
 def test_api_search_requires_q():
-    from fastapi.testclient import TestClient
     import server
+    from fastapi.testclient import TestClient
+
     assert TestClient(server.app).get("/api/market/search").status_code == 400
     assert TestClient(server.app).get("/api/market/repo").status_code == 400
 
@@ -540,15 +616,21 @@ def test_api_search_requires_q():
 def test_api_market_repo_returns_readme(monkeypatch, readme_cache):
     """/market/repo 端到端返回 README 摘要 + 文件列表，且失败静默不 500。"""
     pytest.importorskip("fastapi")
-    from fastapi.testclient import TestClient
-    import server
     import market_api
+    import server
+    from fastapi.testclient import TestClient
+
     # market_api 是 `from market_search import ...` 名字绑定，须 monkeypatch 到 market_api 模块
-    monkeypatch.setattr(market_api, "repo_files_hf",
-                        lambda repo, recursive=False: [{"name": "v.pth", "path": "v.pth",
-                                                        "size": 10, "type": "file", "url": None}])
-    monkeypatch.setattr(ms, "_readme_raw",
-                        lambda p, r: "# 仓库标题\n\n这是仓库的 README 说明文字。")
+    monkeypatch.setattr(
+        market_api,
+        "repo_files_hf",
+        lambda repo, recursive=False: [
+            {"name": "v.pth", "path": "v.pth", "size": 10, "type": "file", "url": None}
+        ],
+    )
+    monkeypatch.setattr(
+        ms, "_readme_raw", lambda p, r: "# 仓库标题\n\n这是仓库的 README 说明文字。"
+    )
     resp = TestClient(server.app).get("/api/market/repo?repo=some/repo&platform=hf")
     assert resp.status_code == 200
     body = resp.json()
@@ -556,17 +638,19 @@ def test_api_market_repo_returns_readme(monkeypatch, readme_cache):
     assert body["files"][0]["path"] == "v.pth"
 
     # readme 拉取异常 → readme 为 null，接口仍 200
-    monkeypatch.setattr(ms, "_readme_raw",
-                        lambda p, r: (_ for _ in ()).throw(OSError("down")))
+    monkeypatch.setattr(ms, "_readme_raw", lambda p, r: (_ for _ in ()).throw(OSError("down")))
     resp2 = TestClient(server.app).get("/api/market/repo?repo=other/repo&platform=hf")
     assert resp2.status_code == 200
     assert resp2.json()["readme"] is None
 
+
 # ---------------- 权重落位：硬链接省一份，失败回退复制 ----------------
+
 
 def test_link_or_copy_content_identical(tmp_path):
     """_link_or_copy 后 dst 内容与 src 一致（无论走硬链接还是复制）。"""
     from market_install import _link_or_copy
+
     src = tmp_path / "a.pth"
     src.write_bytes(PTH_DATA)
     dst = tmp_path / "b.pth"
@@ -577,6 +661,7 @@ def test_link_or_copy_content_identical(tmp_path):
 def test_link_or_copy_overwrites_existing(tmp_path):
     """目标已存在（覆盖重装场景）时先清掉再落，不抛异常。"""
     from market_install import _link_or_copy
+
     src = tmp_path / "a.pth"
     src.write_bytes(PTH_DATA)
     dst = tmp_path / "b.pth"
@@ -588,6 +673,7 @@ def test_link_or_copy_overwrites_existing(tmp_path):
 def test_link_or_copy_falls_back_to_copy(monkeypatch, tmp_path):
     """os.link 抛 OSError（跨盘/非 NTFS）→ 静默回退复制，结果仍正确。"""
     import market_install as mi
+
     monkeypatch.setattr(mi.os, "link", lambda s, d: (_ for _ in ()).throw(OSError("cross-device")))
     src = tmp_path / "a.pth"
     src.write_bytes(PTH_DATA)
@@ -611,6 +697,7 @@ def test_stage_writes_both_locations(monkeypatch, tmp_path, mgr, fake_rvc):
 
 # ---------------- A6 覆盖重装 .old 备份与回滚 ----------------
 
+
 @pytest.fixture()
 def old_dir(tmp_path):
     return tmp_path / "old"
@@ -626,8 +713,9 @@ def fake_out(tmp_path, monkeypatch):
 
 
 def _install_v1(ins, voice_id, server_url):
-    ins.run(voice_id, download={"url": f"{server_url}/v.pth"},
-            index={"url": f"{server_url}/v.index"})
+    ins.run(
+        voice_id, download={"url": f"{server_url}/v.pth"}, index={"url": f"{server_url}/v.index"}
+    )
     return _wait_install(ins)
 
 
@@ -635,14 +723,18 @@ def test_overwrite_backs_up_old_version(server_url, mgr, fake_rvc, old_dir):
     """覆盖重装：旧版本先归档到 .old/<id>/，备份内容即旧版 pth。"""
     ins = InstallManager(manager=mgr, old_dir=old_dir)
     _install_v1(ins, "roll_me", server_url)
-    ins.run("roll_me", download={"url": f"{server_url}/mirror.pth"},
-            index={"url": f"{server_url}/v.index"}, overwrite=True)
+    ins.run(
+        "roll_me",
+        download={"url": f"{server_url}/mirror.pth"},
+        index={"url": f"{server_url}/v.index"},
+        overwrite=True,
+    )
     st = _wait_install(ins)
     assert st["install"]["status"] == "installed"
     assert (fake_rvc / "logs" / "roll_me" / "roll_me.pth").read_bytes() == MIRROR_DATA
     snaps = list((old_dir / "roll_me").iterdir())
     assert len(snaps) == 1
-    assert (snaps[0] / "roll_me.pth").read_bytes() == PTH_DATA    # 归档的是 v1
+    assert (snaps[0] / "roll_me.pth").read_bytes() == PTH_DATA  # 归档的是 v1
     assert "roll_me" in ins.backup_ids()
 
 
@@ -650,8 +742,12 @@ def test_rollback_restores_previous_version(server_url, mgr, fake_rvc, old_dir, 
     """回滚：恢复 v1 到 logs + assets，消费备份，并清失效的试听/质检产物。"""
     ins = InstallManager(manager=mgr, old_dir=old_dir)
     _install_v1(ins, "rb_voice", server_url)
-    ins.run("rb_voice", download={"url": f"{server_url}/mirror.pth"},
-            index={"url": f"{server_url}/v.index"}, overwrite=True)
+    ins.run(
+        "rb_voice",
+        download={"url": f"{server_url}/mirror.pth"},
+        index={"url": f"{server_url}/v.index"},
+        overwrite=True,
+    )
     _wait_install(ins)
     log_pth = fake_rvc / "logs" / "rb_voice" / "rb_voice.pth"
     assert log_pth.read_bytes() == MIRROR_DATA
@@ -664,7 +760,7 @@ def test_rollback_restores_previous_version(server_url, mgr, fake_rvc, old_dir, 
     assert res["voice_id"] == "rb_voice"
     assert log_pth.read_bytes() == PTH_DATA
     assert (fake_rvc / "assets" / "weights" / "rb_voice.pth").read_bytes() == PTH_DATA
-    assert not (old_dir / "rb_voice").exists()                    # 备份被消费
+    assert not (old_dir / "rb_voice").exists()  # 备份被消费
     assert "rb_voice" not in ins.backup_ids()
     assert not (fake_out / "market" / "rb_voice_preview.json").exists()
     assert not (fake_out / "qc" / "rb_voice.json").exists()
@@ -727,6 +823,7 @@ def test_install_failure_auto_rolls_back(server_url, mgr, fake_rvc, old_dir):
 def test_prune_old_keeps_newest(tmp_path):
     """备份裁剪：超出 OLD_KEEP 份时删最旧，保留最新 3 份。"""
     from market_install import OLD_KEEP
+
     old_dir = tmp_path / "old"
     base = old_dir / "v"
     for i in range(5):
@@ -739,6 +836,7 @@ def test_prune_old_keeps_newest(tmp_path):
 
 # ---------------- A6 API 壳 ----------------
 
+
 def test_api_backups_and_rollback_validation():
     resp = _api_client().get("/api/market/backups")
     assert resp.status_code == 200
@@ -748,6 +846,7 @@ def test_api_backups_and_rollback_validation():
 
 
 # ---------------- A7 信号量并发：pth 与 index 并行下载 ----------------
+
 
 class _ParallelCtx:
     def __init__(self):
@@ -775,7 +874,7 @@ class _ParallelHandler(http.server.BaseHTTPRequestHandler):
             if data is None:
                 self.send_error(404)
                 return
-            time.sleep(0.15)                 # 拉长下载窗口，让并发可观测
+            time.sleep(0.15)  # 拉长下载窗口，让并发可观测
             self.send_response(200)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -798,17 +897,22 @@ def parallel_server():
 def test_install_downloads_pth_and_index_in_parallel(parallel_server, mgr, fake_rvc):
     """安装内 pth 与 index 并行下载（信号量文件级并发），最终全部装好。"""
     ins = InstallManager(manager=mgr)
-    ins.run("para", download={"url": f"{parallel_server}/v.pth"},
-            index={"url": f"{parallel_server}/v.index"})
+    ins.run(
+        "para",
+        download={"url": f"{parallel_server}/v.pth"},
+        index={"url": f"{parallel_server}/v.index"},
+    )
     st = _wait_install(ins)
     assert st["install"]["status"] == "installed", st
     assert (fake_rvc / "logs" / "para" / "para.pth").read_bytes() == PTH_DATA
     assert (fake_rvc / "logs" / "para" / "added_para.index").read_bytes() == IDX_DATA
-    assert _ParallelHandler.ctx.peak >= 2, \
-        f"pth 与 index 应并行下载，实际峰值并发 {_ParallelHandler.ctx.peak}"
+    assert (
+        _ParallelHandler.ctx.peak >= 2
+    ), f"pth 与 index 应并行下载，实际峰值并发 {_ParallelHandler.ctx.peak}"
 
 
 # ---------------- 搜索翻页（skip / next_skip，2026-09-07） ----------------
+
 
 def test_search_hf_window_offset(monkeypatch):
     """翻页 = 窗口切片：向 HF 拉 offset+limit 条再切，深页不做文件探测。"""
@@ -828,8 +932,9 @@ def test_search_hf_window_offset(monkeypatch):
 
 
 def test_search_pagination_next_skip(monkeypatch):
-    monkeypatch.setattr(ms, "_get_json",
-                        lambda url, **params: [{"id": f"u/m-{i}"} for i in range(80)])
+    monkeypatch.setattr(
+        ms, "_get_json", lambda url, **params: [{"id": f"u/m-{i}"} for i in range(80)]
+    )
     r1 = ms.search("hf", "q", limit=50, skip=0)
     assert len(r1["items"]) == 50 and r1["next_skip"] == 50
     r2 = ms.search("hf", "q", limit=50, skip=50)
@@ -839,11 +944,14 @@ def test_search_pagination_next_skip(monkeypatch):
 
 def test_search_skip_beyond_ms_block(monkeypatch):
     """平台=all：结果流 = 魔搭块（首页计入）+ HF 续流，skip 跨块不重不漏。"""
-    monkeypatch.setattr(ms, "search_ms",
-                        lambda q, limit: {"items": [{"id": f"ms-{i}"} for i in range(3)],
-                                          "note": ""})
-    monkeypatch.setattr(ms, "_get_json",
-                        lambda url, **params: [{"id": f"hf-{i}"} for i in range(60)])
+    monkeypatch.setattr(
+        ms,
+        "search_ms",
+        lambda q, limit: {"items": [{"id": f"ms-{i}"} for i in range(3)], "note": ""},
+    )
+    monkeypatch.setattr(
+        ms, "_get_json", lambda url, **params: [{"id": f"hf-{i}"} for i in range(60)]
+    )
     r1 = ms.search("all", "q", limit=50, skip=0)
     assert r1["items"][0]["id"] == "ms-0" and r1["items"][3]["id"] == "hf-0"
     assert r1["next_skip"] == 50

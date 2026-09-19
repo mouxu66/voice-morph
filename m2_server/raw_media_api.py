@@ -2,6 +2,8 @@
 
 自 server.py 拆出（行为不变）；app 装配见 server.py。
 """
+
+import contextlib
 import json
 import os
 import subprocess
@@ -9,13 +11,20 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
-from pydantic import BaseModel
-
 import config as cfg
 from common import MAX_UPLOAD_BYTES
-from runtime import (API_PREFIX, CLIPS_DIR, OUT, RAW_DIR, VIDEO_SUFFIXES,
-                     VOICEBANK, AUDIO_SUFFIXES, clip_prefix)
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from pydantic import BaseModel
+from runtime import (
+    API_PREFIX,
+    AUDIO_SUFFIXES,
+    CLIPS_DIR,
+    OUT,
+    RAW_DIR,
+    VIDEO_SUFFIXES,
+    VOICEBANK,
+    clip_prefix,
+)
 
 router = APIRouter(prefix=API_PREFIX)
 
@@ -33,21 +42,23 @@ def _video_meta(name: str) -> dict:
 
 def _start_tagging(name: str) -> None:
     """后台线程：对素材打标（FRD F2），写 meta.json。失败不阻断上传。"""
+
     def _job():
         from tagging import tag_video
+
         src = RAW_DIR / name
         if not src.exists():
             return  # 素材已被删，静默终止
         meta = {"tagging": True, "tagged_at": int(time.time())}
         (RAW_DIR / f"{name}.meta.json").write_text(
-            json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+            json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+        )
         result = tag_video(src, tmp_dir=cfg.MEDIA_DIR / "_tag_tmp")
         result["tagged_at"] = int(time.time())
-        try:
+        with contextlib.suppress(Exception):
             (RAW_DIR / f"{name}.meta.json").write_text(
-                json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
-        except Exception:
-            pass
+                json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
 
     threading.Thread(target=_job, daemon=True).start()
 
@@ -58,9 +69,14 @@ def list_raw_videos():
     videos = []
     for f in RAW_DIR.iterdir():
         if f.suffix.lower() in VIDEO_SUFFIXES:
-            videos.append({"name": f.name, "size_mb": round(f.stat().st_size / 1e6, 1),
-                           "used_by": usage.get(f.name, []),
-                           "meta": _video_meta(f.name)})
+            videos.append(
+                {
+                    "name": f.name,
+                    "size_mb": round(f.stat().st_size / 1e6, 1),
+                    "used_by": usage.get(f.name, []),
+                    "meta": _video_meta(f.name),
+                }
+            )
     return {"videos": videos}
 
 
@@ -83,7 +99,11 @@ def _raw_video_usage() -> dict[str, list[str]]:
 
     依据：音色 clips.txt 里的片段名以素材切片前缀开头（新旧两种前缀都兼容）。
     """
-    videos = [f for f in RAW_DIR.iterdir() if f.suffix.lower() in VIDEO_SUFFIXES] if RAW_DIR.exists() else []
+    videos = (
+        [f for f in RAW_DIR.iterdir() if f.suffix.lower() in VIDEO_SUFFIXES]
+        if RAW_DIR.exists()
+        else []
+    )
     usage: dict[str, list[str]] = {f.name: [] for f in videos}
     if not videos or not VOICEBANK.exists():
         return usage
@@ -94,7 +114,11 @@ def _raw_video_usage() -> dict[str, list[str]]:
         if not clips_txt.exists():
             continue
         try:
-            names = [line.strip() for line in clips_txt.read_text(encoding="utf-8").splitlines() if line.strip()]
+            names = [
+                line.strip()
+                for line in clips_txt.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
         except Exception:
             continue
         if not names:
@@ -125,16 +149,22 @@ def delete_raw_video(name: str, force: bool = False):
         raise HTTPException(404, f"素材不存在: {name}")
     usage = _raw_video_usage().get(name, [])
     if usage and not force:
-        raise HTTPException(409, f"该素材已被音色使用：{'、'.join(usage)}。删除不影响已有音色，但无法再重新生成语料")
+        raise HTTPException(
+            409, f"该素材已被音色使用：{'、'.join(usage)}。删除不影响已有音色，但无法再重新生成语料"
+        )
 
     import shutil
+
     prefix = clip_prefix(p.stem)
     legacy_prefix = p.stem[:12]
     # 旧版切片用 stem[:12] 命名：若目录里还有其他素材共享该前缀（如 video_260828_*），
     # legacy 匹配会误删别人的切片——此时只按新前缀清理
     legacy_safe = not any(
-        v.is_file() and v.suffix.lower() in {".mp4", ".mkv", ".mov", ".webm", ".avi", ".flv", ".ts", ".m4a", ".mp3", ".wav"}
-        and v.stem != p.stem and v.stem[:12] == legacy_prefix
+        v.is_file()
+        and v.suffix.lower()
+        in {".mp4", ".mkv", ".mov", ".webm", ".avi", ".flv", ".ts", ".m4a", ".mp3", ".wav"}
+        and v.stem != p.stem
+        and v.stem[:12] == legacy_prefix
         for v in RAW_DIR.iterdir()
     )
     removed = {"clips": 0, "related": 0}
@@ -172,7 +202,9 @@ async def upload_video(file: UploadFile = File(...)):
         raise HTTPException(400, "未提供文件名")
     suffix = Path(file.filename).suffix.lower()
     if suffix not in VIDEO_SUFFIXES and suffix not in AUDIO_SUFFIXES:
-        raise HTTPException(400, f"仅支持视频/音频格式：{', '.join(sorted(VIDEO_SUFFIXES | AUDIO_SUFFIXES))}")
+        raise HTTPException(
+            400, f"仅支持视频/音频格式：{', '.join(sorted(VIDEO_SUFFIXES | AUDIO_SUFFIXES))}"
+        )
     dest = RAW_DIR / Path(file.filename).name
     if dest.exists():
         raise HTTPException(409, f"同名文件已存在：{file.filename}")

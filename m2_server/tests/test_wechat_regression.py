@@ -7,6 +7,7 @@
 背景见 docs/犯错指南.md §2.2（60" 截断）、§2.12（静音头被录进去）、
 §3.3（outcome=ok 不代表真收到）。
 """
+
 import importlib.util
 import sys
 import wave
@@ -30,27 +31,32 @@ wr = _load()
 
 # ---------------- parse_voice_secs ----------------
 
-@pytest.mark.parametrize("name,expected", [
-    ('语音15"秒', 15.0),
-    ('语音7"秒', 7.0),
-    ("语音60\"秒", 60.0),
-    ("15", 15.0),
-    (None, None),
-    ("", None),
-    ("没有数字", None),
-])
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ('语音15"秒', 15.0),
+        ('语音7"秒', 7.0),
+        ('语音60"秒', 60.0),
+        ("15", 15.0),
+        (None, None),
+        ("", None),
+        ("没有数字", None),
+    ],
+)
 def test_parse_voice_secs(name, expected):
     assert wr.parse_voice_secs(name) == expected
 
 
 # ---------------- 判据 1：终态 ----------------
 
+
 def test_terminal_passes_on_send_step():
     ok, detail = wr.judge_terminal(["已点 ↑ 绿钮发送", "声卡已还原"], "ok")
     assert ok and "已点" in detail
 
 
-@pytest.mark.parametrize("steps", [["正在播放"], []])      # 代码走完但没到发送终态
+@pytest.mark.parametrize("steps", [["正在播放"], []])  # 代码走完但没到发送终态
 def test_terminal_fails_without_send_step_even_if_outcome_ok(steps):
     ok, detail = wr.judge_terminal(steps, "ok")
     assert not ok and "终态" in detail
@@ -64,8 +70,9 @@ def test_terminal_ok_even_if_outcome_not_ok():
 
 # ---------------- 判据 2：时长 ----------------
 
+
 def test_duration_within_tolerance():
-    ok, detail = wr.judge_duration(3.0, 4.0)        # 3 + 1.2 = 4.2，读到 4 → 过
+    ok, detail = wr.judge_duration(3.0, 4.0)  # 3 + 1.2 = 4.2，读到 4 → 过
     assert ok and "4" in detail
 
 
@@ -88,22 +95,27 @@ def test_duration_too_long_flags_playback_lag():
 
 # ---------------- 判据 3：清场 ----------------
 
+
 def test_no_overlay_passes_when_clean():
     ok, detail = wr.judge_no_overlay(None, None, uia_ready=True)
     assert ok and "无挂起浮层" in detail
 
 
-@pytest.mark.parametrize("overlay,green", [
-    ((1, 2, 3, 4), None),
-    (None, (5, 6)),
-    ((1, 2, 3, 4), (5, 6)),
-])
+@pytest.mark.parametrize(
+    "overlay,green",
+    [
+        ((1, 2, 3, 4), None),
+        (None, (5, 6)),
+        ((1, 2, 3, 4), (5, 6)),
+    ],
+)
 def test_no_overlay_fails_on_either_signal(overlay, green):
     ok, detail = wr.judge_no_overlay(overlay, green, uia_ready=False)
     assert not ok and "挂起录音" in detail
 
 
 # ---------------- 合成测试音频 ----------------
+
 
 def test_make_test_wav_duration_and_format(tmp_path):
     p = wr.make_test_wav(tmp_path / "t.wav", secs=2.5, sr=24000)
@@ -122,9 +134,9 @@ def test_make_test_wav_is_not_silent(tmp_path):
 
 # ---------------- 汇总 ----------------
 
+
 def test_overall_aggregates_and_picks_failed_names():
-    js = [{"name": "终态", "ok": True, "detail": "x"},
-          {"name": "时长", "ok": False, "detail": "y"}]
+    js = [{"name": "终态", "ok": True, "detail": "x"}, {"name": "时长", "ok": False, "detail": "y"}]
     ok, summary = wr.overall(js)
     assert not ok and "时长" in summary and "终态" not in summary
 
@@ -135,6 +147,7 @@ def test_overall_all_pass():
 
 
 # ---------------- 参数守门（最便宜的失败路径） ----------------
+
 
 def test_too_short_audio_rejected_before_touching_wechat():
     """<1.5s 直接被参数校验拦下（微信最短 1 秒），不碰任何真机资源。"""

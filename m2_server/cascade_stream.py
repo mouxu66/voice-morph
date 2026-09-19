@@ -23,6 +23,7 @@ ASR→文字→TTS 后，输出只含目标音色，与源发音完全解耦。
     #5 worker 已把 GPU 推理放线程池，这里串行逐块请求（坑 10）
     #9 采集 16k（ASR），播放 24k（与 TTS 输出一致，不重采样）
 """
+
 import argparse
 import io
 import json
@@ -48,9 +49,9 @@ except ImportError:  # RVC venv 未装 webrtcvad 时回退能量 VAD
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-SR_IN = 16000    # 采集/ASR 采样率
-SR_OUT = 24000   # TTS 输出/播放采样率
-FRAME_MS = 30    # VAD 帧长（webrtcvad 仅支持 10/20/30ms）
+SR_IN = 16000  # 采集/ASR 采样率
+SR_OUT = 24000  # TTS 输出/播放采样率
+FRAME_MS = 30  # VAD 帧长（webrtcvad 仅支持 10/20/30ms）
 FRAME_N = SR_IN * FRAME_MS // 1000
 
 INPUT_KEYWORD = os.environ.get("VM_LIVE_INPUT_DEVICE", "麦克风阵列")
@@ -75,6 +76,7 @@ def _live_input_keyword() -> str:
     """
     try:
         from live_settings import get
+
         explicit = get()["input_device"]
         if explicit:
             return explicit
@@ -82,17 +84,35 @@ def _live_input_keyword() -> str:
         pass
     return INPUT_KEYWORD
 
+
 STATE = {
-    "running": True, "stage": "init", "pid": os.getpid(),
-    "last_text": "", "last_asr_s": 0.0, "last_tts_s": 0.0, "last_audio_s": 0.0,
-    "last_fast": None, "chunks": 0, "dropped": 0,
-    "avg_latency_s": 0.0, "last_latency_s": 0.0, "queued_s": 0.0,
+    "running": True,
+    "stage": "init",
+    "pid": os.getpid(),
+    "last_text": "",
+    "last_asr_s": 0.0,
+    "last_tts_s": 0.0,
+    "last_audio_s": 0.0,
+    "last_fast": None,
+    "chunks": 0,
+    "dropped": 0,
+    "avg_latency_s": 0.0,
+    "last_latency_s": 0.0,
+    "queued_s": 0.0,
     # 分阶段耗时统计（最近 30 块）：识别/合成的 avg 与 p95
-    "avg_asr_s": 0.0, "p95_asr_s": 0.0, "avg_tts_s": 0.0, "p95_tts_s": 0.0,
-    "input_device": "", "output_device": "",
-    "enhance": "", "error": "", "updated_at": "",
+    "avg_asr_s": 0.0,
+    "p95_asr_s": 0.0,
+    "avg_tts_s": 0.0,
+    "p95_tts_s": 0.0,
+    "input_device": "",
+    "output_device": "",
+    "enhance": "",
+    "error": "",
+    "updated_at": "",
     # 末尾接 RVC（TTS 只管怎么说，RVC 决定谁在说）
-    "rvc_voice": "", "rvc_error": "", "last_rvc_s": 0.0,
+    "rvc_voice": "",
+    "rvc_error": "",
+    "last_rvc_s": 0.0,
 }
 _latencies: deque = deque(maxlen=20)
 _asr_hist: deque = deque(maxlen=30)
@@ -136,11 +156,13 @@ _PLAYER = None
 
 # ---------------- VAD 分块状态机 ----------------
 
+
 class Chunker:
     """双判据切句状态机：静音判停 / 上限强制切；IDLE 时保留 pre-roll 防吃句首。"""
 
-    def __init__(self, silence_ms=400, chunk_max_s=6.0, min_chunk_s=0.5,
-                 onset_ms=90, pre_roll_ms=240):
+    def __init__(
+        self, silence_ms=400, chunk_max_s=6.0, min_chunk_s=0.5, onset_ms=90, pre_roll_ms=240
+    ):
         self.silence_frames = max(1, silence_ms // FRAME_MS)
         self.max_frames = int(chunk_max_s * 1000) // FRAME_MS
         self.min_voiced = int(min_chunk_s * 1000) // FRAME_MS
@@ -223,6 +245,7 @@ def make_vad_detector(aggressiveness: int):
 
 # ---------------- 播放器：24k 队列 + 预缓冲 + 交叉淡化 ----------------
 
+
 class Player:
     """输出流回调从队列拉数据；不足补零。enqueue 与队尾做 crossfade 防咔哒。
 
@@ -243,8 +266,13 @@ class Player:
         self._starts: dict[int, float] = {}
         self._seq = 0
         self._stream = sd.OutputStream(
-            device=device, samplerate=SR_OUT, channels=1, dtype="float32",
-            blocksize=int(SR_OUT * 0.04), callback=self._cb)
+            device=device,
+            samplerate=SR_OUT,
+            channels=1,
+            dtype="float32",
+            blocksize=int(SR_OUT * 0.04),
+            callback=self._cb,
+        )
 
     def start(self):
         self._stream.start()
@@ -269,7 +297,7 @@ class Player:
             while need > 0 and self._buf:
                 head = self._buf[0]
                 take = min(need, len(head))
-                out[pos:pos + take] = head[:take]
+                out[pos : pos + take] = head[:take]
                 pos += take
                 need -= take
                 if take == len(head):
@@ -319,6 +347,7 @@ class Player:
 
 # ---------------- worker 客户端（8001） ----------------
 
+
 class Worker:
     def __init__(self, base="http://127.0.0.1:8001"):
         self.base = base
@@ -341,20 +370,31 @@ class Worker:
     def asr(self, path: str) -> dict:
         # fast=True：短句用 beam_size=1 + 免时间戳，短块延迟约降一半，
         # 长句识别质量差异可忽略（级联块长 0.5~6s）
-        r = requests.post(self.base + "/transcribe",
-                          json={"path": path, "vad_filter": False, "fast": True},
-                          timeout=120)
+        r = requests.post(
+            self.base + "/transcribe",
+            json={"path": path, "vad_filter": False, "fast": True},
+            timeout=120,
+        )
         r.raise_for_status()
         data = r.json()
         if "error" in data:
             raise RuntimeError(f"ASR 失败: {data['error']}")
         return data
 
-    def tts(self, text: str, ref_audio: str, ref_text: str,
-            timeout=180) -> tuple[np.ndarray, int, bool]:
-        r = requests.post(self.base + "/tts", timeout=timeout, json={
-            "text": text, "language": "Chinese",
-            "ref_audio": ref_audio, "ref_text": ref_text, "fast": True})
+    def tts(
+        self, text: str, ref_audio: str, ref_text: str, timeout=180
+    ) -> tuple[np.ndarray, int, bool]:
+        r = requests.post(
+            self.base + "/tts",
+            timeout=timeout,
+            json={
+                "text": text,
+                "language": "Chinese",
+                "ref_audio": ref_audio,
+                "ref_text": ref_text,
+                "fast": True,
+            },
+        )
         if r.status_code != 200 or not r.content:
             raise RuntimeError(f"TTS 失败 HTTP {r.status_code}")
         audio, sr = sf.read(io.BytesIO(r.content), dtype="float32")
@@ -363,17 +403,32 @@ class Worker:
         fast = r.headers.get("X-Fast-TTS") == "1"
         return audio, sr, fast
 
-    def tts_stream(self, text: str, ref_audio: str, ref_text: str,
-                   seg_chars: int = 16, timeout: tuple = (15, 180)):
+    def tts_stream(
+        self,
+        text: str,
+        ref_audio: str,
+        ref_text: str,
+        seg_chars: int = 16,
+        timeout: tuple = (15, 180),
+    ):
         """流式合成：逐段 yield (float32 音频, sr)。
 
         协议对齐 worker /tts_stream：每帧 = uint32(小端)长度 + float32 PCM(24k)。
         客户端边收边拼，首段到手即可送播放器，首包延迟取决于第一段生成耗时。
         """
-        r = requests.post(self.base + "/tts_stream", stream=True, timeout=timeout,
-                          json={"text": text, "language": "Chinese",
-                                "ref_audio": ref_audio, "ref_text": ref_text,
-                                "fast": True, "seg_chars": seg_chars})
+        r = requests.post(
+            self.base + "/tts_stream",
+            stream=True,
+            timeout=timeout,
+            json={
+                "text": text,
+                "language": "Chinese",
+                "ref_audio": ref_audio,
+                "ref_text": ref_text,
+                "fast": True,
+                "seg_chars": seg_chars,
+            },
+        )
         if r.status_code != 200:
             raise RuntimeError(f"TTS 流式失败 HTTP {r.status_code}")
         sr = int(r.headers.get("X-Sample-Rate", "24000"))
@@ -384,8 +439,8 @@ class Worker:
                 n = struct.unpack("<I", buf[:4])[0]
                 if len(buf) < 4 + n:
                     break
-                pcm = np.frombuffer(buf[4:4 + n], dtype=np.float32)
-                buf = buf[4 + n:]
+                pcm = np.frombuffer(buf[4 : 4 + n], dtype=np.float32)
+                buf = buf[4 + n :]
                 yield np.ascontiguousarray(pcm, dtype=np.float32), sr
 
 
@@ -397,6 +452,7 @@ def _resample(x: np.ndarray, sr_from: int, sr_to: int) -> np.ndarray:
 
 
 # ---------------- 设备解析 ----------------
+
 
 def find_device(keyword: str, is_input: bool) -> int:
     """按关键词在 MME 主机 API 下模糊匹配设备索引。
@@ -420,9 +476,12 @@ def find_device(keyword: str, is_input: bool) -> int:
     # 报错带上**候选设备清单**：设备名会漂移（见 OUTPUT_KEYWORD 处注释），
     # 只说"关键词: xxx"会让人去猜是不是驱动没装。2026-09-19 那次事故正是靠
     # 肉眼比对 MME 枚举名才定性"名字从 CABLE Input 漂成了 扬声器"。
-    avail = [d["name"] for d in sd.query_devices()
-             if d["hostapi"] == mme
-             and (d["max_input_channels"] if is_input else d["max_output_channels"]) > 0]
+    avail = [
+        d["name"]
+        for d in sd.query_devices()
+        if d["hostapi"] == mme
+        and (d["max_input_channels"] if is_input else d["max_output_channels"]) > 0
+    ]
     detail = "、".join(repr(c) for c in avail) if avail else "（无）"
     raise RuntimeError(f"找不到{kind}设备（关键词: {keyword}）；MME 下可用的{kind}设备：{detail}")
 
@@ -439,6 +498,7 @@ def resolve_devices() -> tuple[int, int, str, str]:
 
 
 # ---------------- 全链路处理 ----------------
+
 
 class Cascade:
     def __init__(self, args, worker: Worker):
@@ -460,16 +520,21 @@ class Cascade:
         if not getattr(self.args, "rvc_pth", ""):
             return
         import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent))   # m2_server 目录
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent))  # m2_server 目录
         STATE["rvc_voice"] = Path(self.args.rvc_pth).parent.name
         STATE["rvc_error"] = ""
-        _write_state()          # 加载要 30s+，先让前端看到进度
+        _write_state()  # 加载要 30s+，先让前端看到进度
         try:
             from offline_vc_infer import load_vc
+
             t0 = time.time()
             self.rvc_engine = load_vc(self.args.rvc_pth, self.args.rvc_index)
-            print(f"[cascade] RVC 已常驻 {STATE['rvc_voice']} "
-                  f"({self.rvc_engine.tgt_sr}Hz, {time.time() - t0:.1f}s)", flush=True)
+            print(
+                f"[cascade] RVC 已常驻 {STATE['rvc_voice']} "
+                f"({self.rvc_engine.tgt_sr}Hz, {time.time() - t0:.1f}s)",
+                flush=True,
+            )
         except Exception as e:  # noqa: BLE001
             STATE["rvc_error"] = f"{type(e).__name__}: {e}"[:300]
             print(f"[cascade] RVC 加载失败，退回 TTS 直出: {e}", flush=True)
@@ -478,9 +543,9 @@ class Cascade:
     def _to_rvc(self, audio: np.ndarray, sr: int) -> np.ndarray:
         """TTS 输出 → RVC 换音色 → 回到播放采样率。"""
         from offline_vc_infer import convert_audio
+
         a16 = _resample(audio, sr, 16000) if sr != 16000 else audio
-        y = convert_audio(self.rvc_engine, a16,
-                          self.args.rvc_pitch, self.args.rvc_index_rate)
+        y = convert_audio(self.rvc_engine, a16, self.args.rvc_pitch, self.args.rvc_index_rate)
         if self.rvc_engine.tgt_sr != SR_OUT:
             y = _resample(y, self.rvc_engine.tgt_sr, SR_OUT)
         return y
@@ -493,14 +558,16 @@ class Cascade:
         self.worker.wait_ready()
         t0 = time.time()
         self.tmp_wav.parent.mkdir(parents=True, exist_ok=True)
-        sf.write(str(self.tmp_wav), np.zeros(SR_IN, dtype=np.float32), SR_IN,
-                 subtype="PCM_16")
+        sf.write(str(self.tmp_wav), np.zeros(SR_IN, dtype=np.float32), SR_IN, subtype="PCM_16")
         self.worker.asr(str(self.tmp_wav))
         print(f"[cascade] ASR 预热完成 {time.time() - t0:.1f}s", flush=True)
         t0 = time.time()
         audio, sr, fast = self.worker.tts("好", self.args.ref_audio, self.args.ref_text)
-        print(f"[cascade] TTS 预热完成 {time.time() - t0:.1f}s "
-              f"(fast={fast}, {len(audio) / sr:.1f}s 音频已丢弃)", flush=True)
+        print(
+            f"[cascade] TTS 预热完成 {time.time() - t0:.1f}s "
+            f"(fast={fast}, {len(audio) / sr:.1f}s 音频已丢弃)",
+            flush=True,
+        )
         if self.rvc_engine is not None:
             t0 = time.time()
             try:
@@ -541,8 +608,8 @@ class Cascade:
             rvc_s = 0.0
             first_seq = None
             for seg, sr in self.worker.tts_stream(
-                    text, self.args.ref_audio, self.args.ref_text,
-                    seg_chars=self.args.tts_seg_chars):
+                text, self.args.ref_audio, self.args.ref_text, seg_chars=self.args.tts_seg_chars
+            ):
                 if sr != SR_OUT:
                     seg = _resample(seg, sr, SR_OUT)
                 if self.rvc_engine is not None:
@@ -564,10 +631,12 @@ class Cascade:
                         self.pending_lat[seq] = speech_end_ts
             tts_s = time.time() - t0
             _update_stage_stats("tts", tts_s)
-            STATE.update(last_tts_s=round(tts_s, 2),
-                         last_audio_s=round(total_audio_s, 2))
-            print(f"[cascade] 流式「{text}」 tts {tts_s:.2f}s "
-                  f"rvc_last {rvc_s:.2f}s -> {total_audio_s:.1f}s 音频", flush=True)
+            STATE.update(last_tts_s=round(tts_s, 2), last_audio_s=round(total_audio_s, 2))
+            print(
+                f"[cascade] 流式「{text}」 tts {tts_s:.2f}s "
+                f"rvc_last {rvc_s:.2f}s -> {total_audio_s:.1f}s 音频",
+                flush=True,
+            )
             STATE["chunks"] += 1
             return
         # ---- 非流式（fallback / 显式关闭） ----
@@ -576,8 +645,9 @@ class Cascade:
         _update_stage_stats("tts", tts_s)
         if sr != SR_OUT:
             audio = _resample(audio, sr, SR_OUT)
-        STATE.update(last_tts_s=round(tts_s, 2), last_fast=fast,
-                     last_audio_s=round(len(audio) / SR_OUT, 2))
+        STATE.update(
+            last_tts_s=round(tts_s, 2), last_fast=fast, last_audio_s=round(len(audio) / SR_OUT, 2)
+        )
         rvc_note = ""
         if self.rvc_engine is not None:
             _set_stage("rvc")
@@ -586,8 +656,11 @@ class Cascade:
             rvc_s = time.time() - t0
             STATE["last_rvc_s"] = round(rvc_s, 2)
             rvc_note = f" rvc {rvc_s:.2f}s"
-        print(f"[cascade] {dur:.1f}s -> 「{text}」 asr {asr_s:.2f}s tts {tts_s:.2f}s"
-              f"{rvc_note} fast={fast} -> {len(audio) / SR_OUT:.1f}s 音频", flush=True)
+        print(
+            f"[cascade] {dur:.1f}s -> 「{text}」 asr {asr_s:.2f}s tts {tts_s:.2f}s"
+            f"{rvc_note} fast={fast} -> {len(audio) / SR_OUT:.1f}s 音频",
+            flush=True,
+        )
         self.fail_streak = 0
         if self.args.file:
             self.out_chunks.append(audio)
@@ -603,7 +676,7 @@ class Cascade:
         det = self.vad_det
         n = 0
         for i in range(0, len(pcm) - FRAME_N + 1, FRAME_N):
-            if det(pcm[i:i + FRAME_N]):
+            if det(pcm[i : i + FRAME_N]):
                 n += 1
         return n * FRAME_MS / 1000
 
@@ -627,8 +700,7 @@ class Cascade:
             _latencies.append(lat)
             STATE["last_latency_s"] = round(lat, 2)
             STATE["avg_latency_s"] = round(sum(_latencies) / len(_latencies), 2)
-            print(f"[cascade] 端到端滞后 {lat:.2f}s (avg {STATE['avg_latency_s']}s)",
-                  flush=True)
+            print(f"[cascade] 端到端滞后 {lat:.2f}s (avg {STATE['avg_latency_s']}s)", flush=True)
         _write_state()
 
     def handle_error(self, exc: Exception) -> None:
@@ -643,9 +715,11 @@ class Cascade:
     def run_frames(self, frame_iter, vad_det):
         """统一主循环：frame_iter 产出 (pcm_frame, ts)，file 与 live 模式共用。"""
         self.vad_det = vad_det
-        chunker = Chunker(silence_ms=self.args.silence_ms,
-                          chunk_max_s=self.args.chunk_max_s,
-                          min_chunk_s=self.args.min_chunk_s)
+        chunker = Chunker(
+            silence_ms=self.args.silence_ms,
+            chunk_max_s=self.args.chunk_max_s,
+            min_chunk_s=self.args.min_chunk_s,
+        )
         _set_stage("capturing")
         for frame, ts in frame_iter:
             try:
@@ -690,8 +764,14 @@ def run_live(args):
         # PortAudio 回调线程只入队，绝不阻塞（处理在主循环串行进行）
         q.put(indata[:, 0].copy())
 
-    with sd.InputStream(device=dev_in, samplerate=SR_IN, channels=1,
-                        dtype="int16", blocksize=FRAME_N, callback=in_cb):
+    with sd.InputStream(
+        device=dev_in,
+        samplerate=SR_IN,
+        channels=1,
+        dtype="int16",
+        blocksize=FRAME_N,
+        callback=in_cb,
+    ):
         _PLAYER.start()
         try:
             _live_main_loop(args, cas, q, enhance_wrap)
@@ -732,18 +812,23 @@ def _make_enhancer(args):
     else:
         atten_db = max(1.0, min(60.0, float(atten)))
     try:
-        from audio_enhance import StreamEnhancer, FrameRealigner
+        from audio_enhance import FrameRealigner, StreamEnhancer
+
         enh = StreamEnhancer(atten_lim_db=atten_db)
         align = FrameRealigner(enh, SR_IN, FRAME_N)
         STATE["enhance"] = "on" if atten_db is None else f"on({atten_db:.0f}dB)"
-        print(f"[cascade] DeepFilterNet 麦克风增强已启用"
-              f"（延迟 {enh._den.latency_ms:.0f}ms, 最大压制 "
-              f"{'不限' if atten_db is None else f'{atten_db:.0f}dB'}）", flush=True)
+        print(
+            f"[cascade] DeepFilterNet 麦克风增强已启用"
+            f"（延迟 {enh._den.latency_ms:.0f}ms, 最大压制 "
+            f"{'不限' if atten_db is None else f'{atten_db:.0f}dB'}）",
+            flush=True,
+        )
 
         def wrap(frame_iter):
             for frame, ts in frame_iter:
                 for f in align.feed(frame):
                     yield f, ts
+
         return wrap
     except Exception as e:
         STATE["enhance"] = "off"
@@ -771,8 +856,9 @@ def run_file(args):
     def gen():
         n = len(pcm16) // FRAME_N
         for i in range(n):
-            yield pcm16[i * FRAME_N:(i + 1) * FRAME_N].astype(np.float32) / 32768.0, \
-                i * FRAME_MS / 1000.0
+            yield pcm16[i * FRAME_N : (i + 1) * FRAME_N].astype(
+                np.float32
+            ) / 32768.0, i * FRAME_MS / 1000.0
 
     t0 = time.time()
     cas.run_frames(gen(), _make_det(args))
@@ -790,8 +876,11 @@ def run_file(args):
     spoke = len(pcm16) / SR_IN
     gen_s = len(merged) / SR_OUT
     wall = time.time() - t0
-    print(f"[cascade] 文件模式完成: 输入 {spoke:.1f}s -> 合成 {gen_s:.1f}s, "
-          f"总耗时 {wall:.1f}s, 整体 RTF {spoke / max(wall, 1e-6):.2f}x", flush=True)
+    print(
+        f"[cascade] 文件模式完成: 输入 {spoke:.1f}s -> 合成 {gen_s:.1f}s, "
+        f"总耗时 {wall:.1f}s, 整体 RTF {spoke / max(wall, 1e-6):.2f}x",
+        flush=True,
+    )
     print(f"[cascade] 输出: {out}", flush=True)
 
 
@@ -819,8 +908,9 @@ def run_live_asr(args):
     print("[live-asr] ASR 预热完成", flush=True)
 
     vad_det = _make_det(args)
-    chunker = Chunker(silence_ms=args.silence_ms, chunk_max_s=args.chunk_max_s,
-                      min_chunk_s=args.min_chunk_s)
+    chunker = Chunker(
+        silence_ms=args.silence_ms, chunk_max_s=args.chunk_max_s, min_chunk_s=args.min_chunk_s
+    )
     enhance_wrap = _make_enhancer(args)
     q: queue.Queue = queue.Queue()
 
@@ -849,8 +939,14 @@ def run_live_asr(args):
         _set_stage("capturing")
 
     _set_stage("capturing")
-    with sd.InputStream(device=dev_in, samplerate=SR_IN, channels=1,
-                        dtype="int16", blocksize=FRAME_N, callback=in_cb):
+    with sd.InputStream(
+        device=dev_in,
+        samplerate=SR_IN,
+        channels=1,
+        dtype="int16",
+        blocksize=FRAME_N,
+        callback=in_cb,
+    ):
         for frame, ts in gen():
             out = chunker.feed(frame, vad_det(frame), ts)
             if out is not None:
@@ -870,9 +966,11 @@ def main():
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根
     # 兜底参考音：正常调用方（cascade.py）会显式传 --ref-audio 并先验存不存在，
     # 这里只是“手工直接跑本脚本”时的默认值，故不写死任何具体音色文件。
-    p.add_argument("--ref-audio",
-                   default=os.environ.get("VM_DEFAULT_REF")
-                   or os.path.join(_root, "tts_models", "ref", "default.wav"))
+    p.add_argument(
+        "--ref-audio",
+        default=os.environ.get("VM_DEFAULT_REF")
+        or os.path.join(_root, "tts_models", "ref", "default.wav"),
+    )
     p.add_argument("--ref-text", default="", help="参考文字稿；空则 x-vector 声纹模式")
     p.add_argument("--chunk-max-s", type=float, default=6.0)
     p.add_argument("--silence-ms", type=int, default=400)
@@ -883,34 +981,55 @@ def main():
     p.add_argument("--state-path", default="")
     p.add_argument("--out-dir", default="")
     p.add_argument("--file", default="", help="文件模式：处理该 wav 而非麦克风")
-    p.add_argument("--enhance", action="store_true",
-                   help="麦克风帧级增强（DeepFilterNet，P2-5）；默认由 VM_CASCADE_ENHANCE 控制")
-    p.add_argument("--atten-lim", default=None,
-                   help="增强最大压制 dB（弱人声保护：小=温和，0/none=不限）；"
-                        "默认取 VM_CASCADE_ATTEN_LIM，再默认 12")
-    p.add_argument("--rvc-pth", default="",
-                   help="末尾接 RVC：权重路径（空=不接，音色由 TTS 克隆）")
+    p.add_argument(
+        "--enhance",
+        action="store_true",
+        help="麦克风帧级增强（DeepFilterNet，P2-5）；默认由 VM_CASCADE_ENHANCE 控制",
+    )
+    p.add_argument(
+        "--atten-lim",
+        default=None,
+        help="增强最大压制 dB（弱人声保护：小=温和，0/none=不限）；"
+        "默认取 VM_CASCADE_ATTEN_LIM，再默认 12",
+    )
+    p.add_argument("--rvc-pth", default="", help="末尾接 RVC：权重路径（空=不接，音色由 TTS 克隆）")
     p.add_argument("--rvc-index", default="", help="RVC 特征检索库 added_*.index")
     p.add_argument("--rvc-pitch", type=int, default=0, help="RVC 变调半音数")
     p.add_argument("--rvc-index-rate", type=float, default=0.5)
-    p.add_argument("--asr-only", action="store_true",
-                   help="只转写不合成不播放（实时变声期间的桌宠字幕），无声卡操作")
-    p.add_argument("--tts-stream", action="store_true", default=True,
-                   help="relay 用分段流式 TTS（逐段出声，降低首包延迟）；"
-                        "默认开，--no-tts-stream 关闭走整句")
-    p.add_argument("--no-tts-stream", dest="tts_stream", action="store_false",
-                   help="关闭分段流式 TTS（调试用）")
-    p.add_argument("--tts-seg-chars", type=int, default=16,
-                   help="流式 TTS 单段最大字符数：越小首包越早（但段数多、prefill 开销升）；"
-                        "0 表示整句不分段")
+    p.add_argument(
+        "--asr-only",
+        action="store_true",
+        help="只转写不合成不播放（实时变声期间的桌宠字幕），无声卡操作",
+    )
+    p.add_argument(
+        "--tts-stream",
+        action="store_true",
+        default=True,
+        help="relay 用分段流式 TTS（逐段出声，降低首包延迟）；"
+        "默认开，--no-tts-stream 关闭走整句",
+    )
+    p.add_argument(
+        "--no-tts-stream",
+        dest="tts_stream",
+        action="store_false",
+        help="关闭分段流式 TTS（调试用）",
+    )
+    p.add_argument(
+        "--tts-seg-chars",
+        type=int,
+        default=16,
+        help="流式 TTS 单段最大字符数：越小首包越早（但段数多、prefill 开销升）；"
+        "0 表示整句不分段",
+    )
     args = p.parse_args()
 
     base = Path(__file__).resolve().parent.parent
     args.out_dir = args.out_dir or str(base / "outputs")
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     global _STATE_PATH
-    _STATE_PATH = Path(args.state_path) if args.state_path \
-        else Path(args.out_dir) / "cascade_state.json"
+    _STATE_PATH = (
+        Path(args.state_path) if args.state_path else Path(args.out_dir) / "cascade_state.json"
+    )
 
     try:
         if args.asr_only:
@@ -925,6 +1044,7 @@ def main():
         raise
     except Exception as e:
         import traceback
+
         traceback.print_exc()
         STATE.update(running=False, stage="error", error=f"{type(e).__name__}: {e}"[:1500])
         _write_state()

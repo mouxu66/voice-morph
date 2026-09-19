@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """自动音高建议：分析输入音频的基频（f0），对照目标音色参考音高，
 算出 RVC 变调（半音数）建议值，解决"怎么调都不像"的手动试错。
 
@@ -15,20 +14,20 @@
       （与前端变调滑块范围一致）。
     - 有效语音占比过低（< 8%）时认为 f0 不可靠，返回 voiced_ratio 让前端提示。
 """
+
 import subprocess
-import threading
 import tempfile
+import threading
 from pathlib import Path
 
-import numpy as np
-
 import config as cfg
+import numpy as np
 from common import find_ffmpeg
 
 FMIN_HZ = 50.0
 FMAX_HZ = 500.0
-MIN_VOICED_RATIO = 0.08   # 低于此值认为 f0 不可靠
-MAX_ANALYZE_S = 60        # 过长音频只取开头 60s 分析（pyin 较慢）
+MIN_VOICED_RATIO = 0.08  # 低于此值认为 f0 不可靠
+MAX_ANALYZE_S = 60  # 过长音频只取开头 60s 分析（pyin 较慢）
 
 # 参考音高缓存：voice_id -> (mtime, size, f0)
 _ref_cache: dict[str, tuple[float, int, float]] = {}
@@ -36,8 +35,21 @@ _cache_lock = threading.Lock()
 
 
 def _to_wav16k(src: Path, dst: Path) -> None:
-    cmd = [find_ffmpeg(), "-y", "-loglevel", "error", "-i", str(src),
-           "-t", str(MAX_ANALYZE_S), "-af", "aresample=16000", "-ac", "1", str(dst)]
+    cmd = [
+        find_ffmpeg(),
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        str(src),
+        "-t",
+        str(MAX_ANALYZE_S),
+        "-af",
+        "aresample=16000",
+        "-ac",
+        "1",
+        str(dst),
+    ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if r.returncode != 0 or not dst.exists():
         raise RuntimeError(f"ffmpeg 解码失败: {r.stderr.strip()[:300]}")
@@ -48,8 +60,11 @@ def f0_curve(y: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]:
     import librosa
 
     f0, voiced_flag, _ = librosa.pyin(
-        np.asarray(y, dtype=np.float32), fmin=FMIN_HZ, fmax=FMAX_HZ,
-        sr=sr, frame_length=1024,
+        np.asarray(y, dtype=np.float32),
+        fmin=FMIN_HZ,
+        fmax=FMAX_HZ,
+        sr=sr,
+        frame_length=1024,
     )
     return f0, np.asarray(voiced_flag, dtype=bool)
 

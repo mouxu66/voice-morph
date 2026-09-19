@@ -64,6 +64,31 @@ class Tab:
         self.ws.close()
 
 
+class NotLoaded(RuntimeError):
+    """页面没加载成功（浏览器错误页 / 空壳）。这不是瞬时故障，重试没意义。"""
+
+
+def _assert_app_loaded(info: dict, base: str) -> None:
+    """确认截到的真是应用页面，而不是浏览器的错误页 / 空壳。
+
+    为什么要这一步（2026-09-19 自己踩的）：预览服务没起来时，Chrome 会渲染一张
+    "无法访问此网站"的错误页 —— 它同样有尺寸、同样不横向溢出、同样能截图，
+    于是工具报了 **「全部通过」**。**假绿比没有工具更危险**：
+    它让"今天没验"看起来像"验过了"。宁可在这里直接报错。
+    """
+    text = str(info.get("text") or "")
+    heads = " ".join(str(h) for h in (info.get("heads") or []))
+    bad_marks = ("无法访问此网站", "This site can't be reached", "ERR_CONNECTION",
+                 "ERR_NAME_NOT_RESOLVED", "拒绝连接", "404 Not Found")
+    for mark in bad_marks:
+        if mark in text or mark in heads:
+            raise NotLoaded(f"页面没加载成功（截到的是浏览器错误页：{mark}）—— "
+                               f"先确认 {base} 上的预览服务真的起来了")
+    if info.get("root_children", 1) == 0:
+        raise RuntimeError("SPA 根节点是空的：应用没挂载（可能是路由/脚本报错），"
+                           "别把这张图当验收结果")
+
+
 def _launch(port: int, width: int, height: int) -> subprocess.Popen:
     prof = ROOT.parent / "tmp" / f"webshot-{port}"
     log = ROOT.parent / "tmp" / f"webshot-{port}.log"
@@ -107,9 +132,11 @@ def _shoot(port: int, base: str, route: str, width: int, height: int,
             "JSON.stringify({sw: document.documentElement.scrollWidth,"
             "cw: document.documentElement.clientWidth,"
             "sh: document.documentElement.scrollHeight,"
+            "root_children: (document.getElementById('root')||document.body).children.length,"
             "heads: [...document.querySelectorAll('h1,h2')].map(e=>e.textContent),"
             "text: document.body.innerText.slice(0,600)})")})
         info = json.loads(probe["result"]["value"])
+        _assert_app_loaded(info, base)
         shot = tab.call("Page.captureScreenshot", {"format": "png"})
         OUT.mkdir(parents=True, exist_ok=True)
         tag = route.strip("/").replace("/", "_") or "root"
@@ -158,6 +185,10 @@ def main() -> int:
                     shot = _shoot(port, args.base, args.route, width, args.height,
                                   theme, args.settle)
                     break
+                except NotLoaded as exc:
+                    # 不是瞬时故障：别重试三次装样子，直接说清楚
+                    print(f"!! {exc}")
+                    return 2
                 except Exception as exc:      # noqa: BLE001
                     err = last_err = exc
                 finally:

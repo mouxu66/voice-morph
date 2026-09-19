@@ -1,4 +1,5 @@
 """A1 发送链路自检单测（mock 掉 PowerShell，纯函数 + 端点行为两层）。"""
+
 import sys
 from pathlib import Path
 
@@ -18,12 +19,19 @@ def _diag(devices):
 
 
 # 常见设备清单：扬声器 + 麦克风 + VB-CABLE 两端
-GOOD = _diag([
-    {"flow": 0, "name": "扬声器 (Realtek Audio)", "state": 1, "roles": [0, 1, 2]},
-    {"flow": 0, "name": "CABLE Input (VB-Audio Virtual Cable)", "state": 1, "roles": []},
-    {"flow": 1, "name": "麦克风 (Realtek Audio)", "state": 1, "roles": []},
-    {"flow": 1, "name": "CABLE Output (VB-Audio Virtual Cable)", "state": 1, "roles": [0, 1, 2]},
-])
+GOOD = _diag(
+    [
+        {"flow": 0, "name": "扬声器 (Realtek Audio)", "state": 1, "roles": [0, 1, 2]},
+        {"flow": 0, "name": "CABLE Input (VB-Audio Virtual Cable)", "state": 1, "roles": []},
+        {"flow": 1, "name": "麦克风 (Realtek Audio)", "state": 1, "roles": []},
+        {
+            "flow": 1,
+            "name": "CABLE Output (VB-Audio Virtual Cable)",
+            "state": 1,
+            "roles": [0, 1, 2],
+        },
+    ]
+)
 
 
 def by_key(report, key):
@@ -40,10 +48,15 @@ def test_all_good():
 
 
 def test_cable_missing():
-    r = mod.build_send_chain_report(_diag([
-        {"flow": 0, "name": "扬声器 (Realtek)", "state": 1, "roles": [0]},
-        {"flow": 1, "name": "麦克风 (Realtek)", "state": 1, "roles": [0]},
-    ]), stale=False)
+    r = mod.build_send_chain_report(
+        _diag(
+            [
+                {"flow": 0, "name": "扬声器 (Realtek)", "state": 1, "roles": [0]},
+                {"flow": 1, "name": "麦克风 (Realtek)", "state": 1, "roles": [0]},
+            ]
+        ),
+        stale=False,
+    )
     cable = by_key(r, "cable")
     assert cable["ok"] is False and "CABLE Input" in cable["detail"]
     assert "VB-Audio" in cable["hint"]
@@ -60,7 +73,7 @@ def test_default_capture_is_real_mic():
     r = mod.build_send_chain_report(_diag(devices), stale=False)
     cap = by_key(r, "default_capture")
     assert cap["ok"] is False
-    assert "CABLE Output" in cap["hint"]      # 修复指引必须提到目标设备名
+    assert "CABLE Output" in cap["hint"]  # 修复指引必须提到目标设备名
     assert by_key(r, "default_render")["ok"] is True
 
 

@@ -13,6 +13,7 @@
 对真实 `ci.yml` 的断言**只验"能解析出形如 X.Y 的东西"，不验具体数字** —— 否则以后
 升 CI 版本会让这里误红一片，人就开始无视它了。
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -38,24 +39,31 @@ def check():
 
 # ---------------- 1. 版本号解析（静默失效风险最高的一处） ----------------
 
-@pytest.mark.parametrize("text,expect", [
-    ('python-version: "3.13"', "3.13"),
-    ("python-version: '3.12'", "3.12"),
-    ("python-version: 3.11", "3.11"),                    # 不带引号
-    ('      python-version: "3.11"\n      cache: pip', "3.11"),   # 缩进 + 后随行
-    ("runs-on: windows-latest\n  steps:\n", None),        # 没有该字段
-    ("", None),
-])
+
+@pytest.mark.parametrize(
+    "text,expect",
+    [
+        ('python-version: "3.13"', "3.13"),
+        ("python-version: '3.12'", "3.12"),
+        ("python-version: 3.11", "3.11"),  # 不带引号
+        ('      python-version: "3.11"\n      cache: pip', "3.11"),  # 缩进 + 后随行
+        ("runs-on: windows-latest\n  steps:\n", None),  # 没有该字段
+        ("", None),
+    ],
+)
 def test_ci_python_version_parses_shapes(check, text, expect):
     assert check._ci_python_version(text) == expect
 
 
-@pytest.mark.parametrize("text,expect", [
-    ('node-version: "22"', "22"),
-    ("node-version: '20'", "20"),
-    ('node-version: "22.14.0"', "22.14.0"),
-    ("runs-on: ubuntu-latest", None),
-])
+@pytest.mark.parametrize(
+    "text,expect",
+    [
+        ('node-version: "22"', "22"),
+        ("node-version: '20'", "20"),
+        ('node-version: "22.14.0"', "22.14.0"),
+        ("runs-on: ubuntu-latest", None),
+    ],
+)
 def test_ci_node_version_parses_shapes(check, text, expect):
     assert check._ci_node_version(text) == expect
 
@@ -71,6 +79,7 @@ def test_real_ci_workflow_is_parseable(check):
 
 
 # ---------------- 2. 依赖指纹 ----------------
+
 
 def test_deps_stamp_stable_for_same_input(check):
     assert check._deps_stamp(b"flask\n", "3.11") == check._deps_stamp(b"flask\n", "3.11")
@@ -93,6 +102,7 @@ def test_deps_stamp_shape(check):
 
 # ---------------- 3. 解释器定位必须优雅退化 ----------------
 
+
 def test_probe_python_returns_none_for_missing_executable(check):
     assert check._probe_python(["definitely-not-a-python-20260913"]) is None
 
@@ -112,6 +122,7 @@ def test_venv_python_path_matches_platform(check):
 
 # ---------------- 4. 别把慢模式混进默认检查 ----------------
 
+
 def test_ci_fidelity_is_not_a_default_step(check):
     """它是独立模式：跑几分钟且会建 venv，绝不能混进 pre-commit 的默认流程。
 
@@ -123,7 +134,14 @@ def test_ci_fidelity_is_not_a_default_step(check):
     """
     assert "ci-fidelity" not in check.STEPS
     assert set(check.STEPS) == {
-        "licenses", "requires", "electron", "ps1lint", "nodetest", "ruff", "pytest", "web",
+        "licenses",
+        "requires",
+        "electron",
+        "ps1lint",
+        "nodetest",
+        "ruff",
+        "pytest",
+        "web",
     }
 
 
@@ -133,6 +151,7 @@ def test_ci_fidelity_is_not_a_default_step(check):
 #   · 忘了设 VM_BARE_RUNNER → 探测照旧判"有"，用例在本机绿、在 CI 红
 #   · 只设 VM_BARE_RUNNER 却不动 PATH → **绕过探测**直接调 ffmpeg 的用例照样绿，
 #     而那恰恰是 2026-09-13 红掉的 9 条的形状
+
 
 def test_bare_runner_env_sets_flag_and_unsets_ffmpeg_path(check, monkeypatch):
     """FFMPEG_PATH 必须用 None（= 从子进程环境删掉）表达，不能设成空串。

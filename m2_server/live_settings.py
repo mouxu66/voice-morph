@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """实时变声本地设置：输入设备选择 + 输入降噪开关 + 性能档位。
 
 为什么要独立设置文件
@@ -21,6 +20,8 @@
   - 非空 = 设备名关键词（大小写不敏感的包含匹配，见 rvc_live._device_matches）
   - 文件损坏/缺键一律回退默认值，绝不阻塞变声启动
 """
+
+import contextlib
 import json
 import os
 import tempfile
@@ -31,9 +32,7 @@ from pathlib import Path
 # 独立推导而非 import config：cascade_stream 在 RVC venv 里跑，
 # 路径必须自包含，避免 import 链条的 cwd 差异。
 _ROOT = Path(__file__).resolve().parent.parent
-SETTINGS_PATH = Path(
-    os.environ.get("VM_LIVE_SETTINGS", _ROOT / "outputs" / "live_settings.json")
-)
+SETTINGS_PATH = Path(os.environ.get("VM_LIVE_SETTINGS", _ROOT / "outputs" / "live_settings.json"))
 
 PERF_BALANCED = "balanced"
 PERF_GAME = "game"
@@ -68,8 +67,9 @@ def get() -> dict:
     return out
 
 
-def update(input_device: str | None = None, denoise: bool | None = None,
-           perf_profile: str | None = None) -> dict:
+def update(
+    input_device: str | None = None, denoise: bool | None = None, perf_profile: str | None = None
+) -> dict:
     """合并写设置；未传的字段保持原值。返回写入后的完整设置。"""
     with _lock:
         data = get()
@@ -90,8 +90,6 @@ def update(input_device: str | None = None, denoise: bool | None = None,
             os.replace(tmp, SETTINGS_PATH)
         finally:
             if os.path.exists(tmp):
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(tmp)
-                except OSError:
-                    pass
         return data

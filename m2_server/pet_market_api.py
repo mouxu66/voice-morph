@@ -14,15 +14,15 @@
 
 安全：皮肤 id 白名单校验；下载域名白名单见 pet_market.py。
 """
+
 import re
 
+import pet_market
+import pet_scan
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-
 from runtime import API_PREFIX
-import pet_market
-import pet_scan
 
 router = APIRouter(prefix=API_PREFIX)
 

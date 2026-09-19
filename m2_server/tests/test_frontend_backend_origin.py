@@ -11,6 +11,7 @@
 
 口径：只查字面量主机地址，不管注释（注释里出现地址是正常的，比如说明文字）。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -60,9 +61,10 @@ def test_backend_host_literal_only_in_client():
         for pat in PATTERNS:
             if pat in code:
                 offenders.append(f"{rel}: {pat}")
-    assert not offenders, (
-        "后端地址字面量应只存在于 web/src/api/client.ts（用 backendPrefix()）：\n  "
-        + "\n  ".join(sorted(set(offenders)))
+    assert (
+        not offenders
+    ), "后端地址字面量应只存在于 web/src/api/client.ts（用 backendPrefix()）：\n  " + "\n  ".join(
+        sorted(set(offenders))
     )
 
 

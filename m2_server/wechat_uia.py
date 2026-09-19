@@ -56,8 +56,7 @@ CLASS_VOICE_MSG = "mmui::ChatVoiceItemView"
 # --- Qt accessibility gate 扫描（与 tools/uia_probe.py 同源） ---
 QACCESSIBLE_CORE_STRING = b"qt.accessibility.core"
 QACCESSIBLE_GATE_PATTERN = re.compile(
-    rb"\x48\x85\xc9\x0f\x84....\x80\x3d(?P<disp>.{4})"
-    rb"\x00\x0f\x84",
+    rb"\x48\x85\xc9\x0f\x84....\x80\x3d(?P<disp>.{4})" rb"\x00\x0f\x84",
     re.DOTALL,
 )
 IMAGE_SCN_MEM_EXECUTE = 0x20000000
@@ -75,7 +74,7 @@ PROCESS_VM_OPERATION = 0x0008
 
 _lock = threading.Lock()
 _state: dict = {"pid": None, "ready": False, "rva": None, "reason": "", "checked": 0.0}
-_tls = threading.local()          # 每线程缓存 (hwnd, root)，UIA COM 对象不可跨线程
+_tls = threading.local()  # 每线程缓存 (hwnd, root)，UIA COM 对象不可跨线程
 _rva_cache_path: Path | None = None
 
 
@@ -96,10 +95,11 @@ class MODULEENTRY32W(ctypes.Structure):
 
 # -------------------------------------------------------------- PE 解析 / 扫描
 
+
 def _pe_sections(data: bytes) -> list[dict]:
     try:
         pe_off = struct.unpack_from("<I", data, 0x3C)[0]
-        if data[pe_off:pe_off + 4] != b"PE\0\0":
+        if data[pe_off : pe_off + 4] != b"PE\0\0":
             return []
         coff = pe_off + 4
         count = struct.unpack_from("<H", data, coff + 2)[0]
@@ -108,11 +108,19 @@ def _pe_sections(data: bytes) -> list[dict]:
         out = []
         for i in range(count):
             off = sec_off + i * 40
-            name = data[off:off + 8].split(b"\0", 1)[0].decode("ascii", "ignore")
+            name = data[off : off + 8].split(b"\0", 1)[0].decode("ascii", "ignore")
             vsize, rva, raw_size, raw_ptr = struct.unpack_from("<IIII", data, off + 8)
             chars = struct.unpack_from("<I", data, off + 36)[0]
-            out.append({"name": name, "rva": rva, "vsize": vsize,
-                        "raw_size": raw_size, "raw_ptr": raw_ptr, "chars": chars})
+            out.append(
+                {
+                    "name": name,
+                    "rva": rva,
+                    "vsize": vsize,
+                    "raw_size": raw_size,
+                    "raw_ptr": raw_ptr,
+                    "chars": chars,
+                }
+            )
         return out
     except Exception:
         return []
@@ -138,7 +146,7 @@ def _rip_xrefs(data: bytes, sections, target_rva) -> list[int]:
         if not (sec["chars"] & IMAGE_SCN_MEM_EXECUTE):
             continue
         start = sec["raw_ptr"]
-        raw = data[start:min(len(data), start + sec["raw_size"])]
+        raw = data[start : min(len(data), start + sec["raw_size"])]
         for i in range(0, max(0, len(raw) - 7)):
             if 0x40 <= raw[i] <= 0x4F and raw[i + 1] == 0x8D and (raw[i + 2] & 0xC7) == 0x05:
                 disp = struct.unpack_from("<i", raw, i + 3)[0]
@@ -196,6 +204,7 @@ def scan_gate_rva(dll_path: Path) -> tuple[int | None, list]:
 
 
 # ------------------------------------------------------------ 进程 / 模块 / 内存
+
 
 def _weixin_dll(pid: int):
     """在微信进程里找 Weixin.dll，返回 (基址, 大小, 路径)。"""
@@ -266,6 +275,7 @@ def _rva_cache_file() -> Path:
     if _rva_cache_path is None:
         try:
             from config import OUTPUTS_DIR
+
             base = Path(OUTPUTS_DIR)
         except Exception:
             base = Path(__file__).resolve().parent.parent / "outputs"
@@ -312,9 +322,11 @@ def _dll_mtime(path: Path) -> tuple[int, float]:
 
 # ---------------------------------------------------------------- 热激活
 
+
 def _wechat_hwnd_pid():
     try:
         import wechat_voice as wv
+
         hwnd = wv._find_wechat_hwnd()
     except Exception:
         return None, None
@@ -329,6 +341,7 @@ def _root_class(hwnd: int) -> str | None:
     """读 UIA 根控件类名——判据：`mmui::` 开头=已物化。"""
     try:
         import uiautomation as auto
+
         auto.InitializeUIAutomationInCurrentThread()
         auto.SetGlobalSearchTimeout(min(SEARCH_TIMEOUT, 1.0))
         ctrl = auto.ControlFromHandle(hwnd)
@@ -353,8 +366,12 @@ def ensure_active(force: bool = False) -> bool:
         if not force and _state["pid"] == pid and _state["ready"]:
             return True
         # PID 未变但仍标记未就绪时，允许 3 秒一次的重新探测（避免高频扫盘）
-        if (not force and _state["pid"] == pid and not _state["ready"]
-                and time.time() - _state["checked"] < 3.0):
+        if (
+            not force
+            and _state["pid"] == pid
+            and not _state["ready"]
+            and time.time() - _state["checked"] < 3.0
+        ):
             return False
         _state["checked"] = time.time()
         _state["pid"] = pid
@@ -392,12 +409,11 @@ def ensure_active(force: bool = False) -> bool:
                 logger.warning("[uia] %s", _state["reason"])
                 return False
             logger.info("[uia] 已热激活 WeChat UIA（addr=0x%x）", addr)
-            time.sleep(0.5)          # 等 Qt 物化控件树
+            time.sleep(0.5)  # 等 Qt 物化控件树
 
         cls = _root_class(hwnd)
         ready = bool(cls and cls.startswith("mmui::"))
-        _state.update(ready=ready,
-                      reason="" if ready else f"UIA 树未物化（root={cls}）")
+        _state.update(ready=ready, reason="" if ready else f"UIA 树未物化（root={cls}）")
         if not ready:
             logger.warning("[uia] %s", _state["reason"])
         return ready
@@ -416,6 +432,7 @@ def reset_state() -> None:
 
 # ---------------------------------------------------------------- UIA 查询
 
+
 def _root():
     """当前线程的微信 UIA 根控件（每线程缓存一个 COM 对象）。"""
     if not UIA_ENABLED:
@@ -432,6 +449,7 @@ def _root():
             pass
     try:
         import uiautomation as auto
+
         auto.InitializeUIAutomationInCurrentThread()
         auto.SetGlobalSearchTimeout(min(SEARCH_TIMEOUT, 1.0))
         root = auto.ControlFromHandle(hwnd)

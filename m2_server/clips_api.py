@@ -2,12 +2,12 @@
 
 自 server.py 拆出（行为不变）；app 装配见 server.py。
 """
+
 from pathlib import Path
 
+import config as cfg
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
-
-import config as cfg
 from runtime import API_PREFIX, CLIPS_DIR, clip_prefix
 
 router = APIRouter(prefix=API_PREFIX)
@@ -16,8 +16,10 @@ router = APIRouter(prefix=API_PREFIX)
 @router.get("/clips")
 def list_clips():
     from pydub import AudioSegment
+
     try:
         import clip_qc
+
         qc = clip_qc.load_all()
     except Exception:  # 质检结果读不到不影响列表本身（无质检时前端退化为按响度筛选）
         qc = {}
@@ -73,13 +75,13 @@ def diarize_clips(file: str = Query(..., description="素材文件名或切片�
     纯本地、Apache-2.0、免认证，首次运行自动下载模型并缓存。
     """
     import speaker_sep
+
     stem = Path(file).stem if file and file != "/" else ""
     prefixes = {stem[:12] if stem else ""}
     if stem:
         prefixes.add(clip_prefix(stem))
     prefixes.discard("")
-    paths = [f for f in CLIPS_DIR.glob("*.wav")
-             if any(f.stem.startswith(p) for p in prefixes)]
+    paths = [f for f in CLIPS_DIR.glob("*.wav") if any(f.stem.startswith(p) for p in prefixes)]
     if not paths:
         raise HTTPException(404, f"「{file}」没有可分析的切片，请先对其运行流水线。")
     try:
@@ -96,14 +98,18 @@ def diarize_clips(file: str = Query(..., description="素材文件名或切片�
         if ename == "RuntimeError" and str(e):
             raise HTTPException(500, f"说话人分离失败：{e}")
         raise HTTPException(
-            500, f"说话人分离失败：{e}。建议：确认素材已跑过流水线、切片可正常读取后重试；"
-                f"若为模型首次下载类错误，请检查网络。")
+            500,
+            f"说话人分离失败：{e}。建议：确认素材已跑过流水线、切片可正常读取后重试；"
+            f"若为模型首次下载类错误，请检查网络。",
+        )
 
 
 @router.post("/clips/qc")
-def qc_clips(file: str = Query(..., description="素材文件名或切片前缀"),
-             spk: bool = Query(True, description="是否计算说话人一致性（需跑一次 diarization，较慢）"),
-             force: bool = Query(False, description="忽略缓存重算")):
+def qc_clips(
+    file: str = Query(..., description="素材文件名或切片前缀"),
+    spk: bool = Query(True, description="是否计算说话人一致性（需跑一次 diarization，较慢）"),
+    force: bool = Query(False, description="忽略缓存重算"),
+):
     """给某素材的切片做质量打分（P1-1）。
 
     维度：时长 / 响度 / 削波 / 中段静音 / 底噪 SNR，可选「说话人一致性」（复用 CAM++
@@ -115,11 +121,11 @@ def qc_clips(file: str = Query(..., description="素材文件名或切片前缀"
     import clip_qc
     import numpy as np
     import speaker_sep
+
     stem = Path(file).stem if file and file != "/" else ""
     prefix = clip_prefix(stem) if stem else ""
     prefixes = {p for p in (prefix, stem[:12] if stem else "") if p}
-    paths = [f for f in CLIPS_DIR.glob("*.wav")
-             if any(f.stem.startswith(p) for p in prefixes)]
+    paths = [f for f in CLIPS_DIR.glob("*.wav") if any(f.stem.startswith(p) for p in prefixes)]
     if not paths:
         raise HTTPException(404, f"「{file}」没有可质检的切片，请先对其运行流水线。")
 
@@ -135,14 +141,21 @@ def qc_clips(file: str = Query(..., description="素材文件名或切片前缀"
             if vocal:
                 main_spk, center, _meta = speaker_sep.main_center(vocal)
     try:
-        payload = clip_qc.score_material(prefix or stem, paths, spk_center=center,
-                                         force=force, main_spk=main_spk)
+        payload = clip_qc.score_material(
+            prefix or stem, paths, spk_center=center, force=force, main_spk=main_spk
+        )
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"切片质检失败：{e}")
-    return {"ok": True, "prefix": payload["prefix"], "count": payload["count"],
-            "grades": payload["grades"], "ok_count": payload["ok_count"],
-            "has_spk": payload["has_spk"], "main_spk": payload["main_spk"],
-            "updated_at": payload["updated_at"]}
+    return {
+        "ok": True,
+        "prefix": payload["prefix"],
+        "count": payload["count"],
+        "grades": payload["grades"],
+        "ok_count": payload["ok_count"],
+        "has_spk": payload["has_spk"],
+        "main_spk": payload["main_spk"],
+        "updated_at": payload["updated_at"],
+    }
 
 
 @router.get("/export/rvc")

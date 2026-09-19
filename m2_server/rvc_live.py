@@ -10,6 +10,7 @@
 
 实验名(exp)即音色 ID：训练接口可传任意 exp/dataset，不再锁定单一音色。
 """
+
 import json
 import logging
 import os
@@ -27,11 +28,22 @@ try:
     import config as cfg
 except ImportError:  # 兜底：直接以模块方式运行时
     import sys as _sys
+
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
     import config as cfg
+import contextlib
+
 import live_settings
 import qwen3_tts
-from rvc_common import (ensure_infer_pth, exp_display_name, exp_snapshot, exp_source, find_pth, _find_pids_by_cmdline, _kill_pids)
+from rvc_common import (
+    _find_pids_by_cmdline,
+    _kill_pids,
+    ensure_infer_pth,
+    exp_display_name,
+    exp_snapshot,
+    exp_source,
+    find_pth,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +99,11 @@ DEFAULT_EPOCHS = 40
 # 同时 block_time 只有默认的一半，hubert/f0 上下文不足，音色更容易发飘发怪。
 # rms_mix_rate 取 0.25 是为了和离线链路 offline_vc_infer.py 对齐——离线在 0.25 下听感最好。
 REALTIME_TUNING = {
-    "block_time": 0.25,        # RVC 默认；分块越长上下文越足，artifacts 越少
+    "block_time": 0.25,  # RVC 默认；分块越长上下文越足，artifacts 越少
     "crossfade_length": 0.05,  # RVC 默认；占 block_time 的 20%，避免重叠涂抹
-    "extra_time": 2.5,         # RVC 默认；额外推理上下文
-    "rms_mix_rate": 0.25,      # 与离线链路一致（离线 0.25 时听感最佳）
-    "index_rate": 0.5,         # 与离线 A/B 一致
+    "extra_time": 2.5,  # RVC 默认；额外推理上下文
+    "rms_mix_rate": 0.25,  # 与离线链路一致（离线 0.25 时听感最佳）
+    "index_rate": 0.5,  # 与离线 A/B 一致
     "threhold": -60.0,
     "sr_type": "sr_model",
     "f0method": "rmvpe",
@@ -173,11 +185,14 @@ def _sync_worker_for_profile(profile: str) -> bool:
     if profile == live_settings.PERF_GAME and was_alive:
         try:
             qwen3_tts.shutdown_worker()
-            logger.info("[profile] game 档已卸载 Qwen3-TTS worker（释放约 %.1fGB 显存）",
-                        TTS_WORKER_VRAM_MB / 1024)
+            logger.info(
+                "[profile] game 档已卸载 Qwen3-TTS worker（释放约 %.1fGB 显存）",
+                TTS_WORKER_VRAM_MB / 1024,
+            )
         except Exception as e:
             logger.warning("[profile] 卸载 Qwen3-TTS worker 失败（不影响变声）: %s", e)
     return was_alive
+
 
 # GPU 显存探测缓存：均衡档 1s TTL（显存条跟手）；游戏档 10s TTL。
 # 为什么游戏档要拉长：_gpu_snapshot 一次要 spawn 3 个 nvidia-smi（used/total/pid），
@@ -204,7 +219,11 @@ def _nvidia_smi(query: str) -> list[str] | None:
     try:
         out = subprocess.run(
             ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
         )
         if out.returncode != 0:
             return None
@@ -256,10 +275,14 @@ def _gpu_snapshot() -> dict:
     """按性能档 TTL 缓存的三连查结果，status/profile 接口共用（TTL 见 _gpu_ttl）。"""
     now = time.time()
     if now - _gpu_cache["ts"] >= _gpu_ttl():
-        _gpu_cache.update(ts=now, used=_gpu_used_mb(), total=_gpu_total_mb(),
-                          proc=_live_proc_vram_mb())
-    return {"gpu_total_mb": _gpu_cache["total"], "gpu_used_mb": _gpu_cache["used"],
-            "live_proc_vram_mb": _gpu_cache["proc"]}
+        _gpu_cache.update(
+            ts=now, used=_gpu_used_mb(), total=_gpu_total_mb(), proc=_live_proc_vram_mb()
+        )
+    return {
+        "gpu_total_mb": _gpu_cache["total"],
+        "gpu_used_mb": _gpu_cache["used"],
+        "live_proc_vram_mb": _gpu_cache["proc"],
+    }
 
 
 def _vram_precheck() -> str | None:
@@ -278,13 +301,17 @@ def _vram_precheck() -> str | None:
     if free >= MIN_LIVE_FREE_VRAM_MB:
         return None
     if live_settings.get()["perf_profile"] == live_settings.PERF_GAME:
-        return (f"GPU 显存余量仅 {free} MB（语音合成引擎已卸载后仍低于 "
-                f"{MIN_LIVE_FREE_VRAM_MB} MB）。请关闭占用显存的程序"
-                f"（游戏/浏览器/直播等）后重试。")
-    return (f"GPU 显存余量仅 {free} MB，低于实时变声安全阈值"
-            f"{MIN_LIVE_FREE_VRAM_MB} MB（余量不足时 RVC 推理进程高负载下会崩溃）。"
-            f"建议：① 切换到「游戏低占用」档——自动卸载语音合成引擎释放约 4.8GB；"
-            f"② 关闭其他占用显存的程序后重试。")
+        return (
+            f"GPU 显存余量仅 {free} MB（语音合成引擎已卸载后仍低于 "
+            f"{MIN_LIVE_FREE_VRAM_MB} MB）。请关闭占用显存的程序"
+            f"（游戏/浏览器/直播等）后重试。"
+        )
+    return (
+        f"GPU 显存余量仅 {free} MB，低于实时变声安全阈值"
+        f"{MIN_LIVE_FREE_VRAM_MB} MB（余量不足时 RVC 推理进程高负载下会崩溃）。"
+        f"建议：① 切换到「游戏低占用」档——自动卸载语音合成引擎释放约 4.8GB；"
+        f"② 关闭其他占用显存的程序后重试。"
+    )
 
 
 def _active_exp() -> str:
@@ -298,12 +325,25 @@ def _exp_dirs(exp: str | None = None) -> tuple[str, Path, Path]:
     log_dir, dataset_dir = cfg.rvc_exp_dirs(name)
     return name, log_dir, dataset_dir
 
+
 _state = {
-    "live": {"running": False, "pid": None, "audio_switched": False, "error": "",
-             "headless": False, "monitor": False, "monitor_gain": None},
+    "live": {
+        "running": False,
+        "pid": None,
+        "audio_switched": False,
+        "error": "",
+        "headless": False,
+        "monitor": False,
+        "monitor_gain": None,
+    },
     # exp=当前训练/生效的音色 ID；total_epochs 用于进度百分比计算
-    "train": {"running": False, "pid": None, "rc": None,
-              "exp": cfg.RVC_DEFAULT_EXP, "total_epochs": DEFAULT_EPOCHS},
+    "train": {
+        "running": False,
+        "pid": None,
+        "rc": None,
+        "exp": cfg.RVC_DEFAULT_EXP,
+        "total_epochs": DEFAULT_EPOCHS,
+    },
 }
 # realtime_gui 进程探测缓存（1s TTL，见 _find_realtime_pids）
 _pid_cache: dict = {"ts": None, "pids": []}
@@ -330,8 +370,14 @@ def _stop_asr_proc():
 
 def _asr_state() -> dict:
     """读取转写子进程状态文件；running 以进程存活为准（文件可能残留）。"""
-    res = {"running": False, "stage": "", "last_text": "", "chunks": 0,
-           "error": "", "updated_at": ""}
+    res = {
+        "running": False,
+        "stage": "",
+        "last_text": "",
+        "chunks": 0,
+        "error": "",
+        "updated_at": "",
+    }
     if ASR_STATE_FILE.exists():
         try:
             data = json.loads(ASR_STATE_FILE.read_text(encoding="utf-8"))
@@ -350,10 +396,21 @@ def _audio(action: str) -> dict:
     """
     try:
         proc = subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-File", str(AUDIO_PS1), "-action", action],
-            capture_output=True, text=True, timeout=120,
-            encoding="utf-8", errors="replace",
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(AUDIO_PS1),
+                "-action",
+                action,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            encoding="utf-8",
+            errors="replace",
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"audio_config {action} 执行超时(120s)")
@@ -387,13 +444,24 @@ def _find_realtime_pids() -> list[int]:
         return _pid_cache["pids"]
     pids: list[int] = []
     try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-             "Where-Object { $_.CommandLine -match 'realtime_gui|rvc_headless' } | "
-             "Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
-        ).stdout or ""
+        out = (
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                    "Where-Object { $_.CommandLine -match 'realtime_gui|rvc_headless' } | "
+                    "Select-Object -ExpandProperty ProcessId",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+            ).stdout
+            or ""
+        )
         pids = [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
     except Exception as e:
         logger.warning("[realtime] 枚举实时变声进程失败（状态可能失真）: %s", e)
@@ -455,8 +523,7 @@ def _model_status(exp: str | None = None) -> bool | str:
     pth = find_pth(name, log_dir)
     idx = next(log_dir.glob("added_*.index"), None) if log_dir.exists() else None
     if not (log_dir.exists() and pth is not None and idx is not None):
-        return (f"缺少 RVC 音色模型（logs/{name}/ 下没有 .pth 与 index），"
-                f"请先训练该音色")
+        return f"缺少 RVC 音色模型（logs/{name}/ 下没有 .pth 与 index），" f"请先训练该音色"
     return True
 
 
@@ -493,8 +560,11 @@ def _maybe_run_qc(exp: str, log_dir: Path):
     失败重试天然被 mtime 比较挡住，不会反复拉起。
     """
     try:
-        cands = list(log_dir.glob("G_*.pth")) + list(log_dir.glob("added_*.index")) + [
-            log_dir / f"{exp}.pth", RVC_ROOT / "assets" / "weights" / f"{exp}.pth"]
+        cands = (
+            list(log_dir.glob("G_*.pth"))
+            + list(log_dir.glob("added_*.index"))
+            + [log_dir / f"{exp}.pth", RVC_ROOT / "assets" / "weights" / f"{exp}.pth"]
+        )
         model_mtime = max((p.stat().st_mtime for p in cands if p.exists()), default=0.0)
         if model_mtime <= 0:
             return
@@ -508,8 +578,8 @@ def _maybe_run_qc(exp: str, log_dir: Path):
         def _job():
             try:
                 subprocess.run(
-                    [sys.executable, str(QC_PY), "--voice", exp],
-                    capture_output=True, timeout=1800)
+                    [sys.executable, str(QC_PY), "--voice", exp], capture_output=True, timeout=1800
+                )
             except Exception as e:
                 logger.warning("[qc] 音色质检 %s 执行失败（已忽略）: %s", exp, e)
             finally:
@@ -540,11 +610,16 @@ def _train_progress(exp_name: str | None = None) -> dict:
     res = {
         # running 取"内存态 OR 进程存活"，服务重启后仍能追踪到外部启动的训练
         "running": bool(_state["train"]["running"] and _state["train"].get("exp") == exp)
-                   or bool(_find_train_pids()),
+        or bool(_find_train_pids()),
         "rc": _state["train"].get("rc") if _state["train"].get("exp") == exp else None,
-        "done": False, "error": "",
-        "stage": "", "stage_index": -1, "total_stages": len(_TRAIN_STAGE_MARKERS),
-        "percent": 0.0, "message": "", "log_tail": [],
+        "done": False,
+        "error": "",
+        "stage": "",
+        "stage_index": -1,
+        "total_stages": len(_TRAIN_STAGE_MARKERS),
+        "percent": 0.0,
+        "message": "",
+        "log_tail": [],
         "exp": exp,
     }
     total_epochs = int(_state["train"].get("total_epochs") or DEFAULT_EPOCHS)
@@ -559,12 +634,17 @@ def _train_progress(exp_name: str | None = None) -> dict:
 
     # 只看最近一次启动之后的内容
     starts = [i for i, ln in enumerate(lines) if ln.startswith("=== TRAIN START")]
-    seg = lines[starts[-1] + 1:] if starts else lines
+    seg = lines[starts[-1] + 1 :] if starts else lines
 
     for ln in reversed(seg):
         if "[完成]" in ln:
-            res.update(done=True, stage="完成", stage_index=len(_TRAIN_STAGE_MARKERS), percent=100.0,
-                       message="模型训练完成")
+            res.update(
+                done=True,
+                stage="完成",
+                stage_index=len(_TRAIN_STAGE_MARKERS),
+                percent=100.0,
+                message="模型训练完成",
+            )
             break
         if "[失败]" in ln:
             res.update(error=ln.strip(), message="训练失败")
@@ -573,6 +653,7 @@ def _train_progress(exp_name: str | None = None) -> dict:
         if hit:
             kw, name, weight = hit
             import re as _re
+
             m = _re.search(r"(\d+)\s*/\s*(\d+)", ln)
             percent = weight
             if kw == "轮次":
@@ -584,14 +665,19 @@ def _train_progress(exp_name: str | None = None) -> dict:
                     res["message"] = name
             elif m and int(m.group(2)) > 0:
                 cur, total = int(m.group(1)), int(m.group(2))
-                base = _TRAIN_STAGE_MARKERS[max(0, [x[0] for x in _TRAIN_STAGE_MARKERS].index(kw) - 1)]
+                base = _TRAIN_STAGE_MARKERS[
+                    max(0, [x[0] for x in _TRAIN_STAGE_MARKERS].index(kw) - 1)
+                ]
                 prev_w = base[2] if [x[0] for x in _TRAIN_STAGE_MARKERS].index(kw) > 0 else 0
                 percent = prev_w + (cur / total) * (weight - prev_w)
                 res["message"] = f"{name} {cur}/{total}"
             else:
                 res["message"] = name
-            res.update(stage=name, stage_index=[x[0] for x in _TRAIN_STAGE_MARKERS].index(kw),
-                       percent=round(min(100.0, max(res["percent"], percent)), 1))
+            res.update(
+                stage=name,
+                stage_index=[x[0] for x in _TRAIN_STAGE_MARKERS].index(kw),
+                percent=round(min(100.0, max(res["percent"], percent)), 1),
+            )
             break
     res["log_tail"] = [ln.rstrip() for ln in seg[-14:] if ln.strip()]
     # 训练完成 → 自动音色质检（后台线程静默跑，见 _maybe_run_qc）
@@ -657,10 +743,16 @@ def _system_default_input() -> str | None:
     """
     try:
         out = subprocess.run(
-            [str(VENV_PY), "-c",
-             "import sounddevice as sd, json\n"
-             "print(json.dumps(sd.query_devices(kind='input')['name']))"],
-            capture_output=True, text=True, timeout=60, cwd=str(RVC_ROOT),
+            [
+                str(VENV_PY),
+                "-c",
+                "import sounddevice as sd, json\n"
+                "print(json.dumps(sd.query_devices(kind='input')['name']))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(RVC_ROOT),
         ).stdout
         return json.loads(out.strip().splitlines()[-1])
     except Exception as e:
@@ -682,29 +774,36 @@ def _resolve_device_names() -> tuple[str, str] | None:
     """
     try:
         out = subprocess.run(
-            [str(VENV_PY), "-c",
-             "import sounddevice as sd, json\n"
-             "items = []\n"
-             "for i, d in enumerate(sd.query_devices()):\n"
-             "    items.append({'name': d['name'], 'api': sd.query_hostapis(d['hostapi'])['name'],\n"
-             "                  'in': d['max_input_channels'], 'out': d['max_output_channels']})\n"
-             "print(json.dumps(items))"],
-            capture_output=True, text=True, timeout=60,
+            [
+                str(VENV_PY),
+                "-c",
+                "import sounddevice as sd, json\n"
+                "items = []\n"
+                "for i, d in enumerate(sd.query_devices()):\n"
+                "    items.append({'name': d['name'], 'api': sd.query_hostapis(d['hostapi'])['name'],\n"
+                "                  'in': d['max_input_channels'], 'out': d['max_output_channels']})\n"
+                "print(json.dumps(items))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
             cwd=str(RVC_ROOT),
         )
         items = json.loads(out.stdout.strip().splitlines()[-1])
         mme = [d for d in items if d.get("api") == "MME"]
-        outp = next((d["name"] for d in mme
-                     if d["out"] > 0 and _device_matches(d["name"], OUTPUT_DEVICE)), None)
+        outp = next(
+            (d["name"] for d in mme if d["out"] > 0 and _device_matches(d["name"], OUTPUT_DEVICE)),
+            None,
+        )
         explicit = live_settings.get()["input_device"]
-        candidates = [explicit, _system_default_input(), INPUT_DEVICE,
-                      "Microsoft 声音映射器"]
+        candidates = [explicit, _system_default_input(), INPUT_DEVICE, "Microsoft 声音映射器"]
         inp = None
         for want in candidates:
             if not want:
                 continue
-            inp = next((d["name"] for d in mme
-                        if d["in"] > 0 and _device_matches(d["name"], want)), None)
+            inp = next(
+                (d["name"] for d in mme if d["in"] > 0 and _device_matches(d["name"], want)), None
+            )
             if inp:
                 break
         if inp and outp:
@@ -774,13 +873,24 @@ def _live_stream_ready() -> bool:
 def _find_monitor_pids() -> list[int]:
     """按命令行找出自我监听回环进程（rvc_monitor.py）。"""
     try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-             "Where-Object { $_.CommandLine -match 'rvc_monitor' } | "
-             "Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
-        ).stdout or ""
+        out = (
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                    "Where-Object { $_.CommandLine -match 'rvc_monitor' } | "
+                    "Select-Object -ExpandProperty ProcessId",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+            ).stdout
+            or ""
+        )
         return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
     except Exception as e:
         logger.warning("[monitor] 枚举监听回环进程失败: %s", e)
@@ -791,8 +901,9 @@ def _kill_monitor():
     """停止自我监听回环（变声停止时必须一起收掉，否则耳机里一直是自己的声音）。"""
     for pid in _find_monitor_pids():
         try:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, timeout=30)
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=30
+            )
         except Exception as e:
             logger.debug("[monitor] 停止监听进程 %s 失败（可忽略）: %s", pid, e)
 
@@ -806,10 +917,11 @@ def _start_monitor(gain: float) -> bool:
         MONITOR_LOG.parent.mkdir(parents=True, exist_ok=True)
         log = open(MONITOR_LOG, "ab")
         subprocess.Popen(
-            [str(VENV_PY), str(MONITOR_PY),
-             "--gain", str(gain), "--wait", "3.0"],
-            cwd=str(RVC_ROOT), creationflags=CREATE_NO_WINDOW,
-            stdout=log, stderr=subprocess.STDOUT,
+            [str(VENV_PY), str(MONITOR_PY), "--gain", str(gain), "--wait", "3.0"],
+            cwd=str(RVC_ROOT),
+            creationflags=CREATE_NO_WINDOW,
+            stdout=log,
+            stderr=subprocess.STDOUT,
             env={**os.environ, **_thread_env()},
         )
         log.close()
@@ -838,7 +950,7 @@ def _live_waiter(proc: subprocess.Popen):
     proc.wait()
     # RVC 窗口关闭后自动还原声卡；restore 失败则 reset 兜底，并记录状态供 status 反馈
     _stop_asr_proc()  # 实时转写子进程跟随实时变声一起退出
-    _kill_monitor()   # 自我监听回环同样跟随退出
+    _kill_monitor()  # 自我监听回环同样跟随退出
     error = ""
     try:
         _audio("restore")
@@ -875,7 +987,8 @@ def rvc_live_status(exp_name: str | None = None):
         "dataset_count": len(list(dataset_dir.glob("*.wav"))) if dataset_dir.exists() else 0,
         "live_running": running,
         # 进程活着 ≠ 能出声：无头模式下要等模型加载完、音频流起来才算就绪
-        "live_ready": running and (_live_stream_ready() or not _state["live"].get("headless", True)),
+        "live_ready": running
+        and (_live_stream_ready() or not _state["live"].get("headless", True)),
         "headless": bool(_state["live"].get("headless", False)),
         "audio_switched": _state["live"]["audio_switched"],
         "last_error": _state["live"].get("error", ""),
@@ -913,10 +1026,8 @@ def _mme_input_devices() -> list[dict]:
         apis = sd.query_hostapis()
         mme_idx = next((i for i, a in enumerate(apis) if a["name"] == "MME"), None)
         default_name = ""
-        try:
+        with contextlib.suppress(Exception):
             default_name = sd.query_devices(kind="input")["name"] or ""
-        except Exception:
-            pass
         seen: dict[str, dict] = {}
         for d in sd.query_devices():
             if d["hostapi"] != mme_idx or d["max_input_channels"] <= 0:
@@ -944,10 +1055,13 @@ class LiveProfilePayload(BaseModel):
 def rvc_live_profile_get():
     """当前性能档位 + GPU 显存占用（供前端展示显存条）。"""
     p = live_settings.get()["perf_profile"]
-    return {"ok": True, "profile": p,
-            "profile_desc": PROFILE_DESC.get(p, ""),
-            "tts_worker_alive": qwen3_tts.worker_alive(),
-            **_gpu_snapshot()}
+    return {
+        "ok": True,
+        "profile": p,
+        "profile_desc": PROFILE_DESC.get(p, ""),
+        "tts_worker_alive": qwen3_tts.worker_alive(),
+        **_gpu_snapshot(),
+    }
 
 
 @router.post("/rvc/live/profile")
@@ -960,8 +1074,9 @@ def rvc_live_profile_set(payload: LiveProfilePayload):
     """
     profile = payload.profile.strip()
     if profile not in PROFILE_TUNING:
-        raise HTTPException(status_code=400,
-                            detail=f"未知性能档位：{profile}（可选 balanced / game）")
+        raise HTTPException(
+            status_code=400, detail=f"未知性能档位：{profile}（可选 balanced / game）"
+        )
     changed = profile != live_settings.get()["perf_profile"]
     worker_was_alive = False
     if changed:
@@ -972,8 +1087,9 @@ def rvc_live_profile_set(payload: LiveProfilePayload):
     # 合成中保护（2026-09-19）：worker 正跑 tts/transcribe/analyze 时切换不做即杀，
     # 改为延迟卸载（qwen3_tts 内等 busy 归零后自动回收）。此时 freed 尚未发生——
     # 不虚报释放量，改由 tts_freed_deferred 告知前端「任务结束后释放」。
-    deferred = bool(worker_was_alive and profile == live_settings.PERF_GAME
-                    and qwen3_tts.shutdown_pending())
+    deferred = bool(
+        worker_was_alive and profile == live_settings.PERF_GAME and qwen3_tts.shutdown_pending()
+    )
     restarted = False
     if changed and _live_proc_alive():
         # stop 尽力执行：失败也不阻断 start（声卡 restore/apply 幂等）
@@ -983,11 +1099,15 @@ def rvc_live_profile_set(payload: LiveProfilePayload):
             logger.warning("[profile] 切换档位停止旧变声异常（继续重启）: %s", e)
         rvc_live_start(exp_name=_active_exp(), monitor=(profile == "balanced"))
         restarted = True
-    return {"ok": True, "restarted": restarted, "profile": profile,
-            "profile_desc": PROFILE_DESC.get(profile, ""),
-            "tts_worker_alive": qwen3_tts.worker_alive(),
-            "tts_freed_mb": TTS_WORKER_VRAM_MB if (worker_was_alive and not deferred) else 0,
-            "tts_freed_deferred": deferred}
+    return {
+        "ok": True,
+        "restarted": restarted,
+        "profile": profile,
+        "profile_desc": PROFILE_DESC.get(profile, ""),
+        "tts_worker_alive": qwen3_tts.worker_alive(),
+        "tts_freed_mb": TTS_WORKER_VRAM_MB if (worker_was_alive and not deferred) else 0,
+        "tts_freed_deferred": deferred,
+    }
 
 
 @router.get("/rvc/live/audio_devices")
@@ -1078,13 +1198,22 @@ def rvc_voices():
             meta = d / "meta.json"
             if meta.exists():
                 try:
-                    display = str(json.loads(meta.read_text(encoding="utf-8")).get("display_name")
-                                  or exp_display_name(d.name))
+                    display = str(
+                        json.loads(meta.read_text(encoding="utf-8")).get("display_name")
+                        or exp_display_name(d.name)
+                    )
                 except Exception as e:
-                    logger.debug("[voices] 读取音色 %s 的 display_name 失败（回退目录名）: %s", d.name, e)
-            items[d.name] = {"id": d.name, "display_name": display,
-                             "has_reference": True, "qc": _read_qc(d.name),
-                             "source": _read_source(d.name), **exp_snapshot(d.name)}
+                    logger.debug(
+                        "[voices] 读取音色 %s 的 display_name 失败（回退目录名）: %s", d.name, e
+                    )
+            items[d.name] = {
+                "id": d.name,
+                "display_name": display,
+                "has_reference": True,
+                "qc": _read_qc(d.name),
+                "source": _read_source(d.name),
+                **exp_snapshot(d.name),
+            }
 
     logs = cfg.RVC_ROOT / "logs"
     if logs.exists():
@@ -1095,12 +1224,18 @@ def rvc_voices():
             # 音色库里没有、又没训练产物也没语料的目录属于噪音，不展示
             if not (snap["pth_exists"] or snap["index_exists"] or snap["dataset_count"]):
                 continue
-            items[d.name] = {"id": d.name, "display_name": exp_display_name(d.name),
-                             "has_reference": False, "qc": _read_qc(d.name),
-                             "source": _read_source(d.name), **snap}
+            items[d.name] = {
+                "id": d.name,
+                "display_name": exp_display_name(d.name),
+                "has_reference": False,
+                "qc": _read_qc(d.name),
+                "source": _read_source(d.name),
+                **snap,
+            }
 
-    voices = sorted(items.values(),
-                    key=lambda v: (not v["model_ready"], not v["has_reference"], v["id"]))
+    voices = sorted(
+        items.values(), key=lambda v: (not v["model_ready"], not v["has_reference"], v["id"])
+    )
     return {
         "voices": voices,
         "active_exp": _active_exp(),
@@ -1111,8 +1246,9 @@ def rvc_voices():
 
 
 @router.post("/rvc/live/start")
-def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
-                   monitor_gain: float | None = None):
+def rvc_live_start(
+    exp_name: str | None = None, monitor: bool | None = None, monitor_gain: float | None = None
+):
     """启动实时变声。
 
     monitor: 是否开启自我监听（把变声后的声音回环到耳机，让自己听得到）。
@@ -1129,9 +1265,11 @@ def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
     monitor_gain = MONITOR_GAIN if monitor_gain is None else float(monitor_gain)
     # 级联变声与实时变声互斥：两者抢 GPU 且都要占 CABLE（反向检查在 cascade.start）
     from cascade import _cascade_alive
+
     if _cascade_alive():
-        raise HTTPException(status_code=409,
-                            detail="级联变声正在运行，请先停止（两者抢 GPU 且都占 CABLE）")
+        raise HTTPException(
+            status_code=409, detail="级联变声正在运行，请先停止（两者抢 GPU 且都占 CABLE）"
+        )
     if _live_proc_alive():
         return JSONResponse({"ok": True, "already_running": True, "pid": _state["live"]["pid"]})
     # 允许切换到指定音色的模型（校验其权重与索引都存在后才写配置）
@@ -1179,8 +1317,11 @@ def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
         flags = CREATE_NEW_CONSOLE
     try:
         proc = subprocess.Popen(
-            cmd, cwd=str(RVC_ROOT), creationflags=flags,
-            stdout=gui_log, stderr=subprocess.STDOUT,
+            cmd,
+            cwd=str(RVC_ROOT),
+            creationflags=flags,
+            stdout=gui_log,
+            stderr=subprocess.STDOUT,
             # 限线程：RVC 默认拿逻辑核数开 OpenMP/BLAS 线程池（实测拉满 14~17 核），
             # 限到 2 后 CPU 成本降 6.5× 而 RTF 不变。详见 _thread_env() 注释。
             env={**os.environ, **_thread_env()},
@@ -1213,8 +1354,7 @@ def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
     # 子进程已继承自己的句柄副本，父进程侧可安全关闭，日志仍持续写入
     gui_log.close()
 
-    _state["live"].update(running=True, pid=proc.pid, error="",
-                          headless=headless, monitor=monitor)
+    _state["live"].update(running=True, pid=proc.pid, error="", headless=headless, monitor=monitor)
     threading.Thread(target=_live_waiter, args=(proc,), daemon=True).start()
 
     # 拉起实时转写子进程（桌宠字幕）：只采真麦 + ASR，无声卡操作，失败不影响变声
@@ -1225,9 +1365,17 @@ def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
             ASR_RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
             asr_log = open(ASR_RUN_LOG, "ab")
             subprocess.Popen(
-                [str(VENV_PY), str(STREAM_PY), "--asr-only",
-                 "--state-path", str(ASR_STATE_FILE), "--out-dir", str(cfg.OUTPUTS_DIR)],
-                stdout=asr_log, stderr=subprocess.STDOUT,
+                [
+                    str(VENV_PY),
+                    str(STREAM_PY),
+                    "--asr-only",
+                    "--state-path",
+                    str(ASR_STATE_FILE),
+                    "--out-dir",
+                    str(cfg.OUTPUTS_DIR),
+                ],
+                stdout=asr_log,
+                stderr=subprocess.STDOUT,
                 # whisper 是最吃 CPU 的伴随进程，限线程收益最直接
                 env={**os.environ, **_thread_env()},
             )
@@ -1241,18 +1389,24 @@ def rvc_live_start(exp_name: str | None = None, monitor: bool | None = None,
     if monitor:
         monitor_started = _start_monitor(monitor_gain)
 
-    return JSONResponse({
-        "ok": True, "pid": proc.pid, "audio_switched": True,
-        "asr_subtitle": asr_started,
-        "headless": headless,
-        "monitor": monitor_started,
-        "monitor_gain": monitor_gain if monitor_started else None,
-        "output_device": OUTPUT_DEVICE,
-        "input_device": _live_input_device(),
-        "hint": ("变声已在后台运行（无窗口）。系统录音已切到 CABLE Output，"
-                 "微信等应用会用变身后的声音"
-                 + ("；自我监听已开，你可以在耳机里听到自己。" if monitor_started else "")),
-    })
+    return JSONResponse(
+        {
+            "ok": True,
+            "pid": proc.pid,
+            "audio_switched": True,
+            "asr_subtitle": asr_started,
+            "headless": headless,
+            "monitor": monitor_started,
+            "monitor_gain": monitor_gain if monitor_started else None,
+            "output_device": OUTPUT_DEVICE,
+            "input_device": _live_input_device(),
+            "hint": (
+                "变声已在后台运行（无窗口）。系统录音已切到 CABLE Output，"
+                "微信等应用会用变身后的声音"
+                + ("；自我监听已开，你可以在耳机里听到自己。" if monitor_started else "")
+            ),
+        }
+    )
 
 
 @router.post("/rvc/live/stop")
@@ -1264,10 +1418,9 @@ def rvc_live_stop():
         targets.add(_state["live"]["pid"])
     _kill_pids(list(targets), "stop")
     _pid_cache["ts"] = None  # 清缓存，stop 后 status 立即反映真实状态
-    _state["live"].update(running=False, pid=None, audio_switched=False,
-                          monitor=False)
+    _state["live"].update(running=False, pid=None, audio_switched=False, monitor=False)
     _stop_asr_proc()  # 实时转写子进程跟随实时变声一起退出
-    _kill_monitor()   # 自我监听回环同理，否则耳机里一直有自己的声音
+    _kill_monitor()  # 自我监听回环同理，否则耳机里一直有自己的声音
     # 还原声卡：restore 失败则 reset 兜底，并真实反馈
     try:
         _audio("restore")
@@ -1279,9 +1432,13 @@ def rvc_live_stop():
         _state["live"]["audio_switched"] = False
         if ok:
             _state["live"]["error"] = ""
-            return JSONResponse({"ok": True, "restored": True, "note": f"restore 失败({e})，已用 reset 兜底恢复"})
+            return JSONResponse(
+                {"ok": True, "restored": True, "note": f"restore 失败({e})，已用 reset 兜底恢复"}
+            )
         _state["live"]["error"] = f"还原声卡失败: {e}；reset 兜底失败: {detail}"
-        return JSONResponse({"ok": False, "error": _state["live"]["error"], "fallback_failed": True})
+        return JSONResponse(
+            {"ok": False, "error": _state["live"]["error"], "fallback_failed": True}
+        )
 
 
 @router.post("/rvc/live/reset")
@@ -1311,6 +1468,7 @@ def rvc_train_status(exp_name: str | None = None):
 
 class TrainStartReq(BaseModel):
     """训练启动参数：不传时使用当前生效音色与其默认数据集。"""
+
     exp_name: str | None = None
     dataset_dir: str | None = None
     epochs: int | None = None
@@ -1331,21 +1489,36 @@ def rvc_train_start(req: TrainStartReq | None = None):
         raise HTTPException(status_code=400, detail=f"训练集目录不存在: {dataset}")
 
     proc = subprocess.Popen(
-        [str(VENV_PY), str(TRAIN_PY), "--exp", exp, "--dataset", str(dataset),
-         "--epochs", str(epochs)],
-        cwd=str(RVC_ROOT), creationflags=CREATE_NEW_CONSOLE,
+        [
+            str(VENV_PY),
+            str(TRAIN_PY),
+            "--exp",
+            exp,
+            "--dataset",
+            str(dataset),
+            "--epochs",
+            str(epochs),
+        ],
+        cwd=str(RVC_ROOT),
+        creationflags=CREATE_NEW_CONSOLE,
     )
 
     def _waiter(p):
         rc = p.wait()
         _state["train"].update(running=False, pid=None, rc=rc)
 
-    _state["train"].update(running=True, pid=proc.pid, rc=None,
-                           exp=exp, total_epochs=epochs)
+    _state["train"].update(running=True, pid=proc.pid, rc=None, exp=exp, total_epochs=epochs)
     threading.Thread(target=_waiter, args=(proc,), daemon=True).start()
-    return JSONResponse({"ok": True, "started": True, "pid": proc.pid,
-                         "exp": exp, "epochs": epochs,
-                         "log_dir": str(log_dir)})
+    return JSONResponse(
+        {
+            "ok": True,
+            "started": True,
+            "pid": proc.pid,
+            "exp": exp,
+            "epochs": epochs,
+            "log_dir": str(log_dir),
+        }
+    )
 
 
 # 服务器启动时，清理上次异常残留的声卡切换（有备份但实时未运行 → 自动还原）

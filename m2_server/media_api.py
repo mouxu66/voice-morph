@@ -2,10 +2,10 @@
 
 自 server.py 拆出（行为不变）；app 装配见 server.py。
 """
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
 
 import config as cfg
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from runtime import API_PREFIX, OUT
 
 router = APIRouter(prefix=API_PREFIX)

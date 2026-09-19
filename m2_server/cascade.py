@@ -20,21 +20,21 @@ start 前双向检查，任一在跑都返回 409。
     2. restore 失败走 reset 兜底
     3. 服务器启动时 rvc_live._auto_clean 检查残留备份并还原（共用备份文件）
 """
+
 import json
+import logging
 import os
 import subprocess
 import threading
-import logging
 import time
 from pathlib import Path
 
+import config as cfg
+import prosody_relay
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-
-import config as cfg
-import prosody_relay
-from rvc_common import (ensure_infer_pth, find_index, _find_pids_by_cmdline, _kill_pids)
+from rvc_common import _find_pids_by_cmdline, _kill_pids, ensure_infer_pth, find_index
 from rvc_live import _audio, _reset_audio, _thread_env
 
 logger = logging.getLogger(__name__)
@@ -57,8 +57,11 @@ OUTPUT_DEVICE = os.environ.get("VM_LIVE_OUTPUT_DEVICE", "VB-Audio Virtual Cable|
 _NO_WINDOW = 0x08000000
 
 _STATE = {
-    "running": False, "pid": None, "audio_switched": False,
-    "error": "", "started_at": "",
+    "running": False,
+    "pid": None,
+    "audio_switched": False,
+    "error": "",
+    "started_at": "",
 }
 _warming = False
 _pid_cache: dict = {"ts": None, "pids": []}
@@ -83,9 +86,9 @@ def _cascade_alive() -> bool:
 
 def _worker_health(timeout: float = 2.0) -> bool:
     import urllib.request
+
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8001/health",
-                                    timeout=timeout) as resp:
+        with urllib.request.urlopen("http://127.0.0.1:8001/health", timeout=timeout) as resp:
             return resp.status == 200
     except Exception as e:
         logger.debug("[cascade] 健康检查端口 8001 不可达（worker 未起）: %s", e)
@@ -100,6 +103,7 @@ def _warm_worker():
     _warming = True
     try:
         from qwen3_tts import ensure_worker
+
         ensure_worker()
     except Exception as e:
         _STATE["error"] = f"worker 预热失败: {e}"
@@ -117,7 +121,7 @@ def _read_child_state() -> dict:
 
 
 class CascadeStartReq(BaseModel):
-    voice_id: str | None = None   # 音色库 ID（media/voicebank/<id>/reference.wav）
+    voice_id: str | None = None  # 音色库 ID（media/voicebank/<id>/reference.wav）
     ref_audio: str | None = None  # 显式参考音频路径（优先级低于 voice_id）
     ref_text: str = ""
     chunk_max_s: float | None = None
@@ -136,15 +140,18 @@ def cascade_start(req: CascadeStartReq | None = None):
     if _cascade_alive():
         return JSONResponse({"ok": True, "already_running": True, "pid": _STATE["pid"]})
     from rvc_live import _live_proc_alive
+
     if _live_proc_alive():
-        raise HTTPException(status_code=409,
-                            detail="实时变声正在运行，请先停止（两者抢 GPU 且都占 CABLE）")
+        raise HTTPException(
+            status_code=409, detail="实时变声正在运行，请先停止（两者抢 GPU 且都占 CABLE）"
+        )
     ref_audio = body.ref_audio
     if body.voice_id:
         ref = cfg.MEDIA_DIR / "voicebank" / body.voice_id / "reference.wav"
         if not ref.exists():
-            raise HTTPException(status_code=404,
-                                detail=f"音色 [{body.voice_id}] 不存在或没有参考音频")
+            raise HTTPException(
+                status_code=404, detail=f"音色 [{body.voice_id}] 不存在或没有参考音频"
+            )
         ref_audio = str(ref)
 
     # 末尾接 RVC 时，TTS 参考音优先跟目标音色同源（用户选的「语气=目标音色腔调」）：
@@ -154,8 +161,10 @@ def cascade_start(req: CascadeStartReq | None = None):
     if body.rvc_voice:
         pth = ensure_infer_pth(body.rvc_voice)
         if pth is None:
-            raise HTTPException(status_code=404,
-                                detail=f"音色 [{body.rvc_voice}] 没有可推理的 RVC 模型，先到实时变声页训练")
+            raise HTTPException(
+                status_code=404,
+                detail=f"音色 [{body.rvc_voice}] 没有可推理的 RVC 模型，先到实时变声页训练",
+            )
         rvc_pth = str(pth)
         idx = find_index(body.rvc_voice)
         if idx:
@@ -175,10 +184,13 @@ def cascade_start(req: CascadeStartReq | None = None):
     # 前台轮询 status 等 worker_ready 后再次 start（第二次走完整启动）
     if not _worker_health():
         threading.Thread(target=_warm_worker, daemon=True).start()
-        return JSONResponse({
-            "ok": True, "warming": True,
-            "hint": "TTS 模型加载中（首次约 30s），完成后会自动就绪，请稍候重试",
-        })
+        return JSONResponse(
+            {
+                "ok": True,
+                "warming": True,
+                "hint": "TTS 模型加载中（首次约 30s），完成后会自动就绪，请稍候重试",
+            }
+        )
 
     chunk_max_s = body.chunk_max_s
     if chunk_max_s is None:
@@ -194,11 +206,20 @@ def cascade_start(req: CascadeStartReq | None = None):
     # 状态文件与输出目录显式对齐本服务的 cfg.OUTPUTS_DIR：
     # 安装版 VM_OUTPUTS_DIR 指向数据目录（D:\变声\outputs），子进程按 __file__
     # 推导会落到 resources/backend/outputs，两边对不上导致 status 永远空
-    cmd = [str(RVC_VENV_PY), str(STREAM_PY),
-           "--ref-audio", ref_audio, "--ref-text", body.ref_text,
-           "--chunk-max-s", str(chunk_max_s),
-           "--state-path", str(STATE_FILE),
-           "--out-dir", str(cfg.OUTPUTS_DIR)]
+    cmd = [
+        str(RVC_VENV_PY),
+        str(STREAM_PY),
+        "--ref-audio",
+        ref_audio,
+        "--ref-text",
+        body.ref_text,
+        "--chunk-max-s",
+        str(chunk_max_s),
+        "--state-path",
+        str(STATE_FILE),
+        "--out-dir",
+        str(cfg.OUTPUTS_DIR),
+    ]
     if body.silence_ms:
         cmd += ["--silence-ms", str(body.silence_ms)]
     if body.prime_s is not None:
@@ -209,23 +230,36 @@ def cascade_start(req: CascadeStartReq | None = None):
     # 存档本次启动参数：全局热键一键重启时复用（否则只能用默认音色）
     try:
         (cfg.OUTPUTS_DIR / "cascade_last_start.json").write_text(
-            json.dumps({
-                "voice_id": body.voice_id, "ref_audio": ref_audio,
-                "ref_text": body.ref_text, "chunk_max_s": chunk_max_s,
-                "silence_ms": body.silence_ms, "prime_s": body.prime_s,
-                "mode": body.mode, "rvc_voice": body.rvc_voice,
-            }, ensure_ascii=False), encoding="utf-8")
+            json.dumps(
+                {
+                    "voice_id": body.voice_id,
+                    "ref_audio": ref_audio,
+                    "ref_text": body.ref_text,
+                    "chunk_max_s": chunk_max_s,
+                    "silence_ms": body.silence_ms,
+                    "prime_s": body.prime_s,
+                    "mode": body.mode,
+                    "rvc_voice": body.rvc_voice,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
     except Exception as e:
         logger.debug("[cascade] 写入启动参数快照失败（可忽略）: %s", e)
-    logf = open(RUN_LOG, "ab")
     try:
-        proc = subprocess.Popen(cmd, cwd=str(ROOT), stdout=logf,
-                                stderr=subprocess.STDOUT,
-                                creationflags=_NO_WINDOW,
-                                # 限线程：级联链路里 RVC + whisper + TTS 三段同样会
-                                # 各自按逻辑核数开线程池，不限制会瞬时拉满整机 CPU。
-                                env={**os.environ, **_thread_env()})
-        _pid_cache["ts"] = None
+        with open(RUN_LOG, "ab") as logf:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(ROOT),
+                stdout=logf,
+                stderr=subprocess.STDOUT,
+                creationflags=_NO_WINDOW,
+                # 限线程：级联链路里 RVC + whisper + TTS 三段同样会
+                # 各自按逻辑核数开线程池，不限制会瞬时拉满整机 CPU。
+                env={**os.environ, **_thread_env()},
+            )
+            _pid_cache["ts"] = None
     except Exception as e:
         logf.close()
         _STATE.update(running=False, pid=None, audio_switched=False)
@@ -249,15 +283,25 @@ def cascade_start(req: CascadeStartReq | None = None):
         time.sleep(1)
     logf.close()
 
-    _STATE.update(running=True, pid=proc.pid, audio_switched=True, error="",
-                  started_at=time.strftime("%Y-%m-%d %H:%M:%S"))
+    _STATE.update(
+        running=True,
+        pid=proc.pid,
+        audio_switched=True,
+        error="",
+        started_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+    )
     threading.Thread(target=_cascade_waiter, args=(proc,), daemon=True).start()
-    return JSONResponse({
-        "ok": True, "pid": proc.pid, "output_device": OUTPUT_DEVICE,
-        "chunk_max_s": chunk_max_s, "mode": body.mode,
-        "hint": "已把系统录音设备切到 CABLE Output；对着麦克风说话即可，"
-                "说完一句约 1.5~2s 后播出目标音色。点「停止」自动还原声卡",
-    })
+    return JSONResponse(
+        {
+            "ok": True,
+            "pid": proc.pid,
+            "output_device": OUTPUT_DEVICE,
+            "chunk_max_s": chunk_max_s,
+            "mode": body.mode,
+            "hint": "已把系统录音设备切到 CABLE Output；对着麦克风说话即可，"
+            "说完一句约 1.5~2s 后播出目标音色。点「停止」自动还原声卡",
+        }
+    )
 
 
 def _cascade_waiter(proc: subprocess.Popen):
@@ -293,19 +337,18 @@ def cascade_stop():
         ok, detail = _reset_audio()
         if ok:
             _STATE["error"] = ""
-            return JSONResponse({"ok": True, "restored": True,
-                                 "note": f"restore 失败({e})，已用 reset 兜底恢复"})
+            return JSONResponse(
+                {"ok": True, "restored": True, "note": f"restore 失败({e})，已用 reset 兜底恢复"}
+            )
         _STATE["error"] = f"还原声卡失败: {e}；reset 兜底失败: {detail}"
-        return JSONResponse({"ok": False, "error": _STATE["error"],
-                             "fallback_failed": True})
+        return JSONResponse({"ok": False, "error": _STATE["error"], "fallback_failed": True})
 
 
 @router.get("/cascade/last-start")
 def cascade_last_start():
     """上次启动参数（供全局热键等外部调用方复用）。"""
     try:
-        return json.loads(
-            (cfg.OUTPUTS_DIR / "cascade_last_start.json").read_text(encoding="utf-8"))
+        return json.loads((cfg.OUTPUTS_DIR / "cascade_last_start.json").read_text(encoding="utf-8"))
     except Exception as e:
         logger.debug("[cascade] 读取最近一次启动参数失败（返回空）: %s", e)
         return {}

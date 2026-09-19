@@ -10,25 +10,25 @@
 
 所有对外直链均落域名白名单（见 market_download.ALLOWED_HOSTS）。
 """
+
 import re
 import time
 import urllib.parse
 
 import requests
-
 from market_download import MarketError
 from market_manifest import get_manifest
 
-HF_API = "https://hf-mirror.com"              # 主 API 基址（本机可达；官方不可达）
-HF_OFFICIAL = "https://huggingface.co"        # 镜像基址
+HF_API = "https://hf-mirror.com"  # 主 API 基址（本机可达；官方不可达）
+HF_OFFICIAL = "https://huggingface.co"  # 镜像基址
 MS_BASE = "https://modelscope.cn"
 
 API_TIMEOUT = 20
 
 # 每个搜索结果的排序权重（HF API 的 downloads/likes 在镜像上时常为 0，用 id 相关性兜底）
 SEARCH_LIMIT_MAX = 50
-HF_FETCH_MAX = 200           # 单次向 HF 拉取的最大条数（分页窗口上限；翻页=拉 offset+页宽 再切片）
-FILE_LOOKUP_TOP = 3          # 搜索时对前 N 条做文件探测（每模型一次 tree 请求）
+HF_FETCH_MAX = 200  # 单次向 HF 拉取的最大条数（分页窗口上限；翻页=拉 offset+页宽 再切片）
+FILE_LOOKUP_TOP = 3  # 搜索时对前 N 条做文件探测（每模型一次 tree 请求）
 PTH_RE = re.compile(r"\.pth$", re.IGNORECASE)
 
 
@@ -40,15 +40,18 @@ def hf_resolve(repo: str, path: str, base: str = HF_API) -> str:
 
 def ms_resolve(model_id: str, path: str) -> str:
     """魔搭直链（官方 SDK 模板）：/api/v1/models/{id}/repo?Revision=master&FilePath=.."""
-    return (f"{MS_BASE}/api/v1/models/{urllib.parse.quote(model_id, safe='/')}"
-            f"/repo?Revision=master&FilePath={urllib.parse.quote(path, safe='/')}")
+    return (
+        f"{MS_BASE}/api/v1/models/{urllib.parse.quote(model_id, safe='/')}"
+        f"/repo?Revision=master&FilePath={urllib.parse.quote(path, safe='/')}"
+    )
 
 
 # ---------------- HuggingFace ----------------
 def _get_json(url: str, **params) -> list | dict:
     try:
-        resp = requests.get(url, params=params, timeout=API_TIMEOUT,
-                            headers={"User-Agent": "voice-morph/0.1"})
+        resp = requests.get(
+            url, params=params, timeout=API_TIMEOUT, headers={"User-Agent": "voice-morph/0.1"}
+        )
         resp.raise_for_status()
         return resp.json()
     except requests.RequestException as exc:
@@ -68,30 +71,33 @@ def search_hf(query: str, limit: int = 10, offset: int = 0) -> list[dict]:
     window = min(offset + limit, HF_FETCH_MAX)
     results = _get_json(f"{HF_API}/api/models", search=query, limit=window, full=True) or []
     items: list[dict] = []
-    for m in results[offset:offset + limit]:
+    for m in results[offset : offset + limit]:
         repo = m.get("id", "")
         if not repo:
             continue
         zh = _zh_tags(m.get("tags"))
-        items.append({
-            "id": repo,
-            "name": _hf_title(m),
-            "platform": "hf",
-            "repo": repo,
-            "downloads": int(m.get("downloads") or 0),
-            "likes": int(m.get("likes") or 0),
-            "tags": [t for t in m.get("tags") or []]
-                    + [t for t in m.get("library_name") or [] if t],
-            "desc": make_hf_desc(m, zh),
-            "tags_zh": zh,
-            "updated_at": (m.get("lastModified") or "")[:10],
-            "files": _hf_pick_files(repo) if (offset == 0 and len(items) < FILE_LOOKUP_TOP) else [],
-        })
+        items.append(
+            {
+                "id": repo,
+                "name": _hf_title(m),
+                "platform": "hf",
+                "repo": repo,
+                "downloads": int(m.get("downloads") or 0),
+                "likes": int(m.get("likes") or 0),
+                "tags": list(m.get("tags") or []) + [t for t in m.get("library_name") or [] if t],
+                "desc": make_hf_desc(m, zh),
+                "tags_zh": zh,
+                "updated_at": (m.get("lastModified") or "")[:10],
+                "files": (
+                    _hf_pick_files(repo) if (offset == 0 and len(items) < FILE_LOOKUP_TOP) else []
+                ),
+            }
+        )
     return items
 
 
 def _hf_title(m: dict) -> str:
-    for k in ("cardData", "tags"):
+    for _k in ("cardData", "tags"):
         pass
     pretty = (m.get("cardData") or {}).get("language") or ""
     return pretty or (m.get("author", "") + "/" + m.get("name", "")) or m.get("id", "")
@@ -111,23 +117,54 @@ PIPELINE_ZH = {
     "text-to-speech-g4mms": "语音合成",
 }
 LANG_ZH = {
-    "zh": "中文", "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语",
-    "de": "德语", "es": "西语", "ru": "俄语", "it": "意大利语", "pt": "葡语",
-    "ar": "阿拉伯语", "hi": "印地语",
+    "zh": "中文",
+    "en": "英语",
+    "ja": "日语",
+    "ko": "韩语",
+    "fr": "法语",
+    "de": "德语",
+    "es": "西语",
+    "ru": "俄语",
+    "it": "意大利语",
+    "pt": "葡语",
+    "ar": "阿拉伯语",
+    "hi": "印地语",
 }
 LICENSE_ZH = {
-    "mit": "MIT", "apache-2.0": "Apache-2.0", "gpl-3.0": "GPL-3.0",
-    "gpl-2.0": "GPL-2.0", "lgpl-3.0": "LGPL-3.0", "cc0-1.0": "CC0",
-    "cc-by-4.0": "CC-BY-4.0", "cc-by-nc-4.0": "CC-BY-NC-4.0",
-    "agpl-3.0": "AGPL-3.0", "bsd-3-clause": "BSD-3", "bsd-2-clause": "BSD-2",
+    "mit": "MIT",
+    "apache-2.0": "Apache-2.0",
+    "gpl-3.0": "GPL-3.0",
+    "gpl-2.0": "GPL-2.0",
+    "lgpl-3.0": "LGPL-3.0",
+    "cc0-1.0": "CC0",
+    "cc-by-4.0": "CC-BY-4.0",
+    "cc-by-nc-4.0": "CC-BY-NC-4.0",
+    "agpl-3.0": "AGPL-3.0",
+    "bsd-3-clause": "BSD-3",
+    "bsd-2-clause": "BSD-2",
     "unlicense": "无限制",
 }
-REGION_ZH = {"us": "美国", "de": "德国", "jp": "日本", "cn": "中国", "gb": "英国",
-             "kr": "韩国", "sg": "新加坡", "au": "澳洲", "ca": "加拿大"}
+REGION_ZH = {
+    "us": "美国",
+    "de": "德国",
+    "jp": "日本",
+    "cn": "中国",
+    "gb": "英国",
+    "kr": "韩国",
+    "sg": "新加坡",
+    "au": "澳洲",
+    "ca": "加拿大",
+}
 CAPABILITY_ZH = {
-    "rvc": "RVC 变声", "voice": "变声", "svc": "歌声转换", "so-vits-svc": "SVC 歌声转换",
-    "vc": "变声", "voice-conversion": "变声", "voice-conversion-model": "变声",
-    "wangzer-rvc": "RVC 音色", "recognition": "识别模型",
+    "rvc": "RVC 变声",
+    "voice": "变声",
+    "svc": "歌声转换",
+    "so-vits-svc": "SVC 歌声转换",
+    "vc": "变声",
+    "voice-conversion": "变声",
+    "voice-conversion-model": "变声",
+    "wangzer-rvc": "RVC 音色",
+    "recognition": "识别模型",
 }
 
 
@@ -160,8 +197,11 @@ def _zh_tags(tags: list) -> list:
 
 
 def _zh_langs(tags: list) -> list:
-    langs = [LANG_ZH[str(t).lower()] for t in (tags or [])
-             if re.fullmatch(r"[a-z]{2}", str(t).lower()) and str(t).lower() in LANG_ZH]
+    langs = [
+        LANG_ZH[str(t).lower()]
+        for t in (tags or [])
+        if re.fullmatch(r"[a-z]{2}", str(t).lower()) and str(t).lower() in LANG_ZH
+    ]
     seen, out = set(), []
     for x in langs:
         if x not in seen:
@@ -190,7 +230,7 @@ def make_hf_desc(m: dict, zh_tags: list) -> str:
 
 # ---------------- README 摘要（仓库简介，选中时拉取并缓存） ----------------
 _README_CACHE: dict[str, tuple[float, str | None]] = {}
-_README_TTL = 600          # 秒；同仓库 10 分钟内不重复拉取
+_README_TTL = 600  # 秒；同仓库 10 分钟内不重复拉取
 _UA = {"User-Agent": "voice-morph/0.1"}
 
 
@@ -208,8 +248,10 @@ def _strip_markdown(text: str) -> str:
 def _readme_raw(platform: str, repo: str) -> str | None:
     """拉取仓库 README 原文（HF raw / 魔搭 readme API），失败静默返回 None。"""
     if platform == "modelscope":
-        data = _get_json(f"{MS_BASE}/api/v1/models/{urllib.parse.quote(repo, safe='/')}/readme",
-                         Revision="master")
+        data = _get_json(
+            f"{MS_BASE}/api/v1/models/{urllib.parse.quote(repo, safe='/')}/readme",
+            Revision="master",
+        )
         if isinstance(data, dict):
             for key in ("ModelReadme", "Readme", "Description", "Content"):
                 v = data.get("Data", {}).get(key) if isinstance(data.get("Data"), dict) else None
@@ -222,7 +264,9 @@ def _readme_raw(platform: str, repo: str) -> str | None:
     for branch in ("main", "master"):
         resp = requests.get(
             f"{HF_API}/{urllib.parse.quote(repo, safe='/')}/raw/{branch}/README.md",
-            headers=_UA, timeout=API_TIMEOUT)
+            headers=_UA,
+            timeout=API_TIMEOUT,
+        )
         if resp.status_code == 200:
             return resp.text
     return None
@@ -253,8 +297,10 @@ def readme_summary(repo: str, platform: str = "hf", max_chars: int = 600) -> str
 def _hf_pick_files(repo: str) -> list[dict]:
     """列出仓库顶层文件，挑出 .pth/.index/.zip 并附直链（供前端选文件/安装）。"""
     try:
-        tree = _get_json(f"{HF_API}/api/models/{urllib.parse.quote(repo)}/tree/main",
-                         recursive=False) or []
+        tree = (
+            _get_json(f"{HF_API}/api/models/{urllib.parse.quote(repo)}/tree/main", recursive=False)
+            or []
+        )
     except MarketError:
         return []
     files = []
@@ -282,10 +328,20 @@ def _hf_pick_files(repo: str) -> list[dict]:
 
 def repo_files_hf(repo: str, recursive: bool = False) -> list[dict]:
     """完整仓库文件列表（前端"查看文件"用；含目录树）。"""
-    tree = _get_json(f"{HF_API}/api/models/{urllib.parse.quote(repo)}/tree/main",
-                     recursive=recursive) or []
-    return [{"name": f.get("path", "").rsplit("/", 1)[-1], "path": f.get("path", ""),
-             "size": int(f.get("size") or 0), "type": f.get("type"), "url": None} for f in tree]
+    tree = (
+        _get_json(f"{HF_API}/api/models/{urllib.parse.quote(repo)}/tree/main", recursive=recursive)
+        or []
+    )
+    return [
+        {
+            "name": f.get("path", "").rsplit("/", 1)[-1],
+            "path": f.get("path", ""),
+            "size": int(f.get("size") or 0),
+            "type": f.get("type"),
+            "url": None,
+        }
+        for f in tree
+    ]
 
 
 # ---------------- ModelScope ----------------
@@ -312,26 +368,30 @@ def search_ms(query: str, limit: int = 10) -> dict:
                 tags = [str(d.get("Task") or ""), str(d.get("Backbone") or "")]
                 if isinstance(d.get("Tags"), list):
                     tags += [str(t) for t in d["Tags"]]
-                items.append({
-                    "id": d.get("ModelId") or repo,
-                    "name": d.get("ChineseName") or name or repo,
-                    "platform": "modelscope",
-                    "repo": repo,
-                    "downloads": int(d.get("Downloads") or 0),
-                    "likes": int(d.get("Likes") or 0),
-                    "tags": [t for t in tags if t],
-                    "files": repo_files_ms(repo, _only=True) if repo else [],
-                    "updated_at": (d.get("UpdatedTime")
-                                   or d.get("LastUpdateTime") or "")[:10],
-                })
+                items.append(
+                    {
+                        "id": d.get("ModelId") or repo,
+                        "name": d.get("ChineseName") or name or repo,
+                        "platform": "modelscope",
+                        "repo": repo,
+                        "downloads": int(d.get("Downloads") or 0),
+                        "likes": int(d.get("Likes") or 0),
+                        "tags": [t for t in tags if t],
+                        "files": repo_files_ms(repo, _only=True) if repo else [],
+                        "updated_at": (d.get("UpdatedTime") or d.get("LastUpdateTime") or "")[:10],
+                    }
+                )
         except MarketError:
             items = []
     if not items:
         for m in get_manifest():
             if m["platform"] != "modelscope":
                 continue
-            if q and q.lower() not in (m["name"] + m["voice_id"]).lower() and \
-                    q.lower() not in m.get("desc", "").lower():
+            if (
+                q
+                and q.lower() not in (m["name"] + m["voice_id"]).lower()
+                and q.lower() not in m.get("desc", "").lower()
+            ):
                 continue
             items.append(_manifest_to_search(m))
     return {"items": items[:limit], "note": "魔搭官网已下线匿名搜索，已按精确路径/精选匹配返回"}
@@ -340,18 +400,38 @@ def search_ms(query: str, limit: int = 10) -> dict:
 def _manifest_to_search(m: dict) -> dict:
     files = []
     if m.get("download"):
-        files.append({"name": m["download"]["url"].rsplit("/", 1)[-1], "path": "download",
-                      "size": 0, "type": "model", "url": m["download"]["url"]})
-    return {"id": m["id"], "name": m["name"], "platform": "modelscope",
-            "repo": m["repo"], "downloads": 0, "likes": 0, "tags": ["rvc"],
-            "desc": m.get("desc"), "tags_zh": ["精选音色"], "prefs": m, "files": files}
+        files.append(
+            {
+                "name": m["download"]["url"].rsplit("/", 1)[-1],
+                "path": "download",
+                "size": 0,
+                "type": "model",
+                "url": m["download"]["url"],
+            }
+        )
+    return {
+        "id": m["id"],
+        "name": m["name"],
+        "platform": "modelscope",
+        "repo": m["repo"],
+        "downloads": 0,
+        "likes": 0,
+        "tags": ["rvc"],
+        "desc": m.get("desc"),
+        "tags_zh": ["精选音色"],
+        "prefs": m,
+        "files": files,
+    }
 
 
 def repo_files_ms(model_id: str, _only: bool = False, recursive: bool = True) -> list[dict]:
     """魔搭仓库文件列表（detail/repo-files API 仍可用）。"""
     try:
-        data = _get_json(f"{MS_BASE}/api/v1/models/{urllib.parse.quote(model_id, safe='/')}/repo/files",
-                         Revision="master", Recursive=recursive)
+        data = _get_json(
+            f"{MS_BASE}/api/v1/models/{urllib.parse.quote(model_id, safe='/')}/repo/files",
+            Revision="master",
+            Recursive=recursive,
+        )
     except MarketError:
         return []
     flist = data.get("Data", {}).get("Files") or []
@@ -362,9 +442,16 @@ def repo_files_ms(model_id: str, _only: bool = False, recursive: bool = True) ->
             continue
         if _only and not path.lower().endswith((".pth", ".index", ".zip")):
             continue
-        out.append({"name": path.rsplit("/", 1)[-1], "path": path, "size": size,
-                    "type": ftype, "sha256": f.get("Sha256") or None,
-                    "url": ms_resolve(model_id, path) if ftype == "blob" else None})
+        out.append(
+            {
+                "name": path.rsplit("/", 1)[-1],
+                "path": path,
+                "size": size,
+                "type": ftype,
+                "sha256": f.get("Sha256") or None,
+                "url": ms_resolve(model_id, path) if ftype == "blob" else None,
+            }
+        )
     return out[:20] if _only else out
 
 
@@ -383,7 +470,7 @@ def search(platform: str, query: str, limit: int = 10, skip: int = 0) -> dict:
         out: list[dict] = []
         try:
             r = search_ms(query, limit)
-            out = r["items"][skip:skip + limit]
+            out = r["items"][skip : skip + limit]
             if r["note"]:
                 note = r["note"]
         except MarketError as exc:
@@ -402,10 +489,10 @@ def search(platform: str, query: str, limit: int = 10, skip: int = 0) -> dict:
     except MarketError as exc:
         hf_page = []
         note += f"HF: {exc}; "
-    if skip < m:
-        out = (ms_block[skip:] + hf_page)[:limit]
-    else:
-        out = hf_page[:limit]
+    out = (ms_block[skip:] + hf_page)[:limit] if skip < m else hf_page[:limit]
     has_more = len(hf_page) >= limit and bool(out)
-    return {"items": out, "note": note.strip(" ;") or None,
-            "next_skip": skip + len(out) if has_more else None}
+    return {
+        "items": out,
+        "note": note.strip(" ;") or None,
+        "next_skip": skip + len(out) if has_more else None,
+    }

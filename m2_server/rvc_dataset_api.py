@@ -2,17 +2,17 @@
 
 自 server.py 拆出（行为不变）；app 装配见 server.py。
 """
+
 import re
 import shutil
 import threading
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-
 import config as cfg
 from common import selected_voice, voice_ref
-from rvc_common import find_pth
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from runtime import API_PREFIX, pipeline_lock
+from rvc_common import find_pth
 
 router = APIRouter(prefix=API_PREFIX)
 
@@ -25,14 +25,14 @@ RVC_DEFAULT_EXP = cfg.RVC_DEFAULT_EXP
 # 文件缺失时回退内置 20 句，保证历史行为不变。
 RVC_TEXTS = cfg.load_rvc_texts()
 
-RVC_GEN_STATE = {"running": False, "total": len(RVC_TEXTS), "done": 0,
-                 "current": "", "error": ""}
+RVC_GEN_STATE = {"running": False, "total": len(RVC_TEXTS), "done": 0, "current": "", "error": ""}
 
 
 @router.get("/rvc/dataset")
 def list_rvc_dataset(voice_id: str | None = None):
     """列出已生成的训练语料；传 voice_id 时只看该音色的语料。"""
     import soundfile as sf
+
     prefix = f"rvc_{re.sub(r'[^0-9A-Za-z_-]', '_', voice_id)}_" if voice_id else None
     items = []
     if RVC_DATASET_DIR.exists():
@@ -40,8 +40,13 @@ def list_rvc_dataset(voice_id: str | None = None):
         for f in files if not prefix else [f for f in files if f.name.startswith(prefix)]:
             try:
                 d, sr = sf.read(str(f))
-                items.append({"name": f.name, "duration_s": round(len(d) / sr, 2),
-                              "size_kb": round(f.stat().st_size / 1024, 1)})
+                items.append(
+                    {
+                        "name": f.name,
+                        "duration_s": round(len(d) / sr, 2),
+                        "size_kb": round(f.stat().st_size / 1024, 1),
+                    }
+                )
             except Exception:
                 continue
     return {"items": items, "export_dir": str(RVC_EXPORT_DIR)}
@@ -49,6 +54,7 @@ def list_rvc_dataset(voice_id: str | None = None):
 
 class RvcGenerateReq(BaseModel):
     """指定用哪个音色生成语料；不传则用当前选中音色。"""
+
     voice_id: str | None = None
 
 
@@ -72,6 +78,7 @@ def rvc_generate_dataset(req: RvcGenerateReq | None = None):
         RVC_GEN_STATE.update(running=True, done=0, current="", error="")
         try:
             from qwen3_tts import tts as qwen_tts
+
             for i, text in enumerate(RVC_TEXTS, 1):
                 RVC_GEN_STATE["current"] = text
                 wav = qwen_tts(text, ref_audio=str(ref_audio), ref_text=ref_text)
@@ -110,11 +117,12 @@ def export_rvc_dataset(exp_name: str | None = None, voice_id: str | None = None)
         raise HTTPException(400, "未指定音色：请选择音色，或设置 VM_RVC_EXP 作为默认音色")
     # 前缀后必须紧跟 "_"，否则 rvc_mei 会误匹配到 rvc_meituan_rat 的语料
     prefix = f"rvc_{re.sub(r'[^0-9A-Za-z_-]', '_', voice_id)}_" if voice_id else None
-    files = [f for f in RVC_DATASET_DIR.glob("*.wav")
-             if not prefix or f.name.startswith(prefix)]
+    files = [f for f in RVC_DATASET_DIR.glob("*.wav") if not prefix or f.name.startswith(prefix)]
     if not files:
-        raise HTTPException(400, f"音色 [{voice_id}] 还没有语料，请先生成" if voice_id
-                            else "还没有训练语料，请先生成")
+        raise HTTPException(
+            400,
+            f"音色 [{voice_id}] 还没有语料，请先生成" if voice_id else "还没有训练语料，请先生成",
+        )
 
     dest = RVC_EXPORT_DIR.parent / exp
     # 训练驱动默认读取 dataset/<exp>/（与 logs/<exp>/ 同级，见 cfg.rvc_exp_dirs）
@@ -123,8 +131,13 @@ def export_rvc_dataset(exp_name: str | None = None, voice_id: str | None = None)
         d.mkdir(parents=True, exist_ok=True)
         for f in files:
             shutil.copy2(f, d / f.name)
-    return {"ok": True, "copied": len(files), "dest": str(dest),
-            "train_dataset_dir": str(train_ds), "exp": exp}
+    return {
+        "ok": True,
+        "copied": len(files),
+        "dest": str(dest),
+        "train_dataset_dir": str(train_ds),
+        "exp": exp,
+    }
 
 
 @router.get("/rvc/model")
@@ -134,8 +147,15 @@ def rvc_model_status(exp_name: str | None = None):
     if not exp:
         # 未指定音色：返回空态，而不是拿空实验名去拼路径 —— 那会得到 RVC_ROOT/logs，
         # 可能扫到别人的 .pth 误报“已训练”（2026-09-13 起默认音色可以为空）。
-        return {"exp": "", "trained": False, "pth_exists": False, "index_exists": False,
-                "dataset_count": 0, "weights_dir": "", "dataset_dir": ""}
+        return {
+            "exp": "",
+            "trained": False,
+            "pth_exists": False,
+            "index_exists": False,
+            "dataset_count": 0,
+            "weights_dir": "",
+            "dataset_dir": "",
+        }
     weights_dir = cfg.rvc_exp_dirs(exp)[0]
     pth = find_pth(exp, weights_dir)
     idx = next(weights_dir.glob("added_*.index"), None) if weights_dir.exists() else None

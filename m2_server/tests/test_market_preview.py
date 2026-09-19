@@ -4,15 +4,15 @@
 锚点会吐纯静音，见 2026-09-06 懒羊羊试听静音修复），RVC 推理子进程用 stub
 替代，不碰真实网络、不用真实 GPU。
 """
+
 import json
 import time
 
+import config
+import market_preview as mp
 import numpy as np
 import pytest
 import soundfile as sf
-
-import config
-import market_preview as mp
 
 
 def _tone_wav(path, seconds: float = 2.0, sr: int = 16000, amp: float = 0.5):
@@ -101,8 +101,8 @@ def test_ensure_source_from_reference_and_cache(tmp_path, fake_voicebank, market
     """源句来自参考音真人声截段（~5s 有声），缓存后二次调用不重新截取。"""
     src1 = mp._ensure_source()
     x, sr = sf.read(str(src1))
-    assert x.size > 0 and float(np.sqrt(np.mean(x ** 2))) > mp._MIN_RMS
-    assert abs(len(x) / sr - 5.0) < 0.5        # 中段 ~5s
+    assert x.size > 0 and float(np.sqrt(np.mean(x**2))) > mp._MIN_RMS
+    assert abs(len(x) / sr - 5.0) < 0.5  # 中段 ~5s
     mtime1 = src1.stat().st_mtime
     src2 = mp._ensure_source()
     assert src2 == src1 and src2.stat().st_mtime == mtime1, "缓存有效时不应重新截取"
@@ -116,8 +116,10 @@ def test_ensure_source_rejects_silent_cache_and_ref(tmp_path, fake_voicebank, ma
     assert float(np.sqrt(np.mean(sf.read(str(src))[0] ** 2))) > mp._MIN_RMS
     # 参考音也静音 → RuntimeError
     import soundfile as sf2
-    sf2.write(str(fake_voicebank / "vb_demo" / "reference.wav"),
-              np.zeros(16000, dtype=np.float32), 16000)
+
+    sf2.write(
+        str(fake_voicebank / "vb_demo" / "reference.wav"), np.zeros(16000, dtype=np.float32), 16000
+    )
     (mp._src_wav()).unlink(missing_ok=True)
     with pytest.raises(RuntimeError, match="静音"):
         mp._ensure_source()
@@ -139,21 +141,21 @@ def test_ensure_source_prefers_builtin_clean_src(tmp_path, market_dir, fake_voic
     src = mp._ensure_source()
     assert src == mp.BUILTIN_SRC
     x, sr = sf.read(str(src))
-    assert float(np.sqrt(np.mean(x ** 2))) > mp._MIN_RMS
+    assert float(np.sqrt(np.mean(x**2))) > mp._MIN_RMS
 
 
 def test_ensure_source_builtin_missing_falls_back(tmp_path, market_dir, fake_voicebank):
     """内置源句缺失/无声 → 退回 voicebank 截取路径，不报错。"""
-    _tone_wav(mp._src_wav())                      # 无声内置 + 有声缓存
+    _tone_wav(mp._src_wav())  # 无声内置 + 有声缓存
     assert mp._ensure_source() == mp._src_wav()
-    (mp._src_wav()).unlink(missing_ok=True)       # 无缓存 → 从 voicebank 截取
+    (mp._src_wav()).unlink(missing_ok=True)  # 无缓存 → 从 voicebank 截取
     src = mp._ensure_source()
     assert src.exists() and src != mp.BUILTIN_SRC
 
 
 def test_generate_success_marks_ready(rvc_tmp, market_dir, tmp_path, monkeypatch):
     """完整链路（stub 推理子进程）→ 试听落盘，status=ready 且 url 可访问。"""
-    _tone_wav(mp.MARKET_DIR / "_preview_src.wav")   # 预置有声源句缓存
+    _tone_wav(mp.MARKET_DIR / "_preview_src.wav")  # 预置有声源句缓存
 
     def fake_run(cmd, **kw):  # stub：模拟推理子进程写出 wav
         out = cmd[cmd.index("--output") + 1]
@@ -220,9 +222,9 @@ def test_generate_ready_short_circuits_inflight(rvc_tmp, market_dir, tmp_path, m
         return type("R", (), {"returncode": 0, "stderr": "", "stdout": "OK"})
 
     monkeypatch.setattr(mp.subprocess, "run", fake_run)
-    mp._do_generate("demo_voice")           # 造 ready
+    mp._do_generate("demo_voice")  # 造 ready
     mp._inflight.add("demo_voice")
-    st = mp.generate("demo_voice")          # ready 优先 → 直接返回，不进 inflight 分支
+    st = mp.generate("demo_voice")  # ready 优先 → 直接返回，不进 inflight 分支
     assert st["status"] == "ready"
     mp._inflight.discard("demo_voice")
 
@@ -231,7 +233,7 @@ def test_try_auto_preview_never_raises(rvc_tmp, market_dir, tmp_path, monkeypatc
     """安装收尾触发不应抛异常（含异常路径）；线程快速终结不残留 inflight。"""
     monkeypatch.setattr(mp, "RVC_VENV_PY", tmp_path / "no_python.exe")  # 无环境 → 线程快速 failed
     mp.try_auto_preview("demo_voice")
-    mp.try_auto_preview("")            # 空 id 也不抛
+    mp.try_auto_preview("")  # 空 id 也不抛
     _wait_inflight("demo_voice")
     _wait_inflight("")
     assert mp._inflight == set()
@@ -239,14 +241,15 @@ def test_try_auto_preview_never_raises(rvc_tmp, market_dir, tmp_path, monkeypatc
 
 # ---- 源句指纹失效（2026-09-07）：换源句后旧试听必须自动重生成 ----
 
+
 def test_stale_cache_without_fingerprint(rvc_tmp, market_dir):
     """指纹机制之前的旧缓存（sidecar 无 src_fp）→ 判 missing，触发重新生成。
 
     线上场景：换内置干净源句后，此前生成的试听仍带袋鼠腔且无任何失效机制。
     """
-    _tone_wav(mp.MARKET_DIR / "_preview_src.wav")       # 源句存在，可算当前指纹
-    _tone_wav(mp._out_wav("demo_voice"), seconds=3.0)   # 有声旧试听
-    mp._mark("demo_voice", "ready")                     # 旧格式：不写 src_fp
+    _tone_wav(mp.MARKET_DIR / "_preview_src.wav")  # 源句存在，可算当前指纹
+    _tone_wav(mp._out_wav("demo_voice"), seconds=3.0)  # 有声旧试听
+    mp._mark("demo_voice", "ready")  # 旧格式：不写 src_fp
     assert mp.status("demo_voice")["status"] == "missing"
 
 
@@ -256,10 +259,10 @@ def test_stale_after_source_changed(rvc_tmp, market_dir):
     _tone_wav(src, seconds=2.0)
     _tone_wav(mp._out_wav("demo_voice"), seconds=3.0)
     mp._mark("demo_voice", "ready", src_fp=mp._source_fingerprint(src))
-    assert mp.status("demo_voice")["status"] == "ready"     # 指纹匹配 → 有效
+    assert mp.status("demo_voice")["status"] == "ready"  # 指纹匹配 → 有效
 
-    _tone_wav(src, seconds=6.0)                             # 换源句（重写，size/mtime 变）
-    assert mp.status("demo_voice")["status"] == "missing"   # 指纹不匹配 → 过期
+    _tone_wav(src, seconds=6.0)  # 换源句（重写，size/mtime 变）
+    assert mp.status("demo_voice")["status"] == "missing"  # 指纹不匹配 → 过期
 
 
 def test_generate_records_source_fingerprint(rvc_tmp, market_dir, tmp_path, monkeypatch):
@@ -289,7 +292,9 @@ def test_mark_preserves_existing_fingerprint(rvc_tmp, market_dir):
     sc = json.loads(mp._sidecar("demo_voice").read_text("utf-8"))
     assert sc["src_fp"] == fp
 
+
 # ---------------- 未安装先试听（预下载模型 → 转换，2026-09-07） ----------------
+
 
 def test_generate_with_download_uses_staged_override(market_dir, monkeypatch, tmp_path):
     """未安装 + 带直链 → 走 _worker_pre：_ensure_staged 拿暂存权重，转换用覆盖参数。"""
@@ -339,6 +344,7 @@ def test_ensure_staged_reuses_valid_cache(monkeypatch, tmp_path):
             raise AssertionError("缓存有效时不应重新下载")
 
     import market_download as md
+
     monkeypatch.setattr(md, "get_manager", lambda: FakeMgr())
     assert mp._ensure_staged("vx", {"url": "https://hf-mirror.com/x/x.pth"}) == staged
 
@@ -353,7 +359,7 @@ def test_ensure_staged_downloads_when_missing(monkeypatch, tmp_path):
 
         def start(self, name, url, mirror_url=None, sha256=None, filename=None):
             self.started = (name, filename)
-            staged.write_bytes(b"\x80\x02" + b"\x00" * 16)   # 模拟下载完成落盘
+            staged.write_bytes(b"\x80\x02" + b"\x00" * 16)  # 模拟下载完成落盘
             return {"status": "downloading"}
 
         def task_status(self, name):
@@ -361,6 +367,7 @@ def test_ensure_staged_downloads_when_missing(monkeypatch, tmp_path):
 
     fake = FakeMgr()
     import market_download as md
+
     monkeypatch.setattr(md, "get_manager", lambda: fake)
     out = mp._ensure_staged("vy", {"url": "https://hf-mirror.com/y/y.pth"})
     assert out == staged
@@ -377,6 +384,7 @@ def _sine(path, seconds: float = 3.0, amp: float = 0.4, sr: int = 16000):
 
 # ---- A：输出质量关（防"有声但废"漏过纯响度检查）----
 
+
 def test_quality_ok_passes_normal(tmp_path):
     """正常有声 wav（峰值合理、时长合理、无 NaN）→ 合格。"""
     p = tmp_path / "ok.wav"
@@ -388,7 +396,7 @@ def test_quality_rejects_clipping(tmp_path):
     """大量样本顶到满幅 → 判削顶破音（_audible 查不出的"有声但废"）。"""
     p = tmp_path / "clip.wav"
     x = np.zeros(16000 * 3, dtype=np.float32)
-    x[:2000] = 1.0                     # 占比 ~4.2% > 2% 阈值
+    x[:2000] = 1.0  # 占比 ~4.2% > 2% 阈值
     sf.write(str(p), x, 16000)
     ok, why = mp._quality_ok(p)
     assert not ok and "削顶" in why
@@ -399,7 +407,7 @@ def test_quality_rejects_nan(tmp_path):
     p = tmp_path / "nan.wav"
     x = (0.4 * np.ones(16000 * 3)).astype(np.float32)
     x[0] = np.nan
-    sf.write(str(p), x, 16000, subtype="FLOAT")   # PCM16 会把 NaN 量化掉，须写 float 保真
+    sf.write(str(p), x, 16000, subtype="FLOAT")  # PCM16 会把 NaN 量化掉，须写 float 保真
     ok, why = mp._quality_ok(p)
     assert not ok and "NaN" in why
 
@@ -407,12 +415,13 @@ def test_quality_rejects_nan(tmp_path):
 def test_quality_rejects_too_short(tmp_path):
     """输出被截断成极短（<0.5s）→ 不合格。"""
     p = tmp_path / "short.wav"
-    sf.write(str(p), np.full(1600, 0.4, dtype=np.float32), 16000)   # 0.1s
+    sf.write(str(p), np.full(1600, 0.4, dtype=np.float32), 16000)  # 0.1s
     ok, why = mp._quality_ok(p)
     assert not ok and "过短" in why
 
 
 # ---- B：瞬态失败自愈（子进程偶发崩溃重试一次）----
+
 
 def test_transient_retry_succeeds_on_second_attempt(rvc_tmp, market_dir, monkeypatch):
     """首次推理子进程崩（如 CUDA OOM）→ 自动重试 → 第二次成功 → ready。"""
@@ -442,7 +451,9 @@ def test_transient_retry_exhausted_marks_failed(rvc_tmp, market_dir, monkeypatch
     _sine(mp.MARKET_DIR / "_preview_src.wav")
 
     def fake_run(cmd, **kw):
-        return type("R", (), {"returncode": 1, "stderr": "CUDA error: device-side assert", "stdout": ""})
+        return type(
+            "R", (), {"returncode": 1, "stderr": "CUDA error: device-side assert", "stdout": ""}
+        )
 
     monkeypatch.setattr(mp.subprocess, "run", fake_run)
     mp._do_generate("demo_voice")
@@ -461,7 +472,7 @@ def test_transient_retry_cleans_partial_output(rvc_tmp, market_dir, monkeypatch)
         calls["n"] += 1
         out = cmd[cmd.index("--output") + 1]
         if calls["n"] == 1:
-            sf.write(out, np.zeros(1600, dtype=np.float32), 16000)   # 半成品（截断）
+            sf.write(out, np.zeros(1600, dtype=np.float32), 16000)  # 半成品（截断）
             return type("R", (), {"returncode": 1, "stderr": "boom", "stdout": ""})
         _sine(out, seconds=3.0)
         return type("R", (), {"returncode": 0, "stderr": "", "stdout": "OK"})
@@ -473,6 +484,7 @@ def test_transient_retry_cleans_partial_output(rvc_tmp, market_dir, monkeypatch)
 
 # ---- C：GPU 忙标 skipped 后延时自动补生成 ----
 
+
 def test_worker_backoff_recovers_after_gpu_busy(rvc_tmp, market_dir, monkeypatch):
     """安装收尾自动触发时 GPU 忙 → skipped，后台延时后空闲则自动补生成到 ready。"""
     _sine(mp.MARKET_DIR / "_preview_src.wav")
@@ -483,7 +495,7 @@ def test_worker_backoff_recovers_after_gpu_busy(rvc_tmp, market_dir, monkeypatch
         return "离线变声任务正在运行" if busy_calls["n"] == 1 else ""
 
     monkeypatch.setattr(mp, "_gpu_busy", fake_busy)
-    monkeypatch.setattr(mp, "_BACKOFF_S", 0)          # 测试不等 20s
+    monkeypatch.setattr(mp, "_BACKOFF_S", 0)  # 测试不等 20s
 
     def fake_run(cmd, **kw):
         out = cmd[cmd.index("--output") + 1]
@@ -503,8 +515,11 @@ def test_worker_backoff_stays_skipped_when_still_busy(rvc_tmp, market_dir, monke
     _sine(mp.MARKET_DIR / "_preview_src.wav")
     monkeypatch.setattr(mp, "_gpu_busy", lambda: "实时变声正在运行")
     monkeypatch.setattr(mp, "_BACKOFF_S", 0)
-    monkeypatch.setattr(mp.subprocess, "run",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("GPU 忙时不应推理")))
+    monkeypatch.setattr(
+        mp.subprocess,
+        "run",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("GPU 忙时不应推理")),
+    )
     mp._inflight.clear()
     mp._worker("demo_voice")
     _wait_inflight("demo_voice")
