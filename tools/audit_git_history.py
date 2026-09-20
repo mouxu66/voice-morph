@@ -118,11 +118,24 @@ MATERIAL_RULES: list[tuple[str, str]] = [
 MATERIAL_LIST_FILE = ".audit-materials.txt"
 
 # 占位符 / 示例 / 求值表达式 —— 命中片段里出现任一即放行
+#
+# 2026-09-21 扩充 `Users\` 后的占位名（原只认 Public/user/username/yourname/me）：
+# 实测 `tools/test-ship-frontend.cjs` 的值是 `C:\Users\demo\AppData\Local` 配
+# `/home/demo` —— 那是**测试夹具里的通用假用户名**，语义上就是占位符，但旧白名单
+# 不认识 `demo` → 把「已存在的占位夹具」报成"真实机器指纹泄漏"。
+#
+# 修法是在**白名单**里补名字，而不是放宽 `PRIVACY_RULES` 的主正则：主正则一放宽，
+# 真用户名也一起放过去了，等于把审计能力削掉（同一套取舍见下方 KNOWN_SAFE 注释）。
+#
+# 口径：只收**通用假名**（任何项目任何机器上都可能出现的测试夹具名）。
+# **不要**把某个具体的真实用户名加进来 —— 例如 `jjjj` 是 VM 测试机的实际账户名，
+# 它出现在历史里就是真命中，放行等于把这条规则对那次泄漏关掉。
 PLACEHOLDER = re.compile(
     r"(?i)<[^>]*>|你的|填|改为|换成|xxx|yyy|zzz|change[_-]?me|your[_-]|"
     r"example|sample|dummy|placeholder|redacted|todo|\*\*\*|已移除|"
     r"os\.environ|process\.env|getenv|\$env:|\$\{|"
-    r"Users[/\\]+(?:Public|user|username|yourname|me|%USERNAME%|<|\.\.\.|…)"
+    r"Users[/\\]+(?:Public|user|username|yourname|me|%USERNAME%|<|\.\.\.|…|"
+    r"demo|tester|test|dev|foo|bar|baz|alice|bob)"
 )
 
 # 已知安全的字面量（测试夹具 / 协议常量）—— 用白名单而非放宽正则，

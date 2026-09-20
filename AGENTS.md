@@ -70,7 +70,8 @@
     - **只想让用户立刻用上**则走**定向重打**（2026-09-17 实测，约 1 分钟，不必重装）：
       ```bash
       # 前提：应用必须已完全退出（asar 被占用时替换会失败）
-      ASAR="C:/Users/mouxu/AppData/Local/Programs/voice-morph-desktop/resources/app.asar"
+      # 安装目录随用户名变，用 $LOCALAPPDATA 定位，别写死 C:/Users/<你>/
+      ASAR="$LOCALAPPDATA/Programs/voice-morph-desktop/resources/app.asar"
       cp "$ASAR" "$ASAR.bak-$(date +%Y%m%d-%H%M%S)"        # ① 一定要先备份
       cd web && mkdir -p D:/tmp/asar && \
         node node_modules/@electron/asar/bin/asar.js extract "$ASAR" D:/tmp/asar/x
@@ -103,8 +104,9 @@
   注意 `sync_backend.ps1` 是**只拷不删**（没有 autosync 的 `f.unlink()` 镜像清理），源里删掉/改名过的文件会**残留在副本里** → 用 `verify_backend_sync.py` 的「多余=N」查。**别用 `md5sum` 手工比对**（§2.28 的 `\` 前缀假红/假绿）。
 - **桌宠的 `web/electron/pet/pet.html`（+ `preload.cjs`）是渲染侧文件，不在 asar 里，安装版从磁盘读**：`pet.cjs:27` 的 `PET_DIR` 先试 `resolveProjectRoot()/web/electron/pet`，命中就用它，否则才回退 asar 内置副本。安装版 `resolveProjectRoot()` = `resources/backend`，所以**只要 `resources/backend/web/electron/pet/pet.html` 存在就优先读它 → 改完直接拷一份即热替，不必重打 asar**。⚠️ 但它**不在** `backend_autosync.py` 的镜像范围（只有 `m2_server`/`tools`/`web/dist`），且本机 `D:\变声\voice-morph-desktop\` 为空（无 staging 副本，autosync 恒跳过），所以**每次改 pet.html 都要手动拷**：
   ```bash
+  # $LOCALAPPDATA 指向 %LOCALAPPDATA%（C:\Users\<你>\AppData\Local），别写死用户名
   cp D:/变声/web/electron/pet/pet.html \
-     "C:/Users/mouxu/AppData/Local/Programs/voice-morph-desktop/resources/backend/web/electron/pet/pet.html"
+     "$LOCALAPPDATA/Programs/voice-morph-desktop/resources/backend/web/electron/pet/pet.html"
   python tools/verify_backend_sync.py   # 只读核验；pet 也在比对范围内（10 个文件）
   ```
   ⚠️ **别用 `md5sum` 比对**：Git Bash 的 `md5sum` 遇到含反斜杠的 Windows 路径会在哈希前加 `\` 前缀，一侧相对一侧绝对时**全假红**（68 个 .py 全报不一致），两侧都用绝对路径时**全假绿**（更危险，会把混装放过去）——见 `docs/犯错指南.md` §2.28。要手工比就用 `cmp -s A B`。

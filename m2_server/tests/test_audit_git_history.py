@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -87,6 +88,57 @@ def test_iter_hits_finds_hardcoded_credential(ah):
 def test_iter_hits_lets_placeholders_through(ah, sample, why):
     hits = list(ah._iter_hits(sample, ah.SECRET_RULES))
     assert not hits, f"应放行却命中（{why}）：{sample} → {hits}"
+
+
+# ---------------- PLACEHOLDER：通用假用户名 vs 真实用户名 ----------------
+#
+# 2026-09-21 背景：`tools/test-ship-frontend.cjs` 的夹具值是
+# `C:\Users\demo\AppData\Local` 配 `/home/demo` —— 通用假用户名，却因旧白名单
+# （只认 Public/user/username/yourname/me）而报成"真实机器指纹泄漏"。
+# 修法是在白名单补名字。这组用例钉住两件事：
+#   ① 通用假名该放行（否则又会有人去改夹具、把测试改得更晦涩）；
+#   ② **真实用户名绝不能进白名单** —— 那等于把规则对那次泄漏关掉。
+#
+# 样本一律用 `_pv()` 拼，理由同 SECRET 那组：写全了审计器会命中本文件自己。
+
+
+@pytest.mark.parametrize(
+    "who",
+    ["demo", "tester", "test", "dev", "foo", "bar", "baz", "alice", "bob"],
+)
+def test_generic_fake_usernames_are_placeholders(ah, who):
+    """通用假名（任何项目都可能出现的测试夹具名）必须放行。"""
+    sample = _pv("C:\\Users\\", who, "\\AppData\\Local\\app")
+    hits = [
+        m.group(0)
+        for _desc, m in ah._iter_hits(sample, ah.PRIVACY_RULES)
+        if not ah.PLACEHOLDER.search(sample)
+    ]
+    assert not hits, f"通用假名 {who} 被当成真实指纹：{sample} → {hits}"
+
+
+def test_real_username_is_not_whitelisted(ah):
+    """真实用户名（本机账户 / VM 测试机账户）不得出现在 PLACEHOLDER 里。
+
+    白名单一旦收进某个**具体真实用户名**，这条规则对含它的历史泄漏就永久失明。
+    `jjjj` 与 `mouxu` 都是本项目历史上真实出现过的账户名，必须能被拦下。
+    """
+    src = (TOOLS / "audit_git_history.py").read_text(encoding="utf-8")
+    for real in ["jjjj", "mouxu"]:
+        # 只查 PLACEHOLDER 那段，避免误伤别处的正当引用
+        m = re.search(r"PLACEHOLDER = re\.compile\((.*?)\)\n", src, re.S)
+        assert m, "没找到 PLACEHOLDER 定义"
+        assert real not in m.group(1), (
+            f"PLACEHOLDER 白名单里出现了真实用户名 {real!r} —— "
+            f"这会让这条规则对含它的历史泄漏永久放行，必须拿掉"
+        )
+
+
+def test_real_username_still_caught(ah):
+    """反向确认：真实用户名路径仍会命中（白名单没有误伤主规则）。"""
+    sample = _pv("C:\\Users\\", "jjjj", "\\AppData\\Local\\app")
+    hits = [m.group(0) for _desc, m in ah._iter_hits(sample, ah.PRIVACY_RULES)]
+    assert hits, f"真实用户名被漏掉了：{sample}"
 
 
 # ---------------- _material_rules：分层与字面匹配 ----------------

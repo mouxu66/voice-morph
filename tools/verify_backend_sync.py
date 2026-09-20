@@ -21,7 +21,7 @@
 
     $ md5sum m2_server/common.py
     e6f32025c093741f618c21b6a304e2de *m2_server/common.py      ← 相对路径，无前缀
-    $ md5sum "C:\\Users\\mouxu\\...\\common.py"
+    $ md5sum "C:\\Users\\<用户名>\\...\\common.py"
     \\e6f32025c093741f618c21b6a304e2de *C:\\\\Users\\\\...        ← 绝对路径，有前缀
 
 哈希其实一样，但 ``cut -d' ' -f1`` 拿到的字符串字面不等 →
