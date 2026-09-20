@@ -217,6 +217,11 @@ Expo SDK 54 + RN 0.81 + expo-router 文件路由 + Zustand。`mobile/src/api.ts`
 
 ## 环境搭建（一次性）
 
+> ⚠️ **这一节是 2026-08 在本机（RTX 5060）手工搭建时的原始记录，保留作存档。**
+> **换电脑 / 给别人装请看下一节「新机器部署」** —— 那里走 `tools\setup_env.ps1`
+> （按启用集装依赖、torch 从 CUDA 索引装）。下面这段手工步骤**已经过时**：
+> 列在里面的 `wavmark / eng_to_ipa / inflect / …` 早就不是本仓库的依赖了，照着敲会装一堆没用的东西。
+
 > 前提：NVIDIA 显卡（本机 RTX 5060），已装 git、ffmpeg。
 
 ```powershell

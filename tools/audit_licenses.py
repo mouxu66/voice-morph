@@ -396,6 +396,44 @@ def scan_forbidden_weights(root: Path) -> list[str]:
     return sorted(hits)
 
 
+# 散文里可能出现的"N 个依赖"字样 → 对应的机器块前缀。
+# 只登记确实写在文档里的那些 —— 加一句新的硬编码计数，就要在这里同步登记，
+# 否则它照旧会漂（这张表本身就是"不许偷偷再加一个手写的数"的提醒）。
+_PROSE_COUNTS: tuple[tuple[str, str], ...] = (
+    ("Python 运行时依赖", "python:"),
+    ("npm 运行时依赖", "npm:"),
+)
+
+
+def _prose_count_drift(notices_path: Path) -> list[str]:
+    """散文里硬编码的「N 个依赖」与机器块（`<!-- audit:deps -->`）对不上时报错。
+
+    为什么不干脆删掉那个数字：它对读者是有用的概览（"这个项目有 29 个 Python 依赖，
+    没有 GPL"）。删了省事，但代价是概览没了。所以留着，并用机器盯住它。
+    """
+    try:
+        text = notices_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    block = text[text.find(DEPS_BEGIN) : text.find(DEPS_END)]
+    if not block:
+        return []
+
+    out: list[str] = []
+    for label, prefix in _PROSE_COUNTS:
+        m = re.search(rf"{re.escape(label)}\s*(\d+)\s*个", text)
+        if not m:
+            continue
+        actual = sum(1 for line in block.splitlines() if line.strip().startswith(prefix))
+        written = int(m.group(1))
+        if written != actual:
+            out.append(
+                f"THIRD_PARTY_NOTICES.md 里写着「{label} {written} 个」，"
+                f"但机器块里有 {actual} 条 `{prefix}` —— 手写的数字漂了，改成 {actual}"
+            )
+    return out
+
+
 def audit(root: Path) -> dict:
     """跑一遍全部判据，返回可 JSON 化的结果（不打印、不退出）。"""
     declared: dict[str, list[str]] = {}
@@ -409,6 +447,10 @@ def audit(root: Path) -> dict:
 
     notices_path = root / "THIRD_PARTY_NOTICES.md"
     listed, obligations, problems = parse_notices(notices_path)
+
+    # ---- 散文里硬编码的计数 vs 机器块（第 5 步后漂过一次：写成 22，实际 29）----
+    # 合规文档里的错数字比没有更糟：读者会拿它去核对，对不上之后连机器块也不信了。
+    problems.extend(_prose_count_drift(notices_path))
 
     listed_set = set(listed)
     declared_set = set(declared)

@@ -691,3 +691,38 @@ def test_payload_files_are_byte_stable_across_checkout(sync):
     assert "web/public/licenses/** -text" in attrs
     for f in (ROOT / "web" / "public" / "licenses").glob("*.txt"):
         assert b"\r\n" not in f.read_bytes(), f"{f.name} 里混进了 CRLF"
+
+
+# ---------------------------------------------------------------- 散文里的硬编码计数
+
+
+def test_prose_count_drift_is_empty_for_the_real_notices(tool):
+    """真文件当前是对得上的 —— 这条是"基线绿"，下面的变异才是"检查有效"。"""
+    assert tool._prose_count_drift(ROOT / "THIRD_PARTY_NOTICES.md") == []
+
+
+def test_prose_count_drift_catches_a_stale_number(tool, tmp_path):
+    """★ 变异：把散文里的数字改回错的（22），守卫必须红。
+
+    为什么值得守：合规文档里的错数字比没有更糟 —— 读者会拿它去核对，
+    对不上之后连机器块也不信了。第 5 步之后真漂过一次（写成 22，实际 29）。
+    """
+    doc = tmp_path / "THIRD_PARTY_NOTICES.md"
+    doc.write_text(
+        "Python 运行时依赖 22 个\n\n"
+        f"{tool.DEPS_BEGIN}\n"
+        + "".join(f"python:pkg{i}\n" for i in range(29))
+        + f"{tool.DEPS_END}\n",
+        encoding="utf-8",
+    )
+    problems = tool._prose_count_drift(doc)
+    assert len(problems) == 1
+    assert "22" in problems[0] and "29" in problems[0], "报错要说清写的啥、应该是啥"
+    assert "改成 29" in problems[0]
+
+
+def test_prose_count_drift_ignores_absent_labels(tool, tmp_path):
+    """没写这句就不该报 —— 否则等于逼人必须写个数字。"""
+    doc = tmp_path / "THIRD_PARTY_NOTICES.md"
+    doc.write_text(f"{tool.DEPS_BEGIN}\nnpm:react\n{tool.DEPS_END}\n", encoding="utf-8")
+    assert tool._prose_count_drift(doc) == []

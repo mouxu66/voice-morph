@@ -56,7 +56,7 @@ MIT License，© 2026 mouxu（见根目录 `LICENSE`）。
 | **VB-CABLE**（`vb-cable.com`） | **Donationware**，分发条款见下 | 本仓库**没有内置**：`find` 无安装包、`grep` 无静默安装代码（2026-09-14 实测）。README 把它列为前置依赖 → **现状合规** |
 | **RVC 整合包**（`D:\RVC`，`VM_RVC_ROOT`） | 代码 = `RVC-Project/Retrieval-based-Voice-Conversion-WebUI` = **MIT**（GitHub API 实读，2026-09-14）。**底模条款另说，见下** | 外部目录，用户自备。其 `.venv` 内另有 `sounddevice` / `webrtcvad` / `soundfile` 等（`cascade_stream.py` / `play_worker.py` 在那边跑，见 README「新机器部署」）—— **不随本项目分发，故不在 §2.1 登记**（2026-09-20：`webrtcvad` 随第 5 步撤出主环境登记） |
 | **RVC 底模**（`hubert_base.pt` / `rmvpe.pt` / `pretrained_v2/*`） | ⚠️ **仓库标 `license: mit`，但同仓另有一份 `使用需遵守的协议-LICENSE.txt`** —— 正文在 MIT 版权行后插了一段中文：**"本软件仅供研究使用，使用软件者、传播软件导出的声音者自负全责。如不认可该条款，则不能使用/引用软件包内所有代码和文件。"**（2026-09-14 读 HF `lj1995/VoiceConversionWebUI` 原文） | **不随包分发**（用户在 `D:\RVC` 自备）→ 现状无分发义务。**但"仅供研究使用"意味着不得打进发行物** —— 已由门禁机器化（§2.3） |
-| **Python 运行时依赖 22 个** | 全为宽松许可，**无 GPL**（见 §2.1） | `pip install -r requirements.txt`（CUDA 索引另装 torch） |
+| **Python 运行时依赖 29 个**（核心 + 各能力 `extras.python`） | 全为宽松许可，**无 GPL**（见 §2.1）。**无 GPL 由门禁机器校验**（`tools/audit_licenses.py` 的 `FORBIDDEN`），不是靠人眼 | 由 `tools\setup_env.ps1` **按启用集**装；`torch` / `torchaudio` 从 CUDA 索引另装。**不要**直接 `pip install -r requirements.txt` 期望拿到全部能力 —— 第 5 步起重包只在清单的 `extras.python` 里 |
 
 ### 2.1 Python 依赖（许可取自本机 `site-packages/*.dist-info/METADATA` 实读，2026-09-14）
 
