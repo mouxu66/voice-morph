@@ -18,7 +18,7 @@
   ],
   "legacy_routes": [{ "path": "/cascade", "redirect": "/live?tab=qwen" }],
   "extras": {
-    "python": [],
+    "python": ["deepfilter-stream"],
     "external": [
       {
         "kind": "dir",

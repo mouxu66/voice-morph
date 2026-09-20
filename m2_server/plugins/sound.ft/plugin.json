@@ -11,7 +11,7 @@
   "routes": [],
   "legacy_routes": [{ "path": "/ft", "redirect": "/workshop?tab=ft" }],
   "extras": {
-    "python": [],
+    "python": ["modelscope", "hdbscan"],
     "external": [
       {
         "kind": "dir",

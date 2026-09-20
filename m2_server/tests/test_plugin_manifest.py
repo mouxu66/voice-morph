@@ -20,6 +20,11 @@
 > 「路由注册顺序不许重排」这条**已从本文件移出**：2026-09-20 第 3 步实测（139 条路由）
 > 没有任何两条 router 路由互相遮蔽，顺序对 handler 归属没有影响。该守的改成了
 > 「不许出现重叠」→ `tests/test_route_shadowing.py`。
+>
+> 「`extras.python` 的包必须能在仓库里装到」这条**也已移出**（第 5 步）：它的旧口径是
+> 「包名必须出现在 `requirements*.txt` / `setup_env.ps1` 文本里」，而第 5 步之后
+> `setup_env.ps1` 改成**读清单装 extras**，文本里不再有包名 —— 旧口径会退化成
+> 「看谁的字面量多」。新口径改成**静态 import 图对账** → `tests/test_plugin_deps.py`。
 """
 
 from __future__ import annotations
@@ -234,23 +239,6 @@ def test_health_probe_returns_a_dict_for_the_declared_ones():
     for pid, h in declared:
         fn = getattr(importlib.import_module(h["module"]), h["attr"])
         assert isinstance(fn(), dict), f"{pid} 的探针没返回 dict"
-
-
-def test_extras_python_are_declared_dependencies():
-    """`extras.python` 里的包名必须**在仓库某处真的被装过**。
-
-    防的是"凭印象写依赖"（例如给微调写上 peft —— 那份依赖其实在 RVC 整合包里，
-    这个仓库的主环境从未声明它）。判定口径就取三个真实的安装入口。
-    """
-    sources = "\n".join(
-        (_ROOT / f).read_text(encoding="utf-8")
-        for f in ("requirements.txt", "requirements-dev.txt", "tools/setup_env.ps1")
-    )
-    for p in plugin_manifest.load_all():
-        for pkg in p.extras.get("python", []):
-            assert re.search(rf"\b{re.escape(pkg)}\b", sources), (
-                f"{p.id}: {pkg} 不在 requirements*.txt / setup_env.ps1 里 —— 不要凭印象写依赖"
-            )
 
 
 def test_extras_env_vars_are_real():

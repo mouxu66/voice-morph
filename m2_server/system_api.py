@@ -14,10 +14,34 @@ from rvc_common import find_pth
 router = APIRouter(prefix="/api")
 
 
+def _try_import_torch():
+    """拿 torch 模块；**没装就返回 None**。
+
+    为什么要这层包装（2026-09-20，插件化第 5 步）：torch 是**可选能力**的重依赖
+    （`sound.offline-vc` / `sound.workshop` 的 demucs / 打分器），**不是核心依赖** ——
+    实测核心插件里没有任何模块在模块级 import 它（模块级的只有 `fast_tts.py` 与
+    `qwen3_tts_service.py`，而前者已无人引用、后者跑在独立 `venv312` 子进程里）。
+    所以「轻量预设」（不装 torch，省 ~2GB）下，体检类端点必须照常 200，
+    把「缺 torch」当成**一条可展示的结论**，而不是让它自己 500 ——
+    那等于在最需要看「哪里缺」的时候把面板关掉。
+    """
+    try:
+        import torch
+    except ImportError:
+        return None
+    return torch
+
+
 @router.get("/health")
 def health():
-    import torch
+    """服务健康检查。
 
+    `cuda` 为 **`null`** 表示「本环境没装 torch」（可选依赖缺失），**不是**「没有 GPU」——
+    消费方别把它当故障（见前端 `HealthInfo.cuda` 的注释）。
+    """
+    torch = _try_import_torch()
+    if torch is None:
+        return {"status": "ok", "cuda": None}
     return {"status": "ok", "cuda": torch.cuda.is_available()}
 
 
@@ -26,10 +50,11 @@ def capabilities():
     """路由模块的加载清单：哪些能力真的挂上了、哪些没挂上及原因。
 
     为什么单独开一个端点而不塞进 `/health`：
-    · `/health` 第一行就是 `import torch`，没装 torch 时它本身就 500 ——
-      而「某个能力没装依赖」恰恰是没 torch 的环境里最需要看到的信息，
-      把能力清单挂在它上面等于在最需要的时候消失。本端点**不依赖任何重库**。
-    · 语义也不同：`/health` 答「服务在不在」，这里答「服务里有哪些能力」。
+    · 语义不同：`/health` 答「服务在不在」，这里答「服务里有哪些能力」。
+    · `/health` 要做 GPU 探测（torch 是**可选**依赖），本端点**不依赖任何重库** ——
+      在「什么都没装」的环境里它仍然答得出来，而那正是最需要它的时刻。
+      （2026-09-20 起 `/health` 自己也能在缺 torch 时降级、不再 500；
+      但这条理由仍然成立：**能力清单不该挂在探测类端点上**。）
 
     消费方：前端顶部降级提示（`SetupBanner`）—— 让「哪个能力不可用」
     从 `backend.log` 走到界面上，而不是只对翻日志的人可见。
@@ -93,7 +118,7 @@ def diagnose():
     """
     import shutil
 
-    import torch
+    torch = _try_import_torch()
 
     items: list[dict] = []
 
@@ -222,24 +247,43 @@ def diagnose():
             )
 
     # 6) GPU / CUDA（仅告警，不阻断 CPU 推理）
-    cuda = torch.cuda.is_available()
-    if cuda:
-        try:
-            dev = torch.cuda.get_device_name(0)
-        except Exception:
-            dev = "未知 GPU"
-        items.append({"key": "cuda", "ok": True, "label": "GPU / CUDA", "detail": dev, "hint": ""})
-    else:
+    #    缺 torch 要单独报一项，**不能**让它把整个体检端点打 500 ——
+    #    这个端点的职责就是回答「哪里缺」，缺得最多的时候它最该活着。
+    if torch is None:
+        cuda = False
         items.append(
             {
-                "key": "cuda",
+                "key": "torch",
                 "ok": False,
-                "warn": True,
-                "label": "GPU / CUDA",
-                "detail": "未检测到可用 GPU，将退回 CPU 推理（非常慢）",
-                "hint": "确认已安装对应 CUDA 版本的 PyTorch 且显卡驱动正常；可运行 `nvidia-smi` 验证。",
+                "label": "PyTorch",
+                "detail": "未安装（可选依赖）",
+                "hint": "本地推理与训练需要它。装 GPU 版："
+                "`python -m pip install torch torchaudio --index-url "
+                "https://download.pytorch.org/whl/cu128`；"
+                "只做换音色/试音可不装（属「轻量预设」）。",
             }
         )
+    else:
+        cuda = torch.cuda.is_available()
+        if cuda:
+            try:
+                dev = torch.cuda.get_device_name(0)
+            except Exception:
+                dev = "未知 GPU"
+            items.append(
+                {"key": "cuda", "ok": True, "label": "GPU / CUDA", "detail": dev, "hint": ""}
+            )
+        else:
+            items.append(
+                {
+                    "key": "cuda",
+                    "ok": False,
+                    "warn": True,
+                    "label": "GPU / CUDA",
+                    "detail": "未检测到可用 GPU，将退回 CPU 推理（非常慢）",
+                    "hint": "确认已安装对应 CUDA 版本的 PyTorch 且显卡驱动正常；可运行 `nvidia-smi` 验证。",
+                }
+            )
 
     return {"all_ok": all(i["ok"] for i in items), "cuda": cuda, "items": items}
 

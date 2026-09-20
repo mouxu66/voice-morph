@@ -1,13 +1,16 @@
-# M2 转换服务依赖（主环境 .venv · 核心运行时）
+# M2 转换服务依赖（主环境 .venv · **只放核心运行时**）
 #
-# ⚠️ 可复现性必读：torch / torchaudio 必须从 CUDA 索引安装。
-#    直接 `pip install -r requirements.txt` 会装到 CPU 版 → 显存不可用、推理静默失效！
-#    步骤（RTX50/Blackwell 用 cu128；其它卡按实际 CUDA 版本选 cu121/cu124）：
-#      1) pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
-#      2) pip install -r requirements.txt
-#    （训练/微调相关依赖见 RVC 整合包与 tts_trial/venv312 各自说明，不在此文件。）
-torch
-torchaudio
+# ⚠️ 可选能力的重依赖**不在这里** —— 它们声明在 `m2_server/plugins/<id>/plugin.json`
+#    的 `extras.python` 里，由 `tools/setup_env.ps1` 按启用集安装（插件化第 5 步）。
+#    为什么分开：以前 `pip install -r requirements.txt` 会把 torch(2GB) + demucs
+#    一起拉下来，而「只想换音色 / 试音」的用户并不需要它们 ——
+#    实测核心插件里**没有任何模块**在模块级 import torch（见下「说明 1」）。
+#
+# ⚠️ torch / torchaudio 必须从 CUDA 索引装，**不能**直接 pip install
+#    （会装成 CPU 版 → 显存不可用、推理静默失效）。它们归
+#    `sound.offline-vc`（Seed-VC 推理跑在主 .venv，seed_vc.py:11）与
+#    `sound.audition`（打分器子进程用 sys.executable 拉起，audition_api.py:207）。
+#    装法见 tools/setup_env.ps1 的 -Preset。
 python-dotenv  # .env 自动加载（config.py）
 numpy
 scipy
@@ -18,24 +21,22 @@ uvicorn[standard]
 python-multipart
 pydantic
 requests
-Pillow          # 微信录音浮层截图 + 绿钮质心定位（wechat_voice）· 截图链路是主进程内调用，
-                # 缺了会在「发送语音」时抛 ModuleNotFoundError（2026-09-13 瘦环境实测暴露）
-
-# 音频处理
-demucs          # 人声分离（去 BGM）
-
-# 可选能力（缺了对应功能降级，不影响主流程）
-librosa         # 变声效果器 pitch/speed；缺失时这两个效果直通
-webrtcvad       # 级联变声 VAD 分句；缺失时回退能量 VAD
-pyaudiowpatch   # 桌宠「录当前声音」WASAPI 内录；缺失时桌宠入口报错提示
 
 # 测试
 pytest
 httpx
 
 # 说明
-# 1) Qwen3-TTS worker（m2_server/qwen3_tts_service.py）跑在独立环境
+# 1) 可选依赖现在**只在清单里**，一处权威（别再把它们加回本文件）：
+#      Pillow        → hook.wechat      （微信录音浮层截图 + 绿钮质心定位）
+#      demucs        → sound.workshop   （人声分离；它自己会拉 torch）
+#      librosa       → sound.effects    （变声效果器 pitch/speed；缺失时直通）
+#      pyaudiowpatch → pet.companion    （桌宠「录当前声音」WASAPI 内录）
+#      webrtcvad     → sound.rvc-live   （级联变声 VAD 分句；缺失时回退能量 VAD）
+#      torch,torchaudio → sound.offline-vc / sound.audition
+#      qwen-tts      → sound.tts        （走独立 venv312，见说明 2）
+#    加/改可选依赖时，**清单和本注释一起改**，并跑 tools/audit_licenses.py。
+# 2) Qwen3-TTS worker（m2_server/qwen3_tts_service.py）跑在独立环境
 #    tts_trial/venv312（torch2.8+cu129），依赖见 tts_trial/Qwen3-TTS/。
-# 2) 实时/离线变声与微信语音播放（rvc_live / cascade_stream / offline_vc /
-#    wechat_voice 的子进程部分）跑在 D:\RVC\.venv，额外需要 sounddevice /
-#    soundfile / numpy / requests（README「新机器部署」章节有说明）。
+# 3) 实时变声与微信语音播放的子进程部分跑在 D:\RVC\.venv，额外需要
+#    sounddevice / soundfile / numpy / requests（README「新机器部署」有说明）。

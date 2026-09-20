@@ -2,7 +2,12 @@
 
 export interface HealthInfo {
   status: string;
-  cuda: boolean;
+  /**
+   * `null` = **本环境没装 torch**（可选依赖缺失），**不是**「没有 GPU」——
+   * torch 只被可选能力用到，核心插件不依赖它（插件化第 5 步：torch 归 extra）。
+   * 消费方别把它当故障，也别显示成「无 GPU」。
+   */
+  cuda: boolean | null;
 }
 
 /** 一个加载失败的后端能力（路由模块 / 启动钩子）—— 对应 `/api/capabilities` 的 broken 项 */

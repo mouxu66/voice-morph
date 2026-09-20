@@ -19,7 +19,14 @@
   "legacy_routes": [{ "path": "/qwen", "redirect": "/live?tab=qwen" }],
   "extras": {
     "python": ["qwen-tts"],
-    "external": [],
+    "external": [
+      {
+        "kind": "dir",
+        "env": "VM_TTS_VENV_PY",
+        "label": "Qwen3-TTS 推理环境（独立 tts_trial/venv312，或在主 .venv 装 qwen-tts）",
+        "doc": "m2_server/qwen3_tts.py（worker 用 venv312 拉起，与主环境 torch 版本不同）"
+      }
+    ],
     "models": [
       { "env": "VM_TTS_MODELS_DIR", "label": "Qwen3-TTS 权重（含 tokenizer 与参考音）", "size_hint_mb": 4900 }
     ]

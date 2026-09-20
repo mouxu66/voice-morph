@@ -18,7 +18,7 @@
   ],
   "legacy_routes": [{ "path": "/discover", "redirect": "/workshop?tab=discover" }],
   "extras": {
-    "python": ["demucs"],
+    "python": ["demucs", "torch", "torchaudio", "modelscope", "hdbscan"],
     "external": [],
     "models": []
   },

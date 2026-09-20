@@ -11,7 +11,7 @@
   "routes": [],
   "legacy_routes": [{ "path": "/wechat", "redirect": "/tts?tab=wechat" }],
   "extras": {
-    "python": ["Pillow"],
+    "python": ["Pillow", "psutil", "uiautomation"],
     "external": [
       {
         "kind": "app",

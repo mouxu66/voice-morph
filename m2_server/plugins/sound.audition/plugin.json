@@ -18,7 +18,7 @@
   ],
   "legacy_routes": [],
   "extras": {
-    "python": [],
+    "python": ["torch", "torchaudio", "transformers", "modelscope", "hdbscan"],
     "external": [
       {
         "kind": "dir",
