@@ -27,7 +27,6 @@ function backendCallers(): string[] {
     // 只看可能是前端/脚本的扩展名；后端自己的 .py 不在这个口径里
     if (!/\.(html|cjs|mjs|js|ts|tsx|ps1)$/.test(f)) continue
     if (f.startsWith('web/src/')) continue // 主应用：已经由清单驱动
-    if (f.startsWith('mobile/')) continue // 另一个工程，不消费本后端
     if (f.includes('node_modules/')) continue
     const abs = path.join(repoRoot, f)
     let txt: string
@@ -36,7 +35,9 @@ function backendCallers(): string[] {
     } catch {
       continue // 读不到（权限 / 已删）就跳过，不让它把整条清点带红
     }
-    if (/127\.0\.0\.1:8000|localhost:8000/.test(txt)) hits.push(f)
+    // 后端端口 8000 的字面量（开发代理 / 局域网直连 / 生产都是它）。
+    // 含 IPv4（127.0.0.1 / 192.168.x.x 等）与 localhost 两种写法。
+    if (/(?:\d{1,3}\.){3}\d{1,3}:8000|localhost:8000/.test(txt)) hits.push(f)
   }
   return hits.sort()
 }
@@ -53,6 +54,12 @@ const REGISTRY: Record<string, string> = {
     '开发用独立演示页，调 /api/seedvc/*（属 sound.offline-vc）；未被主进程/package.json 引用 → **不进包**，故不做门控',
   'web/vite.config.ts': '开发期 dev proxy（把 /api 转发到 8000），不是 UI 面',
   'tools/test-pet-renderer-script.cjs': '桌宠脚本的语法自检工具，不是 UI 面',
+  'mobile/src/store.ts':
+    '移动端 host 默认值（192.168.1.10:8000，用户可在设置页改）；已接能力清单（mobile/src/capabilities.ts）',
+  'mobile/src/api.ts':
+    '移动端 API 层；实际调用经 store 的可编辑 host 拼路径（无硬编码调用字面量，注释里的 0.0.0.0:8000 是后端监听说明），已接能力清单',
+  'mobile/app/settings.tsx':
+    '移动端设置页；placeholder/提示里出现局域网地址形如 http://192.168.1.10:8000，非调用字面量',
 }
 
 describe('所有调后端的 UI 面都已登记（新增面必须显式加进来）', () => {
