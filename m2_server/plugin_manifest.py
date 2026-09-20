@@ -268,7 +268,7 @@ def reset_cache() -> None:
         _CACHE = None
 
 
-def mount_plan() -> list[tuple[str, str]]:
+def mount_plan(*, include_disabled: bool = False) -> list[tuple[str, str]]:
     """挂载计划：`[(plugin_id, router_module), ...]`，**顺序即 `include_router` 的顺序**。
 
     顺序 = 插件 `order` 升序（`load_all()` 已排好），插件内按 `routers` 的声明序。
@@ -287,12 +287,23 @@ def mount_plan() -> list[tuple[str, str]]:
     注意：这里**不**跳过 `disabled` 的插件。挂载只认清单的**结构**，「开关」是第 6 步
     的事 —— 现在跳过会立刻改变行为：第 4 步还没让前端按清单渲染路由，用户关掉一个
     能力会直接看到 404，而关闭守卫（核心不可关、依赖传播、409）也都还没做。
-    `state_of()` 已经如实报告 `disabled`，只是暂不据此改变挂载。第 6 步做开关时改这里。
+    第 6 步起**默认跳过 `disabled` 的插件**：关掉一个能力就要真的不 import 它
+    （不拉 torch/CUDA 上下文、不吃显存），只让前端不显示是「省了个入口，没省资源」。
+    跳过的模块记进 `_SKIPPED`，好让 `state_of()` 不把「你关的」报成「未注册」。
+    要**结构全貌**（对账/遮蔽检查）时传 `include_disabled=True`。
     """
-    return [(p.id, module) for p in load_all() for module in p.routers]
+    on = enabled_ids() if not include_disabled else None
+    plan: list[tuple[str, str]] = []
+    for p in load_all():
+        if on is not None and p.id not in on:
+            for module in p.routers:
+                _SKIPPED.add((module, plugin_loader.ROUTER_PURPOSE))
+            continue
+        plan.extend((p.id, module) for module in p.routers)
+    return plan
 
 
-def hooks_for(when: str) -> list[dict[str, str]]:
+def hooks_for(when: str, *, include_disabled: bool = False) -> list[dict[str, str]]:
     """取出声明为 `when` 阶段的启动钩子，按插件 `order` 排序。
 
     `when` 只有两个取值（`_HOOK_WHEN`）：
@@ -304,7 +315,15 @@ def hooks_for(when: str) -> list[dict[str, str]]:
     """
     if when not in _HOOK_WHEN:
         raise ValueError(f"when 必须是 {_HOOK_WHEN} 之一，实际 {when!r}")
-    return [hook for p in load_all() for hook in p.hooks if hook["when"] == when]
+    on = enabled_ids() if not include_disabled else None
+    out: list[dict[str, str]] = []
+    for p in load_all():
+        if on is not None and p.id not in on:
+            for hook in p.hooks:
+                _SKIPPED.add((hook["module"], hook["attr"]))
+            continue
+        out.extend(hook for hook in p.hooks if hook["when"] == when)
+    return out
 
 
 def disabled_ids() -> set[str]:
@@ -324,6 +343,163 @@ def disabled_ids() -> set[str]:
     return {x for x in items if isinstance(x, str)}
 
 
+# ---------------------------------------------------------------- 开关（第 6 步）
+#
+# 前 5 步都在建「声明」，从第 6 步起声明要**改变行为**：关掉的能力不再挂载、
+# 不再出现在前端、不再装它的重依赖。三条判据必须先钉死，否则会出现
+# 「关掉 A 之后 B 变砖」这类比不关更糟的结果：
+#
+#   1. 核心（`core.*`）不可关 —— 关掉整个界面就没有意义了。
+#   2. 仍有**启用中**的插件 `requires` 它 → 不许关（409 并在 detail 里点名依赖者）。
+#      这是设计稿 §6.3 的关闭守卫。
+#   3. 被关掉但**仍被依赖**的插件要保留启用 —— 与第 2 条互补：
+#      用户先关 A（当时没人依赖它），后来又开了依赖 A 的 B，A 必须复活。
+
+# 套餐预设：插件 id 的**起点**（`docs/插件化设计.md` §8.1 的表）。
+#   None = 全开。`core.*` 与 `requires` 闭包由 `expand()` 补上。
+# 放本模块而不是 `tools/plugin_extras.py`：**后端也要用它** —— 设置页要展示预设、
+# 开关接口要套用预设，两处不能各写一份。
+PRESETS: dict[str, list[str] | None] = {
+    # 轻量：只要一个能变声的，硬盘紧张
+    "light": ["sound.offline-vc"],
+    # 标准（默认）：绝大多数人
+    "standard": ["sound.workshop", "sound.tts", "sound.rvc-live", "sound.offline-vc", "sound.audition"],
+    # 全能：全开
+    "full": None,
+    # 仅核心：连离线变声都不要（跑测试 / CI 用）
+    "core": [],
+}
+
+DEFAULT_PRESET = "standard"
+
+PRESET_LABELS: dict[str, str] = {
+    "light": "轻量",
+    "standard": "标准",
+    "full": "全能",
+    "core": "仅核心",
+}
+
+
+def by_id() -> dict[str, Plugin]:
+    return {p.id: p for p in load_all()}
+
+
+def expand(ids) -> set[str]:
+    """补上 `core.*` 与 `requires` 闭包。
+
+    * `core.*` 不可关，无论预设怎么给都补上。
+    * `requires` 是硬依赖：启用试音间就得启用离线变声，否则试音间起来也是 broken。
+      清单里的 id 都已由 `_validate()` 校验存在，这里不重复抛。
+    """
+    plugins = by_id()
+    out = {pid for pid in ids if pid in plugins}
+    out |= {pid for pid, p in plugins.items() if p.is_core}
+    queue = list(out)
+    while queue:
+        pid = queue.pop()
+        for req in plugins[pid].requires:
+            if req not in out:
+                out.add(req)
+                queue.append(req)
+    return out
+
+
+def preset_ids(name: str = DEFAULT_PRESET) -> set[str]:
+    """预设展开成启用集。未知预设**直接抛**（拼错预设名应当当场炸，不是静默全开）。"""
+    if name not in PRESETS:
+        raise KeyError(f"未知预设 {name!r}，可选：{sorted(PRESETS)}")
+    start = PRESETS[name]
+    return expand(by_id().keys() if start is None else start)
+
+
+def enabled_ids(disabled: set[str] | None = None) -> set[str]:
+    """当前**实际启用**的插件 id —— 与 `disabled_ids()` 不是简单互补。
+
+    被关掉的插件**若仍被某个启用中的插件 `requires`，就必须保留**：
+    用户先关 A（当时没人依赖它），后来开了依赖 A 的 B，A 得复活，
+    否则 B 起来就是 broken。宁可多留一个能力，也不要让「关掉 A」把「还在用的 B」弄坏。
+    """
+    off = disabled if disabled is not None else disabled_ids()
+    plugins = by_id()
+    on = {pid for pid in plugins if pid not in off}
+    depended = {req for pid in on for req in plugins[pid].requires}
+    return on | (off & depended)
+
+
+def dependents_of(pid: str, disabled: set[str] | None = None) -> list[str]:
+    """哪些**启用中**的插件 `requires` 了 `pid` —— 关闭守卫的判据（409 的 detail）。"""
+    on = enabled_ids(disabled) - {pid}
+    return sorted(p.id for p in by_id().values() if p.id in on and pid in p.requires)
+
+
+def write_disabled(disabled) -> None:
+    """写 `outputs/plugins.json`。原子替换：先写临时文件再 `replace`，
+    避免写一半崩溃留下一个解析不了的 JSON（`disabled_ids()` 会把损坏当成
+    「一个都没关」，即**全部启用**，那是比崩溃更危险的方向）。
+    """
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"disabled": sorted(disabled)}, ensure_ascii=False, indent=2) + "\n"
+    tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(STATE_FILE)
+
+
+def set_enabled(pid: str, on: bool) -> dict:
+    """开关一个能力。**不抛异常**：拦下来了就在返回值里说清是谁拦的。
+
+    返回 `{id, enabled, blocked_by, reason}`：
+    - `blocked_by` 非空 → 关闭守卫拦下（调用方应回 409）；
+    - `reason == "core"` → 核心能力不可关；
+    - 否则已写入，`enabled` 是写入后的真实状态。
+    """
+    plugins = by_id()
+    if pid not in plugins:
+        raise KeyError(f"没有这个能力：{pid!r}")
+    if plugins[pid].is_core:
+        return {"id": pid, "enabled": True, "blocked_by": [], "reason": "core"}
+
+    off = set(disabled_ids())
+    if on:
+        off.discard(pid)
+        blocked: list[str] = []
+        reason = ""
+    else:
+        blocked = dependents_of(pid, off)
+        if blocked:
+            return {"id": pid, "enabled": True, "blocked_by": blocked, "reason": "dependents"}
+        off.add(pid)
+        reason = ""
+    write_disabled(off)
+    return {"id": pid, "enabled": on, "blocked_by": blocked, "reason": reason}
+
+
+def apply_preset(name: str) -> dict:
+    """套用一个预设：把「预设没点名的」写进 `disabled`。
+
+    ⚠️ 写进文件的是**用户想关的**，不是「最终启用的」—— 因为被依赖而保留的
+    能力不该被记成「用户主动开的」，否则切走再切回来会凭空多出几个开启项。
+    保留逻辑统一留在读侧（`enabled_ids()`），一处权威。
+    """
+    keep = preset_ids(name)
+    off = {p.id for p in load_all() if p.id not in keep}
+    write_disabled(off)
+    return {"preset": name, "disabled": sorted(off), "enabled": sorted(enabled_ids(off))}
+
+
+# 挂载期**刻意跳过**的 (模块, 用途)。`state_of()` 靠它区分
+# 「因为被关掉所以没加载」（正常）与「声称挂着却没挂上」（清单与挂载不一致，要报）。
+_SKIPPED: set[tuple[str, str]] = set()
+
+
+def skipped() -> set[tuple[str, str]]:
+    return set(_SKIPPED)
+
+
+def reset_skipped() -> None:
+    """清跳过记账 —— **只给测试用**（与 `reset_cache()` 同理）。"""
+    _SKIPPED.clear()
+
+
 def state_of(plugin: Plugin, disabled: set[str] | None = None) -> tuple[str, list[str]]:
     """算出 `(state, reasons)`。
 
@@ -335,17 +511,25 @@ def state_of(plugin: Plugin, disabled: set[str] | None = None) -> tuple[str, lis
     off = disabled if disabled is not None else disabled_ids()
 
     results = {(r.module, r.purpose): r for r in plugin_loader.results()}
+    skip = skipped()
     reasons: list[str] = []
     for mod in plugin.routers:
         res = results.get((mod, plugin_loader.ROUTER_PURPOSE))
         if res is None:
-            reasons.append(f"{mod}: 未注册（manifest 与 server.py 的注册表不一致）")
+            # 因为被关掉而**刻意没加载**的不算问题（否则关一个就报一条「未注册」，
+            # 把「你关的」和「坏掉的」混为一谈 —— 与三态分开是同一个道理）。
+            if (mod, plugin_loader.ROUTER_PURPOSE) not in skip:
+                reasons.append(f"{mod}: 未注册（manifest 与 server.py 的注册表不一致）")
         elif not res.ok:
             reasons.append(f"{mod}: {res.reason}")
     for hook in plugin.hooks:
+        # 钩子缺失**不报**：`when="main"` 的钩子只在 `python server.py` 时调用，
+        # 而 `state_of()` 在任意 import 场景下都会跑 —— 报「未调用」会把
+        # 「这个阶段还没到」当成「坏了」。钩子的失败仍然报（那是真失败）。
         res = results.get((hook["module"], hook["attr"]))
         if res is not None and not res.ok:
             reasons.append(f"{hook['module']}.{hook['attr']}: {res.reason}")
+    _ = skip  # （skip 只用于 router，见上）
 
     # 被关掉的插件**仍然把原因算出来**（理由见上），只是不计入 broken ——
     # 这样设置页可以说「你关的，而且它其实也加载失败了」，而不是把信息丢掉。
@@ -363,6 +547,7 @@ def catalog(*, include_disabled: bool = True) -> dict[str, Any]:
     """
     plugins = load_all()
     off = disabled_ids()
+    on = enabled_ids(off)
     out: list[dict[str, Any]] = []
     counts = {STATE_OK: 0, STATE_BROKEN: 0, STATE_DISABLED: 0}
     for p in plugins:
@@ -381,6 +566,11 @@ def catalog(*, include_disabled: bool = True) -> dict[str, Any]:
                 "core": p.is_core,
                 "state": state,
                 "reasons": reasons,
+                # 用户关了（`disabled`）但被别人依赖 → `enabled` 仍为 True。
+                # 前端开关必须读这个字段，不能拿 `state != "disabled"` 推 ——
+                # 那会让「被依赖而保留」的能力显示成关着的。
+                "enabled": p.id in on,
+                "blockedBy": dependents_of(p.id, off),
                 "requires": list(p.requires),
                 "routers": list(p.routers),
                 "routes": [dict(r) for r in p.routes],
@@ -398,5 +588,29 @@ def catalog(*, include_disabled: bool = True) -> dict[str, Any]:
             "broken": counts[STATE_BROKEN],
             "disabled": counts[STATE_DISABLED],
         },
+        # 开关是「重启生效」的：router 已经在启动时挂好了，改状态文件不会
+        # 立刻卸载路由。前端必须把这话说出来，否则用户以为开关坏了。
+        "restartRequired": True,
+        "presets": [
+            {
+                "id": name,
+                "label": PRESET_LABELS.get(name, name),
+                "plugins": sorted(preset_ids(name)),
+            }
+            for name in PRESETS
+        ],
+        "preset": _current_preset(off, plugins),
         "plugins": out,
     }
+
+
+def _current_preset(off: set[str], plugins: list[Plugin]) -> str:
+    """当前禁用集对应哪个预设；对不上就是 `"custom"`（用户逐项改过）。
+
+    注意比的是「用户写的禁用集」而不是 `enabled_ids()` 的结果 —— 后者会把
+    「被依赖而保留」的补回来，与任何预设都难以吻合。
+    """
+    for name in PRESETS:
+        if {p.id for p in plugins if p.id not in preset_ids(name)} == off:
+            return name
+    return "custom"

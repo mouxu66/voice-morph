@@ -22,6 +22,23 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolated_plugin_state(tmp_path_factory):
+    """把插件开关的状态文件挪到临时目录 —— **测试绝不能读写用户的真配置**。
+
+    第 6 步起 `outputs/plugins.json` 决定「哪些能力被挂载」：测试若读它，
+    某台开发机上残留的一份配置就能让全量测试集体变红（且红得莫名其妙）；
+    测试若写它，更是直接改掉用户设置。两样都不能发生，所以整个会话统一隔离。
+    需要验证写文件行为的用例，自己 `monkeypatch.setattr(plugin_manifest, "STATE_FILE", ...)`。
+    """
+    import plugin_manifest
+
+    real = plugin_manifest.STATE_FILE
+    plugin_manifest.STATE_FILE = tmp_path_factory.mktemp("plugin_state") / "plugins.json"
+    yield
+    plugin_manifest.STATE_FILE = real
+
+
 # ==================== 本机资源探测（"本机绿 ≠ CI 绿"的第二根轴）====================
 # 为什么需要（2026-09-13 CI 首次运行）：
 #     CI 首跑红了 9 failed + 4 errors，**没有一条是代码缺陷**，全部是

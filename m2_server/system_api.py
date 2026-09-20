@@ -6,6 +6,7 @@
 
 import config as cfg
 import plugin_loader
+import plugin_manifest
 import storage
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -79,8 +80,12 @@ def capabilities():
 def plugins():
     """插件目录：每个能力的声明（manifest）+ 三态状态 + 依赖关系。
 
-    **只读**：本步（`docs/插件化设计.md` 第 2 步）只把清单建起来并暴露出去，
-    挂载方式一点没动 —— 关/开插件是第 6 步（`POST /api/plugins/{id}/enable|disable`）。
+    第 2 步建清单时**只读**、挂载方式一点没动；第 6 步起端点仍是只读的
+    （写走 `POST /api/plugins/{id}/enable|disable` 与 `/api/plugins/preset`），
+    但清单里的 `enabled` / `blockedBy` 已经反映开关结果，`presets` 给出套餐定义。
+
+    ⚠️ 开关是**重启生效**的（router 在启动时挂好，热插拔本轮不做）：
+    响应里的 `restartRequired` 就是给前端转述用的，别让用户在界面上白点。
 
     与 `/capabilities` 的分工：
     · `/capabilities` 答「**模块**加载情况」（26 个 router 逐个成功/失败），是加载器的原始账本；
@@ -94,8 +99,6 @@ def plugins():
     关键是 `disabled`（用户主动关的）**不计入 broken**，否则关一个插件
     就会弹一条「N 个能力未加载」的降级横幅。
     """
-    import plugin_manifest
-
     catalog = plugin_manifest.catalog()
     res = plugin_loader.results()
     routers = [r for r in res if r.purpose == plugin_loader.ROUTER_PURPOSE]
@@ -107,6 +110,60 @@ def plugins():
         "broken": [r.label for r in res if not r.ok],
     }
     return catalog
+
+
+class _PresetBody(BaseModel):
+    preset: str = Field(..., description=f"预设名，可选：{sorted(plugin_manifest.PRESETS)}")
+
+
+@router.post("/plugins/preset")
+def apply_plugin_preset(body: _PresetBody):
+    """套用一个套餐预设（`docs/插件化设计.md` §8.1）。
+
+    **重启生效**：router 是启动时挂好的，改状态文件不会立刻卸载路由
+    （热插拔见设计稿 §9，本轮不做）。响应里带 `restartRequired` 就是为了让
+    前端能如实说出来 —— 否则用户点了开关却看不到变化，会以为开关坏了。
+    """
+    try:
+        rep = plugin_manifest.apply_preset(body.preset)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"没有这个预设：{body.preset!r}") from exc
+    return {**rep, "restartRequired": True}
+
+
+def _toggle(pid: str, on: bool):
+    """`enable` / `disable` 的公共实现。
+
+    404：没有这个能力（前端点了个不存在的 id，多半是前后端版本不一致）。
+    400：核心能力不可关 —— 关掉它整个界面就没有意义了，这不是"不允许"，
+        是"这个问题不该由开关来回答"，所以不给 409（409 暗示"换个时机再来"）。
+    409：关闭守卫 —— 仍有启用中的能力依赖它。detail 里**点名依赖者**，
+        用户得知道"想关 A，先关 B"，而不是只看到一个"操作被拒绝"。
+    """
+    try:
+        rep = plugin_manifest.set_enabled(pid, on)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"没有这个能力：{pid!r}") from exc
+    if rep["reason"] == "core":
+        raise HTTPException(status_code=400, detail=f"{pid} 是核心能力，不能关闭")
+    if rep["blocked_by"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{pid} 仍被 {('、'.join(rep['blocked_by']))} 依赖；先关掉它们",
+        )
+    return {**rep, "restartRequired": True}
+
+
+@router.post("/plugins/{pid}/enable")
+def enable_plugin(pid: str):
+    """启用一个能力（重启生效）。"""
+    return _toggle(pid, True)
+
+
+@router.post("/plugins/{pid}/disable")
+def disable_plugin(pid: str):
+    """关闭一个能力（重启生效）；若仍被别的能力依赖 → 409 并点名依赖者。"""
+    return _toggle(pid, False)
 
 
 @router.get("/diagnose")

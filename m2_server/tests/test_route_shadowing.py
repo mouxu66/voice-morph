@@ -57,7 +57,9 @@ def _routes() -> list[tuple[str, str, str, str]]:
     out: list[tuple[str, str, str, str]] = []
     not_loaded: list[str] = []
     empty: list[str] = []
-    for plugin_id, module in plugin_manifest.mount_plan():
+    # `include_disabled=True`：检查的是**结构**（任意组合下都不许有两条路由互相遮蔽），
+    # 与当前开关状态无关 —— 用户随时能把某个能力开回来。
+    for plugin_id, module in plugin_manifest.mount_plan(include_disabled=True):
         router = plugin_loader.load_router(module)
         if router is None:
             # 静默跳过会在守护上留一个洞（那个模块的路由没被检查）。

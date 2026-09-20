@@ -184,12 +184,14 @@ def _mount_all() -> None:
     「先装配完、再起副作用」的性质 —— warmup 会起一个加载 4.9G 模型的线程，
     让它和其它模块的 import 抢着跑没有好处。
     """
-    for plugin in plugin_manifest.load_all():
-        for module in plugin.routers:
-            _ROUTER_ORDER.append(module)
-            router = plugin_loader.load_router(module)
-            if router is not None:
-                app.include_router(router)
+    # `mount_plan()` 是模块名的唯一来源，且**第 6 步起默认跳过被关掉的能力** ——
+    # 关掉就要真的不 import（不拉 torch/CUDA 上下文、不吃显存），
+    # 只让前端不显示的话是「省了个入口，没省资源」。
+    for _plugin_id, module in plugin_manifest.mount_plan():
+        _ROUTER_ORDER.append(module)
+        router = plugin_loader.load_router(module)
+        if router is not None:
+            app.include_router(router)
 
     # 人偶市场默认皮肤物化（幂等）、音色市场远程图库后台同步（未配置时为 no-op）、
     # TTS worker + RVC 常驻模型预热（消除首条几十秒的模型加载：实测 TTS 冷

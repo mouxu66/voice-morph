@@ -205,8 +205,13 @@ def test_optional_hooks_are_spelled_correctly(module_name, attr):
 # ---------------------------------------------------------------- 3. 顺序冻结
 
 
-def test_mount_order_follows_the_manifest():
+def test_mount_order_follows_the_manifest(monkeypatch):
     """挂载顺序必须**完全等于**清单算出来的顺序。
+
+    `monkeypatch` 把禁用集钉成空：第 6 步起挂载会跳过被关掉的能力，
+    而这条比的是**结构**（清单 → server 的模块名来源），不该被某个开发机上
+    残留的 `outputs/plugins.json` 影响。跳过行为本身由
+    `tests/test_plugin_switch.py` 覆盖。
 
     清单是模块名的唯一来源（`server.py` 不再手写那 26 个模块名），所以这里比的是
     「`server.py` 有没有照清单走」，而不是「顺序是不是某个历史快照」。
@@ -219,6 +224,7 @@ def test_mount_order_follows_the_manifest():
     """
     import server
 
+    monkeypatch.setattr(plugin_manifest, "disabled_ids", lambda: set())
     expected = [module for _, module in plugin_manifest.mount_plan()]
     assert list(server._ROUTER_ORDER) == expected
     assert len(expected) == _ROUTER_COUNT

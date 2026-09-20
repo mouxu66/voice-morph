@@ -71,8 +71,20 @@ def test_light_preset_is_the_cheapest_real_option():
 
 
 def test_standard_preset_is_the_default():
-    assert pe.DEFAULT_PRESET == "standard"
+    pm = pe._manifest()
+    assert pm.DEFAULT_PRESET == "standard"
     assert pe.resolve()["preset"] == "standard"
+
+
+def test_presets_come_from_the_manifest_not_from_here():
+    """预设表**只在 `plugin_manifest` 里有一份**。
+
+    设置页要展示预设、开关接口要套用预设、安装脚本要按预设装包 —— 三处各写一份
+    必然漂，而且漂移的症状是"界面上选了轻量，实际按标准装了"，很难发现。
+    """
+    pm = pe._manifest()
+    assert not hasattr(pe, "PRESETS"), "预设表已从本模块移除，请改用 plugin_manifest.PRESETS"
+    assert pm.PRESETS["light"] == ["sound.offline-vc"]
 
 
 def test_unknown_preset_raises():

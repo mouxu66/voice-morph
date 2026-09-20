@@ -11,7 +11,7 @@ torch 2GB）+ demucs + qwen-tts。而用户可能只想换音色 —— 那 2GB 
 ------------
 1. `outputs/plugins.json` 的 `disabled` 列表（用户在设置页关掉的能力）——
    **这是真相源**：关掉的能力，它的重包不该再装。
-2. 新机器还没有那个文件时，用 `-Preset` 给的起点（见 `PRESETS`，定义与
+2. 新机器还没有那个文件时，用 `-Preset` 给的起点（见 `plugin_manifest.PRESETS`，定义与
    `docs/插件化设计.md` §8.1 一致）。
 3. `requires` 闭包：启用 A 就必须启用 A 依赖的 B（否则 A 起来也是 broken）。
 
@@ -40,20 +40,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 _M2 = ROOT / "m2_server"
 
-# 套餐预设：插件 id 的**起点**（`docs/插件化设计.md` §8.1 的表）。
-#   None = 全开。`core.*` 由 `_expand()` 自动补上（它们不可关）。
-PRESETS: dict[str, list[str] | None] = {
-    # 轻量：只要一个能变声的，硬盘紧张
-    "light": ["sound.offline-vc"],
-    # 标准（默认）：绝大多数人
-    "standard": ["sound.workshop", "sound.tts", "sound.rvc-live", "sound.offline-vc", "sound.audition"],
-    # 全能：全开
-    "full": None,
-    # 只装核心：连离线变声都不要（跑测试 / CI 用）
-    "core": [],
-}
-
-DEFAULT_PRESET = "standard"
+# 套餐预设**定义在 `plugin_manifest.PRESETS`**（`docs/插件化设计.md` §8.1 的表）。
+# 不放本模块：设置页要展示预设、开关接口要套用预设，三处不能各写一份。
+# 本模块每次调用时从 manifest 读，保证与后端永远一致。
 
 # 必须从 **CUDA 索引** 装的包。直接从 PyPI 装会拿到 CPU 版 →
 # "显存不可用、推理静默失效"（README 警告过的那条红线），所以单独拎出来。
@@ -71,57 +60,35 @@ def _manifest():
     return plugin_manifest
 
 
-def _expand(ids: set[str], plugins: dict) -> set[str]:
-    """补上 `core.*` 与 `requires` 闭包。
-
-    * `core.*` 不可关（关掉整个界面就没意义了），无论预设怎么给都补上。
-    * `requires` 是硬依赖：启用试音间就得启用离线变声，否则试音间起来也是 broken。
-      依赖 id 若在清单里不存在（写错了），**直接抛** —— 静默忽略会让安装清单悄悄少东西。
-    """
-    out = {pid for pid in ids if pid in plugins}
-    out |= {pid for pid, p in plugins.items() if p.is_core}
-    queue = list(out)
-    while queue:
-        pid = queue.pop()
-        for req in plugins[pid].requires:
-            if req not in plugins:
-                raise KeyError(f"{pid} 依赖的 {req!r} 不在清单里（plugin.json 写错了？）")
-            if req not in out:
-                out.add(req)
-                queue.append(req)
-    return out
-
-
 def resolve(preset: str | None = None, only: list[str] | None = None) -> dict:
     """算出一份"启用集 → 要装的包"清单。
 
     参数
     ----
-    preset : `PRESETS` 的键；`None` 时取 `DEFAULT_PRESET`。给了 `only` 就忽略它。
+    preset : `plugin_manifest.PRESETS` 的键；`None` 时取默认预设。给了 `only` 就忽略它。
     only   : 显式指定启用的插件 id（高级用法 / 测试用）。
     """
     pm = _manifest()
     plugins = {p.id: p for p in pm.load_all()}
 
     if only:
-        wanted = _expand(set(only), plugins)
+        wanted = pm.expand(set(only))
         preset_used = "(显式 -Plugins)"
     else:
-        name = preset or DEFAULT_PRESET
-        if name not in PRESETS:
-            raise KeyError(f"未知预设 {name!r}，可选：{sorted(PRESETS)}")
-        spec = PRESETS[name]
-        wanted = _expand(set(plugins) if spec is None else set(spec), plugins)
+        name = preset or pm.DEFAULT_PRESET
+        if name not in pm.PRESETS:
+            raise KeyError(f"未知预设 {name!r}，可选：{sorted(pm.PRESETS)}")
+        wanted = pm.preset_ids(name)
         preset_used = name
 
     # 用户关掉的能力：再减掉一次。但**被别的启用插件依赖**的不能真减 ——
     # 宁可多装一个包，也不要让"关掉 A"把"还在用的 B"弄缺件。
-    # （第 6 步的关闭守卫会从源头拦住这种状态：依赖没关的能力不许关；
-    #   在那之前，这里按"保守保留"处理，并把保留的原因报出来。）
+    # 保留与否统一由 manifest 的 `enabled_ids()` 判定（后端挂载用的是同一份逻辑，
+    # 两处各判一次必然漂），这里只做「取交集」。
     disabled = pm.disabled_ids()
-    depended_on = {r for pid in wanted if pid not in disabled for r in plugins[pid].requires}
-    effective_off = {pid for pid in disabled if pid in wanted and pid not in depended_on}
-    kept = {pid for pid in disabled if pid in wanted and pid in depended_on}
+    on = pm.enabled_ids(disabled)
+    effective_off = {pid for pid in wanted if pid not in on}
+    kept = {pid for pid in disabled if pid in wanted and pid in on}
     enabled = sorted(wanted - effective_off, key=lambda i: plugins[i].order)
 
     pkgs: list[str] = []
@@ -227,7 +194,7 @@ def _print_human(rep: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="按启用集算插件 extras")
-    ap.add_argument("--preset", choices=sorted(PRESETS), default=None)
+    ap.add_argument("--preset", choices=sorted(_manifest().PRESETS), default=None)
     ap.add_argument("--plugins", nargs="*", default=None, help="显式指定启用的插件 id")
     ap.add_argument("--json", action="store_true", help="输出 JSON（setup_env.ps1 消费）")
     ap.add_argument("--check", action="store_true", help="逐项对账：这些包当前装了没")

@@ -157,7 +157,9 @@ def test_mount_plan_is_plugin_order_then_declared_router_order():
     互相遮蔽，所以顺序对 handler 归属没有影响；该守的是「不许出现重叠」，见
     `tests/test_route_shadowing.py`。
     """
-    plan = plugin_manifest.mount_plan()
+    # `include_disabled=True`：这条比的是「清单 → 挂载计划」的结构映射，
+    # 不是「当前哪些能力开着」（那是 `tests/test_plugin_switch.py` 的事）。
+    plan = plugin_manifest.mount_plan(include_disabled=True)
     plugins = plugin_manifest.load_all()
 
     # 按插件切块（挂载计划里同一插件的模块必然相邻）
@@ -531,7 +533,11 @@ def test_plugins_endpoint_shape_and_consistency():
         "id", "name", "kind", "category", "order", "summary", "core",
         "state", "reasons", "requires", "routers", "routes", "legacyRoutes",
         "extras", "health", "disableNote",
+        # 第 6 步：开关状态。`enabled` 不能由 `state` 推（被依赖而保留的能力
+        # state=disabled 而 enabled=True），`blockedBy` 用于"想关 A 先关 B"的提示。
+        "enabled", "blockedBy",
     } <= set(one)
+    assert {"presets", "preset", "restartRequired"} <= set(body)
 
 
 def test_plugins_endpoint_does_not_import_heavy_libs():
