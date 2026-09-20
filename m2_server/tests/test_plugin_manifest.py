@@ -11,7 +11,9 @@
 | 4 个启动钩子都被声明，且 `when` 与**实际调用时机**一致 | `test_all_four_...` / `test_hooks_fire_...` |
 | 健康探针 / `extras` 不写不存在的东西 | `test_health_...` / `test_extras_...` |
 | **三态**：`disabled` 不能被算成 `broken` | `test_disabled_...` |
-| 清单与**前端**（路由 + 侧边栏）对得上 | `test_frontend_...` |
+| 前端**不再硬编码**路由/侧栏，只能从清单拿 | `test_app_tsx_no_longer_...` / `test_studio_nav_no_longer_...` |
+| 清单里的 IA 是**冻结快照**（少一条就红） | `test_manifest_routes_are_the_frozen_...` / `..._nav_is_the_frozen_...` |
+| 声明的页面 / 导出在磁盘上真的存在（全量） | `test_declared_page_module_and_export_exist` |
 | 用户配置不会被存储清理顺手删掉 | `test_plugins_json_...` |
 | `/api/plugins` 与 `/api/capabilities` 不互相矛盾 | `test_plugins_endpoint_...` |
 
@@ -337,79 +339,185 @@ def test_missing_or_broken_state_file_means_nothing_disabled(tmp_path, monkeypat
 
 
 # ------------------------------------------------------- 与前端对齐
+#
+# 第 4 步之前这里是**正则扒源码**：从 `App.tsx` 抓 `<Route path="…">`、从
+# `StudioNav.tsx` 抓 `START_ITEMS` / `MORE_ITEMS` 两个数组，再与清单逐条对账。
+# 第 4 步把两处都换成清单驱动后，**源码里没有那些字面量了** —— 扒出来两边都是空集，
+# 对账会「两边都空」地白绿（`docs/犯错指南.md` §8.19 那一类），所以必须换掉。
+#
+# 换成三条方向不同的门禁，合起来仍等价于原来那条「前端呈现的页面 == 清单声明的页面」：
+#
+#   A. 前端确实不再硬编码 → 它**只能**从清单拿（两条 `..._no_longer_hardcodes_...`）
+#   B. 清单里的 IA 是**冻结快照** → 清单不会悄悄少一条（两条 `..._frozen_...`）
+#
+#   A ∧ B  ⇒  前端呈现的页面集合 == 冻结的那一份
+#
+# 另一件事 —— 「前端能不能**正确**消费清单」（glob key 公式、具名导出名、图标注册表、
+# `disabled` 过滤）**在 Python 里验不了**，要真跑 JS。它由 `web/src/lib/pluginRoutes.test.ts`
+# 负责，CI 的 web job 会 `npx vitest run`。下面 `test_declared_page_module_and_export_exist`
+# 只做「磁盘上真的存在」那一层。
 
 
-def _app_route_paths() -> set[str]:
-    return set(re.findall(r'<Route\s+path="([^"]+)"', _APP_TSX))
+# 路径写在 `<Route>` 标签里的任意位置都要抓到（不能只认 `<Route path="` 开头，
+# 那漏掉 `<Route element={…} path="/x">` 这种写法）
+_LITERAL_ROUTE_RE = re.compile(r'<Route\b[^>]*?\bpath="([^"]+)"')
+_PAGE_STATIC_IMPORT_RE = re.compile(r'from\s+"@/pages/[^"]+"')
+
+# `/` 与 `*` 是外壳兜底（重定向到首页），不属于任何插件，允许字面量
+_APP_SHELL_PATHS = frozenset({"/", "*"})
 
 
-def _nav_items(group: str) -> list[tuple[str, str, str]]:
-    """从 `StudioNav.tsx` 里取某组的 `(path, label, icon)`，按源码顺序。
+def test_app_tsx_no_longer_hardcodes_page_routes():
+    """`App.tsx` 不许再静态 import 页面、也不许写死页面路径。
 
-    两组的名字就是源码里那两个数组（`START_ITEMS` / `MORE_ITEMS`）—— 只取那一段，
-    避免把文件里其它形如 `{ path: … }` 的对象一起卷进来。
+    第 4 步的全部意义就是「页面从清单来」。只要有人把一条 `<Route path="/xxx">` 或者
+    一个 `import { XRoute } from "@/pages/X/index"` 加回去，那条路径就**不受清单管辖**了：
+    清单里删掉它前端照样显示、清单里改了路径前端照样显示旧路径 —— 漂移重新长出来，
+    而且没有任何门禁会红（这正是第 4 步要消灭的东西）。
     """
-    const = "START_ITEMS" if group == "start" else "MORE_ITEMS"
-    m = re.search(rf"const {const}: NavItem\[\] = \[(.*?)\n\]", _NAV_TSX, re.S)
-    assert m, f"StudioNav.tsx 里找不到 {const}"
-    return re.findall(
-        r'\{\s*path:\s*"([^"]+)",\s*label:\s*"([^"]+)",\s*icon:\s*([A-Za-z0-9_]+)', m.group(1)
+    literals = set(_LITERAL_ROUTE_RE.findall(_APP_TSX))
+    # 空集哨兵：把 <Routes> 整块删掉也能让下面那条不等式成立
+    assert literals, "App.tsx 里一条字面量 <Route> 都没有 —— <Routes> 是不是被删了？"
+    assert literals <= _APP_SHELL_PATHS, (
+        f"App.tsx 里写死了页面路径 {sorted(literals - _APP_SHELL_PATHS)}；"
+        "页面路径只能来自清单（plugins/<id>/plugin.json 的 routes[].path）"
+    )
+    static_imports = _PAGE_STATIC_IMPORT_RE.findall(_APP_TSX)
+    assert not static_imports, (
+        f"App.tsx 里还有静态页面 import：{static_imports}；"
+        "页面必须走 import.meta.glob + 清单白名单懒加载（见 lib/pluginRoutes.tsx）"
+    )
+    # 正向要求：确实接了清单。只看「没有写死」不够 —— 两条路都不走也是「没写死」。
+    assert "buildRoutes(" in _APP_TSX, "App.tsx 没调用 buildRoutes：它到底怎么拿到路由的？"
+    assert "usePluginCatalog(" in _APP_TSX, "App.tsx 没读能力清单"
+
+
+def test_studio_nav_no_longer_hardcodes_nav_items():
+    """`StudioNav.tsx` 不许再有硬编码导航数组，也不许写死链接目标。
+
+    只检查「旧数组没了」是不够的（删掉数组留个空 `[]` 也算删），所以正面要求它
+    调用 `navItems(...)`。
+    """
+    assert not re.search(r"const\s+(START_ITEMS|MORE_ITEMS)\b", _NAV_TSX), (
+        "StudioNav.tsx 里还有 START_ITEMS / MORE_ITEMS 硬编码数组"
+    )
+    literals = re.findall(r'\bto="(/[^"]*)"', _NAV_TSX)
+    assert not literals, f"StudioNav.tsx 里写死了链接目标 {literals}；应统一用 item.path"
+    assert "navItems(" in _NAV_TSX, "StudioNav.tsx 没从清单取导航（navItems）"
+    assert "usePluginCatalog(" in _NAV_TSX, "StudioNav.tsx 没读能力清单"
+
+
+# 信息架构的**冻结快照**（2026-09-20 第 4 步落地时的状态）。
+#
+# 为什么这份冻结、而 `test_plugin_loader.py` 里「路由挂载顺序」那份冻结被删了？
+#   · 挂载顺序**没有语义**（09-20 实测 139 条路由 0 重叠，见 `docs/插件化设计.md` §7 更正块），
+#     冻结它只会带来无意义的快照 churn；
+#   · 导航的信息架构**是产品决定** —— 「极简模式 = 首页 + 三条主路径」（09-15）、
+#     「试音间进开始组」（09-18）都是明确拍板的，改动必须有意为之，不能顺手。
+#
+# 第 4 步之后清单是 IA 的**唯一**来源：改 `plugin.json` 就是改产品。没有这两条门禁，
+# 少一个 nav 项、挪一下 `order`、删一条旧路由重定向，不会有任何东西发现。
+_FROZEN_ROUTES: tuple[tuple[str, str, str], ...] = (
+    # (path, module, export)
+    ("/home", "Home", "HomeRoute"),
+    ("/voices", "Voices", "VoicesRoute"),
+    ("/pet-market", "PetMarket", "PetMarketRoute"),
+    ("/audition", "Audition", "AuditionRoute"),
+    ("/offlinevc", "OfflineVc", "OfflineVcRoute"),
+    ("/live", "Live", "LiveRoute"),
+    ("/tts", "Tts", "TtsRoute"),
+    ("/workshop", "Workshop", "WorkshopRoute"),
+)
+
+_FROZEN_LEGACY: tuple[tuple[str, str], ...] = (
+    # (path, redirect) —— 旧书签不能 404
+    ("/market", "/voices?tab=market"),
+    ("/wechat", "/tts?tab=wechat"),
+    ("/audiobook", "/tts?tab=book"),
+    ("/effects", "/offlinevc?tab=fx"),
+    ("/ft", "/workshop?tab=ft"),
+    ("/cascade", "/live?tab=qwen"),
+    ("/qwen", "/live?tab=qwen"),
+    ("/discover", "/workshop?tab=discover"),
+)
+
+_FROZEN_NAV: tuple[tuple[str, str, str, str, int], ...] = (
+    # (path, label, icon, group, order) —— 已按 group + order 排成用户看到的先后
+    ("/home", "首页", "Home", "start", 10),
+    ("/audition", "试音间", "AudioLines", "start", 20),
+    ("/tts", "输字变声", "Speech", "start", 30),
+    ("/workshop", "训练变声", "Mic2", "start", 40),
+    ("/offlinevc", "工具箱", "Wrench", "start", 50),
+    ("/voices", "我的音色", "Library", "more", 10),
+    ("/live", "实时变声", "Radio", "more", 20),
+    ("/pet-market", "桌宠皮肤", "PawPrint", "more", 30),
+)
+
+
+def test_manifest_routes_are_the_frozen_page_set():
+    """真页面 + 旧路由重定向 = 冻结快照。少一条、改一条路径都要显式改这里。"""
+    got = tuple(
+        (r["path"], r["module"], r["export"]) for p in plugin_manifest.load_all() for r in p.routes
+    )
+    assert sorted(got) == sorted(_FROZEN_ROUTES), (
+        f"页面集合变了（对称差）：{sorted(set(got) ^ set(_FROZEN_ROUTES))}"
+    )
+    got_legacy = tuple(
+        (r["path"], r["redirect"]) for p in plugin_manifest.load_all() for r in p.legacy_routes
+    )
+    assert sorted(got_legacy) == sorted(_FROZEN_LEGACY), (
+        f"旧路由重定向变了（对称差）：{sorted(set(got_legacy) ^ set(_FROZEN_LEGACY))}"
     )
 
 
-def test_manifest_routes_match_app_tsx():
-    """清单声明的路由必须与 `App.tsx` 里真实渲染的路由**完全一致**。
+def test_manifest_nav_is_the_frozen_information_architecture():
+    """侧边栏的（路径 / 标签 / 图标 / 分组 / 组内序）= 冻结快照。
 
-    第 4 步要拿这份清单去替掉 `App.tsx` 的硬编码，所以现在就得对账 ——
-    否则等替换那天才发现清单少了一条旧路由（旧书签会 404，而且没人会立刻注意到）。
+    `order` 也是 IA 的一部分：它决定用户在侧栏看到的先后。
     """
-    declared = {r["path"] for p in plugin_manifest.load_all() for r in p.routes}
-    declared |= {r["path"] for p in plugin_manifest.load_all() for r in p.legacy_routes}
-    actual = _app_route_paths()
-    # `/` 与 `*` 是外壳（重定向到首页/兜底），不属于任何插件
-    assert declared == actual - {"/", "*"}, f"只在 App.tsx：{sorted(actual - declared - {'/', '*'})}"
-
-
-def test_manifest_nav_matches_studio_nav():
-    """侧边栏项（标签/图标/分组）要与 `StudioNav.tsx` 逐条对上，**顺序也要**。
-
-    导航顺序就是产品的信息架构（“开始”组的主路径 + “更多功能”），
-    清单若与它对不上，第 4 步切过去就会把侧边栏悄悄重排 —— 那种改动很难在
-    code review 里被看见（"只是换了个顺序"），所以拿断言钉住。
-    """
-    declared = [
-        (p.id, r["path"], r["nav"]["label"], r["nav"]["icon"], r["nav"]["group"], r["nav"]["order"])
+    got = tuple(
+        (r["path"], r["nav"]["label"], r["nav"]["icon"], r["nav"]["group"], r["nav"]["order"])
         for p in plugin_manifest.load_all()
         for r in p.routes
         if r.get("nav")
-    ]
-    declared_paths = {row[1] for row in declared}
-    for group in ("start", "more"):
-        want = [(path, label, icon) for path, label, icon in _nav_items(group)]
-        got = sorted(
-            [(path, label, icon) for _, path, label, icon, g, _o in declared if g == group],
-            key=lambda row: next(o for _, p2, _l, _i, g2, o in declared if p2 == row[0] and g2 == group),
-        )
-        assert got == want, f"{group} 组不一致：{got} != {want}"
-    # 反向：StudioNav 里的项必须都在清单里（漏了会让侧边栏在替换后少一项）
-    assert declared_paths == {p for g in ("start", "more") for p, _, _ in _nav_items(g)}
+    )
+    assert sorted(got) == sorted(_FROZEN_NAV), (
+        f"导航 IA 变了（对称差）：{sorted(set(got) ^ set(_FROZEN_NAV))}"
+    )
+    # 独立于快照的不变量：每个真页面都得有导航项，否则页面存在但**侧栏里找不到入口**
+    # （旧路由不需要 nav —— 它们只是重定向，不是页面）
+    pages = {r["path"] for p in plugin_manifest.load_all() for r in p.routes}
+    navs = {row[0] for row in _FROZEN_NAV}
+    assert pages == navs, f"有页面没有导航项（用户找不到入口）：{sorted(pages - navs)}"
 
 
-@pytest.mark.parametrize("plugin_id", ["core.system", "sound.tts", "pet.market"])
-def test_declared_page_module_and_export_exist(plugin_id):
+def test_declared_page_module_and_export_exist():
     """`routes[].module/export` 必须在 `web/src/pages/<module>/index.tsx` 里真的是那个导出。
 
     页面全是**具名导出**（`Home/index.tsx` → `HomeRoute`），没有 default export，
     所以 `import.meta.glob` 必须指名取哪个 —— 名字打错 = 白屏，且在构建期不报错。
+
+    覆盖**全部**插件（原来只抽查 3 个）。「glob 里到底有没有这个 key」那一层
+    由 `web/src/lib/pluginRoutes.test.ts` 验（那要真跑 JS）。
     """
-    plugin = next(p for p in plugin_manifest.load_all() if p.id == plugin_id)
-    for r in plugin.routes:
-        page = _ROOT / "web" / "src" / "pages" / r["module"] / "index.tsx"
-        assert page.is_file(), f"{plugin_id}: 找不到页面 {page}"
-        src = page.read_text(encoding="utf-8")
-        assert re.search(rf"(?m)^export\s+(?:default\s+)?(?:function|const)\s+{re.escape(r['export'])}\b", src), (
-            f"{plugin_id}: {r['module']}/index.tsx 里没有导出 {r['export']}"
-        )
+    plugins = [p for p in plugin_manifest.load_all() if p.routes]
+    assert plugins, "没有任何插件声明 routes —— 清单是不是整个坏了？"
+    problems: list[str] = []
+    checked = 0
+    for plugin in plugins:
+        for r in plugin.routes:
+            page = _ROOT / "web" / "src" / "pages" / r["module"] / "index.tsx"
+            if not page.is_file():
+                problems.append(f"{plugin.id}: 找不到页面 {page}")
+                continue
+            src = page.read_text(encoding="utf-8")
+            if not re.search(
+                rf"(?m)^export\s+(?:default\s+)?(?:function|const)\s+{re.escape(r['export'])}\b", src
+            ):
+                problems.append(f"{plugin.id}: {r['module']}/index.tsx 里没有导出 {r['export']}")
+            checked += 1
+    assert not problems, "；".join(problems)
+    assert checked == len(_FROZEN_ROUTES), f"只核了 {checked} 条页面，期望 {len(_FROZEN_ROUTES)}"
 
 
 # ------------------------------------------------------- 端点 / 存储保护

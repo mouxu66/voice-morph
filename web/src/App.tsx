@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { getHealth, listVoices } from "@/api/client"
 import { AppChrome } from "@/components/layout/AppChrome"
@@ -10,19 +10,13 @@ import { CapabilityPanel } from "@/components/CapabilityPanel"
 import { LicensesDialog } from "@/components/LicensesDialog"
 import { PetGuide } from "@/components/PetGuide"
 import { UpdateDialog } from "@/components/UpdateDialog"
+import { NoticePanel, RouteBoundary, RouteFallback } from "@/components/RouteBoundary"
 import { ToastViewport } from "@/lib/notify"
+import { buildRoutes, usePluginCatalog } from "@/lib/pluginRoutes"
 import { appVersion, getSetupStatus, hasSetup, hasUpdate as canCheckUpdate, onUpdateAvailable, petGuide, saveSetup, type PetGuidePayload, type UpdateCheck } from "@/lib/electron"
 import { useAppStore } from "@/store/useAppStore"
 import { getStoredSimpleMode, setStoredSimpleMode } from "@/theme"
-import { HomeRoute } from "@/pages/Home/index"
 import { FirstLaunchGuide } from "@/components/FirstLaunchGuide"
-import { AuditionRoute } from "@/pages/Audition/index"
-import { LiveRoute } from "@/pages/Live/index"
-import { TtsRoute } from "@/pages/Tts/index"
-import { VoicesRoute } from "@/pages/Voices/index"
-import { WorkshopRoute } from "@/pages/Workshop/index"
-import { OfflineVcRoute } from "@/pages/OfflineVc/index"
-import { PetMarketRoute } from "@/pages/PetMarket/index"
 
 /** 桌宠换装首启引导载荷：首次启动由桌宠开口介绍"可以换样子"，设置里也可手动重播 */
 function onboardingGuide(): PetGuidePayload {
@@ -114,6 +108,21 @@ export default function App() {
     return () => window.removeEventListener("replay-pet-onboarding" as any, onReplay)
   }, [sayPetOnboarding])
 
+  // ---- 页面路由由能力清单驱动（插件化第 4 步）----
+  // 清单里声明了「哪些能力存在、每个能力的页面在哪个模块、导出叫什么名字」，
+  // 这里只负责把它变成 <Route>。见 lib/pluginRoutes.tsx 的三条注意事项。
+  const { state: catalogState, reload: reloadCatalog } = usePluginCatalog()
+
+  const routePlan = useMemo(() => {
+    if (catalogState.status !== "ready") return null
+    const { routes, legacy } = buildRoutes(catalogState.catalog)
+    // `/` 与 `*` 两条兜底要重定向到首页，所以首页必须存在。真找不到就退回第一条可用路由，
+    // 一条都没有则交给下面渲染「没有可用页面」—— **绝不能让 `*` 指向一个不存在的路径**，
+    // 那会变成无限重定向，症状是整页卡死而不是报错，极难往回查。
+    const home = routes.some((r) => r.path === "/home") ? "/home" : (routes[0]?.path ?? null)
+    return { routes, legacy, home }
+  }, [catalogState])
+
   return (
     <div className="relative min-h-[100dvh] bg-background text-foreground">
       {/* 氛围层：纯 CSS 绘制（光晕/工程网格），不拦截交互、不参与布局 */}
@@ -142,27 +151,46 @@ export default function App() {
 
       {/* 窄屏 56px 顶栏 + 44px 横向导航，桌面端让开侧栏 */}
       <main className="relative min-h-[100dvh] pt-[100px] lg:pl-[var(--sidebar-w)] lg:pt-14">
-        <Routes>
-          <Route path="/home" element={<HomeRoute />} />
-          <Route path="/" element={<Navigate to="/home" replace />} />
-          <Route path="/workshop" element={<WorkshopRoute />} />
-          <Route path="/voices" element={<VoicesRoute />} />
-          <Route path="/live" element={<LiveRoute />} />
-          <Route path="/audition" element={<AuditionRoute />} />
-          <Route path="/tts" element={<TtsRoute />} />
-          <Route path="/offlinevc" element={<OfflineVcRoute />} />
-          <Route path="/pet-market" element={<PetMarketRoute />} />
-          {/* 旧路由重定向到合并页对应 tab */}
-          <Route path="/discover" element={<Navigate to="/workshop?tab=discover" replace />} />
-          <Route path="/ft" element={<Navigate to="/workshop?tab=ft" replace />} />
-          <Route path="/market" element={<Navigate to="/voices?tab=market" replace />} />
-          <Route path="/qwen" element={<Navigate to="/live?tab=qwen" replace />} />
-          <Route path="/cascade" element={<Navigate to="/live?tab=qwen" replace />} />
-          <Route path="/audiobook" element={<Navigate to="/tts?tab=book" replace />} />
-          <Route path="/wechat" element={<Navigate to="/tts?tab=wechat" replace />} />
-          <Route path="/effects" element={<Navigate to="/offlinevc?tab=fx" replace />} />
-          <Route path="*" element={<Navigate to="/home" replace />} />
-        </Routes>
+        {/* 三态：清单读取失败 / 一条路由都没有 / 正常渲染。
+            前两态**不渲染 <Routes>** —— 否则 `*` 兜底会把人往一个不存在的首页上引。 */}
+        {routePlan === null ? (
+          catalogState.status === "error" ? (
+            <NoticePanel
+              title="读不到能力清单"
+              desc="界面上的页面清单来自后端的 /api/plugins。拿不到它就没法知道有哪些页面可去，所以这里不猜、也不降级成空界面。后端可能刚启动或已退出。"
+              detail={catalogState.message}
+              actionLabel="重试"
+              onAction={reloadCatalog}
+            />
+          ) : (
+            <RouteFallback />
+          )
+        ) : routePlan.home === null ? (
+          <NoticePanel
+            title="没有可用的页面"
+            desc="能力清单里一条页面路由都没有。这通常意味着后端清单被改坏了（plugins/<id>/plugin.json 的 routes）。"
+            actionLabel="重新加载"
+            onAction={() => window.location.reload()}
+          />
+        ) : (
+          <RouteBoundary>
+            <Suspense fallback={<RouteFallback />}>
+              <Routes>
+                {/* 真页面：路径 / 模块 / 导出全部来自清单，前端不再手写 */}
+                {routePlan.routes.map(({ path, Component }) => (
+                  <Route key={path} path={path} element={<Component />} />
+                ))}
+                {/* 旧路由重定向到合并页对应 tab（清单的 legacy_routes） */}
+                {routePlan.legacy.map(({ path, redirect }) => (
+                  <Route key={path} path={path} element={<Navigate to={redirect} replace />} />
+                ))}
+                {/* 外壳兜底：不属于任何插件 */}
+                <Route path="/" element={<Navigate to={routePlan.home} replace />} />
+                <Route path="*" element={<Navigate to={routePlan.home} replace />} />
+              </Routes>
+            </Suspense>
+          </RouteBoundary>
+        )}
       </main>
 
       {/* 缺模型时的全局降级提示：不阻塞启动，只提示相关功能不可用 */}
