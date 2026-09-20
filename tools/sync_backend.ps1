@@ -84,7 +84,13 @@ function Sync-Dir {
     $copied = 0
     Get-ChildItem -Path $Src -File -Recurse | ForEach-Object {
         $rel = $_.FullName.Substring($Src.Length).TrimStart('\')
-        # 排除规则：pycache / 日志 / 备份 / 临时
+        # 排除规则：与 m2_server/backend_autosync.py 的 _EXCLUDE_DIRS / _EXCLUDE_SUFFIX 一致
+        # （两处各写一份常量，test_backend_autosync.py 会同时钉住两者。）
+        # 2026-09-19 补上目录级这一条：tests / desktop-control / .pytest_cache 是开发期产物，
+        # 其中 tools/desktop-control/out/ 是 95MB 本地调试截图 —— 发行物 filter 早已排除它们，
+        # 只有镜像这两条没排（副本 121MB 里几乎全是这两块）。
+        if ($rel -match '(^|\\)(__pycache__|\.pytest_cache|\.git|node_modules|\.venv|tests|desktop-control)(\\|$)') { return }
+        # pycache / 日志 / 备份 / 临时
         if ($rel -match '(__pycache__|\.pyc$|\.pyo$|\.log$|\.bak$|\.tmp$)') { return }
         $dest = Join-Path $Dst $rel
         $destDir = Split-Path -Parent $dest

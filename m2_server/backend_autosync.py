@@ -29,8 +29,22 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# 与 tools/sync_backend.ps1 的排除正则保持一致的目录/后缀
-_EXCLUDE_DIRS = {"__pycache__", ".git", "node_modules", ".venv"}
+# 与 tools/sync_backend.ps1 的排除正则保持一致的目录/后缀。
+# 目录级这一组原本只有缓存/版本控制/虚拟环境，于是 `m2_server/tests/` 与
+# `tools/desktop-control/`（`out/` 下是本地调试截图）被**整份镜像进副本** ——
+# 2026-09-19 实测副本总共 121MB，其中 95MB 是 `desktop-control/out/`、764K 是 `tests/`，
+# 而 `web/package.json` 的 extraResources filter 早已把这两者排除在**发行物**之外。
+# 同一件事被写成了两套规则，这里补齐：排除后 `tools/verify_backend_sync.py` 也会一致地
+# 跳过它们（它直接复用本模块的 `_walk`，不另写一份遍历）。
+_EXCLUDE_DIRS = {
+    "__pycache__",
+    ".pytest_cache",
+    ".git",
+    "node_modules",
+    ".venv",
+    "tests",
+    "desktop-control",
+}
 _EXCLUDE_SUFFIX = (".pyc", ".pyo", ".log", ".bak", ".tmp")
 
 # (源相对路径, 副本内目标名)——tools 同步进副本供安装版"运行环境体检"使用

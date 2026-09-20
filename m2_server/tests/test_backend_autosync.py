@@ -173,12 +173,46 @@ def test_sync_ps1_exclude_rule_matches_autosync():
     `backend_autosync.py` 的注释明写"与 tools/sync_backend.ps1 的排除正则保持一致"，
     但两边是**各写一份**的常量 —— 改动一边忘了另一边，就会出现"autosync 拷了、
     手动脚本没拷"的诡异差异。这里把两者都钉在同一个集合上。
+
+    2026-09-19 扩到**目录级**：原先只钉后缀，而漏洞恰好就在目录上 ——
+    `tools/desktop-control/`（95MB 本地截图）与 `m2_server/tests/` 被整份镜像进副本，
+    两边都没写这两条。所以目录同样要成对。
     """
     ps1 = _SYNC_PS1.read_text("utf-8")
     for token in ("__pycache__", "\\.pyc$", "\\.pyo$", "\\.log$", "\\.bak$", "\\.tmp$"):
         assert token in ps1, f"sync_backend.ps1 的排除正则里缺 {token!r}"
     for token in backend_autosync._EXCLUDE_SUFFIX:
         assert token.lstrip(".") in ps1, f"autosync 排除了 {token!r}，脚本的排除正则里却没有"
+    # 只在真正的 `-match` 行里找目录名：ps1 正文里提到 "tests" 的地方太多了，
+    # 拿全文断言等于什么都没断（会静默变成一条永远为真的守卫）。
+    match_lines = "\n".join(line for line in ps1.splitlines() if "-match '" in line)
+    for d in backend_autosync._EXCLUDE_DIRS:
+        assert d in match_lines, f"autosync 排除了目录 {d!r}，脚本的排除正则里却没有"
+
+
+def test_dev_only_dirs_are_not_mirrored(dev_root):
+    """`tests/` 与 `desktop-control/` 不进副本 —— 它们是开发期产物，且体积惊人。
+
+    2026-09-19 实测（给已安装的桌面端同步之后）：副本共 121MB，其中
+    `tools/desktop-control/` 占 95MB（本地调试截图）、`m2_server/tests/` 占 764K，
+    而发行物（`web/package.json` 的 extraResources filter）两样都不带。
+    """
+    root, tgt = dev_root
+    (root / "m2_server" / "tests").mkdir()
+    (root / "m2_server" / "tests" / "test_x.py").write_text("pass\n", encoding="utf-8")
+    (root / "m2_server" / ".pytest_cache").mkdir()
+    (root / "m2_server" / ".pytest_cache" / "CACHEDIR.TAG").write_text("x\n", encoding="utf-8")
+    (root / "tools" / "desktop-control" / "out").mkdir(parents=True)
+    (root / "tools" / "desktop-control" / "out" / "shot.png").write_bytes(b"\x00")
+    (root / "tools" / "desktop-control" / "cdp.py").write_text("pass\n", encoding="utf-8")
+
+    backend_autosync.sync_backend_copy(root)
+
+    assert (tgt / "m2_server" / "server.py").is_file(), "生产文件照旧要同步"
+    assert (tgt / "tools" / "doctor.py").is_file()
+    assert not (tgt / "m2_server" / "tests").exists()
+    assert not (tgt / "m2_server" / ".pytest_cache").exists()
+    assert not (tgt / "tools" / "desktop-control").exists()
 
 
 def test_sync_ps1_is_copy_only_and_says_so():

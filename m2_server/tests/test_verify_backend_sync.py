@@ -131,27 +131,38 @@ def test_diff_pair_absent_dst_dir(tmp_path):
 
 
 def test_ignorable_diffs_do_not_count_as_prod(tmp_path):
-    """测试目录 / 缓存的差异只能进 ign_*，不能污染生产代码计数。"""
+    """「被遍历到、但归类为可忽略」的差异只能进 ign_*，不能污染生产代码计数。
+
+    ⚠️ 2026-09-19 换过例子，别改回去：这里原本用 `tests/test_t.py` 与
+    `.pytest_cache/v/cache/nodeids`。但同一天把 `tests` / `.pytest_cache` / `desktop-control`
+    加进了 `backend_autosync._EXCLUDE_DIRS`（它们不该被镜像进副本），而本核验脚本
+    的遍历**直接复用** `backend_autosync._walk` —— 于是那两个目录连遍历都进不来了，
+    `ign_*` 恒为空，这条断言就变成了在测一个不存在的分类。
+
+    现在的例子换成仍然会被遍历、仍然由 `_IGNORE_RULES` 归为可忽略的两类：
+    运行产物目录（`outputs/`）与开发期脚本。注意不能用 `.bak-*`——
+    它是**后缀级**排除，`_walk` 就抦掉了，同样进不了 ign_*。
+    """
     _make(
         tmp_path / "src",
         {
             "a.py": "x",
-            "tests/test_t.py": "v1",
-            ".pytest_cache/v/cache/nodeids": "v1",
+            "outputs/run.txt": "v1",
+            "tools/wx_green_judge_check.py": "v1",
         },
     )
     _make(
         tmp_path / "dst",
         {
             "a.py": "x",
-            "tests/test_t.py": "v2",  # 内容不同（可忽略）
-            # .pytest_cache 整个缺失（可忽略）
+            "outputs/run.txt": "v2",  # 内容不同（可忽略）
+            # tools/wx_green_judge_check.py 整个缺失（可忽略）
         },
     )
     res = vbs._diff_pair(tmp_path, "src", tmp_path, "dst")
     assert vbs._prod_bad(res) == 0, "可忽略项的差异不该计入生产代码"
-    assert res["ign_changed"] == ["tests/test_t.py"]
-    assert res["ign_missing"] == [".pytest_cache/v/cache/nodeids"]
+    assert res["ign_changed"] == ["outputs/run.txt"]
+    assert res["ign_missing"] == ["tools/wx_green_judge_check.py"]
     assert vbs._ign_bad(res) == 2
 
 
