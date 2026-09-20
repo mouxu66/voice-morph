@@ -10,7 +10,8 @@
   -action reset   强制恢复为真实扬声器/麦克风（兜底，无论有无备份都生效）
   -action diag    枚举全部音频端点（含状态/角色，排查用）
 备份文件位于 %LOCALAPPDATA%/rvc_audio_backup.txt，首次 apply 时写入。
-巡检只处理「有备份但无变声进程」这一种残留（绝不擅改用户手动设置）。
+巡检只处理「有备份且确认无变声进程」这一种残留（探测失败不判定残留；
+绝不擅改用户手动设置）。
 """
 
 import json
@@ -22,7 +23,7 @@ import time
 from pathlib import Path
 
 from fastapi import APIRouter
-from runtime import API_PREFIX, ROOT
+from runtime import API_PREFIX, ROOT, voice_proc_alive
 
 router = APIRouter(prefix=API_PREFIX)
 
@@ -272,16 +273,23 @@ def _backup_exists() -> bool:
     return _AUDIO_BACKUP.exists()
 
 
-def _any_voice_alive() -> bool:
-    from cascade import _cascade_alive
-    from rvc_live import _live_proc_alive
+def _any_voice_alive() -> bool | None:
+    """变声进程存活探测（三态：True=在跑 / False=确认没跑 / None=无法确认）。
 
-    return bool(_cascade_alive() or _live_proc_alive())
+    B 类修复（2026-09-20）：此前函数内反向 import cascade / rvc_live 两个可关
+    插件，插件损坏/缺失时内核巡检跟着 500。进程扫描已下沉到 runtime
+    （core 共用模块，见 runtime.voice_proc_alive），内核不再 import 任何插件。
+    """
+    return voice_proc_alive()
 
 
 def _audio_stale() -> bool:
-    """有备份残留但无变声进程 = 异常残留，需要自动还原。"""
-    return _backup_exists() and not _any_voice_alive()
+    """有备份残留且**确认**无变声进程 = 异常残留，需要自动还原。
+
+    None（扫描失败）不判定 stale：拿不准时绝不动用户设备 —— 宁可备份多留一会
+    （下次变声重新备份会覆盖），也不能把正在变声的用户声卡还原掉。
+    """
+    return _backup_exists() and _any_voice_alive() is False
 
 
 @router.get("/audio/dashboard")

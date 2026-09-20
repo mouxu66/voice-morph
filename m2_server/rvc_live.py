@@ -39,9 +39,6 @@ from rvc_common import (
     _find_pids_by_cmdline,
     _kill_pids,
     ensure_infer_pth,
-    exp_display_name,
-    exp_snapshot,
-    exp_source,
     find_pth,
 )
 
@@ -525,31 +522,6 @@ def _model_status(exp: str | None = None) -> bool | str:
     if not (log_dir.exists() and pth is not None and idx is not None):
         return f"缺少 RVC 音色模型（logs/{name}/ 下没有 .pth 与 index），" f"请先训练该音色"
     return True
-
-
-def _voicebank_dir() -> Path:
-    return cfg.MEDIA_DIR / "voicebank"
-
-
-def _read_qc(exp: str):
-    """读取该音色的质检结果（outputs/qc/<exp>.json）；没有或损坏时返回 None。"""
-    f = QC_DIR / f"{exp}.json"
-    if not f.exists():
-        return None
-    try:
-        return json.loads(f.read_text(encoding="utf-8"))
-    except Exception as e:
-        logger.warning("[qc] 读取质检结果 %s 失败: %s", f, e)
-        return None
-
-
-def _read_source(exp: str) -> str:
-    """读取该音色的来源标记（logs/<exp>/source.json → "market"/""）。
-
-    市场安装的 RVC 模型由 market_install 落 source.json；自训/本地导入无标记。
-    实现统一走 rvc_common.exp_source，避免两处规则漂移。
-    """
-    return exp_source(exp)
 
 
 def _maybe_run_qc(exp: str, log_dir: Path):
@@ -1177,72 +1149,9 @@ def rvc_live_monitor(on: bool = True, gain: float | None = None):
     return JSONResponse({"ok": ok, "monitor_on": ok, "monitor_gain": g if ok else None})
 
 
-@router.get("/rvc/voices")
-def rvc_voices():
-    """实时变声可选音色清单（合并两个来源）：
-
-    1. 音色库 media/voicebank/<id>/reference.wav —— 能生成语料、能训练的音色；
-    2. RVC 整合包 logs/<exp>/ 下训练出权重+索引的实验 —— 能直接实时变声的模型。
-
-    两者以「音色 ID == 实验名」对齐，前端据此展示每个音色走到哪一步
-    （未生成语料 / 语料就绪 / 模型就绪），并可用它启动对应模型的实时变声。
-    """
-    items: dict[str, dict] = {}
-
-    bank = _voicebank_dir()
-    if bank.exists():
-        for d in bank.iterdir():
-            if not d.is_dir() or not (d / "reference.wav").exists():
-                continue
-            display = d.name
-            meta = d / "meta.json"
-            if meta.exists():
-                try:
-                    display = str(
-                        json.loads(meta.read_text(encoding="utf-8")).get("display_name")
-                        or exp_display_name(d.name)
-                    )
-                except Exception as e:
-                    logger.debug(
-                        "[voices] 读取音色 %s 的 display_name 失败（回退目录名）: %s", d.name, e
-                    )
-            items[d.name] = {
-                "id": d.name,
-                "display_name": display,
-                "has_reference": True,
-                "qc": _read_qc(d.name),
-                "source": _read_source(d.name),
-                **exp_snapshot(d.name),
-            }
-
-    logs = cfg.RVC_ROOT / "logs"
-    if logs.exists():
-        for d in logs.iterdir():
-            if not d.is_dir() or d.name in items:
-                continue
-            snap = exp_snapshot(d.name)
-            # 音色库里没有、又没训练产物也没语料的目录属于噪音，不展示
-            if not (snap["pth_exists"] or snap["index_exists"] or snap["dataset_count"]):
-                continue
-            items[d.name] = {
-                "id": d.name,
-                "display_name": exp_display_name(d.name),
-                "has_reference": False,
-                "qc": _read_qc(d.name),
-                "source": _read_source(d.name),
-                **snap,
-            }
-
-    voices = sorted(
-        items.values(), key=lambda v: (not v["model_ready"], not v["has_reference"], v["id"])
-    )
-    return {
-        "voices": voices,
-        "active_exp": _active_exp(),
-        "default_exp": cfg.RVC_DEFAULT_EXP,
-        "rvc_root": str(cfg.RVC_ROOT),
-        "rvc_ready": cfg.RVC_ROOT.exists() and VENV_PY.exists(),
-    }
+# /rvc/voices 已下沉到 voices_api.rvc_voices（core.voices，设计稿 §4.1）。
+# 这是公共音色数据端点（实时页/离线变声/试音间都消费），不能住在可关插件里
+# （关掉 sound.rvc-live 后离线变声与试音间的音色候选会整片失效）。
 
 
 @router.post("/rvc/live/start")

@@ -6,8 +6,11 @@ server.py 拆分后，原先定义在 server.py 里的路径常量 / 全局状�
 所有模块必须通过 `.update()` 或项赋值修改，禁止整体重新赋值（会断开共享）。
 """
 
+import logging
 import re
+import subprocess
 import threading
+import time
 from pathlib import Path
 
 import config as cfg
@@ -111,3 +114,53 @@ def gpu_holder_reason() -> str:
         for name, reason in EXCLUSIVE_TASKS.items():
             return reason or f"{name} 正在运行"
     return ""
+
+
+# ---- 公共变声进程探测（内核，三态语义）----
+# 为什么放这里（2026-09-20，B 类修复）：audio_api（core.audio）的残留巡检要判断
+# 「还有没有变声进程在跑」，此前是函数内反向 import cascade / rvc_live 两个可关
+# 插件 —— 插件损坏/缺失时内核巡检跟着 500（正是设计稿 §4.1 说 core.audio 必须
+# 留内核的理由：退出时要还原声卡，这条链不能依赖任何可关插件）。
+# 进程扫描本身无重依赖（PowerShell 按命令行匹配），下沉到内核后不再 import 插件。
+# rvc_live._find_realtime_pids / cascade._find_cascade_pids 维持原样：高频轮询路径
+# 不动，避免行为漂移。
+# 三态：True=确认有变声进程；False=扫描成功且确认没有；None=扫描失败无法确认。
+# 调用方对 None 必须保守 ——「拿不准就不动用户设备」。
+_VOICE_PID_CACHE: dict = {"ts": None, "alive": None}
+
+
+def voice_proc_alive() -> bool | None:
+    """变声进程（实时 realtime_gui|rvc_headless / 级联 cascade_stream）是否在跑。
+
+    带 1s 缓存：前端对状态类接口 3s 轮询一次，每次都起 PowerShell 进程太重。
+    """
+    now = time.time()
+    ts = _VOICE_PID_CACHE["ts"]
+    if ts is not None and now - ts < 1.0:
+        return _VOICE_PID_CACHE["alive"]
+    try:
+        out = (
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                    "Where-Object { $_.CommandLine -match "
+                    "'realtime_gui|rvc_headless|cascade_stream' } | "
+                    "Select-Object -ExpandProperty ProcessId",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+            ).stdout
+            or ""
+        )
+        alive = any(line.strip().isdigit() for line in out.splitlines())
+    except Exception as e:
+        logging.getLogger(__name__).warning("[voice_proc] 枚举变声进程失败（无法确认）: %s", e)
+        alive = None
+    _VOICE_PID_CACHE.update(ts=now, alive=alive)
+    return alive

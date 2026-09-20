@@ -6,6 +6,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -19,6 +20,7 @@ from runtime import API_PREFIX, CLIPS_DIR, RAW_DIR, VIDEO_SUFFIXES, VOICEBANK, c
 from rvc_common import exp_display_name, exp_license, exp_snapshot, exp_source
 
 router = APIRouter(prefix=API_PREFIX)
+LOG = logging.getLogger(__name__)
 
 
 def _read_meta(meta_path: Path) -> dict:
@@ -99,6 +101,93 @@ def list_voices():
         key=lambda v: (not v.get("model_ready"), not v.get("has_reference", True), v["id"]),
     )
     return {"voices": voices}
+
+
+def _read_qc_json(exp: str):
+    """读取该音色的质检结果（outputs/qc/<exp>.json）；没有或损坏时返回 None。"""
+    f = cfg.OUTPUTS_DIR / "qc" / f"{exp}.json"
+    if not f.exists():
+        return None
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except Exception as e:
+        LOG.warning("[qc] 读取质检结果 %s 失败: %s", f, e)
+        return None
+
+
+# /rvc/voices 从 rvc_live.py 下沉到这里（B 类·公共端点归宿，设计稿 §4.1）：
+# 它被三个页面当「RVC 音色候选」消费（实时变声页、离线变声选音色、试音间的音色
+# 下拉会连同市场音色一起用），实现却一直住在 sound.rvc-live 里 —— 关掉实时变声后
+# 这条公共数据端点跟着消失：离线变声静默没音色可选，试音间刷新音色整片报错。
+# 音色数据层的归属写在 §4.1：core.voices =「音色库是几乎所有能力的公共数据层」。
+@router.get("/rvc/voices")
+def rvc_voices():
+    """RVC 变声可选音色清单（合并两个来源，与原 rvc_live.py 实现等价）：
+
+    1. 音色库 media/voicebank/<id>/reference.wav —— 能生成语料、能训练的音色；
+    2. RVC 整合包 logs/<exp>/ 下训练出权重+索引的实验 —— 能直接实时变声的模型。
+
+    两者以「音色 ID == 实验名」对齐，前端据此展示每个音色走到哪一步。
+    """
+    items: dict[str, dict] = {}
+
+    bank = VOICEBANK
+    if bank.exists():
+        for d in bank.iterdir():
+            if not d.is_dir() or not (d / "reference.wav").exists():
+                continue
+            # 中文名来源：meta.json 的 display_name；没有/损坏时回退目录名
+            meta = _read_meta(d / "meta.json")
+            display = d.name
+            if meta:
+                display = str(meta.get("display_name") or "") or exp_display_name(d.name)
+            items[d.name] = {
+                "id": d.name,
+                "display_name": display,
+                "has_reference": True,
+                "qc": _read_qc_json(d.name),
+                "source": exp_source(d.name),
+                **exp_snapshot(d.name),
+            }
+
+    logs = cfg.RVC_ROOT / "logs"
+    if logs.exists():
+        for d in logs.iterdir():
+            if not d.is_dir() or d.name in items:
+                continue
+            snap = exp_snapshot(d.name)
+            # 音色库里没有、又没训练产物也没语料的目录属于噪音，不展示
+            if not (snap["pth_exists"] or snap["index_exists"] or snap["dataset_count"]):
+                continue
+            items[d.name] = {
+                "id": d.name,
+                "display_name": exp_display_name(d.name),
+                "has_reference": False,
+                "qc": _read_qc_json(d.name),
+                "source": exp_source(d.name),
+                **snap,
+            }
+
+    voices = sorted(
+        items.values(), key=lambda v: (not v["model_ready"], not v["has_reference"], v["id"])
+    )
+    # active_exp 的真相在 rvc_live 的内存态（最近训练/刚启动的实时变声实验），无落盘。
+    # 尽力向它打听：实时变声开着时模块必然已加载（零成本）；实时变声被关/依赖缺失时
+    # import 失败就回退默认实验 —— 反正没人在跑实时变声，这个字段没有用户可感知的语义。
+    try:
+        from rvc_live import _active_exp
+
+        active_exp = _active_exp()
+    except Exception:
+        active_exp = cfg.RVC_DEFAULT_EXP
+    return {
+        "voices": voices,
+        "active_exp": active_exp,
+        "default_exp": cfg.RVC_DEFAULT_EXP,
+        "rvc_root": str(cfg.RVC_ROOT),
+        "rvc_ready": cfg.RVC_ROOT.exists()
+        and (cfg.RVC_ROOT / ".venv" / "Scripts" / "python.exe").exists(),
+    }
 
 
 @router.delete("/voicebank/{voice_id}")

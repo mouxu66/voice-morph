@@ -275,3 +275,28 @@ def test_rvc_voices_also_marks_source(voices_client):
     v = [x for x in voices if x["id"] == "katoong_manbo"][0]
     assert v["display_name"] == "卡通·懒羊羊"
     assert v["source"] == "market"
+
+
+def test_rvc_voices_defined_only_in_core_voices():
+    """B 类门禁：/rvc/voices 是公共数据端点，只允许住在 core.voices（voices_api）。
+
+    它被实时页/离线变声/试音间三个页面消费；曾在 sound.rvc-live 插件里，
+    关掉该插件后离线变声与试音间的音色候选整片失效。谁再把它挪回可关插件
+    必须改这份断言并给出理由。
+    """
+    src_voices = Path(_ROOT) / "voices_api.py"
+    src_rvc = Path(_ROOT) / "rvc_live.py"
+    marker = '@router.get("/rvc/voices")'
+    assert marker in src_voices.read_text(encoding="utf-8")
+    assert marker not in src_rvc.read_text(encoding="utf-8")
+
+
+def test_rvc_voices_active_exp_falls_back_when_live_missing(monkeypatch, voices_client):
+    """实时变声模块不可用时 active_exp 回退默认实验，而不是 500 连坐。"""
+    c, _ = voices_client
+    import sys
+    import voices_api
+
+    monkeypatch.setitem(sys.modules, "rvc_live", None)
+    body = c.get("/api/rvc/voices").json()
+    assert body["active_exp"] == voices_api.cfg.RVC_DEFAULT_EXP
