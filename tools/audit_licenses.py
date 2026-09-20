@@ -182,6 +182,31 @@ def parse_frontend_deps(package_json: Path) -> list[str]:
     return sorted(normalize(k) for k in data.get("dependencies", {}))
 
 
+def parse_plugin_extras(plugins_dir: Path) -> dict[str, str]:
+    """读 `m2_server/plugins/*/plugin.json` 的 `extras.python` → {包名: 哪个插件}。
+
+    为什么必须纳入：第 5 步把 torch / demucs / qwen-tts 这些从 `requirements.txt`
+    挪进了清单 extras。如果审计还只看 `requirements*.txt`，这些包就**整个掉出合规
+    视野** —— 装了、分发了、没人登记许可。那是"合规漏了事后补不回来"的典型。
+
+    只读 JSON、不 import `plugin_manifest`：审计要能在瘦环境（`check.py --fast`）里跑，
+    而 `plugin_manifest` 会牵进 fastapi / dotenv 一整串。
+    """
+    out: dict[str, str] = {}
+    if not plugins_dir.is_dir():
+        return out
+    for path in sorted(plugins_dir.glob("*/plugin.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # 清单读不了不是本脚本的职责（plugin_manifest 会大声报）
+        pid = data.get("id") or path.parent.name
+        for pkg in (data.get("extras") or {}).get("python") or []:
+            if isinstance(pkg, str) and pkg.strip():
+                out.setdefault(normalize(pkg), pid)
+    return out
+
+
 def _block(text: str, begin: str, end: str) -> str | None:
     """取两个标记之间的内容；缺任一标记返回 None（分开报"块缺失"与"块为空"）。"""
     i = text.find(begin)
@@ -377,6 +402,8 @@ def audit(root: Path) -> dict:
     for rel in ("requirements.txt", "requirements-dev.txt"):
         for name in parse_requirements(root / rel):
             declared.setdefault(name, []).append(rel)
+    for name, pid in parse_plugin_extras(root / "m2_server" / "plugins").items():
+        declared.setdefault(name, []).append(f"plugins/{pid}/plugin.json")
     for name in parse_frontend_deps(root / "web" / "package.json"):
         declared.setdefault(name, []).append("web/package.json")
 

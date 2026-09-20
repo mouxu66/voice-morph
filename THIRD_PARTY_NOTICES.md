@@ -54,7 +54,7 @@ MIT License，© 2026 mouxu（见根目录 `LICENSE`）。
 |---|---|---|
 | **ffmpeg** | LGPL-2.1+ 或 GPL（**取决于构建**，如 gyan essentials=LGPL） | 仅以**子进程**调用（提轨 / 宠物皮肤 atlas·gif / 预览生成）。不随包分发、不静态链接 → 不构成衍生作品。**不要**把 ffmpeg.exe 塞进安装包 |
 | **VB-CABLE**（`vb-cable.com`） | **Donationware**，分发条款见下 | 本仓库**没有内置**：`find` 无安装包、`grep` 无静默安装代码（2026-09-14 实测）。README 把它列为前置依赖 → **现状合规** |
-| **RVC 整合包**（`D:\RVC`，`VM_RVC_ROOT`） | 代码 = `RVC-Project/Retrieval-based-Voice-Conversion-WebUI` = **MIT**（GitHub API 实读，2026-09-14）。**底模条款另说，见下** | 外部目录，用户自备 |
+| **RVC 整合包**（`D:\RVC`，`VM_RVC_ROOT`） | 代码 = `RVC-Project/Retrieval-based-Voice-Conversion-WebUI` = **MIT**（GitHub API 实读，2026-09-14）。**底模条款另说，见下** | 外部目录，用户自备。其 `.venv` 内另有 `sounddevice` / `webrtcvad` / `soundfile` 等（`cascade_stream.py` / `play_worker.py` 在那边跑，见 README「新机器部署」）—— **不随本项目分发，故不在 §2.1 登记**（2026-09-20：`webrtcvad` 随第 5 步撤出主环境登记） |
 | **RVC 底模**（`hubert_base.pt` / `rmvpe.pt` / `pretrained_v2/*`） | ⚠️ **仓库标 `license: mit`，但同仓另有一份 `使用需遵守的协议-LICENSE.txt`** —— 正文在 MIT 版权行后插了一段中文：**"本软件仅供研究使用，使用软件者、传播软件导出的声音者自负全责。如不认可该条款，则不能使用/引用软件包内所有代码和文件。"**（2026-09-14 读 HF `lj1995/VoiceConversionWebUI` 原文） | **不随包分发**（用户在 `D:\RVC` 自备）→ 现状无分发义务。**但"仅供研究使用"意味着不得打进发行物** —— 已由门禁机器化（§2.3） |
 | **Python 运行时依赖 22 个** | 全为宽松许可，**无 GPL**（见 §2.1） | `pip install -r requirements.txt`（CUDA 索引另装 torch） |
 
@@ -70,6 +70,33 @@ fastapi / pydantic / pydub / demucs / sounddevice / webrtcvad / comtypes / pytes
 加它是因为 `pyproject.toml` 的 addopts 默认带 `--cov`，少了它连参数解析都过不去
 （`docs/犯错指南.md` §3.36）。
 librosa — **ISC**；Pillow — **HPND**；requests / python-multipart / pyaudiowpatch — **Apache-2.0**。
+
+**2026-09-20 新增 7 条 —— 登记口径扩大到了插件清单**（第 5 步「拆 core/extra」的对偶）。
+这一步把 `torch` / `demucs` / `qwen-tts` 这些从 `requirements.txt` 挪进了
+`m2_server/plugins/<id>/plugin.json` 的 `extras.python`；如果审计还只看
+`requirements*.txt`，它们就**整个掉出合规视野** —— 装了、分发了、没人登记许可。
+所以 `tools/audit_licenses.py` 现在也读清单 extras（`parse_plugin_extras`），
+下面 7 条随之补登（许可均取自本机 `site-packages/*.dist-info/METADATA` 实读）：
+
+| 包 | 许可 | 谁要它 |
+|---|---|---|
+| `deepfilter-stream` | **MIT**（`License: MIT` + `License-File: LICENSE`/`NOTICE`） | `sound.offline-vc` / `sound.rvc-live`（降噪） |
+| `hdbscan` | **BSD**（`License: BSD`；`Classifier: License :: OSI Approved`） | `sound.audition` / `sound.workshop` / `sound.ft`（说话人聚类） |
+| `modelscope` | **Apache-2.0**（`License-Expression: Apache-2.0`） | 同上（CAM++ 声纹） |
+| `psutil` | **BSD-3-Clause** | `hook.wechat`（微信进程操作） |
+| `qwen-tts` | **Apache-2.0**（`License: Apache-2.0`；实读 `tts_trial/venv312/…/qwen_tts-0.1.1.dist-info`） | `sound.tts`（TTS worker） |
+| `transformers` | **Apache-2.0**（`License: Apache 2.0 License` + classifier） | `sound.audition`（NatScore 打分器） |
+| `uiautomation` | **Apache-2.0**（`License: Apache 2.0`） | `hook.wechat`（微信窗口 UIA） |
+
+> `deepfilter-stream` 的 ONNX 模型资产（DeepFilterNet3）首次运行自动下载到
+> `%LOCALAPPDATA%\deepfilter-stream\…`，**不进仓库、不随包分发**；上游 README 标
+> Apache-2.0（见 `m2_server/audio_enhance.py` 顶部注释，2026-09-13 实读）。
+
+**同时撤出 1 条：`webrtcvad`**。它随第 5 步离开了主环境 —— 唯一的引用点
+`m2_server/cascade_stream.py` 是**由 RVC 整合包 `.venv` 拉起的子进程脚本**，
+主环境既没装它、也不该装（缺了文件内有能量 VAD 兜底）。登记它的许可已经没有
+分发/文档义务可履行，留着只会变成"残留条目"（机器块会直接判红）。
+它现在的正确归属是 §2 的「RVC 整合包」那一行 —— 由用户自备，不随分发。
 
 - `demucs` 仓库 license = **MIT**（GitHub API 实读原文：`Copyright (c) Meta Platforms, Inc. and affiliates.`；该仓库已归档）。
   ⚠️ **预训练权重无独立许可声明**（2026-09-14 读 README 原文：只有一句
@@ -171,12 +198,16 @@ electron-builder 配置（`files` + `extraResources`）推出**真实打包面**
 
 <!-- audit:deps:begin -->
 python:comtypes
+python:deepfilter-stream
 python:demucs
 python:fastapi
+python:hdbscan
 python:httpx
 python:librosa
+python:modelscope
 python:numpy
 python:pillow
+python:psutil
 python:pyaudiowpatch
 python:pydub
 python:pydantic
@@ -184,6 +215,7 @@ python:pytest
 python:pytest-cov
 python:python-dotenv
 python:python-multipart
+python:qwen-tts
 python:requests
 python:ruff
 python:scipy
@@ -191,8 +223,9 @@ python:sounddevice
 python:soundfile
 python:torch
 python:torchaudio
+python:transformers
+python:uiautomation
 python:uvicorn
-python:webrtcvad
 npm:@fontsource/inter
 npm:@fontsource/jetbrains-mono
 npm:@fontsource/outfit
