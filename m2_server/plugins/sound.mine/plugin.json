@@ -1,0 +1,16 @@
+{
+  "id": "sound.mine",
+  "name": "音色挖掘",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 180,
+  "summary": "从素材里挖候选音色并保存进音色库",
+  "requires": ["core.voices", "sound.workshop"],
+  "routers": ["mine_api"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [],
+  "extras": { "python": [], "external": [], "models": [] },
+  "health": null,
+  "disable": { "note": "关闭后挖掘入口消失，不影响已有的音色库" }
+}

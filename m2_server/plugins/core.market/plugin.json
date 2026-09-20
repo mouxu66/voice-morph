@@ -1,0 +1,18 @@
+{
+  "id": "core.market",
+  "name": "下载与市场底座",
+  "kind": "builtin",
+  "category": "core",
+  "order": 60,
+  "summary": "音色市场的下载/断点续传/安装/回滚链路，以及远程图库后台同步",
+  "requires": [],
+  "routers": ["market_api"],
+  "hooks": [{ "module": "market_images", "attr": "start_background_sync", "when": "import" }],
+  "routes": [],
+  "legacy_routes": [{ "path": "/market", "redirect": "/voices?tab=market" }],
+  "extras": { "python": [], "external": [], "models": [] },
+  "health": null,
+  "disable": {
+    "note": "核心：不可关闭（market_download/market_install 将来要复用来装插件本身）"
+  }
+}

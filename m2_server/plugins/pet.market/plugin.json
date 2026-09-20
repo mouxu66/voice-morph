@@ -1,0 +1,23 @@
+{
+  "id": "pet.market",
+  "name": "桌宠皮肤市场",
+  "kind": "builtin",
+  "category": "pet",
+  "order": 210,
+  "summary": "皮肤市场列表、内置皮肤物化、自定义图片生成皮肤",
+  "requires": ["pet.companion"],
+  "routers": ["pet_market_api"],
+  "hooks": [{ "module": "pet_market", "attr": "ensure_default_bundle", "when": "import" }],
+  "routes": [
+    {
+      "path": "/pet-market",
+      "module": "PetMarket",
+      "export": "PetMarketRoute",
+      "nav": { "label": "桌宠皮肤", "icon": "PawPrint", "group": "more", "order": 30 }
+    }
+  ],
+  "legacy_routes": [],
+  "extras": { "python": [], "external": [], "models": [] },
+  "health": null,
+  "disable": { "note": "关闭后桌宠皮肤页消失；已装好的皮肤文件仍留在 outputs/pet-skins" }
+}

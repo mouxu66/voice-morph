@@ -1,0 +1,16 @@
+{
+  "id": "sound.effects",
+  "name": "音效器",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 140,
+  "summary": "音高/语速等效果器（librosa 缺失时这两个效果直通）",
+  "requires": ["core.voices"],
+  "routers": ["effects"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [{ "path": "/effects", "redirect": "/offlinevc?tab=fx" }],
+  "extras": { "python": ["librosa"], "external": [], "models": [] },
+  "health": null,
+  "disable": { "note": "关闭后工具箱里的音效器标签消失" }
+}

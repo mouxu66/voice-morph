@@ -1,0 +1,16 @@
+{
+  "id": "sound.audiobook",
+  "name": "有声书",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 150,
+  "summary": "长文本分章合成与拼接（复用 TTS 链路，无独立重依赖）",
+  "requires": ["sound.tts"],
+  "routers": ["audiobook"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [{ "path": "/audiobook", "redirect": "/tts?tab=book" }],
+  "extras": { "python": [], "external": [], "models": [] },
+  "health": null,
+  "disable": { "note": "关闭后「输字变声」里的有声书标签消失" }
+}

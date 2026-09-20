@@ -1,0 +1,16 @@
+{
+  "id": "core.openai",
+  "name": "OpenAI 兼容层",
+  "kind": "builtin",
+  "category": "core",
+  "order": 70,
+  "summary": "OpenAI SDK 可直接接入的 /v1/* 门面（纯适配层，零额外依赖）",
+  "requires": [],
+  "routers": ["openai_compat"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [],
+  "extras": { "python": [], "external": [], "models": [] },
+  "health": null,
+  "disable": { "note": "核心：不可关闭（给开发者的门面，关掉会打断既有的 SDK 集成）" }
+}

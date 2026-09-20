@@ -1,0 +1,34 @@
+{
+  "id": "sound.audition",
+  "name": "试音间",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 170,
+  "summary": "一个声音 × 多个音色：盲听对比与多链路客观评分（复用离线/TTS 链路与尺子）",
+  "requires": ["core.voices", "sound.offline-vc"],
+  "routers": ["ab_api", "ab_chain", "audition_api"],
+  "hooks": [],
+  "routes": [
+    {
+      "path": "/audition",
+      "module": "Audition",
+      "export": "AuditionRoute",
+      "nav": { "label": "试音间", "icon": "AudioLines", "group": "start", "order": 20 }
+    }
+  ],
+  "legacy_routes": [],
+  "extras": {
+    "python": [],
+    "external": [
+      {
+        "kind": "dir",
+        "env": "VM_RVC_ROOT",
+        "label": "RVC 整合包（多链路评测会调它）",
+        "size_hint_mb": 1500
+      }
+    ],
+    "models": []
+  },
+  "health": null,
+  "disable": { "note": "关闭后试音间页消失（它不是一个新引擎，而是既有能力的统一入口）" }
+}

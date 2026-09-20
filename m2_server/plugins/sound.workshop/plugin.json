@@ -1,0 +1,27 @@
+{
+  "id": "sound.workshop",
+  "name": "训练变声（音色工坊）",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 100,
+  "summary": "整条流水线：提轨 → 去 BGM → 切片 → 质检；以及切片导出 RVC 数据集",
+  "requires": ["core.media", "core.voices"],
+  "routers": ["pipeline_api", "clips_api"],
+  "hooks": [],
+  "routes": [
+    {
+      "path": "/workshop",
+      "module": "Workshop",
+      "export": "WorkshopRoute",
+      "nav": { "label": "训练变声", "icon": "Mic2", "group": "start", "order": 40 }
+    }
+  ],
+  "legacy_routes": [{ "path": "/discover", "redirect": "/workshop?tab=discover" }],
+  "extras": {
+    "python": ["demucs"],
+    "external": [],
+    "models": []
+  },
+  "health": null,
+  "disable": { "note": "关闭后「训练变声」页与切片/去 BGM 链路消失，其它能力不受影响" }
+}

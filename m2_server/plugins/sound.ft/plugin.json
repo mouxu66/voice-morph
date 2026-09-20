@@ -1,0 +1,27 @@
+{
+  "id": "sound.ft",
+  "name": "音色微调",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 160,
+  "summary": "RVC 微调：数据集准备（语料生成/生成集）与训练任务编排",
+  "requires": ["core.voices", "sound.workshop"],
+  "routers": ["finetune", "rvc_dataset_api"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [{ "path": "/ft", "redirect": "/workshop?tab=ft" }],
+  "extras": {
+    "python": [],
+    "external": [
+      {
+        "kind": "dir",
+        "env": "VM_RVC_ROOT",
+        "label": "RVC 整合包（训练脚本在其 venv 里跑）",
+        "size_hint_mb": 1500
+      }
+    ],
+    "models": []
+  },
+  "health": null,
+  "disable": { "note": "关闭后「训练变声」里的微调标签消失（含数据集准备）" }
+}

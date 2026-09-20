@@ -1,0 +1,34 @@
+{
+  "id": "sound.offline-vc",
+  "name": "工具箱（离线变声）",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 130,
+  "summary": "离线文件变声（RVC）与表达力变声（Seed-VC），以及音效器",
+  "requires": ["core.voices"],
+  "routers": ["offline_vc", "seed_vc"],
+  "hooks": [],
+  "routes": [
+    {
+      "path": "/offlinevc",
+      "module": "OfflineVc",
+      "export": "OfflineVcRoute",
+      "nav": { "label": "工具箱", "icon": "Wrench", "group": "start", "order": 50 }
+    }
+  ],
+  "legacy_routes": [],
+  "extras": {
+    "python": [],
+    "external": [
+      {
+        "kind": "dir",
+        "env": "VM_RVC_ROOT",
+        "label": "RVC 整合包（离线推理在其 venv 里跑）",
+        "size_hint_mb": 1500
+      }
+    ],
+    "models": []
+  },
+  "health": null,
+  "disable": { "note": "关闭后工具箱页消失（含音效器与表达力变声子标签）" }
+}

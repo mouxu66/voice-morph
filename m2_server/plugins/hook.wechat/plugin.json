@@ -1,0 +1,28 @@
+{
+  "id": "hook.wechat",
+  "name": "微信发送",
+  "kind": "builtin",
+  "category": "hook",
+  "order": 220,
+  "summary": "把变声结果发进微信 PC 版（UIA 自动化 + 录音浮层绿钮判据）",
+  "requires": [],
+  "routers": ["wechat_voice"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [{ "path": "/wechat", "redirect": "/tts?tab=wechat" }],
+  "extras": {
+    "python": ["Pillow"],
+    "external": [
+      {
+        "kind": "app",
+        "label": "微信 PC 版",
+        "doc": "docs/犯错指南.md（这个模块的坑最密集，见其中 §8.x 微信相关条目）"
+      }
+    ],
+    "models": []
+  },
+  "health": { "module": "wechat_uia", "attr": "status" },
+  "disable": {
+    "note": "关闭后微信发送入口消失。这一环最依赖外部环境，单独成插件就是为了让「是这个能力不可用」一眼可见"
+  }
+}

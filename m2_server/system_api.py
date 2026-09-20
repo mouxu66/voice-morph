@@ -50,6 +50,40 @@ def capabilities():
     }
 
 
+@router.get("/plugins")
+def plugins():
+    """插件目录：每个能力的声明（manifest）+ 三态状态 + 依赖关系。
+
+    **只读**：本步（`docs/插件化设计.md` 第 2 步）只把清单建起来并暴露出去，
+    挂载方式一点没动 —— 关/开插件是第 6 步（`POST /api/plugins/{id}/enable|disable`）。
+
+    与 `/capabilities` 的分工：
+    · `/capabilities` 答「**模块**加载情况」（26 个 router 逐个成功/失败），是加载器的原始账本；
+    · 本端点答「**能力**视角」：哪些能力可用、哪些被用户关掉了、每个能力要装什么、
+      缺了会怎样。它把 registry 聚合成人看得懂的清单，是前端侧边栏/设置页的输入。
+
+    同样**不 import 任何重库**（同 `/capabilities` 的理由）：
+    状态端点不能依赖它要报告的那个东西。
+
+    三态 `ok / broken / disabled` 见 `plugin_manifest.py` 的模块注释 ——
+    关键是 `disabled`（用户主动关的）**不计入 broken**，否则关一个插件
+    就会弹一条「N 个能力未加载」的降级横幅。
+    """
+    import plugin_manifest
+
+    catalog = plugin_manifest.catalog()
+    res = plugin_loader.results()
+    routers = [r for r in res if r.purpose == plugin_loader.ROUTER_PURPOSE]
+    # 与 /capabilities 对齐的分母：manifest 的「不坏」不能与加载器的账本相矛盾，
+    # 所以把两边都报出来，前端/体检对不上时能一眼看出是在哪一层出的问题。
+    catalog["loaders"] = {
+        "routers": len(routers),
+        "loaded": sum(1 for r in routers if r.ok),
+        "broken": [r.label for r in res if not r.ok],
+    }
+    return catalog
+
+
 @router.get("/diagnose")
 def diagnose():
     """环境体检：并行检查本机推理所需的各项依赖，返回勾叉清单。

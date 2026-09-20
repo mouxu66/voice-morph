@@ -1,0 +1,16 @@
+{
+  "id": "core.media",
+  "name": "素材与静态音频",
+  "kind": "builtin",
+  "category": "core",
+  "order": 30,
+  "summary": "原始视频上传/落盘与静态音频托管（含路径穿越防护）",
+  "requires": [],
+  "routers": ["raw_media_api", "media_api"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [],
+  "extras": { "python": [], "external": [], "models": [] },
+  "health": null,
+  "disable": { "note": "核心：不可关闭（所有链路的第一步都是把素材放进来）" }
+}

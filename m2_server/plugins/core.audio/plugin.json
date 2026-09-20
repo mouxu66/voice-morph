@@ -1,0 +1,18 @@
+{
+  "id": "core.audio",
+  "name": "音频设备",
+  "kind": "builtin",
+  "category": "core",
+  "order": 50,
+  "summary": "设备配置/诊断看板/残留巡检，退出时还原系统默认设备",
+  "requires": [],
+  "routers": ["audio_api"],
+  "hooks": [{ "module": "audio_api", "attr": "_start_audio_audit", "when": "main" }],
+  "routes": [],
+  "legacy_routes": [],
+  "extras": { "python": [], "external": [], "models": [] },
+  "health": null,
+  "disable": {
+    "note": "核心：不可关闭 —— 即使用户完全不用实时变声，退出时也必须能把系统麦克风/扬声器还原回去"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "pet.companion",
+  "name": "桌宠",
+  "kind": "builtin",
+  "category": "pet",
+  "order": 200,
+  "summary": "桌面宠物本体：素材内录（WASAPI loopback）与渲染侧 pet.html 的状态驱动",
+  "requires": [],
+  "routers": ["capture_api"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [],
+  "extras": {
+    "python": ["pyaudiowpatch"],
+    "external": [],
+    "models": []
+  },
+  "health": null,
+  "disable": { "note": "关闭后桌宠入口消失（桌宠本体的渲染侧文件在 web/electron/pet，不受后端影响）" }
+}

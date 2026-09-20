@@ -1,0 +1,36 @@
+{
+  "id": "sound.rvc-live",
+  "name": "实时变声",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 120,
+  "summary": "RVC 实时变声与级联变声，经虚拟声卡注入微信/游戏/会议",
+  "requires": ["core.audio", "core.voices"],
+  "routers": ["rvc_live", "cascade"],
+  "hooks": [],
+  "routes": [
+    {
+      "path": "/live",
+      "module": "Live",
+      "export": "LiveRoute",
+      "nav": { "label": "实时变声", "icon": "Radio", "group": "more", "order": 20 }
+    }
+  ],
+  "legacy_routes": [{ "path": "/cascade", "redirect": "/live?tab=qwen" }],
+  "extras": {
+    "python": [],
+    "external": [
+      {
+        "kind": "dir",
+        "env": "VM_RVC_ROOT",
+        "label": "RVC 整合包（含 .venv：唯一有 sounddevice 的环境）",
+        "size_hint_mb": 1500,
+        "doc": "README「新机器部署」"
+      },
+      { "kind": "audio-device", "label": "VB-Audio CABLE（虚拟声卡）", "doc": "docs/AUDIO_TROUBLESHOOTING.md" }
+    ],
+    "models": []
+  },
+  "health": null,
+  "disable": { "note": "关闭后实时变声页消失；不影响离线转换与 TTS" }
+}

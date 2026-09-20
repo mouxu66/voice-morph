@@ -182,6 +182,25 @@ def test_glob_match_handles_the_dialects_in_use(pattern, rel, expected):
     assert _glob_match(pattern, rel) is expected, f"{pattern!r} vs {rel!r}"
 
 
+def test_m2_server_filter_keeps_plugin_manifests(extras):
+    """插件清单（`m2_server/plugins/<id>/plugin.json`）必须进包。
+
+    它是新加的一类**数据文件**：第 3 步之后路由怎么挂、依赖装什么都要读它。
+    被 filter 挡在包外的话，安装版会变成"插件目录知道得比后端少" ——
+    而且同样是**静默**的（文件不在只会少一个能力，不会报错）。
+
+    两件事一起钉：filter 里没有会吃掉插件清单的排除项；真源文件也确实在仓库里。
+    """
+    from pathlib import Path
+
+    entry = extras["backend/m2_server"]
+    manifests = sorted((ROOT / "m2_server" / "plugins").glob("*/plugin.json"))
+    assert manifests, "仓库里一个插件清单都没有？"
+    for path in manifests:
+        rel = str(Path("plugins") / path.parent.name / "plugin.json")
+        assert not _excluded(entry, rel), f"m2_server 的 filter 把 {rel} 挡在包外了"
+
+
 def test_m2_server_filter_keeps_bundled_rvc_texts(extras):
     """`m2_server/data/rvc_texts.txt` 必须进包。
 

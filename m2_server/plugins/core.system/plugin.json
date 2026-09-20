@@ -1,0 +1,23 @@
+{
+  "id": "core.system",
+  "name": "系统与体检",
+  "kind": "builtin",
+  "category": "core",
+  "order": 10,
+  "summary": "健康检查、环境体检、存储看板与清理；其它插件的探针都挂在它上面",
+  "requires": [],
+  "routers": ["system_api"],
+  "hooks": [],
+  "routes": [
+    {
+      "path": "/home",
+      "module": "Home",
+      "export": "HomeRoute",
+      "nav": { "label": "首页", "icon": "Home", "group": "start", "order": 10 }
+    }
+  ],
+  "legacy_routes": [],
+  "extras": { "python": [], "external": [], "models": [] },
+  "health": null,
+  "disable": { "note": "核心：不可关闭（体检与存储看板是所有能力的问题出口）" }
+}

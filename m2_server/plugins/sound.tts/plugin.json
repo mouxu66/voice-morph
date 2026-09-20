@@ -1,0 +1,29 @@
+{
+  "id": "sound.tts",
+  "name": "输字变声（文字转语音）",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 110,
+  "summary": "Qwen3-TTS 文字转语音，含模型预热与常驻 worker",
+  "requires": ["core.voices"],
+  "routers": ["tts_api"],
+  "hooks": [{ "module": "warmup", "attr": "start_background", "when": "import" }],
+  "routes": [
+    {
+      "path": "/tts",
+      "module": "Tts",
+      "export": "TtsRoute",
+      "nav": { "label": "输字变声", "icon": "Speech", "group": "start", "order": 30 }
+    }
+  ],
+  "legacy_routes": [{ "path": "/qwen", "redirect": "/live?tab=qwen" }],
+  "extras": {
+    "python": ["qwen-tts"],
+    "external": [],
+    "models": [
+      { "env": "VM_TTS_MODELS_DIR", "label": "Qwen3-TTS 权重（含 tokenizer 与参考音）", "size_hint_mb": 4900 }
+    ]
+  },
+  "health": { "module": "warmup", "attr": "status" },
+  "disable": { "note": "关闭后「输字变声」页消失，且不再拉起 TTS worker 与占显存" }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "core.voices",
+  "name": "音色库",
+  "kind": "builtin",
+  "category": "core",
+  "order": 20,
+  "summary": "音色库与音色包导出导入：几乎所有能力的公共数据层",
+  "requires": [],
+  "routers": ["voices_api"],
+  "hooks": [],
+  "routes": [
+    {
+      "path": "/voices",
+      "module": "Voices",
+      "export": "VoicesRoute",
+      "nav": { "label": "我的音色", "icon": "Library", "group": "more", "order": 10 }
+    }
+  ],
+  "legacy_routes": [],
+  "extras": { "python": [], "external": [], "models": [] },
+  "health": null,
+  "disable": { "note": "核心：不可关闭（音色是 TTS/RVC/离线变声共同的数据层）" }
+}

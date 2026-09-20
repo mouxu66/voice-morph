@@ -1,0 +1,16 @@
+{
+  "id": "core.history",
+  "name": "发送历史",
+  "kind": "builtin",
+  "category": "core",
+  "order": 40,
+  "summary": "转换/发送历史记录与回放",
+  "requires": [],
+  "routers": ["history_api"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [],
+  "extras": { "python": [], "external": [], "models": [] },
+  "health": null,
+  "disable": { "note": "核心：不可关闭（历史是「刚才那条哪去了」的答案）" }
+}
