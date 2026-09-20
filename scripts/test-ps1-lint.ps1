@@ -5,6 +5,11 @@
 #   2. 合并行：`| Out-Null` 之后同一行还跟着另一条语句（Edit 吞换行的典型症状）
 #   3. 脚本内函数的必填参数（Mandatory）是否在所有调用点被提供
 #   4. UTF-8 BOM 是否在位（PowerShell 5.1 中文坑）
+#   5. `Get-Content … | ConvertFrom-Json` 必须带 `-Encoding UTF8`：PS 5.1 的
+#      Get-Content 默认按 ANSI(GBK) 解码，而本仓的 JSON（web/package.json、latest.json）
+#      是**无 BOM 的 UTF-8 且含中文** → 中文错位时会一并吃掉后面的引号 →
+#      ConvertFrom-Json 报「无法分析 JSON」，而 JS 侧 JSON.parse 能过，本地看不出来。
+#      判据用 AST（找 ConvertFrom-Json，回溯同一管道里的 Get-Content），不用行级正则。
 # 运行：powershell -ExecutionPolicy Bypass -File scripts/test-ps1-lint.ps1
 
 $ErrorActionPreference = "Stop"
@@ -57,6 +62,47 @@ foreach ($c in $selfCases) {
   if ($got -ne $c.merged) { $regexIssues += ("want=" + $c.merged + " got=" + $got + " [" + $c.why + "]") }
 }
 Report ($regexIssues.Count -eq 0) "merged-line regex self-check" $(if ($regexIssues.Count) { $regexIssues -join "; " } else { ("cases=" + $selfCases.Count) })
+
+# --- 0b. 自检：JSON 读取规则的 AST 判定（防规则本身退化）---
+function Get-JsonReadIssues($ast) {
+  $issues = @()
+  $jsonCmds = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'ConvertFrom-Json' }, $true)
+  foreach ($jc in $jsonCmds) {
+    $pipe = $jc.Parent
+    if (-not ($pipe -is [System.Management.Automation.Language.PipelineAst])) { continue }
+    foreach ($el in $pipe.PipelineElements) {
+      if (-not ($el -is [System.Management.Automation.Language.CommandAst])) { continue }
+      if ($el.GetCommandName() -notmatch '^(Get-Content|gc|cat|type)$') { continue }
+      $hasEnc = $false
+      foreach ($c in $el.CommandElements) {
+        if ($c -is [System.Management.Automation.Language.CommandParameterAst] -and $c.ParameterName -match '^Encoding') { $hasEnc = $true }
+      }
+      if (-not $hasEnc) { $issues += ("L" + $el.Extent.StartLineNumber) }
+    }
+  }
+  # 调用点一律用 @(...) 包裹：空/单元素/多元素三种情况都能得到可靠的 .Count
+  return @($issues)
+}
+function Get-JsonAst([string]$text) {
+  $e = $null; $tk = $null
+  return [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$tk, [ref]$e)
+}
+$jsonCases = @(
+  @{ txt = '$x = Get-Content $p -Raw | ConvertFrom-Json';                                    want = 1; why = "缺 -Encoding" },
+  @{ txt = '$x = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json';                      want = 0; why = "带了 -Encoding" },
+  @{ txt = '$x = (Get-Content package.json -Encoding UTF8 | ConvertFrom-Json).version';       want = 0; why = "括号内联形式，带了" },
+  @{ txt = "`$x = Get-Content `$p -Raw ```n  | ConvertFrom-Json";                             want = 1; why = "跨行管道也耍抓到" },
+  @{ txt = '$ok = $r.Content | ConvertFrom-Json';                                            want = 0; why = "HTTP 响应不经 Get-Content" },
+  @{ txt = '$v = (Get-Content $p -Raw | ConvertFrom-Json).version';                           want = 1; why = "括号内联形式，未带" },
+  # LINT-SELF: sample
+  @{ txt = '$w = Get-Content $p -Encoding UTF8 -Raw | ConvertFrom-Json';                      want = 0; why = "参数顺序不影响" }
+)
+$jsonIssues = @()
+foreach ($c in $jsonCases) {
+  $got = @(Get-JsonReadIssues (Get-JsonAst $c.txt)).Count
+  if ($got -ne $c.want) { $jsonIssues += ("want=" + $c.want + " got=" + $got + " [" + $c.why + "]") }
+}
+Report ($jsonIssues.Count -eq 0) "json-read UTF8 rule self-check" $(if ($jsonIssues.Count) { $jsonIssues -join "; " } else { ("cases=" + $jsonCases.Count) })
 
 foreach ($t in $targets) {
   $p = Join-Path $scriptDir $t
@@ -132,6 +178,10 @@ foreach ($t in $targets) {
     }
   }
   Report ($issues.Count -eq 0) "$t mandatory args" $(if ($issues.Count) { $issues -join "; " } else { "ok" })
+
+  # --- 5. JSON 读取必须显式 UTF8（见头部第 5 条）---
+  $jissues = @(Get-JsonReadIssues $ast)
+  Report ($jissues.Count -eq 0) "$t json read uses -Encoding UTF8" $(if ($jissues.Count) { $jissues -join "," } else { "ok" })
 }
 
 Write-Host ""

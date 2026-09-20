@@ -60,7 +60,12 @@ Write-Host "仓库根：$RepoRoot"
 Step "1/7 前置检查"
 
 if (-not (Test-Path $PkgJson)) { Die "找不到 $PkgJson" }
-$pkgBefore = Get-Content $PkgJson -Raw | ConvertFrom-Json
+# 必须显式 -Encoding UTF8：PS 5.1 的 Get-Content 默认按 ANSI(GBK) 解码，而这个
+# package.json 是**无 BOM 的 UTF-8 且含中文**（"//" 说明数组）→ 中文错位时会吃掉
+# 后面的引号 → ConvertFrom-Json 报「无法分析 JSON」，而 JS 的 JSON.parse 能过，
+# 所以本地任何 JS 侧检查都看不出来（2026-09-20 实测：第 1 步就死在这里）。
+# 回归防线：scripts/test-ps1-lint.ps1 的「json read uses -Encoding UTF8」规则。
+$pkgBefore = Get-Content $PkgJson -Raw -Encoding UTF8 | ConvertFrom-Json
 Ok "当前版本：$($pkgBefore.version)"
 
 # 证书密码：签名必需，缺了打出来的包会被 SmartScreen 拦
@@ -170,7 +175,7 @@ if ($SkipBump) {
     if ($LASTEXITCODE -ne 0) { Die "npm version $BumpLevel 失败" }
   } finally { Pop-Location }
 }
-$pkgAfter = Get-Content $PkgJson -Raw | ConvertFrom-Json
+$pkgAfter = Get-Content $PkgJson -Raw -Encoding UTF8 | ConvertFrom-Json
 $NewVersion = $pkgAfter.version
 Ok "本次发版版本：$NewVersion"
 
@@ -239,7 +244,8 @@ try {
 
 $ManifestPath = Join-Path $Release2Dir "latest.json"
 if (-not (Test-Path $ManifestPath)) { Die "未生成 $ManifestPath" }
-$manifest = Get-Content $ManifestPath -Raw | ConvertFrom-Json
+# -Notes 里可能有中文 → 与上面同一条坑（latest.json 由 node 写好，是无 BOM UTF-8）
+$manifest = Get-Content $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 Ok "清单版本：$($manifest.version)"
 
 # 清单自校验：sha256 必须与磁盘文件实际值一致（防止清单与包不匹配）

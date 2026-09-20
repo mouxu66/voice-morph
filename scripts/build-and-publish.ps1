@@ -23,7 +23,9 @@ try {
   # 2) 版本号 +1（--no-git-tag-version：不自动提交，提交归项目铁律统一处理）
   Write-Host "==> npm version patch"
   npm version patch --no-git-tag-version
-  $ver = (Get-Content package.json | ConvertFrom-Json).version
+  # 必须 -Encoding UTF8：PS 5.1 默认按 ANSI 解码，而该文件是无 BOM UTF-8 且含中文
+  # （2026-09-20 实测：漏了这一处会让 release.ps1 第 1 步就 ConvertFrom-Json 失败）
+  $ver = (Get-Content package.json -Encoding UTF8 | ConvertFrom-Json).version
   Write-Host "    新版本：$ver"
 
   # 3) 桌面端构建（自签签名；无 CSC_KEY_PASSWORD 时 electron-builder 自动跳过签名）

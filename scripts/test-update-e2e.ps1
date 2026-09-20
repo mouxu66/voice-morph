@@ -440,7 +440,7 @@ $diag | ConvertTo-Json -Depth 5 | Set-Content C:\vm_e2e\install-diag.json
   Invoke-GuestCommand -Script $installScript -TimeoutSec 150 | Out-Null
   $tmp = Join-Path $WorkDir "install-result.json"
   Copy-FromGuest "$GuestWork\install-result.json" $tmp
-  $installInfo = Get-Content $tmp -Raw | ConvertFrom-Json
+  $installInfo = Get-Content $tmp -Raw -Encoding UTF8 | ConvertFrom-Json
   Remove-Item $tmp -Force
 
   # 诊断文件一并拷回（即使后续 FAIL 也留证据）
@@ -451,7 +451,7 @@ $diag | ConvertTo-Json -Depth 5 | Set-Content C:\vm_e2e\install-diag.json
     $hint = ""
     if (Test-Path $diagTmp) {
       try {
-        $d = Get-Content $diagTmp -Raw | ConvertFrom-Json
+        $d = Get-Content $diagTmp -Raw -Encoding UTF8 | ConvertFrom-Json
         $hint = "诊断：source=$($d.source) motw=$($d.motw) 残留进程=[$($d.procsStillRunning -join ',')] " +
                 "LOCALAPPDATA\Programs=[$($d.localProgramsDirs -join ',')] 见 $diagTmp"
       } catch { }
@@ -514,7 +514,7 @@ foreach ($n in $names) {
   try { Copy-FromGuest "$GuestWork\clear-installer.json" $tmp } catch { }
   if (Test-Path $tmp) {
     try {
-      $ci = Get-Content $tmp -Raw | ConvertFrom-Json
+      $ci = Get-Content $tmp -Raw -Encoding UTF8 | ConvertFrom-Json
       if (@($ci.killed).Count -gt 0) {
         Write-Host "  已清理安装器残留：[$(($ci.killed) -join ',')]"
       }
@@ -535,7 +535,7 @@ foreach ($n in $names) {
   #       PowerShell 恒在 Session 0，即使它把 app 成功投到 Session 1，脚本看到的仍是 0。
   #       真判据 = 启动后**回查 app 进程自己的 SessionId**（见轮询里的 appSessions）。
   $launchScript = @'
-$exe = (Get-Content C:\vm_e2e\install-result.json | ConvertFrom-Json).exe
+$exe = (Get-Content C:\vm_e2e\install-result.json -Encoding UTF8 | ConvertFrom-Json).exe
 $env:VM_UPDATE_URL = "http://__HOSTIP__:__PORT__/latest.json"
 $env:VM_UPDATE_TEST_AUTO = "1"
 $env:VM_UPDATE_TEST_RESULT = "C:\vm_e2e\update-check-result.json"
@@ -596,7 +596,7 @@ if ($useSchtasks) {
   while ((Get-Date) -lt $deadline) {
     $pollNo += 1
     $poll = @'
-$exename = (Get-Content C:\vm_e2e\install-result.json | ConvertFrom-Json).exe
+$exename = (Get-Content C:\vm_e2e\install-result.json -Encoding UTF8 | ConvertFrom-Json).exe
 $name = [System.IO.Path]::GetFileNameWithoutExtension($exename)
 # 三个候选进程名：主 exe 名 + 打包目录名 + 通用 electron
 $candNames = @($name, 'voice-morph-desktop', 'electron') | Select-Object -Unique
@@ -660,7 +660,7 @@ $snap | ConvertTo-Json -Depth 5 | Set-Content ("C:\vm_e2e\app-running-" + __N__ 
     Invoke-GuestCommand -Script $poll -TimeoutSec 30 | Out-Null
     $tmp = Join-Path $WorkDir "app-running.json"
     Copy-FromGuest "$GuestWork\app-running.json" $tmp
-    $snapObj = Get-Content $tmp -Raw | ConvertFrom-Json
+    $snapObj = Get-Content $tmp -Raw -Encoding UTF8 | ConvertFrom-Json
     $running = $snapObj.running
     Remove-Item $tmp -Force
     # 结果文件已写出（VM_UPDATE_TEST_RESULT 指向 C:\vm_e2e）= 检测到更新并触发自动安装
@@ -677,7 +677,7 @@ $snap | ConvertTo-Json -Depth 5 | Set-Content ("C:\vm_e2e\app-running-" + __N__ 
     try { Copy-FromGuest "$GuestWork\app-running.json" $lastTmp } catch { }
     if (Test-Path $lastTmp) {
       try {
-        $s = Get-Content $lastTmp -Raw | ConvertFrom-Json
+        $s = Get-Content $lastTmp -Raw -Encoding UTF8 | ConvertFrom-Json
         $sz = ($s.sizes.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)B" }) -join " "
         $cnt = ($s.counts.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " "
         $errTxt = if ($s.stderr) { ($s.stderr -replace "\r?\n", " | ") } else { "(空)" }
@@ -693,7 +693,7 @@ $snap | ConvertTo-Json -Depth 5 | Set-Content ("C:\vm_e2e\app-running-" + __N__ 
     try { Copy-FromGuest "$GuestWork\launch-params.json" $lpTmp } catch { }
     if (Test-Path $lpTmp) {
       try {
-        $lp = Get-Content $lpTmp -Raw | ConvertFrom-Json
+        $lp = Get-Content $lpTmp -Raw -Encoding UTF8 | ConvertFrom-Json
         $evi += "；launchMethod=$($lp.launchMethod) interactiveFlag=$($lp.interactiveFlag)" +
                 " 自会话=$($lp.sessionId) exeExists=$($lp.exeExists)"
       } catch { }
@@ -706,20 +706,20 @@ $snap | ConvertTo-Json -Depth 5 | Set-Content ("C:\vm_e2e\app-running-" + __N__ 
 
   # 5) 确认 0.2.2 生效：重读磁盘 exe 版本（先清可能的 electron 残留，缓解 NSIS /S 覆盖失败）
   $killResidual = @'
-$exename = (Get-Content C:\vm_e2e\install-result.json | ConvertFrom-Json).exe
+$exename = (Get-Content C:\vm_e2e\install-result.json -Encoding UTF8 | ConvertFrom-Json).exe
 $name = [System.IO.Path]::GetFileNameWithoutExtension($exename)
 Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 '@
   Invoke-GuestCommand -Script $killResidual -TimeoutSec 15 | Out-Null
   $verScript = @'
-$exe = (Get-Content C:\vm_e2e\install-result.json | ConvertFrom-Json).exe
+$exe = (Get-Content C:\vm_e2e\install-result.json -Encoding UTF8 | ConvertFrom-Json).exe
 $v = (Get-Item $exe).VersionInfo.FileVersion
 [pscustomobject]@{ version = $v } | ConvertTo-Json | Set-Content C:\vm_e2e\version.json
 '@
   Invoke-GuestCommand -Script $verScript -TimeoutSec 30 | Out-Null
   $tmp = Join-Path $WorkDir "version.json"
   Copy-FromGuest "$GuestWork\version.json" $tmp
-  $ver = (Get-Content $tmp -Raw | ConvertFrom-Json).version
+  $ver = (Get-Content $tmp -Raw -Encoding UTF8 | ConvertFrom-Json).version
   Remove-Item $tmp -Force
   Add-Result ($ver -eq $NewVersion) "版本生效" "磁盘 exe 版本=$ver，期望 $NewVersion"
 
