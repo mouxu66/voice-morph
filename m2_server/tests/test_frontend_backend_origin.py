@@ -32,6 +32,11 @@ if not SRC.is_dir():
 def _iter_source_files():
     for p in SRC.rglob("*"):
         if p.suffix in (".ts", ".tsx") and p.is_file():
+            # 测试文件里出现主机字面量是在**扫描业务代码**（如
+            # backendSurfaceAudit.test.ts 的正则），不是业务代码自己硬编码，
+            # 不进守卫口径（否则要么逼测试把正则拼字符串，要么整条误红）。
+            if p.name.endswith(".test.ts") or p.name.endswith(".test.tsx"):
+                continue
             yield p
 
 
