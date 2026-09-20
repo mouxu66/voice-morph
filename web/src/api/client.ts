@@ -3,6 +3,7 @@ import type {
   ClipItem,
   DiagnoseInfo,
   HealthInfo,
+  PluginCatalog,
   SendChainInfo,
   TtsChainInfo,
   VideoItem,
@@ -79,6 +80,20 @@ export async function getHealth(): Promise<HealthInfo> {
  */
 export async function getCapabilities(): Promise<CapabilityInfo> {
   return jsonFetch<CapabilityInfo>("/capabilities");
+}
+
+/**
+ * 能力清单（插件目录）：每个能力的声明 + 三态状态 + 依赖关系。
+ *
+ * 与 `getCapabilities` 的分工：那边答「26 个路由**模块**逐个挂上没有」，是加载器的原始账本；
+ * 这里答「**能力**视角」—— 哪些可用、哪些被用户关掉、每个要装什么、缺了会怎样。
+ *
+ * **只读**：开关能力是插件化第 6 步（`POST /api/plugins/{id}/enable|disable`）。
+ * 后端实现同样不依赖重库（没有模块级 `import torch`），所以重依赖崩掉时它仍能答 ——
+ * 这正是最需要这份清单的时刻。
+ */
+export async function getPlugins(): Promise<PluginCatalog> {
+  return jsonFetch<PluginCatalog>("/plugins");
 }
 
 /** 环境体检：检查 ffmpeg / RVC 整合包 / 默认音色权重 / CUDA / TTS 模型 等本机依赖 */

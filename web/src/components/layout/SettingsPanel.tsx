@@ -1,5 +1,8 @@
-import { Check, Compass, Download, Eye, EyeOff, FolderOpen, HardDrive, LayoutGrid, Moon, Monitor, Palette, Scale, Sparkles, Sun, X } from "lucide-react"
+import { useEffect, useState } from "react"
+import { Check, Compass, Download, Eye, EyeOff, FolderOpen, HardDrive, Layers, LayoutGrid, Moon, Monitor, Palette, Scale, Sparkles, Sun, X } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { getPlugins } from "@/api/client"
+import type { PluginCatalog } from "@/types"
 import type { ThemeMode } from "@/theme"
 import { BuildWatchControl } from "@/components/BuildWatchControl"
 
@@ -25,6 +28,7 @@ export function SettingsPanel({
   onOpenStorage,
   onOpenLicenses,
   onOpenUpdate,
+  onOpenCapabilities,
 }: {
   open: boolean
   onClose: () => void
@@ -40,7 +44,22 @@ export function SettingsPanel({
   onOpenStorage: () => void
   onOpenLicenses: () => void
   onOpenUpdate: () => void
+  onOpenCapabilities: () => void
 }) {
+  // 能力摘要：只为让「有没有能力被关掉」在打开抽屉时一眼可见。
+  // 取不到就退回不显示计数（后端刚启动 / 旧版后端没这个端点），不打扰用户。
+  const [caps, setCaps] = useState<PluginCatalog | null>(null)
+  useEffect(() => {
+    if (!open) return
+    let alive = true
+    getPlugins()
+      .then((c) => alive && setCaps(c))
+      .catch(() => alive && setCaps(null))
+    return () => {
+      alive = false
+    }
+  }, [open])
+
   if (!open) return null
 
   const replay = (event: string) => {
@@ -52,6 +71,17 @@ export function SettingsPanel({
     fn()
     onClose()
   }
+
+  // 摘要只讲「有没有被关掉 / 没加载」—— 这两件事会让功能凭空消失，值得一眼看见。
+  const capsTrailing = caps
+    ? `${caps.counts.total} 项${
+        caps.counts.disabled
+          ? ` · ${caps.counts.disabled} 已关闭`
+          : caps.counts.broken
+            ? ` · ${caps.counts.broken} 未加载`
+            : " · 全部可用"
+      }`
+    : undefined
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-black/60" onClick={onClose}>
@@ -120,6 +150,15 @@ export function SettingsPanel({
           <Group title="维护" hint="模型、引擎与磁盘占用都在本机，不上传。">
             <Row icon={<FolderOpen className="h-4 w-4" />} label="模型与引擎配置" onClick={() => jump(onOpenModel)} />
             <Row icon={<HardDrive className="h-4 w-4" />} label="存储占用与清理" onClick={() => jump(onOpenStorage)} />
+          </Group>
+
+          <Group title="能力" hint="每项能力要装什么、哪些没加载、哪些被你关掉了。">
+            <Row
+              icon={<Layers className="h-4 w-4" />}
+              label="能力清单"
+              trailing={capsTrailing}
+              onClick={() => jump(onOpenCapabilities)}
+            />
           </Group>
 
           <Group title="开发工具" hint="前端自动构建监听器。修改代码后自动编译并同步到应用。">

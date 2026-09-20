@@ -6,6 +6,7 @@ import { EnvHealth } from "@/components/EnvHealth"
 import { ModelSetupPanel, SetupBanner } from "@/components/ModelSetupPanel"
 import { SendChainCheck } from "@/components/SendChainCheck"
 import { StoragePanel } from "@/components/StoragePanel"
+import { CapabilityPanel } from "@/components/CapabilityPanel"
 import { LicensesDialog } from "@/components/LicensesDialog"
 import { PetGuide } from "@/components/PetGuide"
 import { UpdateDialog } from "@/components/UpdateDialog"
@@ -46,6 +47,7 @@ export default function App() {
   const [modelOpen, setModelOpen] = useState(false)
   const [chainOpen, setChainOpen] = useState(false)
   const [storageOpen, setStorageOpen] = useState(false)
+  const [capOpen, setCapOpen] = useState(false)
   const [licensesOpen, setLicensesOpen] = useState(false)
   const [updateOpen, setUpdateOpen] = useState(false)
   const [autoUpdate, setAutoUpdate] = useState<UpdateCheck | null>(null)
@@ -132,6 +134,7 @@ export default function App() {
         onOpenModel={() => setModelOpen(true)}
         onOpenStorage={() => setStorageOpen(true)}
         onOpenLicenses={() => setLicensesOpen(true)}
+        onOpenCapabilities={() => setCapOpen(true)}
         onOpenUpdate={() => { setAutoUpdate(null); setUpdateOpen(true) }}
         version={version}
         canCheckUpdate={canCheckUpdate}
@@ -169,6 +172,7 @@ export default function App() {
       <ModelSetupPanel open={modelOpen} onClose={() => setModelOpen(false)} />
       <SendChainCheck open={chainOpen} onClose={() => setChainOpen(false)} />
       <StoragePanel open={storageOpen} onClose={() => setStorageOpen(false)} />
+      <CapabilityPanel open={capOpen} onClose={() => setCapOpen(false)} />
       <LicensesDialog open={licensesOpen} onClose={() => setLicensesOpen(false)} />
       <UpdateDialog
         open={updateOpen}

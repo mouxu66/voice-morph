@@ -51,6 +51,7 @@ export function AppChrome({
   onOpenStorage,
   onOpenLicenses,
   onOpenUpdate,
+  onOpenCapabilities,
   onOpenChain,
   version,
   canCheckUpdate,
@@ -64,6 +65,7 @@ export function AppChrome({
   onOpenStorage: () => void
   onOpenLicenses: () => void
   onOpenUpdate: () => void
+  onOpenCapabilities: () => void
   onOpenChain: () => void
   version: string | null
   canCheckUpdate: boolean
@@ -253,6 +255,7 @@ export function AppChrome({
         onOpenStorage={onOpenStorage}
         onOpenLicenses={onOpenLicenses}
         onOpenUpdate={onOpenUpdate}
+        onOpenCapabilities={onOpenCapabilities}
       />
     </>
   )

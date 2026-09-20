@@ -27,6 +27,86 @@ export interface CapabilityInfo {
   broken: CapabilityBroken[];
 }
 
+/** 能力声明的导航信息（`plugin.json` 的 `routes[].nav`）—— 侧边栏由它渲染 */
+export interface PluginNav {
+  label: string;
+  icon?: string;
+  group: 'start' | 'more';
+  order: number;
+}
+
+/**
+ * `plugin.json` 里的一条页面路由。
+ *
+ * `module` / `export` 都是必填：本仓页面**全是具名导出、零 default export**
+ * （`Home/index.tsx` → `HomeRoute`），所以必须指名取哪个导出。
+ */
+export interface PluginRoute {
+  path: string;
+  module: string;
+  export: string;
+  nav?: PluginNav;
+}
+
+/** 只做重定向的旧路由：页面合并后留下的入口（如 `/discover` → `/workshop?tab=discover`） */
+export interface PluginLegacyRoute {
+  path: string;
+  redirect: string;
+}
+
+/** 一个能力要装的东西；`python` 是 pip 包名，`external` 是本机目录 / 应用 / 音频设备 */
+export interface PluginExtras {
+  python?: string[];
+  external?: { kind: 'dir' | 'app' | 'audio-device'; env?: string; label: string; size_hint_mb?: number }[];
+  models?: string[];
+}
+
+/**
+ * 三态。关键是 `disabled`（用户主动关的）**不算 broken** ——
+ * 否则关一个能力就会弹一条「N 个能力未加载」的降级横幅。
+ */
+export type PluginState = 'ok' | 'broken' | 'disabled';
+
+/** 插件目录里的一项能力（`GET /api/plugins` 的 `plugins[i]`） */
+export interface PluginEntry {
+  id: string;
+  name: string;
+  kind: 'builtin' | 'user';
+  category: 'core' | 'sound' | 'pet' | 'hook';
+  order: number;
+  summary: string;
+  /** 核心能力不可关（关掉它整个界面就没有意义了） */
+  core: boolean;
+  state: PluginState;
+  /** 加载失败原因。`disabled` 的项**也会带着** —— 设置页要能说「你关的，而且它本来就是坏的」 */
+  reasons: string[];
+  /** 依赖的其它能力 id；只做存在性 + 无环校验，暂不做状态传播 */
+  requires: string[];
+  routers: string[];
+  routes: PluginRoute[];
+  legacyRoutes: PluginLegacyRoute[];
+  extras: PluginExtras;
+  health: { module: string; attr: string } | null;
+  /** 为什么不能关 / 关了会失去什么 */
+  disableNote: string;
+}
+
+/**
+ * 能力清单（`GET /api/plugins`）。
+ *
+ * 与 `/capabilities` 的分工：那边是**加载器**的原始账本（26 个 router 逐个成功/失败），
+ * 这里是**能力**视角（哪些可用、哪些被关掉、每个要装什么）。`loaders` 把两边的账
+ * 一起报出来 —— 对不上时能一眼看出问题出在哪一层。
+ *
+ * **只读**：开关能力是插件化第 6 步的事（`POST /api/plugins/{id}/enable|disable`）。
+ */
+export interface PluginCatalog {
+  ok: boolean;
+  counts: { total: number; ok: number; broken: number; disabled: number };
+  plugins: PluginEntry[];
+  loaders: { routers: number; loaded: number; broken: string[] };
+}
+
 // 环境体检单项（/api/diagnose 返回）；warn=true 表示「不致命的告警」（如退回 CPU）
 export interface DiagnoseItem {
   key: string;
