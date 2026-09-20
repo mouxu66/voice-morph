@@ -1,7 +1,7 @@
 {
   "name": "voice-morph-desktop",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "变声 · 音色克隆工作台（桌面端）",
   "type": "module",
   "main": "electron/main.cjs",
