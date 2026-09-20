@@ -158,10 +158,19 @@
 
 注册走**容错加载**（`m2_server/plugin_loader.py`）：任一模块导入失败只让它自己不可用，
 不再拖垮整个后端 —— 缺 torch / 缺权重 / 没装微信都是**正常状态**，不该表现为「软件打不开」。
-启动时 stdout 会打一行 `[plugin_loader] 路由模块 N/26 个已加载`，坏掉的逐条列出原因；
+启动时 stdout 会打一行 `[plugin_loader] 路由模块 N/M 个已加载`，坏掉的逐条列出原因
+（**M 会随启用集变化**：关掉的能力不加载，见下面「关掉一个能力」）；
 `GET /api/capabilities` 是同一份数据的 HTTP 出口（前端顶部降级横幅读它）。
-改动这个注册表前请看 `m2_server/tests/test_plugin_loader.py` —— 注册**顺序是行为**
-（FastAPI 按注册顺序匹配路由），被逐字冻结着。
+
+**挂哪些模块由能力清单决定**，不写在 `server.py` 里：`m2_server/plugins/<id>/plugin.json`
+声明每个能力占哪些 router，`plugin_manifest.mount_plan()` 是唯一出口。
+改动前请看 `m2_server/tests/test_plugin_loader.py` 与 `tests/test_route_shadowing.py`。
+
+> ⚠️ 早前这里写过「注册顺序是行为，被逐字冻结着」—— **2026-09-20 实测推翻**：
+> 139 条真实路由里**没有任何两条 router 路由互相遮蔽**，65 条遮蔽关系全部是
+> 「router vs SPA 兜底」且无害。也就是说顺序对 handler 归属**没有影响**，
+> 冻结它只会在每次加插件时逼人改一次快照。现在守的是「不许出现重叠」
+> （`test_route_shadowing.py`），而不是某个历史顺序。
 
 > 注意：当前环境的 FastAPI 对 `include_router` 采用惰性挂载（路由不展开进 `app.routes`），不要用「枚举路由表」的方式做断言，用 TestClient 真实请求验证（见 `tests/test_server.py`）。
 
@@ -284,7 +293,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
 > 这三行只是摘要。**机器可读的那份在 `m2_server/plugins/<id>/plugin.json`**：
 > 每个能力声明自己占哪些 router、需要哪些「重可选依赖」（另外几个 GB 的 Python 包与模型）、
 > 对应的前端页面与侧边栏项、以及缺了会怎样。当前共 19 个能力（7 个核心 + 12 个可选），
-> 可用 `GET /api/plugins` 看实时状态（`ok` / `broken` / `disabled` 三态）。
+> 可用 `GET /api/plugins` 看实时状态（`ok` / `broken` / `disabled` 三态 + 开关结果 `enabled`）。
 > 改这里的表格前先看 `docs/插件化设计.md` —— 那份清单才是真相源，这张表是给人快速扫的。
 >
 > 想先看看"这台机器按当前启用集会装什么"：`python tools\plugin_extras.py`

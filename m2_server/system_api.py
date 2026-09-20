@@ -59,8 +59,9 @@ def capabilities():
 
     消费方：前端顶部降级提示（`SetupBanner`）—— 让「哪个能力不可用」
     从 `backend.log` 走到界面上，而不是只对翻日志的人可见。
-    （`docs/插件化设计.md` 第 2 步的 `GET /api/plugins` 会在这个基础上扩成
-    带 manifest 的目录，本端点保留作为“只是加载状态”的稳定子集。）
+    （`GET /api/plugins` 是带 manifest 的**能力**目录，本端点保留作为
+    “只是加载状态”的稳定子集 —— 两者由 `test_plugins_endpoint_shape_and_consistency`
+    对账，数字对不上时能一眼看出问题出在哪一层。）
     """
     res = plugin_loader.results()
     routers = [r for r in res if r.purpose == plugin_loader.ROUTER_PURPOSE]
