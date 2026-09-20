@@ -105,7 +105,14 @@ $script:PatternMap = [ordered]@{
 
 # ---------------------------------------------------------------- helpers -----
 function Get-OutDir {
-  if ($Out) { $d = $Out } else { $d = Join-Path $PSScriptRoot 'out' }
+  # Runtime artifacts live OUTSIDE the repo on purpose (2026-09-21).
+  # These are full-resolution desktop screenshots and clipboard dumps: they may
+  # carry private window content, and git's `add` default made them easy to
+  # commit by accident (they did reach history once, via a docs commit).
+  # Anything not gitignored is readable by the agent, so keep them on disk but
+  # out of the work tree entirely. Override with -Out if you really need them
+  # inside the repo; .gitignore now covers the whole out/ directory as a net.
+  if ($Out) { $d = $Out } else { $d = Join-Path ([IO.Path]::GetTempPath()) 'desktop-control' }
   if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
   return $d
 }

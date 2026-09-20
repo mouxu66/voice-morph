@@ -15,8 +15,9 @@ $DC probe
 
 # 1. 看一眼屏幕（-Preview 会额外出一张 1280 宽 JPEG，agent 只能读这张）
 $DC shot -Preview
-#    → tools/desktop-control/out/shot-<时间>.png （全分辨率，存档用）
-#    → tools/desktop-control/out/shot-<时间>.jpg （~100KB，肉眼/agent 都看这张）
+#    → %TEMP%\desktop-control\shot-<时间>.png （全分辨率，存档用）
+#    → %TEMP%\desktop-control\shot-<时间>.jpg （~100KB，肉眼/agent 都看这张）
+#    （2026-09-21 起默认输出在仓库外，理由见下方「产物落在哪」）
 
 # 2. 现在有哪些窗口
 $DC windows
@@ -62,21 +63,33 @@ $DC -Action type -ArgsFile /tmp/args.json
 
 （`Action` 写在 JSON 里也算数；JSON 里的字段名 = 参数名。）
 
-## 产物与 .gitignore
+## 产物落在哪（2026-09-21 起：**仓库外**）
 
-结果写到 `tools/desktop-control/out/`：
+结果默认写到 **`%TEMP%\desktop-control\`**（Windows 上即
+`C:\Users\<你>\AppData\Local\Temp\desktop-control`）：
 
 - `*.json` —— 每次动作的结果详情（窗口、命中元素、用的哪种模式、矩形）
 - `*.png` —— 全分辨率截图
 - `*.jpg` —— 降采样预览
 
-`.gitignore` **只忽略 `*.png` 和 `*.json`，故意留下 `*.jpg`**：读取工具对被 ignore 的路径一律
-`[BLOCKED]`，所以 agent 必须能读到那张 jpg，才算"看得见屏幕"。改动这条 ignore 前先想清楚。
+**为什么搬出仓库**：这些是**你桌面的真实截图**和剪贴板 dump，可能含聊天记录、密钥窗口、
+别人的消息，而本仓库是**公开**的。原先把它们放在 `tools/desktop-control/out/` 且**故意不 ignore
+`*.jpg`**（理由是"agent 得能读到那张 jpg 才看得见屏幕"，因为读取工具对被 ignore 的路径一律
+`[BLOCKED]`）——代价是任何 `git add .` 都会把它们收进库。
 
-> ⚠️ **隐私红线**：`out/*.jpg` 是**你桌面的真实截图**（可能含聊天记录、密钥窗口、别人的消息），
-> 而本仓库是**公开**的。被 ignore 的 png/json 相对安全，**这个 jpg 不是**。
-> 因此：① 绝不要 `git add -A`；② 用完就删（`rm -f tools/desktop-control/out/*`）；
-> ③ 要长期留证的截图请先裁剪/模糊，别直接放进来。
+这个代价真实兑现过一次：2026-09-19 一条**改第三方许可的 docs 提交**顺手把 38 张截图和
+`out/_clip.txt` 带进了历史（`4af0a33`），直到 09-21 才用 `git-filter-repo` 重写未推送的
+69 条提交剔除干净。教训是「靠纪律防止误 add」不如「让它根本不在工作树里」。
+
+现在的分工：
+
+- **新路径**（`%TEMP%`）不在工作树内 → `git add .` 天然收不到，同时 agent 照常可读，看图能力不变；
+- **`.gitignore` 保留 `tools/desktop-control/out/` 整目录规则**作兜底，覆盖两种情况：
+  ① 有人显式 `-Out` 指回仓库；② 本地磁盘上还有历史遗留的旧产物。
+- 真的需要把产物放进仓库时用 `-Out D:\变声\tools\desktop-control\out`，但**别忘了它可能被提交**。
+
+> ⚠️ 隐私红线不变：截图是**真实桌面**，`%TEMP%` 也不是保险箱（同机其他进程可读）。
+> 用完就删（`Remove-Item "$env:TEMP\desktop-control\*"`）；要长期留证请先裁剪/模糊。
 
 ## 已知边界（别指望它）
 

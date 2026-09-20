@@ -40,17 +40,19 @@ web/vite.config.ts.timestamp-*.mjs
 tts_trial/*.wav
 
 # ===== 桌面控制工具的运行时产物（全分辨率截图 / UIA 树 JSON）=====
-# 只忽略 .png/.json，*.jpg 预览故意保留“可见”状态：read_files 无法读取被 ignore 的文件，
-# agent 得靠这个 jpg 才能“看到”屏幕（见 tools/desktop-control/dc.ps1 的 -Preview）。
+# 【2026-09-21 起：运行时产物默认不再落在仓库内】
+#   dc.ps1 的 Get-OutDir 已把默认输出目录改到 %TEMP%\desktop-control，
+#   截图/剪贴板 dump 天然在工作树之外，不会再被 `git add .` 误收。
+#   仍保留下面的规则，是为了兜住两种情况：① 有人显式用 -Out 指回仓库；
+#   ② 历史遗留文件还在本地磁盘上（未被 git 跟踪）。整目录一网打尽，
+#   包括此前故意"可见"的 *.jpg 和 _clip.txt —— 那个"让 agent 看图"的
+#   理由已不成立：新路径同样可读。
 #
-# ⚠️【2026-09-18 提醒】正因为 jpg / _clip.txt 不受 ignore 保护，
-#   **`git add tools/desktop-control/` 或 `git add .` 会把 38 张桌面截图和剪贴板 dump
-#   一起入库并推到 GitHub**。只 add 工具本体那几个文件：
-#     git add tools/desktop-control/README.md tools/desktop-control/cdp.py \
-#             tools/desktop-control/dc.ps1 tools/desktop-control/pet.py
-#   （截图里可能有微信聊天窗口等私人内容，务必别误传。）
-tools/desktop-control/out/*.png
-tools/desktop-control/out/*.json
+# ⚠️ 背景（2026-09-18 发现 / 2026-09-21 修复）：jpg 与 _clip.txt 曾不受
+#   ignore 保护，38 张桌面截图 + 剪贴板 dump 被一条无关的 docs 提交
+#   （4af0a33）顺带入库。所幸当时尚未推送，已用 git-filter-repo 重写
+#   未推送的 69 条历史剔除干净（详见 docs/犯错指南.md）。
+tools/desktop-control/out/
 web/tsconfig.tsbuildinfo
 
 # ===== 模型权重（大文件，另行管理/下载） =====
