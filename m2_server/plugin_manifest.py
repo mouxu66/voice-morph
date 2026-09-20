@@ -418,12 +418,25 @@ def enabled_ids(disabled: set[str] | None = None) -> set[str]:
     被关掉的插件**若仍被某个启用中的插件 `requires`，就必须保留**：
     用户先关 A（当时没人依赖它），后来开了依赖 A 的 B，A 得复活，
     否则 B 起来就是 broken。宁可多留一个能力，也不要让「关掉 A」把「还在用的 B」弄坏。
+
+    复活是**传递闭包**（复活的 A 也有依赖 → 一并复活，直到不动为止）：
+    否则会造出「A 启用了、A 依赖的 B 却还关着」的半吊子状态，B 照样把 A 拖成 broken。
+    当前清单里没有「可选能力依赖可选能力再依赖可选能力」的链，这一跳今天到不了；
+    用传递闭包钉住，是为了清单以后加一条就立刻正确，而不是那天再被咬一口。
     """
-    off = disabled if disabled is not None else disabled_ids()
+    off = set(disabled if disabled is not None else disabled_ids())
     plugins = by_id()
     on = {pid for pid in plugins if pid not in off}
-    depended = {req for pid in on for req in plugins[pid].requires}
-    return on | (off & depended)
+    changed = True
+    while changed:
+        changed = False
+        for pid in sorted(on):
+            for req in plugins[pid].requires:
+                if req in off:
+                    off.discard(req)
+                    on.add(req)
+                    changed = True
+    return on
 
 
 def dependents_of(pid: str, disabled: set[str] | None = None) -> list[str]:

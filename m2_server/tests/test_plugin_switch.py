@@ -37,6 +37,20 @@ def _p(pid: str) -> plugin_manifest.Plugin:
     return plugin_manifest.by_id()[pid]
 
 
+def _mk(pid: str, requires: tuple[str, ...] = ()) -> plugin_manifest.Plugin:
+    """造一个虚拟可选插件（不落盘），专给「真实清单里还没有的图」用。"""
+    return plugin_manifest.Plugin(
+        id=pid,
+        name=pid,
+        kind="builtin",
+        category="sound",
+        order=9,
+        summary="",
+        routers=(f"{pid}_api",),
+        requires=requires,
+    )
+
+
 def _ids() -> set[str]:
     return set(plugin_manifest.by_id())
 
@@ -73,6 +87,22 @@ def test_dependents_of_names_the_dependents():
     assert plugin_manifest.dependents_of("sound.offline-vc") == ["sound.audition"]
     assert sorted(plugin_manifest.dependents_of("sound.workshop")) == ["sound.ft", "sound.mine"]
     assert plugin_manifest.dependents_of("pet.companion") == ["pet.market"]
+
+
+def test_enabled_ids_revives_transitively(monkeypatch):
+    """复活是传递闭包：B 依赖 A、C 依赖 B，关掉 A+B 只留 C → A、B 都得回来。
+
+    真实清单里没有「可选→可选→可选」的链（现在唯一的第二跳是核心，永远开着），
+    所以用虚拟图钉住 —— 别等清单以后加了这么一条、上线才被咬。
+    """
+    graph = {
+        "C": _mk("C", ("B",)),
+        "B": _mk("B", ("A",)),
+        "A": _mk("A", ()),
+    }
+    monkeypatch.setattr(plugin_manifest, "by_id", lambda: graph)
+    on = plugin_manifest.enabled_ids({"A", "B"})
+    assert on == {"A", "B", "C"}, "C 开着 → B 复活 → B 依赖的 A 也必须复活"
 
 
 def test_dependents_of_ignores_disabled_dependents():
