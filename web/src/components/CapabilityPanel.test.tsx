@@ -11,13 +11,17 @@
  * 2. `broken` 的原因必须露出来（否则用户只知道「少了块功能」，不知道缺什么）；
  * 3. 全 ok 时**不能**冒出告警块（否则等于把 disabled 混进 broken 的老毛病换个地方犯）。
  */
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 const getPlugins = vi.fn()
+const setPluginEnabled = vi.fn()
+const applyPluginPreset = vi.fn()
 
 vi.mock("@/api/client", () => ({
   getPlugins: (...a: unknown[]) => getPlugins(...a),
+  setPluginEnabled: (...a: unknown[]) => setPluginEnabled(...a),
+  applyPluginPreset: (...a: unknown[]) => applyPluginPreset(...a),
 }))
 
 import { CapabilityPanel } from "./CapabilityPanel"
@@ -27,6 +31,9 @@ type Entry = {
   name: string
   category: string
   state: string
+  /** 缺省按 `state` 推（与后端一致：只有"被依赖而保留"时会不一样） */
+  enabled?: boolean
+  blockedBy?: string[]
   reasons?: string[]
   summary?: string
   disableNote?: string
@@ -34,7 +41,7 @@ type Entry = {
   requires?: string[]
 }
 
-function catalog(entries: Entry[]) {
+function catalog(entries: Entry[], preset = "standard") {
   const counts = { total: entries.length, ok: 0, broken: 0, disabled: 0 }
   for (const e of entries) counts[e.state as "ok" | "broken" | "disabled"] += 1
   return {
@@ -47,6 +54,8 @@ function catalog(entries: Entry[]) {
       summary: e.summary ?? "一句话说明",
       reasons: e.reasons ?? [],
       requires: e.requires ?? [],
+      blockedBy: e.blockedBy ?? [],
+      enabled: e.enabled ?? e.state !== "disabled",
       routers: [],
       routes: [],
       legacyRoutes: [],
@@ -56,6 +65,13 @@ function catalog(entries: Entry[]) {
       ...e,
     })),
     loaders: { routers: 26, loaded: 26, broken: [] },
+    restartRequired: true,
+    preset,
+    presets: [
+      { id: "light", label: "轻量", plugins: ["sound.offline-vc"] },
+      { id: "standard", label: "标准", plugins: ["sound.tts", "sound.offline-vc"] },
+      { id: "full", label: "全能", plugins: ["sound.tts", "sound.offline-vc", "sound.mine"] },
+    ],
   }
 }
 
@@ -184,5 +200,110 @@ describe("CapabilityPanel", () => {
 
     expect(await screen.findByText("读取能力清单失败")).toBeInTheDocument()
     await waitFor(() => expect(getPlugins).toHaveBeenCalled())
+  })
+})
+
+// ---------------------------------------------------------------- 第 6 步：开关
+//
+// 上面守的是"看得清"，下面守的是"真的能改、改了说得清"。
+// 三条最要紧的：
+//   1. 开关读 `enabled`，不能拿 `state` 推（被依赖而保留的能力会显示错）；
+//   2. 被拒时**原样**显示后端 detail（409 说的是"你还被谁依赖着"，
+//      通用文案会把它翻译成"同名文件已存在"）；
+//   3. 写完必须说"重启生效" —— 否则用户点了没变化，只会以为开关坏了。
+
+describe("CapabilityPanel · 开关", () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("★ 开关读 enabled，不是 state（被依赖而保留的能力必须显示成开着的）", async () => {
+    getPlugins.mockResolvedValue(
+      catalog([
+        OK_CORE,
+        // 用户关了它，但 sound.audiobook 还依赖它 → 后端仍保留
+        { ...OK_SOUND, state: "disabled", enabled: true, blockedBy: ["sound.audiobook"] },
+      ]),
+    )
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    const sw = await screen.findByRole("switch", { name: /关闭 输字变声/ })
+    expect(sw).toHaveAttribute("aria-checked", "true")
+    // 关不掉的原因要说出来，别让用户对着一个开关干瞪眼
+    expect(screen.getByText(/被依赖：sound.audiobook/)).toBeInTheDocument()
+  })
+
+  it("核心能力的开关不给点", async () => {
+    getPlugins.mockResolvedValue(catalog([OK_CORE]))
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    const sw = await screen.findByRole("switch", { name: /核心能力，不可关闭 系统与体检/ })
+    expect(sw).toBeDisabled()
+  })
+
+  it("点开关 → 调 enable/disable，并提示重启生效", async () => {
+    getPlugins.mockResolvedValue(catalog([OK_CORE, OK_SOUND]))
+    setPluginEnabled.mockResolvedValue({
+      id: "sound.tts",
+      enabled: false,
+      blockedBy: [],
+      reason: "",
+      restartRequired: true,
+    })
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    const sw = await screen.findByRole("switch", { name: /关闭 输字变声/ })
+    fireEvent.click(sw)
+
+    await waitFor(() => expect(setPluginEnabled).toHaveBeenCalledWith("sound.tts", false))
+    // 断言「已关闭…」这一条整体 —— 只匹配"重启应用后生效"会连页脚说明一起命中
+    expect(await screen.findByText("已关闭「输字变声」，重启应用后生效。")).toBeInTheDocument()
+  })
+
+  it("★ 关闭守卫被拒时原样显示后端 detail（409 ≠ 同名文件已存在）", async () => {
+    getPlugins.mockResolvedValue(catalog([OK_CORE, OK_SOUND]))
+    setPluginEnabled.mockRejectedValue(
+      new Error("sound.tts 仍被 sound.audiobook 依赖；先关掉它们"),
+    )
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    const sw = await screen.findByRole("switch", { name: /关闭 输字变声/ })
+    fireEvent.click(sw)
+
+    // 通用错误文案会把 409 翻译成"同名文件已存在，请换个名字"，在这里是完全错的
+    expect(await screen.findByText(/仍被 sound.audiobook 依赖/)).toBeInTheDocument()
+    expect(screen.queryByText(/同名文件/)).not.toBeInTheDocument()
+  })
+
+  it("套餐预设可点，点了调 applyPluginPreset", async () => {
+    getPlugins.mockResolvedValue(catalog([OK_CORE, OK_SOUND], "custom"))
+    applyPluginPreset.mockResolvedValue({
+      preset: "light",
+      disabled: ["sound.tts"],
+      enabled: ["sound.offline-vc"],
+      restartRequired: true,
+    })
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    expect(await screen.findByText(/当前是自定义组合/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: /轻量/ }))
+
+    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("light"))
+    expect(await screen.findByText(/已套用「轻量」套餐/)).toBeInTheDocument()
+  })
+
+  it("当前套餐高亮（aria-pressed）", async () => {
+    getPlugins.mockResolvedValue(catalog([OK_CORE, OK_SOUND], "standard"))
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    const standard = await screen.findByRole("button", { name: /标准/ })
+    expect(standard).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByRole("button", { name: /轻量/ })).toHaveAttribute("aria-pressed", "false")
   })
 })

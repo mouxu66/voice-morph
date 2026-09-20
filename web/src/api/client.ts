@@ -4,6 +4,8 @@ import type {
   DiagnoseInfo,
   HealthInfo,
   PluginCatalog,
+  PluginPresetResult,
+  PluginToggleResult,
   SendChainInfo,
   TtsChainInfo,
   VideoItem,
@@ -94,6 +96,30 @@ export async function getCapabilities(): Promise<CapabilityInfo> {
  */
 export async function getPlugins(): Promise<PluginCatalog> {
   return jsonFetch<PluginCatalog>("/plugins");
+}
+
+/**
+ * 开关一个能力（插件化第 6 步）。
+ *
+ * 失败时 `jsonFetch` 会把后端的 `detail` 原样抛出来 —— **别过 `friendlyError()`**：
+ * 它把 409 一律翻译成「同名文件已存在」，而这里的 409 说的是
+ * 「你还被某某依赖着，先关掉它」，语义完全不同。
+ *
+ * **重启生效**：router 在后端启动时挂好，本轮不做热插拔，所以返回里带
+ * `restartRequired`，界面必须如实转述（否则用户点了开关看不到变化，以为坏了）。
+ */
+export async function setPluginEnabled(id: string, enabled: boolean): Promise<PluginToggleResult> {
+  const verb = enabled ? "enable" : "disable"
+  return jsonFetch<PluginToggleResult>(`/plugins/${encodeURIComponent(id)}/${verb}`, { method: "POST" })
+}
+
+/** 套用一个套餐预设（§8.1）。同样是重启生效。 */
+export async function applyPluginPreset(preset: string): Promise<PluginPresetResult> {
+  return jsonFetch<PluginPresetResult>("/plugins/preset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ preset }),
+  })
 }
 
 /** 环境体检：检查 ffmpeg / RVC 整合包 / 默认音色权重 / CUDA / TTS 模型 等本机依赖 */

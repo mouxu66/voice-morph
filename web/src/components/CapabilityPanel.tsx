@@ -1,22 +1,31 @@
 import { useCallback, useEffect, useState } from "react"
-import { AlertTriangle, Layers, Loader2, PowerOff, RefreshCw, X } from "lucide-react"
-import { getPlugins } from "@/api/client"
+import { AlertTriangle, Layers, Loader2, PowerOff, RefreshCw, RotateCcw, X } from "lucide-react"
+import { applyPluginPreset, getPlugins, setPluginEnabled } from "@/api/client"
 import type { PluginCatalog, PluginEntry, PluginState } from "@/types"
 import { cn } from "@/lib/utils"
 import { ErrorPanel } from "@/components/ErrorPanel"
 
 /**
- * 能力管理：把 `GET /api/plugins` 的清单摊到界面上。
+ * 能力管理：把 `GET /api/plugins` 的清单摊到界面上，并**真的能开关**（插件化第 6 步）。
  *
- * 为什么要有这一屏：步 2 只把清单做成了 API，用户看不到 —— 于是「某个能力被关了」
- * 在界面上表现为「那一块功能凭空消失」，没有任何解释。而 `SetupBanner` 已经处理了
+ * 为什么要有这一屏：清单做成了 API 但用户看不到 —— 于是「某个能力被关了」在界面上
+ * 表现为「那一块功能凭空消失」，没有任何解释。而 `SetupBanner` 已经处理了
  * 「能力**不可用**」（加载失败 / 缺依赖），所以这里只补另一半：**被关掉的**能力去哪了。
  *
  * 三态来自 `plugin_manifest.py`，关键是 `disabled` 与 `broken` **分开**：
  * 用户自己关掉的不该被当成故障来报警，但也不该把原因丢掉 —— 所以被关掉的项
  * 照样把 `reasons` 列出来，好回答「你关的，而且它本来就是坏的」。
  *
- * 本屏**只读**：开关能力（含套餐预设）是插件化第 6 步，届时这里才变成可操作的。
+ * ★ 开关读 `enabled` 而不是 `state`：被别的启用能力依赖时，用户关了它但后端仍保留
+ * （否则依赖方会变砖），此时 `state='disabled'` 而 `enabled=true`。拿 `state` 推会
+ * 把「被依赖而保留」显示成关着的。
+ *
+ * ★ 守卫**只写在后端**：本屏不做「这个能不能关」的预判，点了就发请求，被拒就把
+ * 后端的 `detail` 原样显示（「你还被某某依赖着，先关掉它」）。前端再写一遍守卫
+ * 等于把判据放两处，清单一改就漂。
+ *
+ * ★ **重启生效**：router 在后端启动时挂好，本轮不做热插拔。改完必须说清，
+ * 否则用户点了开关看不到任何变化，只会以为开关坏了。
  */
 const CATEGORY_LABEL: Record<PluginEntry["category"], string> = {
   core: "内核（随包、不可关）",
@@ -52,6 +61,49 @@ function StateBadge({ state }: { state: PluginState }) {
   )
 }
 
+/** 开关（role="switch"）。`core` 与忙碌态都不给点，但**不隐藏** —— 让用户看见它存在。 */
+function Switch({
+  on,
+  busy,
+  disabled,
+  title,
+  onToggle,
+  label,
+}: {
+  on: boolean
+  busy?: boolean
+  disabled?: boolean
+  title?: string
+  onToggle: () => void
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      aria-busy={busy || undefined}
+      aria-disabled={disabled || undefined}
+      title={title}
+      disabled={busy || disabled}
+      onClick={onToggle}
+      className={cn(
+        "relative h-5 w-9 shrink-0 rounded-full transition",
+        on ? "bg-emerald-500/80" : "bg-muted-foreground/30",
+        busy || disabled ? "cursor-not-allowed opacity-60" : "hover:opacity-90",
+      )}
+    >
+      <span
+        className={cn(
+          "absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all",
+          on ? "left-[18px]" : "left-0.5",
+        )}
+      />
+    </button>
+  )
+}
+
 /** 一个能力要装什么 —— 三项都空就不占版面 */
 function Extras({ p }: { p: PluginEntry }) {
   const py = p.extras?.python ?? []
@@ -72,7 +124,18 @@ function Extras({ p }: { p: PluginEntry }) {
   )
 }
 
-function CapabilityRow({ p }: { p: PluginEntry }) {
+function CapabilityRow({
+  p,
+  busy,
+  onToggle,
+}: {
+  p: PluginEntry
+  busy?: boolean
+  onToggle?: (id: string, on: boolean) => void
+}) {
+  const on = p.enabled ?? p.state !== "disabled"
+  const locked = p.core
+  const blocked = p.blockedBy?.length ?? 0
   return (
     <li className="rounded-lg border border-border bg-background/60 px-3 py-2.5">
       <div className="flex items-start justify-between gap-3">
@@ -83,7 +146,27 @@ function CapabilityRow({ p }: { p: PluginEntry }) {
           </p>
           <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{p.summary}</p>
         </div>
-        <StateBadge state={p.state} />
+        <div className="flex shrink-0 items-center gap-2">
+          <StateBadge state={p.state} />
+          {onToggle ? (
+            <Switch
+              on={on}
+              busy={busy}
+              disabled={locked}
+              label={`${locked ? "核心能力，不可关闭" : on ? "关闭" : "开启"} ${p.name}`}
+              title={
+                locked
+                  ? "核心能力，不能关闭（关掉它整个界面就没有意义了）"
+                  : blocked && on
+                    ? `仍被 ${p.blockedBy.join("、")} 依赖；要先关掉它们`
+                    : on
+                      ? "关闭这个能力（重启后生效）"
+                      : "开启这个能力（重启后生效）"
+              }
+              onToggle={() => onToggle(p.id, !on)}
+            />
+          ) : null}
+        </div>
       </div>
 
       {p.reasons.length ? (
@@ -100,6 +183,12 @@ function CapabilityRow({ p }: { p: PluginEntry }) {
 
       {p.disableNote ? (
         <p className="mt-1 text-[11px] leading-5 text-muted-foreground/80">{p.disableNote}</p>
+      ) : null}
+
+      {blocked ? (
+        <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
+          被依赖：{p.blockedBy.join("、")}（想关它，先关掉这些）
+        </p>
       ) : null}
 
       {p.requires.length ? (
@@ -145,6 +234,12 @@ export function CapabilityPanel({ open, onClose }: { open: boolean; onClose: () 
   const [data, setData] = useState<PluginCatalog | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
+  /** 忙碌的能力 id，或 `"preset:<name>"` */
+  const [busy, setBusy] = useState<string | null>(null)
+  /** 开关被拒 / 写成功后的提示。写成功也要提示 —— 否则"点了没变化"会被当成坏了。 */
+  const [notice, setNotice] = useState<{ tone: "ok" | "warn" | "error"; text: string } | null>(null)
+  /** 本次会话里改过 → 必须提示重启，不然用户不知道为什么界面没变 */
+  const [dirty, setDirty] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -162,10 +257,52 @@ export function CapabilityPanel({ open, onClose }: { open: boolean; onClose: () 
     if (open) void load()
   }, [open, load])
 
+  const toggle = useCallback(
+    async (id: string, on: boolean) => {
+      setBusy(id)
+      setNotice(null)
+      try {
+        await setPluginEnabled(id, on)
+        setDirty(true)
+        setNotice({
+          tone: "ok",
+          text: `已${on ? "开启" : "关闭"}「${data?.plugins.find((p) => p.id === id)?.name ?? id}」，重启应用后生效。`,
+        })
+        await load()
+      } catch (e) {
+        // 守卫的判据只在后端一处，所以这里**原样**转述它的 detail
+        // （409 说的是"你还被某某依赖着"，不能被通用文案吃掉）。
+        setNotice({ tone: "error", text: e instanceof Error ? e.message : String(e) })
+      } finally {
+        setBusy(null)
+      }
+    },
+    [data, load],
+  )
+
+  const applyPreset = useCallback(
+    async (name: string, label: string) => {
+      setBusy(`preset:${name}`)
+      setNotice(null)
+      try {
+        await applyPluginPreset(name)
+        setDirty(true)
+        setNotice({ tone: "ok", text: `已套用「${label}」套餐，重启应用后生效。` })
+        await load()
+      } catch (e) {
+        setNotice({ tone: "error", text: e instanceof Error ? e.message : String(e) })
+      } finally {
+        setBusy(null)
+      }
+    },
+    [load],
+  )
+
   if (!open) return null
 
   const plugins = data?.plugins ?? []
   const counts = data?.counts
+  const presets = data?.presets ?? []
   const disabled = plugins.filter((p) => p.state === "disabled")
   const broken = plugins.filter((p) => p.state === "broken")
   const usable = plugins.filter((p) => p.state === "ok")
@@ -227,7 +364,72 @@ export function CapabilityPanel({ open, onClose }: { open: boolean; onClose: () 
           </div>
         ) : null}
 
+        {notice ? (
+          <p
+            role="status"
+            className={cn(
+              "mt-4 rounded-lg border px-3 py-2 text-xs leading-5",
+              notice.tone === "error"
+                ? "border-destructive/40 bg-destructive/10 text-destructive"
+                : notice.tone === "warn"
+                  ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-700"
+                  : "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+            )}
+          >
+            {notice.text}
+          </p>
+        ) : null}
+
+        {dirty ? (
+          <p
+            role="status"
+            className="mt-2 flex items-start gap-1.5 rounded-lg border border-border bg-muted/60 px-3 py-2 text-xs leading-5 text-muted-foreground"
+          >
+            <RotateCcw className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              改动已保存，但<strong className="font-medium">要重启应用才生效</strong> —— 路由是后端
+              启动时挂好的，本轮不做热插拔。重启后关掉的能力不会加载，也就不占显存。
+            </span>
+          </p>
+        ) : null}
+
         <div className="mt-5 space-y-6">
+          <Section
+            title="套餐预设"
+            hint="先按套餐选，不够再往下逐项调 —— 直接甩一张裸插件表是配置负担，不是自由度。"
+          >
+            <div className="flex flex-wrap gap-2">
+              {presets.map((preset) => {
+                const active = data?.preset === preset.id
+                const isBusy = busy === `preset:${preset.id}`
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    aria-pressed={active}
+                    disabled={busy !== null}
+                    onClick={() => void applyPreset(preset.id, preset.label)}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition disabled:opacity-60",
+                      active
+                        ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                        : "border-border bg-background/60 text-muted-foreground hover:bg-muted hover:text-foreground",
+                    )}
+                  >
+                    {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                    {preset.label}
+                    <span className="font-mono text-[10px] opacity-70">{preset.plugins.length}</span>
+                  </button>
+                )
+              })}
+              {data && data.preset === "custom" ? (
+                <span className="self-center text-[11px] text-muted-foreground">
+                  当前是自定义组合（在套餐之外逐项改过）
+                </span>
+              ) : null}
+            </div>
+          </Section>
+
           <Section
             title="被关掉的能力"
             hint="关掉的能力不会加载 —— 不占显存、不注册路由、界面上也不出现。这里让「功能去哪了」有个答案。"
@@ -236,7 +438,7 @@ export function CapabilityPanel({ open, onClose }: { open: boolean; onClose: () 
             {disabled.length ? (
               <ul className="space-y-2">
                 {disabled.map((p) => (
-                  <CapabilityRow key={p.id} p={p} />
+                  <CapabilityRow key={p.id} p={p} busy={busy === p.id} onToggle={toggle} />
                 ))}
               </ul>
             ) : (
@@ -255,7 +457,7 @@ export function CapabilityPanel({ open, onClose }: { open: boolean; onClose: () 
             >
               <ul className="space-y-2">
                 {broken.map((p) => (
-                  <CapabilityRow key={p.id} p={p} />
+                  <CapabilityRow key={p.id} p={p} busy={busy === p.id} onToggle={toggle} />
                 ))}
               </ul>
             </Section>
@@ -277,7 +479,7 @@ export function CapabilityPanel({ open, onClose }: { open: boolean; onClose: () 
                   </h4>
                   <ul className="space-y-2">
                     {list.map((p) => (
-                      <CapabilityRow key={p.id} p={p} />
+                      <CapabilityRow key={p.id} p={p} busy={busy === p.id} onToggle={toggle} />
                     ))}
                   </ul>
                 </div>
@@ -292,8 +494,8 @@ export function CapabilityPanel({ open, onClose }: { open: boolean; onClose: () 
         </div>
 
         <p className="mt-5 border-t border-border pt-3 text-[11px] leading-5 text-muted-foreground">
-          当前<strong className="font-medium">只读</strong>：关闭 / 开启能力（含套餐预设与依赖守卫）
-          会在插件化的第 6 步接入界面。
+          关掉一个能力 = 后端不加载它的路由与启动钩子（不占显存）+ 界面上不出现 + 下次装依赖时跳过它的
+          重包。改动<strong className="font-medium">重启应用后生效</strong>。
         </p>
       </div>
     </div>

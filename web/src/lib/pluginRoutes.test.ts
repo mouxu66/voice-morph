@@ -69,6 +69,8 @@ function asCatalog(overrides: Record<string, Partial<PluginEntry>> = {}): Plugin
     summary: "",
     core: raw.category === "core",
     state: "ok",
+    enabled: true,
+    blockedBy: [],
     reasons: [],
     requires: [],
     routers: [],
@@ -79,7 +81,15 @@ function asCatalog(overrides: Record<string, Partial<PluginEntry>> = {}): Plugin
     disableNote: "",
     ...overrides[raw.id],
   }))
-  return { ok: true, counts: { total: plugins.length, ok: plugins.length, broken: 0, disabled: 0 }, plugins, loaders: { routers: 0, loaded: 0, broken: [] } }
+  return {
+    ok: true,
+    counts: { total: plugins.length, ok: plugins.length, broken: 0, disabled: 0 },
+    plugins,
+    loaders: { routers: 0, loaded: 0, broken: [] },
+    restartRequired: true,
+    presets: [],
+    preset: "full",
+  }
 }
 
 const MANIFEST = readManifest()
@@ -136,14 +146,43 @@ describe("glob 会多匹配，必须由清单当白名单", () => {
 describe("可见性与排序", () => {
   it("被关掉的插件不出现，但 core 恒在（否则首页可能整个消失）", () => {
     resetPageCache()
-    const off = { "sound.tts": { state: "disabled" as const }, "core.system": { state: "disabled" as const } }
+    const off = {
+      "sound.tts": { state: "disabled" as const, enabled: false },
+      "core.system": { state: "disabled" as const, enabled: false },
+    }
     const { routes } = buildRoutes(asCatalog(off))
     const paths = routes.map((r) => r.path)
     expect(paths).not.toContain("/tts")
     expect(paths).toContain("/home")
-    // 反例：如果 core 也照 state 过滤，界面会一条路由都没有
-    const { routes: onlyCore } = buildRoutes(asCatalog({ "core.system": { state: "disabled" as const } }))
+    // 反例：如果 core 也照开关过滤，界面会一条路由都没有
+    const { routes: onlyCore } = buildRoutes(
+      asCatalog({ "core.system": { state: "disabled" as const, enabled: false } }),
+    )
     expect(onlyCore.length).toBeGreaterThan(0)
+  })
+
+  it("★ 可见性看 enabled 而不是 state（被依赖而保留的能力必须还在界面上）", () => {
+    resetPageCache()
+    // 用户关了它，但 sound.audiobook 还依赖它 → 后端仍挂载（否则依赖方变砖）。
+    // 此时把它从界面上抹掉 = 用户再也找不到一个实际可用的入口。
+    const { routes } = buildRoutes(
+      asCatalog({ "sound.tts": { state: "disabled" as const, enabled: true } }),
+    )
+    expect(routes.map((r) => r.path)).toContain("/tts")
+
+    // 对照：真的关掉了就不该出现（否则上一条等于把开关废了）
+    const { routes: off } = buildRoutes(
+      asCatalog({ "sound.tts": { state: "disabled" as const, enabled: false } }),
+    )
+    expect(off.map((r) => r.path)).not.toContain("/tts")
+  })
+
+  it("旧版后端没有 enabled 字段时按可见处理（不该整个界面变空）", () => {
+    resetPageCache()
+    const catalog = asCatalog()
+    for (const p of catalog.plugins) delete (p as Partial<PluginEntry>).enabled
+    expect(buildRoutes(catalog).routes.length).toBeGreaterThan(0)
+    expect(navItems(catalog, "start").length).toBeGreaterThan(0)
   })
 
   it("导航按清单 nav.order 升序，分组不串", () => {

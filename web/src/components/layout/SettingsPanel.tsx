@@ -152,10 +152,10 @@ export function SettingsPanel({
             <Row icon={<HardDrive className="h-4 w-4" />} label="存储占用与清理" onClick={() => jump(onOpenStorage)} />
           </Group>
 
-          <Group title="能力" hint="每项能力要装什么、哪些没加载、哪些被你关掉了。">
+          <Group title="能力" hint="按套餐或逐项开关；关掉的不加载、不占显存（重启后生效）。">
             <Row
               icon={<Layers className="h-4 w-4" />}
-              label="能力清单"
+              label="能力管理"
               trailing={capsTrailing}
               onClick={() => jump(onOpenCapabilities)}
             />

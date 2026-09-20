@@ -59,14 +59,19 @@ export const knownIcons: Record<string, LucideIcon> = {
 /**
  * 一个插件的能力是否在界面上出现。
  *
- * `disabled`（用户自己关的）→ 不出现；
- * 但 **`core` 恒出现** —— 清单里 `core` 的定义就是「不可关闭」（`disable.note` 写着
- * "核心：不可关闭"），而 `core.system` 恰好持有 `/home`。万一 `outputs/plugins.json`
- * 被手工改坏，这条兜底保证首页还在，界面不会退化成「一条路由都没有的空壳」。
- * 真正的关闭守卫（核心不可关 → 409）是第 6 步的事。
+ * 看 **`enabled`**（第 6 步的开关结果），**不是** `state !== "disabled"`：
+ * 被别的启用能力依赖时，用户关了它但后端仍保留（否则依赖方会变砖），
+ * 此时 `state='disabled'` 而 `enabled=true` —— 拿 `state` 判会把一个**后端仍挂载着**
+ * 的能力从界面上抹掉，用户就再也找不到入口。
+ *
+ * 但 **`core` 恒出现**：清单里 `core` 的定义就是「不可关闭」，而 `core.system` 恰好
+ * 持有 `/home`。万一 `outputs/plugins.json` 被手工改坏，这条兜底保证首页还在，
+ * 界面不会退化成「一条路由都没有的空壳」。
+ *
+ * `enabled` 缺失时按"显示"处理：旧版后端还没这个字段，不该让整个界面变空。
  */
 function isVisible(plugin: PluginEntry): boolean {
-  return plugin.core || plugin.state !== "disabled"
+  return Boolean(plugin.core) || plugin.enabled !== false
 }
 
 /** 页面缺失 / 导出名不对时的占位。不抛异常 —— 一条坏声明不该让整个界面白屏。 */

@@ -108,6 +108,14 @@ export interface PluginEntry {
   /** 核心能力不可关（关掉它整个界面就没有意义了） */
   core: boolean;
   state: PluginState;
+  /**
+   * 开关状态（第 6 步）。**不能由 `state` 推**：
+   * 被别的启用能力依赖时，用户关了它但系统仍保留 → `state='disabled'` 而 `enabled=true`。
+   * 界面上的开关必须读这个字段。
+   */
+  enabled: boolean;
+  /** 仍依赖本能力的**启用中**能力 id —— 想关本能力，得先把这些关掉（后端会回 409） */
+  blockedBy: string[];
   /** 加载失败原因。`disabled` 的项**也会带着** —— 设置页要能说「你关的，而且它本来就是坏的」 */
   reasons: string[];
   /** 依赖的其它能力 id；只做存在性 + 无环校验，暂不做状态传播 */
@@ -128,13 +136,48 @@ export interface PluginEntry {
  * 这里是**能力**视角（哪些可用、哪些被关掉、每个要装什么）。`loaders` 把两边的账
  * 一起报出来 —— 对不上时能一眼看出问题出在哪一层。
  *
- * **只读**：开关能力是插件化第 6 步的事（`POST /api/plugins/{id}/enable|disable`）。
+ * 第 6 步起**带开关状态**：`presets` 是套餐定义（后端 `plugin_manifest.PRESETS`），
+ * `preset` 是当前禁用集对应的套餐（逐项改过就是 `custom`）。写操作走
+ * `POST /api/plugins/{id}/enable|disable` 与 `/api/plugins/preset`。
  */
 export interface PluginCatalog {
   ok: boolean;
   counts: { total: number; ok: number; broken: number; disabled: number };
   plugins: PluginEntry[];
   loaders: { routers: number; loaded: number; broken: string[] };
+  /** 开关是**重启生效**的（router 在启动时挂好，本轮不做热插拔）—— 界面必须说清 */
+  restartRequired: boolean;
+  presets: PluginPreset[];
+  /** 当前套餐名；`custom` = 用户在预设之外逐项改过 */
+  preset: string;
+}
+
+/** 套餐预设（`docs/插件化设计.md` §8.1）—— 不给用户一张裸插件表 */
+export interface PluginPreset {
+  id: string;
+  label: string;
+  /** 该套餐会启用哪些能力（已含核心与依赖闭包） */
+  plugins: string[];
+}
+
+/** `POST /api/plugins/{id}/enable|disable` 的返回 */
+export interface PluginToggleResult {
+  id: string;
+  /** 写入后的真实状态（被守卫拦下时是 `true`，即没关成） */
+  enabled: boolean;
+  /** 关闭守卫点名的依赖者 —— 想关本能力，得先关它们 */
+  blockedBy: string[];
+  /** `core`=核心不可关；`dependents`=被依赖；"" = 已写入 */
+  reason: string;
+  restartRequired: boolean;
+}
+
+/** `POST /api/plugins/preset` 的返回 */
+export interface PluginPresetResult {
+  preset: string;
+  disabled: string[];
+  enabled: string[];
+  restartRequired: boolean;
 }
 
 // 环境体检单项（/api/diagnose 返回）；warn=true 表示「不致命的告警」（如退回 CPU）
