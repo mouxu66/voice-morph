@@ -63,6 +63,12 @@ MIT License，© 2026 mouxu（见根目录 `LICENSE`）。
 torch / torchaudio / scipy / soundfile / uvicorn / httpx / python-dotenv — **BSD**；
 numpy — `BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0`（复合，全部宽松）；
 fastapi / pydantic / pydub / demucs / sounddevice / webrtcvad / comtypes / pytest / ruff — **MIT**；
+`pytest-cov` — **MIT**（2026-09-19 实读本机 `pytest_cov-7.1.0.dist-info/METADATA`：
+`License-Expression: MIT` + classifier `OSI Approved :: MIT License`；作者 Marc Schlaich，
+源码 <https://github.com/pytest-dev/pytest-cov>）。
+它只是**开发时**依赖（`requirements-dev.txt`），不进发行物 ——
+加它是因为 `pyproject.toml` 的 addopts 默认带 `--cov`，少了它连参数解析都过不去
+（`docs/犯错指南.md` §3.36）。
 librosa — **ISC**；Pillow — **HPND**；requests / python-multipart / pyaudiowpatch — **Apache-2.0**。
 
 - `demucs` 仓库 license = **MIT**（GitHub API 实读原文：`Copyright (c) Meta Platforms, Inc. and affiliates.`；该仓库已归档）。
@@ -175,6 +181,7 @@ python:pyaudiowpatch
 python:pydub
 python:pydantic
 python:pytest
+python:pytest-cov
 python:python-dotenv
 python:python-multipart
 python:requests

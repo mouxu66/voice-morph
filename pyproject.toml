@@ -70,11 +70,22 @@ check_untyped_defs = false
 minversion = "8.0"
 addopts = "-ra -q --cov=m2_server --cov-report=term-missing --cov-report=html --cov-report=json"
 testpaths = ["m2_server/tests"]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+# 这里**故意没有** asyncio_mode / asyncio_default_fixture_loop_scope：
+# 它们是 pytest-asyncio 的配置，而本项目没有任何 async 用例、也没把该插件写进
+# requirements-dev.txt —— 留着就是一份**看着像已接好、实际是惰性**的配置
+# （CI 上只会多两条 PytestConfigWarning: Unknown config option）。
+# 真要写 async 用例时，把插件加进 requirements-dev.txt + THIRD_PARTY_NOTICES.md，
+# 再把这两项一起加回来。判据见 m2_server/tests/test_check_ci_fidelity.py §6。
 filterwarnings = [
   "error::pytest.PytestUnhandledThreadExceptionWarning",
   "error::DeprecationWarning",
+  # anyio 4.15 起把 `anyio.abc.BlockingPortal` 变成了惰性别名（getattr 时发废弃警告），
+  # 而 starlette 1.6.0 的 testclient.py 顶层还在引用它 → **import fastapi.testclient 就红**。
+  # 同样是第三方库自己的事（本项目改不了），不豁免它 → 所有用 TestClient 的用例整片假红。
+  # 2026-09-19 实测：干净 venv（anyio 4.15.1）6 条收集期 ERROR，本机 .venv（anyio 4.14.2）全绿。
+  # 与上一条同一口径：只豁免这一条具体消息，别放宽成 ignore::DeprecationWarning。
+  # ⚠️ starlette 更新后应回来删掉这行（它引用对了就不会再发）。
+  "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
   # pydub 在模块顶层 `import audioop`，Python 3.12+ 会发 DeprecationWarning；
   # 这是第三方库的事，本项目改不了。不豁免它 → 所有 import 到 pydub 的用例整片假红
   # （2026-09-19 实测：test_voices_api 6 条全红，且干净树上同样红 = 与业务代码无关）。

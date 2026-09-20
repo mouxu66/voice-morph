@@ -198,3 +198,156 @@ def test_bare_runner_env_ignores_empty_path_entries(check, monkeypatch):
     extra, dropped = check._bare_runner_env()
     assert dropped == []
     assert extra["PATH"] == "C:\\definitely-not-there-20260913"
+
+
+# ---------------- 6. `pyproject` 的 pytest 配置 ←→ `requirements-dev.txt` ----------------
+# 这一节来自 2026-09-19 `--ci-fidelity` 首跑红：`pyproject.toml` 的 addopts 默认带
+# `--cov=m2_server --cov-report=…`，而 `pytest-cov` **从没进过任何 requirements** ——
+# 本机 `.venv` 里它只是某次手工装的残留，于是本机全绿、瘦环境连**参数解析**都过不去：
+#     python -m pytest: error: unrecognized arguments: --cov=m2_server …
+# 报错长得像"配置写错了"，实际是缺插件。**这类缺口是三道门禁的公共盲区**：
+#   · `ruff`/`requires` 不管 pytest 配置；
+#   · `_deps_stamp` 只管"requirements 变了就重装"，不管"该写的没写"；
+#   · 全量自检跑在本机 `.venv`，而那正是唯一装了这个包的地方。
+# 所以用一个**静态**对照把这条不变量钉住：addopts 里出现的每个长选项，
+# 都必须在下面这张表里明说"由哪个发行包提供"。
+
+#: addopts 选项 → 提供它的发行包（`None` = pytest 自带，无需声明）。
+#: 不在表里的长选项**故意**直接失败 —— 强制改动者思考一次"这从哪来"，
+#: 而不是让它默默躺在一个本机恰好装了的包里。
+_ADDOPTS_OWNERS: dict[str, str | None] = {
+    "--cov": "pytest-cov",
+    "--cov-report": "pytest-cov",
+}
+
+
+def _parse_requirements_names(text: str) -> set[str]:
+    """从 requirements 文本取**未被注释掉**的包名（归一化：小写、`_`→`-`）。
+
+    注释必须真的被剥掉：`requirements-dev.txt` 里就有一行写着 "pytest-cov" 的注释
+    （解释为什么不能改成去掉覆盖率），而那段注释**曾经就是这个 bug 的现场** ——
+    所以这个解析器不能被自述文本骗过。
+    """
+    names = set()
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        name = re.split(r"[<>=!~\[;\s]", line, maxsplit=1)[0]
+        if name:
+            names.add(name.lower().replace("_", "-"))
+    return names
+
+
+def _requirements_dev_names() -> set[str]:
+    return _parse_requirements_names((ROOT / "requirements-dev.txt").read_text("utf-8"))
+
+
+def _addopts_long_options() -> list[str]:
+    """从 pyproject 的 `addopts` 里取长选项（去掉 `=值` 部分）。"""
+    import tomllib
+
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))
+    addopts = data["tool"]["pytest"]["ini_options"]["addopts"]
+    out = []
+    for tok in addopts.split():
+        opt = tok.split("=", 1)[0]
+        if opt.startswith("--"):
+            out.append(opt)
+    return out
+
+
+def test_requirements_parser_self_check():
+    """解析器自检：注释行/行内注释不能被当成声明（否则这个门禁可以被一段注释骗绿）。"""
+    names = _parse_requirements_names(
+        "# pytest-cov\n"          # 整行注释：不是声明
+        "pytest>=8\n"
+        "pytest-asyncio  # 行内注释\n"
+        "-r requirements.txt\n"   # include 行：不是包名
+        "\n"
+        "Pillow\n"
+    )
+    assert names == {"pytest", "pytest-asyncio", "pillow"}
+    assert "pytest-cov" not in names, "整行注释被当成声明了"
+
+
+def test_requirements_parser_reads_real_file():
+    """真实文件必须解析得出东西（防"路径变了、这里默默变空集→全绿"）。"""
+    names = _requirements_dev_names()
+    assert {"pytest", "fastapi", "ruff"} <= names
+
+
+def test_addopts_long_options_are_non_empty():
+    """真实 addopts 必须解析得出长选项（防"换了 TOML 结构、这里默默变空集"）。"""
+    assert _addopts_long_options(), "pyproject addopts 里没解析到任何长选项，解析器或配置变了"
+
+
+def test_every_addopts_option_has_a_declared_owner():
+    """addopts 的每个长选项都要在表里 —— 新增插件选项时强制做一次显式决定。"""
+    unknown = [o for o in _addopts_long_options() if o not in _ADDOPTS_OWNERS]
+    assert not unknown, (
+        f"pyproject addopts 里有未登记的选项 {unknown}；"
+        "请在 test_check_ci_fidelity._ADDOPTS_OWNERS 里写明它由哪个包提供"
+    )
+
+
+def test_addopts_plugin_distributions_are_declared_in_dev_requirements():
+    """★ 本节的真正目的：addopts 用到的插件必须在**瘦环境**里有声明。
+
+    否则 CI（只装 requirements-dev.txt）会在参数解析阶段就红，
+    而本机因为手工装过而全绿——最骗人的那种绿。
+    """
+    declared = _requirements_dev_names()
+    needed = sorted({d for d in _ADDOPTS_OWNERS.values() if d})
+    missing = [d for d in needed if d.lower().replace("_", "-") not in declared]
+    assert not missing, (
+        f"pyproject addopts 需要 {missing}，但 requirements-dev.txt 没声明 —— "
+        "CI 会在 `unrecognized arguments` 上红，而本机不会"
+    )
+
+
+def test_dev_requirements_declares_pytest_cov_specifically():
+    """把具体那一项也钉住，而不是只靠上面的表（表被改空就全都没了）。"""
+    assert "pytest-cov" in _requirements_dev_names()
+
+
+#: `[tool.pytest.ini_options]` 里由**插件**提供的键 → 提供它的发行包。
+#: addopts 那条用的是"未知就失败"，这里反过来用"已知就必须声明" —— 
+#: ini 键大多是 pytest 自带的（testpaths / minversion / filterwarnings…），
+#: 反向穷举会变成一份要不停维护的清单。两者合起来刚好盖住两类回归。
+_INI_KEY_OWNERS: dict[str, str] = {
+    "asyncio_mode": "pytest-asyncio",
+    "asyncio_default_fixture_loop_scope": "pytest-asyncio",
+}
+
+
+def ini_options() -> dict:
+    import tomllib
+
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))
+    return dict(data["tool"]["pytest"]["ini_options"])
+
+
+def test_plugin_owned_ini_keys_have_their_plugin_declared():
+    """★ 2026-09-19：`asyncio_mode = "auto"` 在瘦环境里只是一条
+    `PytestConfigWarning: Unknown config option` —— 也就是**看似接好、实际惰性**。
+    留着它就是留一份假信息，所以要么声明 `pytest-asyncio`，要么删掉这两项。
+
+    注意不能反过来写"ini 里有未知键就红"：`filterwarnings` / `testpaths` 等
+    都是 pytest 自带的，穷举它们会变成维护负担。
+    """
+    declared = _requirements_dev_names()
+    present = [k for k in ini_options() if k in _INI_KEY_OWNERS]
+    missing = sorted(
+        {_INI_KEY_OWNERS[k] for k in present if _INI_KEY_OWNERS[k].lower().replace("_", "-") not in declared}
+    )
+    assert not missing, (
+        f"pyproject 里用了 {present}，但 requirements-dev.txt 没声明 {missing}"
+    )
+
+
+def test_ini_key_owners_table_is_not_vacuous():
+    """表本身不能变空（否则上一条永远绿）—— 变异验证：
+    把 `asyncio_mode = "auto"` 加回 pyproject，这条仍绿而上一条会红。"""
+    assert "asyncio_mode" in _INI_KEY_OWNERS
+    assert ini_options(), "读不到 [tool.pytest.ini_options]"

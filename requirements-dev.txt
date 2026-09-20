@@ -13,6 +13,14 @@
 # 若哪天有人给测试路径加了重依赖，CI 会在收集期大声失败——把缺的包补到这里，
 # 并顺手确认它是不是真的必须。
 pytest>=8
+#  pyproject.toml 的 addopts 默认就带 `--cov=m2_server --cov-report=…`，
+#  所以**没有 pytest-cov 时 pytest 连参数解析都过不去** —— 报的是
+#  `unrecognized arguments: --cov=m2_server`，看着像配置写错了，实际是缺插件。
+#  2026-09-19 用 `tools/check.py --ci-fidelity` 在瘦环境里实测复现（此前本机一直绿，
+#  是因为 .venv 里**手工装过**它、而它从没进过任何 requirements）。
+#  ⚠️ 别改成“给 CI 加 `-o addopts=` 去掉覆盖率”：ci.yml 的立身之本就是
+#  「与本地、与 git 钩子跑同一条命令」，去掉就等于把这条不变量换成了两套命令。
+pytest-cov
 httpx                  # fastapi.testclient 的传输层
 ruff>=0.6              # tools/check.py 的静态扫描（F/E9 规则）
 
