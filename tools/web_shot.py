@@ -41,6 +41,22 @@ def _targets(port: int) -> list:
     return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=5))
 
 
+def _page_target(port: int) -> dict:
+    """挑出**真正的页面** target（必须按 `type` 挑，不能按下标取）。
+
+    ⚠️ 2026-09-20 实测踩到：本机 Chrome 带组件扩展（`Google Hangouts` 等），它们的
+    `background_page` / `service_worker` 排在 `/json` 列表**前面**。用 `[0]` 会把 CDP
+    会话接到扩展的 background_page 上 —— 于是 `document.getElementById('root')` 不存在、
+    body 只有一个换行，`_assert_app_loaded` 报「SPA 根节点是空的」，看起来像"应用没挂载"，
+    其实是**看错了页面**。扩展列表与顺序会随 Chrome 版本变，所以按类型挑。
+    """
+    for t in _targets(port):
+        if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
+            return t
+    kinds = [t.get("type") for t in _targets(port)]
+    raise RuntimeError(f"没有可用的 page target（现有：{kinds}）")
+
+
 class Tab:
     """一个极简 CDP 会话（够用就好，不引依赖）。"""
 
@@ -78,6 +94,12 @@ def _assert_app_loaded(info: dict, base: str) -> None:
     """
     text = str(info.get("text") or "")
     heads = " ".join(str(h) for h in (info.get("heads") or []))
+    # 先确认 CDP 会话真的接在应用页面上：接到扩展 background_page 时，下面每条判据
+    # 都会以"应用坏了"的样子报出来，方向就查错了（2026-09-20 实测，见 _page_target）
+    url = str(info.get("url") or "")
+    if base and url and not url.startswith(base):
+        raise NotLoaded(f"CDP 会话接到的不是应用页面（URL={url}，期望以 {base} 开头）—— "
+                        f"多半接到了扩展的 background_page，见 _page_target")
     bad_marks = ("无法访问此网站", "This site can't be reached", "ERR_CONNECTION",
                  "ERR_NAME_NOT_RESOLVED", "拒绝连接", "404 Not Found")
     for mark in bad_marks:
@@ -111,8 +133,8 @@ def _launch(port: int, width: int, height: int) -> subprocess.Popen:
 
 
 def _shoot(port: int, base: str, route: str, width: int, height: int,
-           theme: str, settle: float) -> tuple[Path, dict]:
-    tab = Tab(_targets(port)[0]["webSocketDebuggerUrl"])
+           theme: str, settle: float, probe_expr: str | None = None) -> tuple[Path, dict]:
+    tab = Tab(_page_target(port)["webSocketDebuggerUrl"])
     try:
         tab.call("Page.enable")
         tab.call("Runtime.enable")
@@ -128,15 +150,20 @@ def _shoot(port: int, base: str, route: str, width: int, height: int,
         tab.call("Page.addScriptToEvaluateOnNewDocument", {"source": seed})
         tab.call("Page.navigate", {"url": f"{base}/#{route}"})
         time.sleep(settle)
-        probe = tab.call("Runtime.evaluate", {"returnByValue": True, "expression": (
-            "JSON.stringify({sw: document.documentElement.scrollWidth,"
+        raw = tab.call("Runtime.evaluate", {"returnByValue": True, "expression": (
+            "JSON.stringify({url: location.href,"
+            "sw: document.documentElement.scrollWidth,"
             "cw: document.documentElement.clientWidth,"
             "sh: document.documentElement.scrollHeight,"
             "root_children: (document.getElementById('root')||document.body).children.length,"
             "heads: [...document.querySelectorAll('h1,h2')].map(e=>e.textContent),"
             "text: document.body.innerText.slice(0,600)})")})
-        info = json.loads(probe["result"]["value"])
+        info = json.loads(raw["result"]["value"])
         _assert_app_loaded(info, base)
+        # 额外量测：只「看着对」不算验收，得让页面自己把数字报出来（--probe）
+        if probe_expr:
+            extra = tab.call("Runtime.evaluate", {"returnByValue": True, "expression": probe_expr})
+            info["probe"] = (extra.get("result") or {}).get("value")
         shot = tab.call("Page.captureScreenshot", {"format": "png"})
         OUT.mkdir(parents=True, exist_ok=True)
         tag = route.strip("/").replace("/", "_") or "root"
@@ -156,6 +183,9 @@ def main() -> int:
                     help="视口高度；太高时 headless 分配渲染表面易失败（本机实测）")
     ap.add_argument("--themes", default="light,dark")
     ap.add_argument("--settle", type=float, default=5.0, help="导航后等待秒数")
+    ap.add_argument("--probe", default=None,
+                    help="额外在页面里求值的 JS 表达式（结果随截图一起打印）；"
+                         "用来量「侧栏有几项」「有没有落到占位页」这类看图看不准的事")
     ap.add_argument("--port", type=int, default=9300)
     args = ap.parse_args()
 
@@ -183,7 +213,7 @@ def main() -> int:
                 err = None
                 try:
                     shot = _shoot(port, args.base, args.route, width, args.height,
-                                  theme, args.settle)
+                                  theme, args.settle, args.probe)
                     break
                 except NotLoaded as exc:
                     # 不是瞬时故障：别重试三次装样子，直接说清楚
@@ -213,6 +243,8 @@ def main() -> int:
         hit = next((i for f, i in results if f.name.endswith(f"-{theme}.png")), None)
         if hit:
             print(f"\n--- 标题层级（{theme}）---\n{hit['heads']}")
+            if args.probe:
+                print(f"--- probe（{theme}）---\n{hit.get('probe')}")
     # 「没出图」与「溢出」是两回事，分开报 —— 混在一起会让人以为页面布局坏了
     if overflow_bad:
         print(f"\n!! {overflow_bad} 档横向溢出，要修")
