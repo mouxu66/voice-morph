@@ -13,11 +13,15 @@ import {
   wechatSendVoice,
 } from "@/src/api";
 import { useAppStore } from "@/src/store";
+import { pluginVisible, useCapabilities } from "@/src/capabilities";
 import { Badge, Button, C, Card, PlayButton, ShareButton, usePolling } from "@/src/ui";
 
 export default function TtsScreen() {
   const insets = useSafeAreaInsets();
   const { lastVoiceId, setLastVoiceId } = useAppStore();
+  const caps = useCapabilities();
+  // 微信发送（/wechat/send_voice、/wechat/history）属于 hook.wechat；合成本体走 sound.tts（tab 已在 _layout 门控）。
+  const wechatVisible = pluginVisible(caps, "hook.wechat");
   const [text, setText] = useState("");
   const [lang, setLang] = useState<"zh" | "en">("zh");
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
@@ -58,6 +62,7 @@ export default function TtsScreen() {
   // 微信发送历史（低频轮询）
   usePolling(
     async () => {
+      if (!wechatVisible) return;
       try {
         const h = await getWechatHistory();
         setWxHistory(h.items ?? []);
@@ -188,24 +193,28 @@ export default function TtsScreen() {
             <Text style={styles.playHint}>点击播放 · ↗ 保存/分享到手机</Text>
           </View>
           <View style={styles.wxDivider} />
-          <Button
-            title={wxSending ? "微信发送中，PC 被接管…" : "发送到微信语音条"}
-            onPress={sendToWechat}
-            disabled={wxSending}
-            loading={wxSending}
-            tone="ghost"
-          />
-          <Text style={styles.wxHint}>
-            PC 端微信将自动抢前台发送（约 {Math.ceil((result.duration_s || 5) + 3)}s），需微信 4.1.9+ 且已打开聊天窗口。
-          </Text>
-          {wxResult ? (
-            <Text style={[styles.wxResult, { color: wxResult.ok ? C.ok : C.err }]}>{wxResult.msg}</Text>
-          ) : null}
+          {wechatVisible && (
+            <>
+              <Button
+                title={wxSending ? "微信发送中，PC 被接管…" : "发送到微信语音条"}
+                onPress={sendToWechat}
+                disabled={wxSending}
+                loading={wxSending}
+                tone="ghost"
+              />
+              <Text style={styles.wxHint}>
+                PC 端微信将自动抢前台发送（约 {Math.ceil((result.duration_s || 5) + 3)}s），需微信 4.1.9+ 且已打开聊天窗口。
+              </Text>
+              {wxResult ? (
+                <Text style={[styles.wxResult, { color: wxResult.ok ? C.ok : C.err }]}>{wxResult.msg}</Text>
+              ) : null}
+            </>
+          )}
         </Card>
       )}
 
-      {/* 微信发送历史 */}
-      {wxHistory.length > 0 && (
+      {/* 微信发送历史（hook.wechat） */}
+      {wechatVisible && wxHistory.length > 0 && (
         <Card style={{ marginTop: 16 }}>
           <View style={styles.rowBetween}>
             <Text style={styles.cardTitle}>微信发送记录</Text>

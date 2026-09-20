@@ -192,6 +192,33 @@ export async function listRvcVoices(): Promise<RvcVoicesInfo> {
   return jsonFetch<RvcVoicesInfo>("/rvc/voices");
 }
 
+// ---- 能力清单（插件目录，GET /api/plugins）----
+
+export interface PluginEntry {
+  id: string;
+  name?: string;
+  kind?: string;
+  category?: string;
+  order?: number;
+  summary?: string;
+  core?: boolean;
+  state?: string;
+  reasons?: string[];
+  enabled?: boolean;
+  routers?: string[];
+}
+
+export interface PluginCatalog {
+  ok?: boolean;
+  counts?: { total: number; ok: number; broken: number; disabled: number };
+  plugins: PluginEntry[];
+}
+
+/** 拉一次能力清单；后端在 8000 端口，经 getHost() 拼地址。 */
+export async function getPlugins(): Promise<PluginCatalog> {
+  return jsonFetch<PluginCatalog>("/plugins", undefined, 6000);
+}
+
 // ---- 级联变声（遥控 PC 端运行） ----
 
 export async function cascadeStart(opts?: {

@@ -25,6 +25,7 @@ import {
   rvcLiveStop,
 } from "@/src/api";
 import { useAppStore } from "@/src/store";
+import { pluginVisible, useCapabilities } from "@/src/capabilities";
 import { Badge, Button, C, Card, Row, StatPill, usePolling } from "@/src/ui";
 
 const STAGE_ZH: Record<string, string> = {
@@ -41,6 +42,11 @@ const STAGE_ZH: Record<string, string> = {
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { host, lastVoiceId, setLastVoiceId } = useAppStore();
+  const caps = useCapabilities();
+  // 级联/实时/train 都属于 sound.rvc-live；素材流水线属于 sound.workshop。
+  // 清单没拿到时 pluginVisible 恒 true，全部照常显示（fail-open）。
+  const rvcLiveVisible = pluginVisible(caps, "sound.rvc-live");
+  const workshopVisible = pluginVisible(caps, "sound.workshop");
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [online, setOnline] = useState(false);
   const [cs, setCs] = useState<CascadeStatus | null>(null);
@@ -96,6 +102,7 @@ export default function HomeScreen() {
   // 级联 + 实时状态（1s）
   usePolling(
     async () => {
+      if (!rvcLiveVisible) return;
       try {
         const s = await cascadeStatus();
         setCs(s);
@@ -119,12 +126,16 @@ export default function HomeScreen() {
   // 训练 + 流水线进度（3s，只读监控，断连静默）
   usePolling(
     async () => {
-      try {
-        setTrain(await getTrainStatus(liveExp ?? undefined));
-      } catch { /* ignore */ }
-      try {
-        setPipeline(await getPipelineStatus());
-      } catch { /* ignore */ }
+      if (rvcLiveVisible) {
+        try {
+          setTrain(await getTrainStatus(liveExp ?? undefined));
+        } catch { /* ignore */ }
+      }
+      if (workshopVisible) {
+        try {
+          setPipeline(await getPipelineStatus());
+        } catch { /* ignore */ }
+      }
     },
     3000,
     true
@@ -210,9 +221,11 @@ export default function HomeScreen() {
           )}
         </Card>
 
-        {/* 级联变声遥控 */}
-        <Text style={styles.section}>级联变声（文字中转 · 消除口音）</Text>
-        <Card>
+        {/* 级联变声遥控（sound.rvc-live） */}
+        {rvcLiveVisible && (
+          <>
+            <Text style={styles.section}>级联变声（文字中转 · 消除口音）</Text>
+            <Card>
           <View style={styles.rowBetween}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <Text style={styles.cardTitle}>{running ? "运行中" : "已停止"}</Text>
@@ -285,11 +298,15 @@ export default function HomeScreen() {
             </Text>
           ) : null}
           <Text style={styles.hint}>PC 端全局热键 Ctrl+Alt+V 可随时启停</Text>
-        </Card>
+            </Card>
+          </>
+        )}
 
-        {/* RVC 实时变声遥控 */}
-        <Text style={styles.section}>RVC 实时变声（遥控 PC）</Text>
-        <Card>
+        {/* RVC 实时变声遥控（sound.rvc-live） */}
+        {rvcLiveVisible && (
+          <>
+            <Text style={styles.section}>RVC 实时变声（遥控 PC）</Text>
+            <Card>
           <View style={styles.rowBetween}>
             <Text style={styles.cardTitle}>{liveRunning ? "运行中" : "已停止"}</Text>
             {live ? <Badge text={live.exp} tone="gray" /> : null}
@@ -338,11 +355,16 @@ export default function HomeScreen() {
             style={{ marginTop: 12 }}
           />
           <Text style={styles.hint}>麦克风与声卡切换都在 PC 端完成，与级联变声互斥</Text>
-        </Card>
+            </Card>
+          </>
+        )}
 
-        {/* PC 端任务状态镜像：训练 / 素材流水线 */}
-        <Text style={styles.section}>PC 任务状态</Text>
-        <Card>
+        {/* PC 端任务状态镜像：训练（sound.rvc-live）/ 素材流水线（sound.workshop） */}
+        {(rvcLiveVisible || workshopVisible) && (
+          <>
+            <Text style={styles.section}>PC 任务状态</Text>
+            {rvcLiveVisible && (
+              <Card>
           <View style={styles.rowBetween}>
             <Text style={styles.cardTitle}>RVC 训练</Text>
             {train ? (
@@ -367,7 +389,9 @@ export default function HomeScreen() {
             <Text style={styles.hint}>PC 端当前没有训练任务{train?.exp ? `（最近：${train.exp}）` : ""}</Text>
           )}
         </Card>
-        <Card>
+            )}
+            {workshopVisible && (
+              <Card>
           <View style={styles.rowBetween}>
             <Text style={styles.cardTitle}>素材流水线</Text>
             {pipeline ? (
@@ -400,6 +424,9 @@ export default function HomeScreen() {
             </Text>
           )}
         </Card>
+            )}
+          </>
+        )}
       </ScrollView>
     </View>
   );

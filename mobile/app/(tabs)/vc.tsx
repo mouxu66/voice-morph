@@ -6,6 +6,7 @@ import Slider from "@react-native-community/slider";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { OfflineVcStatus, RvcVoice, getOfflineVcStatus, listRvcVoices, mediaUrl, runOfflineVc } from "@/src/api";
+import { pluginVisible, useCapabilities } from "@/src/capabilities";
 import { Badge, Button, C, Card, PlayButton, Row, ShareButton, usePolling } from "@/src/ui";
 
 // 转换任务兜底超时：后端 RVC 推理子进程 timeout 1800s，留出余量覆盖后端失联场景
@@ -15,6 +16,9 @@ const IDLE_GRACE_MS = 8000;
 
 export default function VcScreen() {
   const insets = useSafeAreaInsets();
+  const caps = useCapabilities();
+  // 离线变声整页由 sound.offline-vc 支撑；该 tab 已在 _layout 隐藏，这里兜底深链直入的显隐。
+  const offlineVcVisible = pluginVisible(caps, "sound.offline-vc");
   const [voices, setVoices] = useState<RvcVoice[]>([]);
   const [voiceId, setVoiceId] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
@@ -144,6 +148,15 @@ export default function VcScreen() {
   };
 
   const converting = submitting || taskRunning;
+
+  if (!offlineVcVisible) {
+    return (
+      <ScrollView style={styles.root} contentContainerStyle={[styles.body, { paddingTop: insets.top + 12 }]}>
+        <Text style={styles.title}>离线变声</Text>
+        <Text style={styles.subtitle}>该能力已在 PC 端关闭（sound.offline-vc）</Text>
+      </ScrollView>
+    );
+  }
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={[styles.body, { paddingTop: insets.top + 12 }]}>
