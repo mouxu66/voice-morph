@@ -268,9 +268,15 @@ powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
 
 | 能力 | 依赖 | 缺了会怎样 |
 |------|------|-----------|
-| 文字转语音 | `qwen-tts` + `tts_models/` 权重 | 「文字转语音」页不可用 |
+| 文字转语音 | `qwen-tts` + `tts_models/` 权重 | 「输字变声」页不可用 |
 | 实时变声 | RVC 整合包（`VM_RVC_ROOT`）+ VB-Audio CABLE | 「实时变声」页不可用 |
 | 微信发送 | 微信 PC 版 + 桌宠置顶引导 | 「微信发送」不可用，其余正常 |
+
+> 这三行只是摘要。**机器可读的那份在 `m2_server/plugins/<id>/plugin.json`**：
+> 每个能力声明自己占哪些 router、需要哪些「重可选依赖」（另外几个 GB 的 Python 包与模型）、
+> 对应的前端页面与侧边栏项、以及缺了会怎样。当前共 19 个能力（7 个核心 + 12 个可选），
+> 可用 `GET /api/plugins` 看实时状态（`ok` / `broken` / `disabled` 三态）。
+> 改这里的表格前先看 `docs/插件化设计.md` —— 那份清单才是真相源，这张表是给人快速扫的。
 
 ### 目录清理
 
