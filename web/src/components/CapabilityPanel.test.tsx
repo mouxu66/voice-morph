@@ -148,6 +148,35 @@ describe("CapabilityPanel", () => {
     expect(await screen.findByText(/核心：不可关闭/)).toBeInTheDocument()
   })
 
+  it("★ extras.models 是对象数组 —— 渲染 label，绝不能出现 [object Object]", async () => {
+    getPlugins.mockResolvedValue(
+      catalog([
+        {
+          ...OK_SOUND,
+          extras: {
+            python: ["Pillow"],
+            external: [{ kind: "dir", label: "RVC 整合包", env: "VM_RVC_ROOT", size_hint_mb: 1500 }],
+            models: [
+              {
+                label: "Qwen3-TTS 权重（含 tokenizer 与参考音）",
+                env: "VM_TTS_MODELS_DIR",
+                size_hint_mb: 4900,
+              },
+            ],
+          },
+        },
+      ]),
+    )
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    expect(await screen.findByText(/Qwen3-TTS 权重/)).toBeInTheDocument()
+    expect(screen.getByText(/需自备：RVC 整合包/)).toBeInTheDocument()
+    // 回归：这里曾把 models 按 string[] 声明 → 直接 join → 界面上是 [object Object]。
+    // 单测的手写数据当时也是字符串，所以只有真机截图才暴露 —— 数据形状照抄后端。
+    expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument()
+  })
+
   it("清单取不到时报错但不崩", async () => {
     getPlugins.mockRejectedValue(new Error("Failed to fetch"))
 

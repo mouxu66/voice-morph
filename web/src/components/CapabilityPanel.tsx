@@ -66,7 +66,8 @@ function Extras({ p }: { p: PluginEntry }) {
         </span>
       ) : null}
       {external.length ? <span>需自备：{external.map((x) => x.label).join("、")}</span> : null}
-      {models.length ? <span>模型：{models.join("、")}</span> : null}
+      {/* 取 label 而不是直接 join —— 元素是对象，直接拼会渲染成 [object Object] */}
+      {models.length ? <span>模型：{models.map((x) => x.label).join("、")}</span> : null}
     </p>
   )
 }

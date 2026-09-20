@@ -54,11 +54,36 @@ export interface PluginLegacyRoute {
   redirect: string;
 }
 
-/** 一个能力要装的东西；`python` 是 pip 包名，`external` 是本机目录 / 应用 / 音频设备 */
+/** 一个能力要用到、但不在 pip 里的东西（本机目录 / 应用 / 音频设备） */
+export interface PluginExternalAsset {
+  kind: 'dir' | 'app' | 'audio-device';
+  label: string;
+  /** 指向该资源的环境变量（如 `VM_RVC_ROOT`） */
+  env?: string;
+  size_hint_mb?: number;
+  /** 相关文档位置（这个模块的坑记在哪） */
+  doc?: string;
+}
+
+/**
+ * 需要另外下载的权重 / 模型目录。
+ *
+ * 与 `external` 的区别：那是「要装的软件」，这是「要下的东西」。
+ * ⚠️ 元素是**对象**不是字符串 —— 这里曾按 `string[]` 声明，界面上就渲染成了
+ * `[object Object]`（只有真机截图才看得出来，单测用的是手写数据所以没暴露）。
+ */
+export interface PluginModelAsset {
+  label: string;
+  /** 指向该模型目录的环境变量（如 `VM_TTS_MODELS_DIR`） */
+  env?: string;
+  size_hint_mb?: number;
+}
+
+/** 一个能力要装的东西；`python` 是 pip 包名，另两项是对象数组 */
 export interface PluginExtras {
   python?: string[];
-  external?: { kind: 'dir' | 'app' | 'audio-device'; env?: string; label: string; size_hint_mb?: number }[];
-  models?: string[];
+  external?: PluginExternalAsset[];
+  models?: PluginModelAsset[];
 }
 
 /**
