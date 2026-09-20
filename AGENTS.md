@@ -57,7 +57,9 @@
 
 - 桌面端有**两种运行形态，生效路径完全不同**（2026-09-14 读 `web/electron/backend.cjs` 实测确认；此前本文写的"一律优先命中 `D:\变声` 源码根"**只对源码模式成立**）：
   - **源码模式**（`npm run electron`，`app.isPackaged === false`）：`resolveProjectRoot()` 候选第一项是 `__dirname/../..` = `D:\变声` → 后端跑 `D:\变声\m2_server\server.py`，前端加载 `D:\变声\web\dist\index.html`。**改完重启即生效。**
-  - **安装版**（`变声工坊.exe`，`app.isPackaged === true`）：`resolveProjectRoot()` **直接 early-return 包内 `resources/backend`**，`frontendHtmlCandidates()` 也只返回 `resources/backend/web_dist/index.html` —— **绝不回退 `D:\变声` 源码根**（防止自动更新装了新包却仍读旧源码）。改 `m2_server`/`web` 仍会生效，因为后端启动时 `backend_autosync.py` 会把 `D:\变声` 的 `m2_server`/`tools`/`web/dist` 镜像进包内副本。
+  - **安装版**（`变声工坊.exe`，`app.isPackaged === true`）：`resolveProjectRoot()` **直接 early-return 包内 `resources/backend`**，`frontendHtmlCandidates()` 也只返回 `resources/backend/web_dist/index.html` —— **绝不回退 `D:\变声` 源码根**（防止自动更新装了新包却仍读旧源码）。
+    - **⚠️ 更正（2026-09-20 读 `backend_autosync.py:105-123` 实测）**：本文此前写的「改 `m2_server`/`web` 仍会生效，因为后端启动时 `backend_autosync.py` 会把 `D:\变声` 的 `m2_server`/`tools`/`web/dist` 镜像进**包内副本**」**是错的**。`sync_backend_copy()` 的目标恒为 `project_root / "voice-morph-desktop" / "resources" / "backend"`，即**源码根下的 staging 目录**；而安装版形态下 `root` 本身就是 `resources/backend` → 命中第 117 行的 early-return（`"安装版运行形态（源码即副本），跳过"`）→ **autosync 什么都不做**。
+    - 所以：改 `m2_server/*.py` 后**重启安装版不会生效**，必须显式同步（见下方 `sync_backend.ps1 -TargetRoot` 那条），改前端仍走 `cd web && npm run ship`。
   - **但 `web/electron/*.cjs`（主进程）不在镜像范围内**——它只活在 app.asar 里。改主进程（`pet.cjs`/`backend.cjs`/`alt-hint.cjs`/`setup-ipc.cjs` 等）**必须重打 asar**；重启旧包无效，且会留下"前端文案已更新、主进程行为还是旧的"的半新半旧状态。
     - **发版**走 `npm run electron:build`（electron-builder，重跑 tsc+vite+打包+安装器）。
     - **只想让用户立刻用上**则走**定向重打**（2026-09-17 实测，约 1 分钟，不必重装）：
