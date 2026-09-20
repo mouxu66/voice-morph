@@ -35,6 +35,7 @@ import secrets
 
 import config as cfg
 import plugin_loader
+import plugin_manifest
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -141,71 +142,63 @@ else:
         allow_headers=["*"],
     )
 
-# ---- 注册路由：容错加载（顺序与拆分前逐条一致）----
+# ---- 注册路由：**由插件清单驱动**（第 3 步）----
 # 为什么不再直接 `from xxx import router`：那是 26 处**模块级**导入，任意一处失败
 # （缺 torch / 缺权重 / 缺可选依赖 / 一个笔误）都会让整个后端 `ImportError` 起不来，
 # 而「用户没装这个能力」本来就是正常状态，不该表现为「软件打不开」。
 # 记账口径、为什么不吞 `BaseException` 见 plugin_loader.py 的模块注释。
 #
-# ⚠️ 两点别动：
-#   1. **顺序有语义** —— FastAPI 按注册顺序匹配路由，重排会让重叠路径换一个 handler 接；
-#   2. 拆成三段 `_register(...)` 是**照搬**原来的位置：中间那两个启动副作用
-#      （pet_market / market_images）原本就夹在 pet_market_api 与 capture_api 之间。
+# 为什么也不在这里手写模块名：手写 = 第二份真相源。清单（`plugins/*/plugin.json`
+# 的 `routers`）已经是「哪个能力有哪些模块」的唯一出处，挂载照着它走即可。
+# 模块清单不在这里列了；有一条容易踩的记一下：`openai_compat` 的 prefix 是 `/v1`
+# （**不是** `/api/v1`）—— SDK 的 base_url="…/v1" 语义要求如此，挂到 /api/v1
+# 会让用户按官方文档写反而打不通（详见 openai_compat.py 模块注释）。
+#
+# 顺序 = 清单 `order` 升序（core 10-70 → sound 100-180 → pet 200-210 → hook 220），
+# 插件内按 `routers` 声明序。原注释写着「顺序有语义，别动」，2026-09-20 第 3 步
+# 把这句话**量了一遍**（139 条真实路由）：
+#     · 完全相同的 (method, path)              0 条
+#     · router 之间互相遮蔽                     0 条
+#     · 65 条遮蔽关系全部是 router vs SPA 兜底  且全部「先注册、无害」
+#     · 低优先级路由 / websocket / Mount        0 个
+# 所以「历史交错序 → 清单 order」这次搬家是**行为等价**的，而原来那句警告守的
+# 是「将来有人加了一对重叠路径」—— 那件事现在由 `tests/test_route_shadowing.py`
+# 直接断言（不许出现重叠，出现就点名哪两条、属于哪个插件），比冻结一份没人
+# 解释得清的历史顺序更管用。
+#
+# 原来的三段 `_register(...)` 之所以是三段，是为了把两个启动副作用
+# （pet_market / market_images）夹在指定位置；现在副作用由清单的 `hooks` 驱动，
+# 分段的历史理由也就消失了。
+#
+# 注意这里**会**因为清单坏掉而启动失败（`ManifestError`）。这是刻意的：清单既然
+# 是挂载的唯一来源，读不出来就没有「退而求其次」的答案 —— 退化成「什么都不挂」
+# 只会得到一个没有路由的后端，比大声报错更难查。清单是随包发的静态文件，
+# 且 `tests/test_plugin_manifest.py` 全程校验它。
 _ROUTER_ORDER: list[str] = []
 
 
-def _register(*module_names: str) -> None:
-    """按给定顺序容错注册：导不进来的只跳过它自己，并在 registry 里留下原因。"""
-    _ROUTER_ORDER.extend(module_names)
-    for name in module_names:
-        router = plugin_loader.load_router(name)
-        if router is not None:
-            app.include_router(router)
+def _mount_all() -> None:
+    """按清单挂载全部 router，再跑 `when="import"` 的启动副作用。
+
+    副作用**等全部 router 挂完再跑**，不随各自的插件穿插执行：这样保住原来
+    「先装配完、再起副作用」的性质 —— warmup 会起一个加载 4.9G 模型的线程，
+    让它和其它模块的 import 抢着跑没有好处。
+    """
+    for plugin in plugin_manifest.load_all():
+        for module in plugin.routers:
+            _ROUTER_ORDER.append(module)
+            router = plugin_loader.load_router(module)
+            if router is not None:
+                app.include_router(router)
+
+    # 人偶市场默认皮肤物化（幂等）、音色市场远程图库后台同步（未配置时为 no-op）、
+    # TTS worker + RVC 常驻模型预热（消除首条几十秒的模型加载：实测 TTS 冷
+    # 41.8s→2.9s、RVC 24.7s→0.3s，端到端 ~77s→~13s）—— 都在清单里声明。
+    for hook in plugin_manifest.hooks_for("import"):
+        plugin_loader.call_hook(hook["module"], hook["attr"])
 
 
-_register(
-    "rvc_live",
-    "finetune",
-    "audiobook",
-    "offline_vc",
-    "seed_vc",
-    "cascade",
-    "effects",
-    "wechat_voice",
-    "history_api",
-    "system_api",
-    "voices_api",
-    "raw_media_api",
-    "pipeline_api",
-    "clips_api",
-    "tts_api",
-    "mine_api",
-    "market_api",
-    "pet_market_api",
-)
-
-# 人偶市场：确保默认内置皮肤（芙宁娜）物化到 outputs（幂等，失败不阻塞）
-plugin_loader.call_hook("pet_market", "ensure_default_bundle")
-
-# 音色市场远程图库：启动后台自动同步（VM_MARKET_IMG_REPO 未配置时为 no-op）
-plugin_loader.call_hook("market_images", "start_background_sync")
-
-_register(
-    "capture_api",
-    "ab_api",
-    "ab_chain",
-    "audio_api",
-)
-# 试音间：一个声音 × 多个音色（复用 offline_vc / market_preview / ab_chain 的链路与尺子）
-_register("audition_api")
-
-# 预热 TTS worker + RVC 常驻模型：消除首条几十秒的模型加载
-# （实测 TTS 冷 41.8s→2.9s、RVC 24.7s→0.3s，端到端 ~77s→~13s）
-plugin_loader.call_hook("warmup", "start_background")
-
-# OpenAI 兼容层：prefix=/v1（**不是** /api/v1）——SDK 的 base_url="…/v1" 语义要求如此，
-# 挂到 /api/v1 会让用户按官方文档写反而打不通。详见 openai_compat.py 模块注释。
-_register("media_api", "rvc_dataset_api", "openai_compat")
+_mount_all()
 
 # 启动横幅：把容错结果说清楚。“哪个能力不可用”必须是**可见的**，
 # 否则这次容错只是把“崩溃”换成了“静默”，反而更难查。
@@ -230,9 +223,12 @@ if _web_dist is not None:
 
 
 if __name__ == "__main__":
-    # 音频设备残留自动巡检（FRD F4）。audio_api 导不进来时静默跳过 ——
-    # 巡检是「附加保险」，不该因为它连累整个后端起不来。
-    plugin_loader.call_hook("audio_api", "_start_audio_audit")
+    # `when="main"` 的启动副作用：只在真入口跑。放这里而不是模块级是刻意的 ——
+    # `import server`（打包探测、测试、工具脚本）不该产生这些副作用。
+    # 目前唯一一条是 audio_api 的音频设备残留自动巡检（FRD F4）；导不进来时静默跳过，
+    # 因为巡检是「附加保险」，不该因为它连累整个后端起不来。
+    for _hook in plugin_manifest.hooks_for("main"):
+        plugin_loader.call_hook(_hook["module"], _hook["attr"])
     # 打开桌面端 = 拉起后端：自动把 m2_server/tools/web/dist 镜像同步到
     # resources/backend 兜底副本（安装版回退用），详见 backend_autosync.py。
     # 后台线程执行，失败/关闭（VM_BACKEND_AUTOSYNC=0）均不影响启动。

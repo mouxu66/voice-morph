@@ -7,22 +7,28 @@
 | 守什么 | 用例 |
 |---|---|
 | 26 个 router 被清单**不多不少**全覆盖 | `test_manifest_covers_...` |
-| 插件内的 router 顺序不被打乱（步 3 按它挂载，顺序是**行为**） | `test_router_order_...` |
-| 4 个启动钩子也被声明，且 `when` 与真实调用位置一致 | `test_hooks_are_...` |
+| 挂载顺序 = 插件 `order` + 插件内声明序 | `test_mount_plan_...` |
+| 4 个启动钩子都被声明，且 `when` 与**实际调用时机**一致 | `test_all_four_...` / `test_hooks_fire_...` |
 | 健康探针 / `extras` 不写不存在的东西 | `test_health_...` / `test_extras_...` |
 | **三态**：`disabled` 不能被算成 `broken` | `test_disabled_...` |
 | 清单与**前端**（路由 + 侧边栏）对得上 | `test_frontend_...` |
 | 用户配置不会被存储清理顺手删掉 | `test_plugins_json_...` |
 | `/api/plugins` 与 `/api/capabilities` 不互相矛盾 | `test_plugins_endpoint_...` |
+
+> 「路由注册顺序不许重排」这条**已从本文件移出**：2026-09-20 第 3 步实测（139 条路由）
+> 没有任何两条 router 路由互相遮蔽，顺序对 handler 归属没有影响。该守的改成了
+> 「不许出现重叠」→ `tests/test_route_shadowing.py`。
 """
 
 from __future__ import annotations
 
-import ast
 import importlib
 import inspect
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -34,7 +40,6 @@ import plugin_manifest  # noqa: E402
 
 _M2 = Path(__file__).resolve().parents[1]
 _ROOT = _M2.parent
-_SERVER_SRC = (_M2 / "server.py").read_text(encoding="utf-8")
 _APP_TSX = (_ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
 _NAV_TSX = (_ROOT / "web" / "src" / "components" / "voice-studio" / "StudioNav.tsx").read_text(
     encoding="utf-8"
@@ -59,41 +64,62 @@ def _load_all() -> None:
         plugin_loader.load_router(name)
 
 
-def _server_hook_calls() -> list[dict[str, str]]:
-    """从 `server.py` 里**按源码位置**取出所有 `call_hook("mod", "attr")`，并判定它在哪一层。
+#: 探针脚本：在**子进程**里把 `call_hook` 换成记录器，再 `import server`，
+#: 然后打出「实际调了哪些钩子」与「清单声明了哪些」。用子进程是因为钩子只在
+#: **第一次** `import server` 时跑一次，同进程里没法重放。
+_HOOK_PROBE = """
+import json
+import plugin_loader
 
-    `when` 不是装饰性字段：`"import"` 的钩子随 app 装配一起跑，`"main"` 的只在
-    `python server.py` 入口跑（打包/测试里 `import server` 不会触发）。声明错了，
-    第 6 步按清单驱动就会把副作用挪到错误的时机。
+calls = []
+plugin_loader.call_hook = lambda m, a, *rest: (calls.append([m, a]), True)[1]
+
+import plugin_manifest
+import server
+
+print("RESULT " + json.dumps({
+    "calls": sorted(calls),
+    "import": sorted([h["module"], h["attr"]] for p in plugin_manifest.load_all()
+                     for h in p.hooks if h["when"] == "import"),
+    "main": sorted([h["module"], h["attr"]] for p in plugin_manifest.load_all()
+                   for h in p.hooks if h["when"] == "main"),
+}))
+"""
+
+
+def test_hooks_fire_in_the_phase_the_manifest_declares():
+    """`when` 不是装饰性字段 —— 所以别只比源码文本，**跑一次 `import server` 看谁被调用**。
+
+    · 声明 `when="import"` 的钩子必须**恰好**在这时被调用：少一个 = 副作用静默消失，
+      多一个 = 有钩子没进清单（清单就不再是唯一真相源）；
+    · 声明 `when="main"` 的钩子必须**没有**被调用 —— 它只在 `python server.py` 入口跑。
+      放错位置会让打包探测 / 测试 / 工具脚本每次 `import server` 都产生副作用。
+
+    为什么换掉了原来那版：旧版是从源码里按**行号**抓 `call_hook("mod", "attr")`
+    字面量，再猜它在不在 `__main__` 块里。第 3 步把调用改成「遍历清单」之后字面量
+    就没了，那种测法会「两边都空」地白绿 —— 而且它测的本来就是**文本**，不是**行为**。
     """
-    tree = ast.parse(_SERVER_SRC)
-    main_node = next(
-        (
-            n
-            for n in tree.body
-            if isinstance(n, ast.If)
-            and ast.unparse(n.test).replace(" ", "").startswith("__name__=='__main__'")
-        ),
-        None,
+    proc = subprocess.run(
+        [sys.executable, "-c", _HOOK_PROBE],
+        cwd=str(_M2),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},  # 横幅里有中文
     )
-    # 不能用 `{n.lineno for n in ast.walk(...)}`：算子节点（如 `==` 的 `ast.Eq`）没有 lineno
-    main_lines = set()
-    if main_node is not None:
-        main_lines = {ln for n in ast.walk(main_node) if (ln := getattr(n, "lineno", None)) is not None}
+    assert proc.returncode == 0, f"`import server` 就失败了：\n{proc.stderr}"
 
-    out: list[dict[str, str]] = []
-    for node in ast.walk(tree):
-        # 调用形式是 `plugin_loader.call_hook(...)`（属性调用）—— 只匹配 `ast.Name` 会
-        # 一条都取不到，而那正好会让本用例"两边都空"地白绿（左 4 条 vs 右 0 条才能发现）。
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
-        if name != "call_hook":
-            continue
-        mod, attr = node.args[0].value, node.args[1].value
-        out.append({"module": mod, "attr": attr, "when": "main" if node.lineno in main_lines else "import"})
-    return out
+    line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")), None)
+    assert line, f"探针没打出结果：\n{proc.stdout}\n{proc.stderr}"
+    got = json.loads(line.removeprefix("RESULT "))
+
+    # 先确认这份断言不是空的 —— 两边都空也会「相等」
+    assert got["import"], "清单里一条 when=import 的钩子都没有？那这个断言是空的"
+    assert got["calls"] == got["import"], (
+        f"import 期实际调用的钩子与清单不符：\n  实际 {got['calls']}\n  清单 {got['import']}"
+    )
+    for hook in got["main"]:
+        assert hook not in got["calls"], f"when=main 的钩子 {hook} 在 import 期就被调用了"
 
 
 # ------------------------------------------------------- 覆盖：不多不少、顺序不乱
@@ -113,20 +139,34 @@ def test_manifest_covers_exactly_the_registered_routers():
     assert len(declared) == len(set(declared)), "同一模块被两个插件认领"
 
 
-def test_router_order_within_a_plugin_follows_the_frozen_registration_order():
-    """插件内 router 的**相对顺序**必须与注册顺序一致。
+def test_mount_plan_is_plugin_order_then_declared_router_order():
+    """挂载计划的两层结构：插件按 `order` 升序成块，块内按 `routers` 声明序。
 
-    FastAPI 按注册顺序匹配路由，重叠路径由先注册者接 —— 顺序是行为。
-    第 3 步会按"插件 + 插件内顺序"来挂载，所以这里先把它钉住：
-    重排清单里的数组 = 悄悄改变路由优先级。
-    （全序本身由 `test_plugin_loader.py::test_router_registration_order_is_frozen` 冻结。）
+    `server.py` 直接拿 `mount_plan()` 去挂载，所以这条钉的就是「挂载顺序」本身。
+    和 `test_plugin_loader.py::test_mount_order_follows_the_manifest` 的分工：
+    那边比 `server._ROUTER_ORDER`（实现有没有照清单走），这边比清单算出来的结构。
+
+    注意**不再**冻结一份历史全序。第 3 步实测（139 条路由）表明没有两条 router 路由
+    互相遮蔽，所以顺序对 handler 归属没有影响；该守的是「不许出现重叠」，见
+    `tests/test_route_shadowing.py`。
     """
-    import server
+    plan = plugin_manifest.mount_plan()
+    plugins = plugin_manifest.load_all()
 
-    order = {name: i for i, name in enumerate(server._ROUTER_ORDER)}
-    for p in plugin_manifest.load_all():
-        idx = [order[m] for m in p.routers]
-        assert idx == sorted(idx), f"{p.id} 的 routers 顺序与注册顺序不符：{p.routers}"
+    # 按插件切块（挂载计划里同一插件的模块必然相邻）
+    blocks: list[tuple[str, list[str]]] = []
+    for pid, module in plan:
+        if blocks and blocks[-1][0] == pid:
+            blocks[-1][1].append(module)
+        else:
+            blocks.append((pid, [module]))
+
+    # ① 块的先后 = 插件 order 升序（这里自己排一遍，不依赖 load_all 的内部排序）
+    assert [pid for pid, _ in blocks] == [p.id for p in sorted(plugins, key=lambda x: x.order)]
+    # ② 块内顺序 = 该插件 routers 的声明序（重排数组 = 悄悄改挂载顺序）
+    by_id = {p.id: p for p in plugins}
+    for pid, modules in blocks:
+        assert modules == list(by_id[pid].routers), f"{pid} 的挂载顺序与声明序不符：{modules}"
 
 
 def test_manifest_ids_and_order_are_unique():
@@ -153,11 +193,20 @@ def test_core_plugins_are_declared_core():
 # ------------------------------------------------------- 钩子 / 探针 / extras
 
 
-def test_hooks_are_declared_and_placed_correctly():
-    """4 个启动钩子都要在清单里，且 `when` 与 `server.py` 里的调用位置一致。"""
+def test_all_four_startup_hooks_are_declared():
+    """4 个启动钩子一个都不能少 —— 少一个就是「副作用静默消失」。
+
+    这份字面量是刻意的哨兵：`when` 的**正确性**由上面那条按行为验证的用例负责，
+    这里只回答「有没有人把一条钩子从清单里删掉了」。第 3 步起 `server.py` 不再手写
+    `call_hook(...)` 字面量，所以源码比对已经不可能了 —— 只能钉清单本身。
+    """
     declared = {(h["module"], h["attr"]): h["when"] for p in plugin_manifest.load_all() for h in p.hooks}
-    actual = {(h["module"], h["attr"]): h["when"] for h in _server_hook_calls()}
-    assert declared == actual, f"清单 {declared} != 实际 {actual}"
+    assert declared == {
+        ("pet_market", "ensure_default_bundle"): "import",
+        ("market_images", "start_background_sync"): "import",
+        ("warmup", "start_background"): "import",
+        ("audio_api", "_start_audio_audit"): "main",
+    }
 
 
 def test_hook_and_health_targets_exist():

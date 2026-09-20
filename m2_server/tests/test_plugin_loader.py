@@ -14,8 +14,12 @@
    跑在**子进程**里毒掉一个真模块，是端到端的，不是 mock）。
 2. **容错没变成静默** —— 坏掉的要在启动横幅里逐条说明原因。容错只把"崩溃"
    换成"静默"的话，反而比崩溃更难查（本项目同类事故见 `docs/犯错指南.md` §2.36）。
-3. **顺序没被顺手重排** —— 注册顺序是**行为**：FastAPI 按注册顺序匹配路由，
-   重排会让重叠路径换一个 handler 接。
+3. **顺序由清单决定、且对行为无影响** —— 挂载顺序 = 清单的插件 `order`
+   （`test_mount_order_follows_the_manifest`）。而「顺序会不会改变 handler 归属」
+   这件事由 `tests/test_route_shadowing.py` 直接断言：**不许出现两条互相遮蔽的
+   router 路由**。2026-09-20 第 3 步实测过（139 条路由、0 条 router 间遮蔽），
+   所以原来那份「冻结历史交错序」的期望值已删除 —— 它对行为没有影响，
+   却会在每次加插件时逼人做一次无意义的取舍。
 
 ⚠️ 这套用例**不需要 torch**：`requirements-dev.txt` 刻意不装它，
 所以"26 个模块全都能导入"这件事在 CI 的裸环境里同样成立。
@@ -37,38 +41,14 @@ pytest.importorskip("fastapi", reason="plugin_loader 依赖 fastapi")
 from fastapi import APIRouter  # noqa: E402
 
 import plugin_loader  # noqa: E402
+import plugin_manifest  # noqa: E402
 
 _M2 = Path(__file__).resolve().parents[1]
 
-#: 期望的注册顺序 —— 抄自改写前 `server.py` 里 26 处 `include_router` 的**实际先后**。
-_EXPECTED_ORDER: tuple[str, ...] = (
-    "rvc_live",
-    "finetune",
-    "audiobook",
-    "offline_vc",
-    "seed_vc",
-    "cascade",
-    "effects",
-    "wechat_voice",
-    "history_api",
-    "system_api",
-    "voices_api",
-    "raw_media_api",
-    "pipeline_api",
-    "clips_api",
-    "tts_api",
-    "mine_api",
-    "market_api",
-    "pet_market_api",
-    "capture_api",
-    "ab_api",
-    "ab_chain",
-    "audio_api",
-    "audition_api",
-    "media_api",
-    "rvc_dataset_api",
-    "openai_compat",
-)
+#: 路由模块总数。**故意写死**：它是「有没有人顺手删掉一个能力」的独立哨兵 ——
+#: 挂载顺序本身改由清单给出，所以这份字面量只剩计数这一件事。
+#: 数字变了要同步 README 与 `docs/插件化设计.md` 里的说法。
+_ROUTER_COUNT = 26
 
 
 @pytest.fixture(autouse=True)
@@ -124,7 +104,7 @@ def test_healthy_module_list_handles_every_router_module():
     for name in server._ROUTER_ORDER:
         assert plugin_loader.load_router(name) is not None, f"{name} 加载失败"
     report = plugin_loader.report(server._ROUTER_ORDER)
-    assert f"{len(_EXPECTED_ORDER)}/{len(_EXPECTED_ORDER)}" in report, report
+    assert f"{_ROUTER_COUNT}/{_ROUTER_COUNT}" in report, report
     assert "不可用" not in report, report
 
 
@@ -145,7 +125,7 @@ def test_broken_module_does_not_stop_server_from_starting(tmp_path):
         "import plugin_loader\n"
         "import server\n"
         "print('BROKEN', sorted(r.module for r in plugin_loader.broken()))\n"
-        f"print('TOTAL {len(_EXPECTED_ORDER)}')\n"
+        f"print('TOTAL {_ROUTER_COUNT}')\n"
     )
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}  # 横幅里有中文，别让编码把用例搞红
     proc = subprocess.run(
@@ -225,16 +205,23 @@ def test_optional_hooks_are_spelled_correctly(module_name, attr):
 # ---------------------------------------------------------------- 3. 顺序冻结
 
 
-def test_router_registration_order_is_frozen():
-    """⚠️ 别重排 `_ROUTER_ORDER`。
+def test_mount_order_follows_the_manifest():
+    """挂载顺序必须**完全等于**清单算出来的顺序。
 
-    FastAPI 按注册顺序匹配路由 —— 两条路径重叠时（例如 `/api/voices/{name}` 与
-    `/api/voices/market`），先注册的那个接。顺序是**行为**，不是排版。
-    要动这份期望值，请先读 `server.py` 里 `_register` 上方那段注释。
+    清单是模块名的唯一来源（`server.py` 不再手写那 26 个模块名），所以这里比的是
+    「`server.py` 有没有照清单走」，而不是「顺序是不是某个历史快照」。
+
+    为什么不再冻结一份历史顺序：2026-09-20 第 3 步把「顺序有语义」这句话量了一遍
+    （139 条真实路由）—— **没有任何两条 router 路由互相遮蔽**，65 条遮蔽关系全部是
+    「router vs SPA 兜底」且全部无害。也就是说注册顺序对 handler 归属**没有影响**，
+    冻结它只会在每次加插件时逼人改一次快照。真正该守的那件事（不许出现重叠）在
+    `tests/test_route_shadowing.py::test_no_router_route_shadows_another`。
     """
     import server
 
-    assert list(server._ROUTER_ORDER) == list(_EXPECTED_ORDER)
+    expected = [module for _, module in plugin_manifest.mount_plan()]
+    assert list(server._ROUTER_ORDER) == expected
+    assert len(expected) == _ROUTER_COUNT
 
 
 # ---------------------------------------------------------------- 4. 界面出口
@@ -260,7 +247,7 @@ def test_capabilities_endpoint_reports_load_state():
     _load_all()
     body = TestClient(server.app).get("/api/capabilities").json()
     assert body["ok"] is True
-    assert body["total"] == len(_EXPECTED_ORDER)
+    assert body["total"] == _ROUTER_COUNT
     assert body["loaded"] == body["total"]
     assert body["broken"] == []
 

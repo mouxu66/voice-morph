@@ -268,6 +268,45 @@ def reset_cache() -> None:
         _CACHE = None
 
 
+def mount_plan() -> list[tuple[str, str]]:
+    """挂载计划：`[(plugin_id, router_module), ...]`，**顺序即 `include_router` 的顺序**。
+
+    顺序 = 插件 `order` 升序（`load_all()` 已排好），插件内按 `routers` 的声明序。
+    这是 `server.py` 唯一的模块名来源 —— 它不再手写 26 个模块名。
+
+    为什么顺序要有个明确出处：FastAPI 按注册顺序匹配路由，两条路由互相遮蔽时
+    **先注册的那个接**，所以挂载顺序是**行为**，不该由「谁先被写进 server.py」决定。
+
+    但也要说清这份顺序**今天**意味着什么（2026-09-20 第 3 步实测，139 条真实路由）：
+    没有任何两条 router 路由互相遮蔽，65 条遮蔽关系**全部**是「router vs SPA 兜底」，
+    低优先级路由 / websocket / Mount 均为 0。所以「历史交错序 → 清单 order」这次
+    搬家是**行为等价**的。真正的守卫是 `tests/test_route_shadowing.py` ——
+    一旦有人引入重叠，它直接点名是哪两条路径、属于哪个插件，
+    而不是靠一份没人解释得清的历史顺序去兜。
+
+    注意：这里**不**跳过 `disabled` 的插件。挂载只认清单的**结构**，「开关」是第 6 步
+    的事 —— 现在跳过会立刻改变行为：第 4 步还没让前端按清单渲染路由，用户关掉一个
+    能力会直接看到 404，而关闭守卫（核心不可关、依赖传播、409）也都还没做。
+    `state_of()` 已经如实报告 `disabled`，只是暂不据此改变挂载。第 6 步做开关时改这里。
+    """
+    return [(p.id, module) for p in load_all() for module in p.routers]
+
+
+def hooks_for(when: str) -> list[dict[str, str]]:
+    """取出声明为 `when` 阶段的启动钩子，按插件 `order` 排序。
+
+    `when` 只有两个取值（`_HOOK_WHEN`）：
+
+    - `"import"`：随 app 装配一起跑（`server.py` 模块级）。错放这里 → 每次
+      `import server` 都产生副作用，测试会被牵连。
+    - `"main"`：只在 `python server.py` 入口跑。错放那里 → 打包/测试环境下
+      这个副作用永远不发生。
+    """
+    if when not in _HOOK_WHEN:
+        raise ValueError(f"when 必须是 {_HOOK_WHEN} 之一，实际 {when!r}")
+    return [hook for p in load_all() for hook in p.hooks if hook["when"] == when]
+
+
 def disabled_ids() -> set[str]:
     """读 `outputs/plugins.json` 的 `disabled` 列表；文件缺失/损坏一律当「一个都没关」。
 
