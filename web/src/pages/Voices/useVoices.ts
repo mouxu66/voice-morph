@@ -77,7 +77,9 @@ export function useVoices() {
           await uploadVideo(media[i])
         } catch (e) {
           const msg = friendlyError(e, "上传失败")
-          if (!/同名文件已存在/.test(msg)) throw new Error(`${media[i].name}: ${msg}`)
+          // 带上 `cause`：friendlyError 只留下一句给人看的话，原始异常（网络/服务端细节）
+          // 否则就永远丢了，上层想排查也无处下手。
+          if (!/同名文件已存在/.test(msg)) throw new Error(`${media[i].name}: ${msg}`, { cause: e })
         }
       }
       setImportMessage("解析素材（提取人声 → 切片）…")

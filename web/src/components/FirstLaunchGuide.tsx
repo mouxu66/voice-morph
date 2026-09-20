@@ -58,8 +58,8 @@ export function FirstLaunchGuide() {
       /* 隐私模式读不了，跳过引导 */
     }
     const onReplay = () => setOpen(true)
-    window.addEventListener("replay-first-launch" as any, onReplay)
-    return () => window.removeEventListener("replay-first-launch" as any, onReplay)
+    window.addEventListener("replay-first-launch", onReplay)
+    return () => window.removeEventListener("replay-first-launch", onReplay)
   }, [])
 
   // Esc 关闭（与「先逛逛」等价，同样落盘标记）
@@ -70,7 +70,6 @@ export function FirstLaunchGuide() {
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   if (!open) return null

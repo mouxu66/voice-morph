@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
+import type { Mic} from "lucide-react";
 import {
-  Cable, Check, ChevronDown, Gamepad2, Headphones, Loader2, MessageCircle, Mic,
+  Cable, Check, ChevronDown, Gamepad2, Headphones, Loader2, MessageCircle,
   RefreshCw, ScanLine, TriangleAlert, Wrench, X,
 } from "lucide-react"
 import { applyAudioConfig, restoreAudioConfig, sendChainCheck } from "@/api/client"

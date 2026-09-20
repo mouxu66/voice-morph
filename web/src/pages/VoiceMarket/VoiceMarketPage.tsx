@@ -421,10 +421,15 @@ function MarketCard({ item, p }: { item: MarketItem; p: VoiceMarket }) {
   const playable = p.isPlayable(item.demo)
   const prev = p.previews[voiceId]
 
+  // 同 PetMarketPage 的讲究：**p 每次渲染都是新对象**，把 `p` 放进 deps 会让这个 effect
+  // 每次渲染都跑（ensurePreview 会 setState → 再渲染 → 再跑）。ensurePreview 是 useCallback
+  //（`useVoiceMarket.ts:386`），解构出来才稳定。
+  const { ensurePreview } = p
+
   // A2：装了但没有仓库演示音频 → 自动生成固定句试听（ready 后底部出播放器）
   useEffect(() => {
-    if (isInstalled && !playable) void p.ensurePreview(voiceId)
-  }, [isInstalled, playable, voiceId, p.ensurePreview])
+    if (isInstalled && !playable) void ensurePreview(voiceId)
+  }, [isInstalled, playable, voiceId, ensurePreview])
 
   const previewBusy = prev?.status === "generating" || prev?.status === "missing"
   const previewErr = prev?.status === "failed" || prev?.status === "skipped"

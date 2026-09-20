@@ -16,8 +16,9 @@
 - ✅ @testing-library/react - React 测试库
 - ✅ @playwright/test - E2E 测试
 - ✅ @sentry/electron + @sentry/react - 错误追踪
-- ✅ prettier - 代码格式化
-- ✅ eslint-plugin-prettier + @typescript-eslint/* - TS ESLint
+- ✅ prettier - 代码格式化（`npm run format`，**可选执行**，见下方 ⚠️）
+- ✅ eslint + @eslint/js + typescript-eslint + eslint-plugin-react-hooks - 静态检查
+- ✅ eslint-config-prettier - 只关掉与 prettier 冲突的规则，**不**把排版塞进 lint
 
 ### **Python 包（后端）**
 - ✅ pydantic-settings - 环境变量管理
@@ -39,48 +40,60 @@
 
 ### **1. Prettier 配置**
 
-创建 `.prettierrc` 文件：
+`web/.prettierrc`（2026-09-20 按仓库**实测风格**修正：这里原来的 `semi: true` +
+`singleQuote: true` 跟代码正好相反）：
 
 ```json
 {
-  "semi": true,
-  "singleQuote": true,
+  "semi": false,
+  "singleQuote": false,
   "tabWidth": 2,
-  "trailingComma": "es5",
+  "trailingComma": "all",
   "printWidth": 100,
   "endOfLine": "auto"
 }
 ```
 
+> ⚠️ **`npm run format` 会改动约 88 个文件（-3444 / +7950 行）** —— 本仓库从来没被
+> prettier 格式化过，实测 19678 行里 1476 行带分号（其中 1324 行是缩进的接口/类型成员，
+> 手写风格如此），且 5% 的行超过 100 字符。所以格式化是**可选**动作，不是日常流程；
+> 想跑就单独成一个提交，别混在功能改动里。
+
 ### **2. ESLint 配置**
 
-更新 `.eslintrc.json` 或创建 `.eslintrc.cjs`：
+**只有** `web/eslint.config.mjs`（flat config）。旧的 `web/.eslintrc.cjs` 已于
+2026-09-20 删除 —— ESLint 10 不再读 eslintrc，留着它只会造成「看起来权威、实际 inert」
+的双配置漂移（而且它 extend 的是 `recommended-requiring-type-checking`，比现役规则严得多）。
 
 ```javascript
-module.exports = {
-  root: true,
-  env: { browser: true, es2021: true, node: true },
-  extends: [
-    'eslint:recommended',
-    'plugin:@typescript-eslint/recommended',
-    'plugin:@typescript-eslint/recommended-requiring-type-checking',
-    'plugin:prettier/recommended',
-  ],
-  parser: '@typescript-eslint/parser',
-  parserOptions: {
-    project: ['./tsconfig.json'],
-    tsConfigRootDir: __dirname,
-    ecmaVersion: 'latest',
-    sourceType: 'module',
+import js from '@eslint/js';
+import tseslint from 'typescript-eslint';
+import prettierConfig from 'eslint-config-prettier';
+import reactHooks from 'eslint-plugin-react-hooks';
+
+export default tseslint.config(
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
+  prettierConfig,            // 只关掉冲突的排版规则，自己不报错
+  {
+    files: ['**/*.{ts,tsx}'],
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/consistent-type-imports': 'error',
+      '@typescript-eslint/no-explicit-any': 'warn',
+    },
   },
-  plugins: ['@typescript-eslint', 'prettier'],
-  rules: {
-    'prettier/prettier': 'error',
-    '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
-    '@typescript-eslint/consistent-type-imports': 'error',
-  },
-};
+  { ignores: ['dist/**', 'build/**', 'node_modules/**'] },
+);
 ```
+
+> **为什么不用 `eslint-plugin-prettier`**：实测 `prettier/prettier: error` 会让 lint
+> 报 3373 个错误，几乎全是 `Delete ';'`，**没有一个是真缺陷**；关掉后只剩 9 个真问题。
+> 排版交给 prettier 单独跑（prettier 官方也不推荐这个插件）。
+> 这条决定由 `web/src/lintConfig.test.ts` 钉住。
 
 ### **3. Vitest 配置**
 

@@ -104,8 +104,8 @@ export default function App() {
   // 设置抽屉「重播换装引导」：再次让桌宠开口介绍
   useEffect(() => {
     const onReplay = () => sayPetOnboarding()
-    window.addEventListener("replay-pet-onboarding" as any, onReplay)
-    return () => window.removeEventListener("replay-pet-onboarding" as any, onReplay)
+    window.addEventListener("replay-pet-onboarding", onReplay)
+    return () => window.removeEventListener("replay-pet-onboarding", onReplay)
   }, [sayPetOnboarding])
 
   // ---- 页面路由由能力清单驱动（插件化第 4 步）----

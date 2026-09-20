@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
+import type {
   FtCorpusQc,
   FtStatus,
-  FtTrainStatus,
+  FtTrainStatus} from "@/api/client";
+import {
   ftAudition,
   ftCorpusPrune,
   ftCorpusRestore,

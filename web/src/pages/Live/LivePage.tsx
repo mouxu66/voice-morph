@@ -22,7 +22,7 @@ import {
   Wrench,
 } from "lucide-react"
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { useLive } from "@/pages/Live/useLive"
+import type { useLive } from "@/pages/Live/useLive"
 import { PageShell } from "@/components/layout/PageShell"
 import { AuditionEntry } from "@/components/AuditionEntry"
 import { ErrorPanel } from "@/components/ErrorPanel"

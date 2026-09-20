@@ -3,7 +3,8 @@ import {
   ArrowRight, BookOpenText, CheckCircle2, ListMusic,
   Loader2, Mic, RefreshCw, Scissors, Square, Undo2, Upload, Wand2,
 } from "lucide-react";
-import { SCRIPT_SENTENCES, useFt } from "@/pages/Ft/useFt";
+import type { useFt } from "@/pages/Ft/useFt";
+import { SCRIPT_SENTENCES } from "@/pages/Ft/useFt";
 import { mediaUrl } from "@/api/client";
 import { useAppStore } from "@/store/useAppStore";
 import { ErrorPanel } from "@/components/ErrorPanel";

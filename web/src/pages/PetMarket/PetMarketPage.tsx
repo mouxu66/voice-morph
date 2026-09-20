@@ -247,9 +247,14 @@ export function PetMarketPage(p: PetMarket) {
   const [cat, setCat] = useState<string>("全部")
   const [query, setQuery] = useState("")
 
+  // 只拿函数本身当依赖：**p 是每次渲染新建的对象**，把 `p` 塞进 deps 会让这个 effect
+  // 每次渲染都跑一遍（refreshDiscovery 内部 setState → 再渲染 → 再跑），是个真死循环。
+  // refreshDiscovery 本身是 useCallback（`usePetMarket.ts:188`），解构出来才稳定。
+  const { refreshDiscovery } = p
+
   useEffect(() => {
-    void p.refreshDiscovery()
-  }, [p.refreshDiscovery])
+    void refreshDiscovery()
+  }, [refreshDiscovery])
 
   const cats = useMemo(() => {
     const set = new Set<string>((p.manifest ?? []).map((m) => m.category ?? "其他"))

@@ -89,6 +89,16 @@ jobs:
         working-directory: web
         run: npx tsc -b --pretty false
 
+      # 2026-09-20 补：`npm run lint` 此前**坏了一整年没人发现** —— `eslint.config.mjs`
+      # import 了 `@eslint/js` / `typescript-eslint`，而 package.json 两个都没声明，
+      # 本机靠传递依赖侥幸能 import 到，新机器 `npm ci` 后直接 ERR_MODULE_NOT_FOUND。
+      # 这类洞不会让 tsc 或 vitest 变红，只能靠 lint 自己跑起来才暴露 → 钉进 CI。
+      # 另有 `src/lintConfig.test.ts` 专门守「配置 import 的包必须已声明」这一根因。
+      # npm ci 会装 devDependencies，eslint 及其插件都在里面。
+      - name: 静态检查（eslint）
+        working-directory: web
+        run: npm run lint
+
       # 与本机 `tools/check.py` 的 web 步一致（npm ci 默认装 devDependencies，
       # 所以 vitest / jsdom / @testing-library 都在）。别改成只在本机跑的裸脚本。
       - name: 单测（vitest）

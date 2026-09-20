@@ -97,8 +97,8 @@ export function PetGuide({ page, enabled }: { page: string; enabled: boolean }) 
       setExpanded(true)
       setCurrent(0)
     }
-    window.addEventListener("replay-pet-guide" as any, replay)
-    return () => window.removeEventListener("replay-pet-guide" as any, replay)
+    window.addEventListener("replay-pet-guide", replay)
+    return () => window.removeEventListener("replay-pet-guide", replay)
   }, [])
 
   const guide: PageGuide | undefined = GUIDES[page]
