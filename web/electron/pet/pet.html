@@ -708,6 +708,56 @@
  */
 const API = "http://127.0.0.1:8000/api/cascade/status";
 const LIVE_API = "http://127.0.0.1:8000/api/rvc/live/status";
+// core.system 的能力，**永远挂载**。实时变声被关掉时用它判断「后端在不在」（见下面 CAP 门控）
+const HEALTH_API = "http://127.0.0.1:8000/api/health";
+
+// ===CAP-GATE-START===
+// ---------------- 能力门控（2026-09-20）----------------
+// 桌宠请求的后端接口里有 3 个属于**可关能力**，关掉以后对应 router 根本不挂载
+// （实测：关 pet.market → pet_market_api 不挂载；关 sound.rvc-live → rvc_live + cascade
+//  不挂载；关 hook.wechat → wechat_voice 不挂载），桌宠点下去就是 404。
+//
+// ⚠️ 更糟的是 tick() 原本拿「cascade + live 两个接口都拉不到」当**后端离线**的判据：
+// 一旦关掉 sound.rvc-live，这两个接口同时消失 → 桌宠会**永久显示「后端离线」**，
+// 而后端其实好好的。所以桌宠必须认识能力清单，不能假装所有能力都在。
+const CAP_DEPS = { market: "pet.market", live: "sound.rvc-live", wechat: "hook.wechat" };
+const CAP = { market: true, live: true, wechat: true, loaded: false };
+
+/**
+ * 由 `GET /api/plugins` 的响应算出三处门控。
+ *
+ * **取不到清单时一律当作"开着"** —— 后端没起来、或清单接口自己出错，都不该把桌宠
+ * 弄成残废：那是把"我猜错了"变成"看起来坏了"。只有**明确写着 enabled=false** 的才关。
+ *
+ * 只看 `enabled`，不看 `state`：被别的启用中能力依赖而保留的能力是
+ * `state=disabled / enabled=true`（路由仍然挂着），拿 `state` 判会把还在的能力藏掉。
+ */
+function capStateFromCatalog(json) {
+  const all = { market: true, live: true, wechat: true };
+  const list = json && Array.isArray(json.plugins) ? json.plugins : null;
+  if (!list) return all;
+  for (const p of list) {
+    if (!p || typeof p.id !== "string") continue;
+    for (const key of Object.keys(CAP_DEPS)) {
+      if (p.id === CAP_DEPS[key] && p.enabled === false) all[key] = false;
+    }
+  }
+  return all;
+}
+// ===CAP-GATE-END===
+
+/** 拉一次能力清单并落进 CAP；失败保持现状（全开）。 */
+async function loadCapabilities() {
+  try {
+    const r = await fetch("http://127.0.0.1:8000/api/plugins", { cache: "no-store" });
+    if (!r.ok) return;
+    const s = capStateFromCatalog(await r.json());
+    CAP.market = s.market;
+    CAP.live = s.live;
+    CAP.wechat = s.wechat;
+    CAP.loaded = true;
+  } catch {}
+}
 
 const SPRITES = {
   idle:   "svg/idle.webp",
@@ -775,6 +825,8 @@ function applySkin() {
 
 /** 拉取当前应用皮肤配置；失败/后端离线保持现有皮肤不动。 */
 async function loadSkin() {
+  // 人偶市场被关掉 → 皮肤接口不存在。直接用内置皮肤，别每 5s 白打一次 404。
+  if (!CAP.market) return;
   let cfg = null;
   try {
     const r = await fetch(`${SKIN_SHEET_API}/applied`, { cache: "no-store" });
@@ -1070,14 +1122,24 @@ async function tick() {
   if (guide) return;              // 导览期间不打断
   let cascadeData = null, live = null;
   let anyOk = false;
-  try {
-    const r = await fetch(API, { cache: "no-store" });
-    if (r.ok) { cascadeData = await r.json(); anyOk = true; }
-  } catch {}
-  try {
-    const r = await fetch(LIVE_API, { cache: "no-store" });
-    if (r.ok) { live = await r.json(); anyOk = true; }
-  } catch {}
+  if (CAP.live) {
+    try {
+      const r = await fetch(API, { cache: "no-store" });
+      if (r.ok) { cascadeData = await r.json(); anyOk = true; }
+    } catch {}
+    try {
+      const r = await fetch(LIVE_API, { cache: "no-store" });
+      if (r.ok) { live = await r.json(); anyOk = true; }
+    } catch {}
+  } else {
+    // ⚠️ 实时变声被关掉 → 上面两个接口**根本不存在**，绝不能据此判「后端离线」
+    // （那会让桌宠在后端好好的时候永久显示「后端离线」）。改用 core.system 的
+    // /api/health —— 核心能力不可关，它一定在。
+    try {
+      const r = await fetch(HEALTH_API, { cache: "no-store" });
+      if (r.ok) anyOk = true;
+    } catch {}
+  }
   // —— 后端健康：两个状态接口全挂 = 后端失联。离线时切 error 精灵 + 气泡提示
   // （不刷屏：离线只提示一次，恢复在线时再提示一次「回来啦」）——
   const wasOffline = backendOffline;
@@ -1356,6 +1418,8 @@ function relTime(ts) {
 
 // 最近发送：后端 /api/wechat/history，点一条重发
 async function loadRecent() {
+  // 微信能力被关掉 → wechat_voice 路由不挂载，这个接口不存在。
+  if (!CAP.wechat) return;
   try {
     const r = await fetch("http://127.0.0.1:8000/api/wechat/history", { cache: "no-store" });
     if (!r.ok) return;
@@ -1375,7 +1439,25 @@ recentEl.addEventListener("click", (e) => {
   if (it && window.pet && window.pet.sendWav) window.pet.sendWav(it.dataset.wav);
 });
 
-function refreshPanel() { loadVoices(); loadRecent(); refreshSendLabel(); refreshEngineSeg(); }
+/**
+ * 按能力清单收起桌宠上用不到的控件 —— 关掉的能力意味着后端**根本没有那些接口**，
+ * 留着就是一按 404 的按钮。
+ *
+ * 只在清单**真正读到**之后才收（`CAP.loaded`）：读不到时保持原样，
+ * 免得后端临时没起来就把桌宠弄成残废。
+ */
+function refreshCapVisibility() {
+  if (!CAP.loaded) return;
+  const hide = (id, off) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = off ? "none" : "";
+  };
+  hide("engRow", !CAP.live);      // 「麦克风」+ 引擎二选一分段
+  hide("live", !CAP.live);        // 「开 RVC / 开 千问」按钮
+  hide("recent", !CAP.wechat);    // 「最近发送」（点一条重发）
+}
+
+function refreshPanel() { loadVoices(); loadRecent(); refreshSendLabel(); refreshEngineSeg(); refreshCapVisibility(); }
 
 // ---------------- 试听 / 发送 / 结果反馈 ----------------
 // lastPreview / previewAudio 的声明已前移到「快捷面板」段的 DOM 引用处（排除 TDZ 隐患）。
@@ -1623,14 +1705,21 @@ setInterval(() => {
 // 引擎分段的初始选中态（从 localStorage 恢复）。必须在 void tick() 之前 ——
 // tick 会调 refreshEngineSeg()，但那时 runningEngine 还是 null，先渲染一次选中态。
 setEngine(engine);
-void tick();
-setInterval(tick, 1000);
-// 皮肤轮询：应用新皮肤后 5s 内热切换（无需重启桌宠）。
-// MOCK 调试模式下不请求后端（保持离线自演）。
-if (!MOCK) {
-  loadSkin();
-  setInterval(loadSkin, 5000);
-}
+// ⚠️ 先拿到能力清单，再决定要不要轮询引擎状态 / 皮肤。
+// 否则第一帧就会按「全都开着」去打已被关掉的接口 —— 不但刷 404，
+// tick() 还会据此把好好的后端判成「离线」。
+void (async () => {
+  await loadCapabilities();
+  refreshCapVisibility();
+  void tick();
+  setInterval(tick, 1000);
+  // 皮肤轮询：应用新皮肤后 5s 内热切换（无需重启桌宠）。
+  // MOCK 调试模式下不请求后端（保持离线自演）。
+  if (!MOCK && CAP.market) {
+    loadSkin();
+    setInterval(loadSkin, 5000);
+  }
+})();
 </script>
 </body>
 </html>
