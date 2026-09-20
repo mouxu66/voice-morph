@@ -74,6 +74,18 @@ function isVisible(plugin: PluginEntry): boolean {
   return Boolean(plugin.core) || plugin.enabled !== false
 }
 
+/**
+ * 页内 UI（tab / 面板 / 按钮）按能力清单显隐时的查询：插件被关 → false。
+ *
+ * 与 `isVisible` 同一策略：core 恒可见；`enabled` 缺字段（旧后端）按可见处理。
+ * 清单没拿到 / 没这个 id 也按可见 —— 这里只做「关掉就藏」，不替旧后端下结论。
+ */
+export function pluginVisible(catalog: PluginCatalog | null | undefined, id: string): boolean {
+  if (!catalog) return true
+  const p = catalog.plugins.find((x) => x.id === id)
+  return p ? isVisible(p) : true
+}
+
 /** 页面缺失 / 导出名不对时的占位。不抛异常 —— 一条坏声明不该让整个界面白屏。 */
 function missingPage(module: string, exportName?: string): ComponentType {
   return function MissingPage() {

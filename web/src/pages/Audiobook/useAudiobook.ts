@@ -10,7 +10,11 @@ import { friendlyError } from "@/lib/errors"
 
 const POLL_MS = 2000
 
-export function useAudiobook() {
+/**
+ * `enabled=false`（sound.audiobook 能力被关，tab 已藏）时不轮询 ——
+ * 后端端点此时不存在，轮询只会 404 空转。
+ */
+export function useAudiobook(enabled = true) {
   const { backendUp, voices, selectedVoiceId, selectVoice } = useAppStore()
   const [text, setText] = useState("")
   const [gapMs, setGapMs] = useState(350)
@@ -38,6 +42,7 @@ export function useAudiobook() {
 
   // 挂载时拉一次状态（服务端任务可能仍在跑），running 则开始轮询
   useEffect(() => {
+    if (!enabled) return
     void (async () => {
       try {
         const s = await getAudiobookStatus()
@@ -51,7 +56,7 @@ export function useAudiobook() {
       }
     })()
     return stopPoll
-  }, [refresh, stopPoll])
+  }, [enabled, refresh, stopPoll])
 
   const startPoll = useCallback(() => {
     stopPoll()

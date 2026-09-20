@@ -20,7 +20,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 import type { PluginCatalog, PluginEntry, PluginRoute } from "@/types"
-import { buildRoutes, knownIcons, navItems, pageKey, pageModules, resetPageCache } from "./pluginRoutes"
+import { buildRoutes, knownIcons, navItems, pageKey, pageModules, pluginVisible, resetPageCache } from "./pluginRoutes"
 
 /**
  * 找 `m2_server/plugins`。
@@ -184,6 +184,22 @@ describe("可见性与排序", () => {
     for (const p of catalog.plugins) delete (p as Partial<PluginEntry>).enabled
     expect(buildRoutes(catalog).routes.length).toBeGreaterThan(0)
     expect(navItems(catalog, "start").length).toBeGreaterThan(0)
+  })
+
+  it("pluginVisible：被关的插件 → false，core / 缺字段 / 清单缺失 → 可见", () => {
+    const catalog = asCatalog({
+      "hook.wechat": { state: "disabled" as const, enabled: false },
+      "sound.audiobook": { state: "disabled" as const, enabled: true }, // 被依赖而保留
+    })
+    expect(pluginVisible(catalog, "hook.wechat")).toBe(false)
+    expect(pluginVisible(catalog, "sound.audiobook")).toBe(true) // 看 enabled 不看 state
+    expect(pluginVisible(catalog, "core.system")).toBe(true)
+    expect(pluginVisible(null, "hook.wechat")).toBe(true) // 清单没拿到：不隐藏
+    expect(pluginVisible(catalog, "no.such-plugin")).toBe(true) // 清单里没有：不替后端下结论
+
+    const legacy = asCatalog()
+    for (const p of legacy.plugins) delete (p as Partial<PluginEntry>).enabled
+    expect(pluginVisible(legacy, "hook.wechat")).toBe(true) // 旧后端缺 enabled：可见
   })
 
   it("导航按清单 nav.order 升序，分组不串", () => {

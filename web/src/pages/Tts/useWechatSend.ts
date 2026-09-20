@@ -17,8 +17,11 @@ import { friendlyError } from "@/lib/errors"
 /**
  * 微信语音发送：三档路径共用一个 hook。
  * 全自动（模拟 Alt + 播放）/ 半自动（播放到虚拟声卡，人手按 Alt）/ 手动实时变声。
+ *
+ * `enabled=false`（hook.wechat 能力被关，tab 已藏）时不轮询 —— 后端端点此时不存在，
+ * 轮询只会 404 空转。
  */
-export function useWechatSend() {
+export function useWechatSend(enabled = true) {
   const { backendUp } = useAppStore()
   const [lastTts, setLastTts] = useState<WechatLastTts | null>(null)
   const [history, setHistory] = useState<WechatHistoryItem[]>([])
@@ -30,7 +33,7 @@ export function useWechatSend() {
   // 轮询后端预热：起来后每 2s 查一次直到 done。预热未完成就发语音，请求会阻塞在
   // 模型加载上（安全，但第一次会等几十秒）——这里把进度暴露给界面，别让用户以为卡死。
   useEffect(() => {
-    if (!backendUp) {
+    if (!enabled || !backendUp) {
       setWarmup(null)
       return
     }
@@ -51,7 +54,7 @@ export function useWechatSend() {
       alive = false
       if (timer) clearTimeout(timer)
     }
-  }, [backendUp])
+  }, [enabled, backendUp])
 
   const refresh = useCallback(async () => {
     try {
@@ -64,8 +67,8 @@ export function useWechatSend() {
   }, [])
 
   useEffect(() => {
-    if (backendUp) void refresh()
-  }, [backendUp, refresh])
+    if (enabled && backendUp) void refresh()
+  }, [enabled, backendUp, refresh])
 
   const run = useCallback(
     async (kind: "send" | "play" | "manual", fn: () => Promise<WechatSendResult>) => {
