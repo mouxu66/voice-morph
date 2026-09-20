@@ -148,13 +148,20 @@
 
 ## 后端 M2（FastAPI）
 
-`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**24 个独立 router**（对应 `server.py` 里 24 处 `include_router`）：
+`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**26 个独立 router**：
 
 `cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history_api`（历史）。
 
 原 `server.py` 内联的业务已于 2026-09-03 按域拆为独立路由模块：`system_api`（health/diagnose）、`voices_api`（音色库+音色包）、`raw_media_api`（素材库/上传）、`pipeline_api`（流水线）、`clips_api`（切片/质检/说话人分离）、`tts_api`、`mine_api`（音色挖掘）、`capture_api`（桌宠内录）、`ab_api`（盲听）、`ab_chain`（A/B 链路对比 + 自然度打分）、`audio_api`（设备配置/巡检）、`media_api`（静态音频）、`rvc_dataset_api`（训练集）、`market_api`（模型市场）、`pet_market_api`（桌宠市场）；共享状态收敛在 `runtime.py`。
 
 接口清单（节选）：`GET /api/health`、`/api/diagnose`、`/api/voices`、`/api/raw_videos`、`POST /api/pipeline/run`、`/api/clips`、`POST /api/voicebank`、`POST /api/tts`、`POST /api/mine/run`、`POST /api/capture/loopback`、`POST /api/ab/run`、`/api/rvc/live/*`、`/api/wechat/*`、`/api/audio/*`。
+
+注册走**容错加载**（`m2_server/plugin_loader.py`）：任一模块导入失败只让它自己不可用，
+不再拖垮整个后端 —— 缺 torch / 缺权重 / 没装微信都是**正常状态**，不该表现为「软件打不开」。
+启动时 stdout 会打一行 `[plugin_loader] 路由模块 N/26 个已加载`，坏掉的逐条列出原因；
+`GET /api/capabilities` 是同一份数据的 HTTP 出口（前端顶部降级横幅读它）。
+改动这个注册表前请看 `m2_server/tests/test_plugin_loader.py` —— 注册**顺序是行为**
+（FastAPI 按注册顺序匹配路由），被逐字冻结着。
 
 > 注意：当前环境的 FastAPI 对 `include_router` 采用惰性挂载（路由不展开进 `app.routes`），不要用「枚举路由表」的方式做断言，用 TestClient 真实请求验证（见 `tests/test_server.py`）。
 
@@ -221,7 +228,7 @@ pip install -r requirements.txt
 ### 自检（改完代码 / 依赖后）
 
 ```powershell
-python tools\check.py                 # 全量：requires + electron-load + ruff + pytest + tsc
+python tools\check.py                 # 全量：licenses + requires + electron + ps1lint + ruff + nodetest + pytest + (tsc + vitest)
 python tools\check.py --fast          # 提交前（pre-commit 钩子跑的就是它）
 python tools\check.py --ci-fidelity   # 复刻 CI：在只装 requirements-dev.txt 的干净 venv 里跑 CI 那条命令
 ```
@@ -230,7 +237,11 @@ python tools\check.py --ci-fidelity   # 复刻 CI：在只装 requirements-dev.t
 本机多装的包（包括别的包顺手带进来的**传递依赖**）会把"依赖没声明"这类问题整个挡住。
 它自动从 `.github/workflows/ci.yml` 读版本号、建 `.venv-ci/`、跑 CI 同一条命令，
 并在结尾诚实列出没被复刻的差异（runner 镜像 / Linux 大小写 / `npm ci` 全新安装）。
-来龙去脉见 `docs/犯错指南.md` §3.9。
+来龙去脉见 `docs/犯错指南.md` §3.9、§3.36。
+
+前端单测：`cd web && npm run test:run`（vitest + jsdom）。
+**它的门禁位置是 `tools/check.py` 的 `web` 步**（tsc 之后），不在 `--fast` 里；
+CI 的 `web` job 同样跑 `npx vitest run` —— 两边保持一致，别只在本机跑。
 
 git 钩子由 `python tools/install_hooks.py` 安装（`core.hooksPath=.githooks`）：
 pre-commit 跑 `--fast`，pre-push 跑全量。
