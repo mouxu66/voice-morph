@@ -12,6 +12,7 @@
 """
 
 import contextlib
+import logging
 import subprocess
 import threading
 import time
@@ -22,7 +23,8 @@ from common import MAX_UPLOAD_BYTES, find_ffmpeg
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from rvc_common import ensure_infer_pth
-from rvc_live import _live_proc_alive
+
+LOG = logging.getLogger(__name__)
 
 OUT = cfg.OUTPUTS_DIR
 OUT.mkdir(exist_ok=True)
@@ -41,6 +43,19 @@ OFFLINEVC_STATE: dict = {
     "error": "",
 }
 _ovc_lock = threading.Lock()
+
+
+def _live_running() -> bool:
+    """实时变声是否在运行。延迟 import：`rvc_live` 属于可关插件 sound.rvc-live，
+    模块级引用会在它被关掉时依旧把它（连同 qwen3_tts/live_settings）拉进进程，
+    架空第 6 步「关了就不 import」；且它一旦加载失败会拖垮本模块。
+    失败（被关/损坏）一律视为未运行 —— 互斥检查放行，本能力不被牵连。"""
+    try:
+        from rvc_live import _live_proc_alive
+    except Exception as exc:  # noqa: BLE001 —— 互斥检查不配让整个端点 500
+        LOG.warning("[offlinevc] 无法确认实时变声状态（%s），按未运行处理", exc)
+        return False
+    return bool(_live_proc_alive())
 
 
 @router.post("/offlinevc/run")
@@ -76,7 +91,7 @@ async def offlinevc_run(
             )
         if not RVC_VENV_PY.exists():
             raise HTTPException(status_code=500, detail="RVC 运行环境缺失")
-        if _live_proc_alive():
+        if _live_running():
             raise HTTPException(
                 status_code=409, detail="实时变声正在运行，请先停止后再离线转换（避免争抢显卡）"
             )

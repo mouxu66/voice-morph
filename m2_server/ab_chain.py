@@ -17,6 +17,7 @@ FastAPI 会把它放进线程池执行，浏览器 fetch 保持连接等待即�
 """
 
 import contextlib
+import logging
 import re
 import shutil
 import subprocess
@@ -29,7 +30,6 @@ from common import MAX_UPLOAD_BYTES, find_ffmpeg, voice_ref
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from runtime import OUT
 from rvc_common import ensure_infer_pth
-from rvc_live import _live_proc_alive
 
 router = APIRouter(prefix="/api")
 
@@ -40,6 +40,20 @@ NATSCORE_CKPT = cfg.ROOT / "models" / "natscore" / "final.pt"
 _chain_lock = threading.Lock()  # 全局单飞：一次只跑一个链路对比
 _NATS = None  # NatScore 单例（lazy，加载 whisper-small + final.pt）
 _NATS_LOCK = threading.Lock()
+
+LOG = logging.getLogger(__name__)
+
+
+def _live_running() -> bool:
+    """实时变声是否在运行。延迟 import：`rvc_live` 属可关插件 sound.rvc-live，
+    模块级引用会让「关掉」失效并把试音间拴在它的加载成败上。
+    失败按未运行处理 —— 互斥放行。"""
+    try:
+        from rvc_live import _live_proc_alive
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("[ab_chain] 无法确认实时变声状态（%s），按未运行处理", exc)
+        return False
+    return bool(_live_proc_alive())
 
 
 # ---------------- 客观分 ----------------
@@ -233,7 +247,7 @@ async def ab_chain(
     if not _chain_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="已有链路对比任务在跑，请稍候")
     try:
-        if _live_proc_alive():
+        if _live_running():
             raise HTTPException(
                 status_code=409, detail="实时变声正在运行，请先停止（避免争抢显卡）"
             )

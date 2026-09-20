@@ -24,12 +24,33 @@ import time
 from pathlib import Path
 
 import config as cfg
-from cascade import _cascade_alive
 from common import MAX_UPLOAD_BYTES, find_ffmpeg, voice_ref
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from rvc_live import _live_proc_alive
 
 LOG = logging.getLogger(__name__)
+
+
+def _live_running() -> bool:
+    """实时变声是否在运行。延迟 import：`rvc_live` 属可关插件 sound.rvc-live，
+    模块级引用会让「关掉」失效并把本模块拴在它的加载成败上（步 1 防的
+    「一个 import 失败拖垮一片」的变种）。失败按未运行处理 —— 互斥放行。"""
+    try:
+        from rvc_live import _live_proc_alive
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("[seedvc] 无法确认实时变声状态（%s），按未运行处理", exc)
+        return False
+    return bool(_live_proc_alive())
+
+
+def _cascade_running() -> bool:
+    """级联变声是否在运行。延迟 import：`cascade` 与 rvc_live 同属可关的
+    sound.rvc-live，模块级引用同样会把被关掉/坏掉的能力重新拉进来。"""
+    try:
+        from cascade import _cascade_alive
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("[seedvc] 无法确认级联状态（%s），按未运行处理", exc)
+        return False
+    return bool(_cascade_alive())
 
 OUT = cfg.OUTPUTS_DIR
 OUT.mkdir(exist_ok=True)
@@ -108,11 +129,11 @@ async def seedvc_run(
             raise HTTPException(
                 status_code=500, detail="Seed-VC 推理脚本缺失（seed_vc_repo/inference_v2.py）"
             )
-        if _live_proc_alive():
+        if _live_running():
             raise HTTPException(
                 status_code=409, detail="实时变声正在运行，请先停止后再转换（避免争抢显卡）"
             )
-        if _cascade_alive():
+        if _cascade_running():
             raise HTTPException(
                 status_code=409, detail="级联变声正在运行，请先停止后再转换（避免争抢显卡）"
             )

@@ -23,7 +23,7 @@ def client(monkeypatch, tmp_path):
     ref.write_bytes(b"RIFFref")
     monkeypatch.setattr(ac, "voice_ref", lambda vid: (ref, ""))
 
-    monkeypatch.setattr(ac, "_live_proc_alive", lambda: False)
+    monkeypatch.setattr(ac, "_live_running", lambda: False)
     monkeypatch.setattr(ac, "MAX_UPLOAD_BYTES", 64 * 1024 * 1024)
 
     def fake_pre(src, dst):
@@ -125,7 +125,7 @@ def test_chain_lock_busy_returns_409(client, monkeypatch):
 
 def test_chain_gpu_busy_returns_409(client, monkeypatch):
     """实时变声占用 GPU → 409 带原因。"""
-    monkeypatch.setattr(ac, "_live_proc_alive", lambda: True)
+    monkeypatch.setattr(ac, "_live_running", lambda: True)
     files, data = _upload()
     r = client.post("/api/ab/chain", files=files, data=data)
     assert r.status_code == 409

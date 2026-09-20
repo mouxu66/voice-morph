@@ -9,8 +9,6 @@ import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from mine_api import _mine_worker_thread
-from pipeline_api import pipeline_job
 from pydantic import BaseModel
 from runtime import (
     API_PREFIX,
@@ -32,6 +30,12 @@ class CaptureLoopbackRequest(BaseModel):
 def _capture_auto_worker(files: list[Path]):
     """内录后的自动流程：流水线 → 音色挖掘，进度走现有 PIPELINE_STATE / MINE_STATE。"""
     try:
+        # 延迟 import：pipeline/mine 属可关插件（sound.workshop / sound.mine），
+        # 且 pet.companion 的 requires 没声明它们 —— 模块级引用会把关掉的能力
+        # 重新拉进来，其中一个坏掉还会直接拖垮整个 capture_api。
+        from mine_api import _mine_worker_thread
+        from pipeline_api import pipeline_job
+
         pipeline_job(files)
         if PIPELINE_STATE.get("status") == "done":
             _mine_worker_thread()
