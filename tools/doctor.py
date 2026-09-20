@@ -1,9 +1,15 @@
-# -*- coding: utf-8 -*-
 """变声工坊 · 环境体检。
 
 这个应用的前端只是界面，真正的推理全在本地 Python 后端与若干外部工具里。
 换一台机器时最容易卡在"界面打开了但什么都用不了"，本脚本把依赖逐项查一遍，
 并直接给出补齐命令 —— 目标是不用翻文档也能把环境配好。
+
+第 5 步（插件化）之后多了两件事：
+  * **torch 不再是"必需项"** —— 它归 `sound.offline-vc` / `sound.audition` /
+    `sound.workshop` 的 extras。没装 torch 时 `/api/health` 会返回 `cuda: null`
+    而不是 500，核心页面照常能用，所以这里的判定跟着变成"按启用集"。
+  * **每个启用插件的 extras 逐项对账** —— 见最后的「插件依赖」一节，
+    直接给 `setup_env.ps1` 的命令（而不是让人自己猜该装什么）。
 
 用法：
     python tools\\doctor.py            # 人可读报告
@@ -104,8 +110,48 @@ def run_checks() -> list[Check]:
         c.fix = f'"{py}" -m pip install -r "{ROOT / "requirements.txt"}"'
     results.append(c)
 
+    # ---------- 2.5 插件 extras（按启用集） ----------
+    # 第 5 步的核心验收方式：不再问"torch 装了没"，而是问
+    # 「你**启用的**这些能力，各自的 extras 齐了没」。
+    plan: dict = {}
+    try:
+        sys.path.insert(0, str(ROOT / "tools"))
+        import plugin_extras  # noqa: PLC0415
+
+        plan = plugin_extras.resolve()
+        installed = plugin_extras.check_installed(py, plan["python"])
+        missing_pkgs = sorted(k for k, v in installed.items() if not v)
+        c = Check("plugin_extras", "插件依赖（按当前启用集）", required=False)
+        c.ok = not missing_pkgs
+        if missing_pkgs:
+            # 说清"缺的这个包是谁要的" —— 只说包名，用户不知道该开/关哪个能力
+            owners = {
+                pkg: [v["name"] for v in plan["by_plugin"].values() if pkg in v["python"]]
+                for pkg in missing_pkgs
+            }
+            detail = "；".join(f"{pkg}（{'、'.join(owners[pkg])}）" for pkg in missing_pkgs)
+            c.detail = f"启用 {plan['enabled_count']} 个能力 · 缺 {len(missing_pkgs)} 个：{detail}"
+            c.fix = f'"{ROOT / "tools" / "setup_env.ps1"}" -Preset {plan["preset"]}'
+        else:
+            c.detail = f"启用 {plan['enabled_count']} 个能力 · 所需 {len(plan['python'])} 个包全部就绪"
+        results.append(c)
+    except Exception as e:  # noqa: BLE001
+        c = Check("plugin_extras", "插件依赖（按当前启用集）", required=False)
+        c.detail = f"算不出来：{type(e).__name__}: {e}"
+        c.fix = f'"{py}" "{ROOT / "tools" / "plugin_extras.py"}"'
+        results.append(c)
+        plan = {}
+
     # ---------- 3. PyTorch / CUDA ----------
-    c = Check("torch", "PyTorch + CUDA", required=True)
+    # 第 5 步起 torch 归 extras（sound.offline-vc / sound.audition / sound.workshop）：
+    # 没装它不该算"必需项缺失"（`/health` 会降级成 `cuda: null`，核心功能照常）。
+    # 但**缺了要说清哪几个能力会不可用**，否则用户看到"可选"就忽略了。
+    torch_owners = [
+        v["name"]
+        for v in plan.get("by_plugin", {}).values()
+        if {x.lower() for x in v["python"]} & {"torch", "torchaudio"}
+    ]
+    c = Check("torch", "PyTorch + CUDA", required=False)
     code = (
         "import torch;"
         "print(torch.__version__, torch.cuda.is_available(),"
@@ -117,11 +163,15 @@ def run_checks() -> list[Check]:
         c.ok = avail == "True"
         c.detail = f"torch {ver} · CUDA {'可用' if c.ok else '不可用'}{(' · ' + name) if name else ''}"
         if not c.ok:
-            c.fix = ("显存可用但 CUDA 不可用，多半装了 CPU 版 torch。"
+            c.fix = ("装了 torch 但 CUDA 不可用，多半是 CPU 版（会静默不用显卡）。"
                      "重装 GPU 版：pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128")
     else:
-        c.detail = (err or out).splitlines()[-1] if (err or out) else "torch 未安装"
-        c.fix = f'"{py}" -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128'
+        c.ok = not torch_owners  # 没启用需要它的能力 → 不算缺
+        c.detail = "未安装" + (
+            "（当前启用集不需要它，不影响使用）" if not torch_owners
+            else f"（{'、'.join(torch_owners)} 需要它，这些能力不可用）"
+        )
+        c.fix = f'"{ROOT / "tools" / "setup_env.ps1"}" -Preset {plan.get("preset", "standard")}' if torch_owners else ""
     results.append(c)
 
     # ---------- 4. TTS（Qwen3-TTS） ----------
@@ -152,7 +202,7 @@ def run_checks() -> list[Check]:
         else:
             tt.detail = "未找到 qwen_tts，也没有独立 TTS 环境"
         if not tt.ok:
-            tt.fix = (f'"{py}" -m pip install qwen-tts  '
+            tt.fix = (f'"{ROOT / "tools" / "setup_env.ps1"}" -Plugins sound.tts  '
                       f'（或设置 VM_TTS_VENV_PY 指向已装好的环境）')
     results.append(tt)
 

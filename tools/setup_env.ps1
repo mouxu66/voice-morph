@@ -1,31 +1,58 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    变声工坊 · 一键环境准备
+    变声工坊 · 一键环境准备（核心 + 按启用集的插件 extras）
 
 .DESCRIPTION
-    在拿到源码的新机器上准备 Python 后端环境：
+    本脚本不再"一刀全装"（第 5 步之前是 requirements.txt 一把梭，torch 2GB 必装）：
+
       1. 创建（或复用）项目 .venv
-      2. 按 requirements.txt 安装依赖
-      3. 安装与显卡匹配的 GPU 版 PyTorch（默认 cu128；RTX 50 系 Blackwell 需要 cu128+ 的 torch 2.9+）
-      4. 可选安装 qwen-tts（文字转语音用）
-    装完跑 python tools\doctor.py 复检。
+      2. 装**核心**依赖 —— requirements.txt，只有"不装它应用就起不来"的那些
+      3. 按**启用集**装插件 extras —— 读 m2_server/plugins/<id>/plugin.json
+         · torch / torchaudio 单独走 CUDA 索引（装成 CPU 版会"显存不可用、推理静默失效"）
+         · 关掉的能力不装它的重包（这就是省几个 GB 的地方）
+      4. 复检：tools/doctor.py（环境体检）+ tools/plugin_extras.py --check（逐项对账）
+
+    启用集怎么定（优先级从高到低）：
+      -Plugins 显式列出 > -Preset 预设 > outputs/plugins.json 里用户关掉的那些
+
+.PARAMETER Root
+    项目根（默认取本脚本的上一级目录）。
+
+.PARAMETER Preset
+    light（轻量：核心 + 离线变声）/ standard（默认）/ full（全能）/ core（只装核心）。
+
+.PARAMETER Plugins
+    高级：显式指定启用的插件 id（如 -Plugins sound.tts,sound.rvc-live），覆盖 -Preset。
 
 .PARAMETER CudaTag
-    PyTorch 的 CUDA 标签，默认 cu128。
+    PyTorch 的 CUDA 标签，默认 cu128（RTX 50 系 Blackwell 需 cu128+ 的 torch 2.9+）。
 
 .PARAMETER SkipTts
-    跳过 qwen-tts 安装。
+    不装 qwen-tts（已有独立 TTS 环境 tts_trial\venv312 时用，省一坨下载）。
+
+.PARAMETER SkipExtras
+    只装核心依赖，跳过全部插件 extras（等价于 -Preset core）。
+
+.PARAMETER DryRun
+    只打印将要执行的命令，不真装。
 
 .EXAMPLE
     .\tools\setup_env.ps1
-    .\tools\setup_env.ps1 -SkipTts
+    .\tools\setup_env.ps1 -Preset light
+    .\tools\setup_env.ps1 -Plugins sound.tts,sound.rvc-live
+    .\tools\setup_env.ps1 -Preset full -CudaTag cu129
 #>
 [CmdletBinding()]
 param(
     [string]$Root,
+    [ValidateSet("light", "standard", "full", "core")]
+    [string]$Preset = "standard",
+    [string[]]$Plugins = @(),
     [string]$CudaTag = "cu128",
-    [switch]$SkipTts
+    [switch]$SkipTts,
+    [switch]$SkipExtras,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,13 +69,23 @@ if (-not (Test-Path -LiteralPath (Join-Path $Root "m2_server/server.py"))) {
 }
 Write-Host "项目根：$Root" -ForegroundColor DarkGray
 
-function Invoke-Step([string]$Message, [scriptblock]$Action) {
-    Write-Host ""
-    Write-Host "==> $Message" -ForegroundColor Cyan
-    & $Action
-    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
-        Write-Host "步骤失败（退出码 $LASTEXITCODE）：$Message" -ForegroundColor Red
-        exit $LASTEXITCODE
+$venvPy = Join-Path $Root ".venv/Scripts/python.exe"
+$script:hadFailure = $false
+
+function Invoke-Pip {
+    <#
+      跑一次 pip。$Fatal=$false 时失败只警告（例如 extras 里某个包在新机器上装不上，
+      不该让整轮准备中断 —— 最后的 --check 会把缺的列出来）。
+    #>
+    param([string[]]$Arguments, [string]$What, [bool]$Fatal = $true)
+    Write-Host ("    pip " + ($Arguments -join " ")) -ForegroundColor DarkGray
+    if ($DryRun) { return }
+    & $script:venvPy -m pip @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ("{0} 失败（退出码 {1}）。可稍后单独重试：" -f $What, $LASTEXITCODE) -ForegroundColor Yellow
+        Write-Host ("  & '{0}' -m pip {1}" -f $script:venvPy, ($Arguments -join " ")) -ForegroundColor DarkGray
+        if ($Fatal) { exit $LASTEXITCODE }
+        $script:hadFailure = $true
     }
 }
 
@@ -68,55 +105,127 @@ if (-not $py) {
     exit 1
 }
 
-$venvPy = Join-Path $Root ".venv/Scripts/python.exe"
 if (Test-Path -LiteralPath $venvPy) {
     Write-Host "复用已存在的项目虚拟环境：$venvPy" -ForegroundColor Green
 }
 else {
     Write-Host "==> 创建虚拟环境 .venv" -ForegroundColor Cyan
-    & $py -m venv (Join-Path $Root ".venv")
-    if ($LASTEXITCODE -ne 0) { Write-Host "创建虚拟环境失败" -ForegroundColor Red; exit $LASTEXITCODE }
+    if (-not $DryRun) {
+        & $py -m venv (Join-Path $Root ".venv")
+        if ($LASTEXITCODE -ne 0) { Write-Host "创建虚拟环境失败" -ForegroundColor Red; exit $LASTEXITCODE }
+    }
     Write-Host "已创建：$venvPy" -ForegroundColor Green
 }
 
-& $venvPy -m pip install --upgrade pip
-if ($LASTEXITCODE -ne 0) { Write-Host "升级 pip 失败" -ForegroundColor Red; exit $LASTEXITCODE }
+Invoke-Pip -Arguments @("install", "--upgrade", "pip") -What "升级 pip"
 
-# ---------- 2. GPU 版 PyTorch ----------
+# ---------- 2. 核心依赖（不含任何插件 extras） ----------
 Write-Host ""
-Write-Host "==> 安装 PyTorch（$CudaTag）" -ForegroundColor Cyan
-Write-Host "    这一步会下载 2GB 以上，请耐心等待…" -ForegroundColor DarkGray
-& $venvPy -m pip install torch torchaudio --index-url "https://download.pytorch.org/whl/$CudaTag"
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "PyTorch 安装失败。可改试 -CudaTag cu129（RTX 50 系 Blackwell）：" -ForegroundColor Red
-    Write-Host "  .\tools\setup_env.ps1 -CudaTag cu129" -ForegroundColor DarkGray
-    exit $LASTEXITCODE
-}
+Write-Host "==> 安装核心依赖（requirements.txt）" -ForegroundColor Cyan
+Invoke-Pip -Arguments @("install", "-r", (Join-Path $Root "requirements.txt")) -What "核心依赖安装"
 
-# ---------- 3. 其余后端依赖 ----------
-Write-Host ""
-Write-Host "==> 安装后端依赖" -ForegroundColor Cyan
-& $venvPy -m pip install -r (Join-Path $Root "requirements.txt")
-if ($LASTEXITCODE -ne 0) { Write-Host "后端依赖安装失败" -ForegroundColor Red; exit $LASTEXITCODE }
-
-# ---------- 4. 可选：qwen-tts ----------
-if ($SkipTts) {
+# ---------- 3. 按启用集算插件 extras ----------
+$plan = $null
+if ($SkipExtras) {
     Write-Host ""
-    Write-Host "已按 -SkipTts 跳过 qwen-tts，文字转语音功能将不可用。" -ForegroundColor Yellow
+    Write-Host "已按 -SkipExtras 跳过全部插件 extras（只装核心依赖）。" -ForegroundColor Yellow
 }
 else {
     Write-Host ""
-    Write-Host "==> 安装 qwen-tts（文字转语音，可选）" -ForegroundColor Cyan
-    & $venvPy -m pip install qwen-tts
+    Write-Host "==> 计算启用集与 extras" -ForegroundColor Cyan
+    # 用 .venv 的解释器跑：它此时已装好 fastapi/pydantic（plugin_manifest 依赖）
+    $extrasArgs = @((Join-Path $Root "tools/plugin_extras.py"), "--json")
+    if ($Plugins.Count -gt 0) { $extrasArgs += @("--plugins") + $Plugins }
+    else { $extrasArgs += @("--preset", $Preset) }
+
+    if ($DryRun) {
+        Write-Host ("    " + $venvPy + " " + ($extrasArgs -join " ")) -ForegroundColor DarkGray
+    }
+    # 算清单是只读的（读清单 + 读 outputs/plugins.json），-DryRun 下也照跑 ——
+    # 否则 DryRun 的启用集是假的，等于没验证。
+    $raw = & $venvPy @extrasArgs
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "qwen-tts 安装失败（不影响实时变声，仅影响文字转语音）。" -ForegroundColor Yellow
-        Write-Host "可稍后单独安装： & '$venvPy' -m pip install qwen-tts" -ForegroundColor DarkGray
+        Write-Host "算 extras 失败。可单独运行排查：" -ForegroundColor Red
+        Write-Host "  & '$venvPy' tools\plugin_extras.py" -ForegroundColor DarkGray
+        exit $LASTEXITCODE
+    }
+    $plan = ($raw | Out-String) | ConvertFrom-Json
+
+    Write-Host ("    预设 {0} · 启用 {1} 个能力" -f $plan.preset, $plan.enabled_count) -ForegroundColor Green
+    if ($plan.disabled_by_user) {
+        Write-Host ("    按你的设置跳过：{0}" -f ($plan.disabled_by_user -join "、")) -ForegroundColor DarkGray
+    }
+    if ($plan.kept_despite_disabled) {
+        Write-Host ("    你关掉了 {0}，但有启用中的能力依赖它 → 仍然装上" -f ($plan.kept_despite_disabled -join "、")) -ForegroundColor DarkGray
+    }
+
+    # 过滤掉 $null：JSON 里的空数组经 ConvertFrom-Json 会变成 $null
+    $cudaPkgs = @($plan.python_cuda | Where-Object { $_ })
+    $pipPkgs = @($plan.python_pip | Where-Object { $_ })
+    # -SkipTts 是旧参数，语义 = 从 extras 里去掉 qwen-tts（已有独立 TTS 环境时用）
+    if ($SkipTts) {
+        $pipPkgs = @($pipPkgs | Where-Object { $_ -ne "qwen-tts" })
+        Write-Host "    已按 -SkipTts 去掉 qwen-tts（文字转语音需要独立环境 tts_trial\venv312）" -ForegroundColor Yellow
+    }
+}
+
+# ---------- 4. 装 extras：torch 走 CUDA 索引，其余走 PyPI ----------
+if ($plan) {
+    if ($cudaPkgs.Count -gt 0) {
+        Write-Host ""
+        Write-Host ("==> 安装 PyTorch（{0}，约 2GB，请耐心等待）" -f $CudaTag) -ForegroundColor Cyan
+        $cudaArgs = @("install") + $cudaPkgs + @("--index-url", "https://download.pytorch.org/whl/$CudaTag")
+        Invoke-Pip -Arguments $cudaArgs -What "PyTorch 安装"
+    }
+    if ($pipPkgs.Count -gt 0) {
+        Write-Host ""
+        Write-Host ("==> 安装插件 extras（{0} 个）" -f $pipPkgs.Count) -ForegroundColor Cyan
+        # 非致命：extras 里可能有个别包在新机器上装不上，不该中断整轮准备
+        Invoke-Pip -Arguments (@("install") + $pipPkgs) -What "插件 extras 安装" -Fatal $false
+    }
+
+    if ($plan.external) {
+        Write-Host ""
+        Write-Host "以下外部依赖 pip 装不了，需要你自己准备：" -ForegroundColor Yellow
+        foreach ($item in $plan.external) {
+            $size = ""
+            if ($item.size_hint_mb) { $size = "（约 $($item.size_hint_mb)MB）" }
+            Write-Host ("    [{0}] {1}{2}" -f $item.kind, $item.label, $size) -ForegroundColor DarkGray
+        }
+    }
+    if ($plan.models) {
+        Write-Host ""
+        Write-Host "模型权重（首次使用会自动下载或需手动放置）：" -ForegroundColor Yellow
+        foreach ($item in $plan.models) {
+            $size = ""
+            if ($item.size_hint_mb) { $size = "（约 $($item.size_hint_mb)MB）" }
+            Write-Host ("    {0}{1}" -f $item.label, $size) -ForegroundColor DarkGray
+        }
     }
 }
 
 # ---------- 5. 复检 ----------
 Write-Host ""
 Write-Host "==> 环境体检" -ForegroundColor Cyan
-& $venvPy (Join-Path $Root "tools/doctor.py")
+if ($DryRun) {
+    Write-Host "    （-DryRun：跳过）" -ForegroundColor DarkGray
+}
+else {
+    & $venvPy (Join-Path $Root "tools/doctor.py")
+    Write-Host ""
+    Write-Host "==> 启用集逐项对账" -ForegroundColor Cyan
+    & $venvPy (Join-Path $Root "tools/plugin_extras.py") --check
+}
+
 Write-Host ""
-Write-Host "准备完成。启动应用：npm run electron:dev（开发）或安装 web\\release 下的安装包。" -ForegroundColor Green
+if ($DryRun) {
+    Write-Host "（-DryRun 完成：以上是要执行的命令，未真装）" -ForegroundColor Yellow
+}
+elseif ($script:hadFailure) {
+    Write-Host "准备完成，但**有包没装上** —— 看上面「逐项对账」里缺的那几个。" -ForegroundColor Yellow
+    Write-Host "想装更多能力：改设置页的开关后重跑本脚本，或 -Preset full 一次装全。" -ForegroundColor DarkGray
+}
+else {
+    Write-Host "准备完成。启动应用：npm run electron:dev（开发）或安装 web\release 下的安装包。" -ForegroundColor Green
+    Write-Host "想装更多能力：改设置页的开关后重跑本脚本，或 -Preset full 一次装全。" -ForegroundColor DarkGray
+}

@@ -253,14 +253,23 @@ pre-commit 跑 `--fast`，pre-push 跑全量。
 前端只是界面，推理全在本地 Python 后端里，所以**必须先准备一次后端环境**：
 
 ```powershell
-# 1) 一键准备环境（建 .venv、装 GPU 版 PyTorch 与后端依赖）
+# 1) 一键准备环境（建 .venv → 装核心依赖 → 按「启用集」装各能力的 extras）
 powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
 
 # 2) 体检：逐项列出缺什么、缺了怎么补
 .\.venv\Scripts\python.exe tools\doctor.py
 ```
 
-- `setup_env.ps1` 默认装 `cu128`。RTX 50 系（Blackwell）若报 kernel 不兼容，改试 `.\tools\setup_env.ps1 -CudaTag cu129`。
+- **默认只装「标准」套餐**（核心 + 训练变声 / 输字变声 / 实时变声 / 工具箱 / 试音间）。
+  以前是"一刀全装"，`torch` 那 2GB 无论你用不用都得下；现在按需装。
+- 换套餐：`-Preset light`（只要一个能变声的，硬盘紧张）/ `-Preset full`（全开）/
+  `-Preset core`（只装核心，跑测试用）；也可 `-Plugins sound.tts,sound.rvc-live` 精确指定。
+- **关掉的能力不装它的重包**：在设置页关掉「输字变声」后重跑本脚本，`qwen-tts` 就不会再装。
+- `-SkipTts`：已有独立 TTS 环境（`tts_trial\venv312`）时用，跳过 `qwen-tts`。
+- `-DryRun`：只打印要执行的命令，不真装（换机器前先看一眼）。
+- 默认装 `cu128`。RTX 50 系（Blackwell）若报 kernel 不兼容，改试 `-CudaTag cu129`。
+  ⚠️ `torch` / `torchaudio` **必须从 CUDA 索引装**（脚本已内置）——直接 `pip install torch`
+  会装成 CPU 版，症状是"能跑但不用显卡"（静默失效，不报错）。
 - 应用启动后若后端没起来，会弹窗说明原因并指向 `tools\` 下的脚本，不会只给你一个空界面。
 - 后端运行日志：`%APPDATA%\<应用名>\backend.log`。
 
@@ -277,6 +286,9 @@ powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
 > 对应的前端页面与侧边栏项、以及缺了会怎样。当前共 19 个能力（7 个核心 + 12 个可选），
 > 可用 `GET /api/plugins` 看实时状态（`ok` / `broken` / `disabled` 三态）。
 > 改这里的表格前先看 `docs/插件化设计.md` —— 那份清单才是真相源，这张表是给人快速扫的。
+>
+> 想先看看"这台机器按当前启用集会装什么"：`python tools\plugin_extras.py`
+> （加 `--check` 逐项对账"装了没"，加 `--json` 给脚本消费）。
 
 ### 目录清理
 
