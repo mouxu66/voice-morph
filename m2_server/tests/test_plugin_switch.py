@@ -371,7 +371,52 @@ def test_diagnose_skip_is_driven_by_the_owner_table(monkeypatch, client):
     assert body["skipped"] == []
 
 
-# ---------------------------------------------------------------- 7. 变异验证
+# ---------------------------------------------------------------- 7. 健康探针
+#
+# 第 2 步只把它写进清单（"只声明不接线"），设计稿 §6.3 却说 `GET /api/plugins`
+# 要带「健康探针结果」—— 又一个"声称了没接上"。第 6 步补掉。
+
+
+def test_health_probe_runs_and_returns_the_raw_snapshot():
+    """跑起来就回原始快照。**没有 `ok` 字段** —— 那是刻意的。"""
+    p = _p("sound.tts")
+    assert p.health, "sound.tts 应该声明了探针"
+    probe = plugin_manifest.probe_health(p)
+    assert probe is not None and probe["ran"] is True
+    assert isinstance(probe["data"], dict)
+
+
+def test_health_probe_is_none_when_not_declared():
+    assert plugin_manifest.probe_health(_p("core.voices")) is None
+
+
+def test_health_probe_degrades_instead_of_killing_the_catalog(monkeypatch):
+    """★ 探针自己炸了，也必须变成一条结论 —— 不能让 `/api/plugins` 500。
+
+    这条端点的存在理由就是「在最坏的时候还能答」（缺依赖时最需要看它），
+    让它依赖探针等于在最坏的时候把它关掉。
+    """
+    import importlib
+
+    def boom(name):
+        raise ImportError(f"假装 {name} 装不上")
+
+    monkeypatch.setattr(importlib, "import_module", boom)
+    probe = plugin_manifest.probe_health(_p("hook.wechat"))
+    assert probe["ran"] is False
+    assert "ImportError" in (probe["error"] or "")
+
+
+def test_disabled_plugin_is_not_probed():
+    """关掉的能力不跑探针 —— 它连模块都没加载，问它健康没有意义。"""
+    plugin_manifest.write_disabled({"sound.tts", "sound.audiobook"})
+    catalog = plugin_manifest.catalog()
+    by_id = {p["id"]: p for p in catalog["plugins"]}
+    assert by_id["sound.tts"]["healthProbe"] is None
+    assert by_id["hook.wechat"]["healthProbe"] is not None
+
+
+# ---------------------------------------------------------------- 8. 变异验证
 #
 # 上面所有断言在真代码上都是绿的。要区分"没有违规"与"检查失效"，
 # 必须往真对象里注入真违规，看断言**会不会红**。

@@ -306,4 +306,37 @@ describe("CapabilityPanel · 开关", () => {
     expect(standard).toHaveAttribute("aria-pressed", "true")
     expect(screen.getByRole("button", { name: /轻量/ })).toHaveAttribute("aria-pressed", "false")
   })
+
+  it("健康探针的结果会摊开（后端不猜 ok，这里也不猜）", async () => {
+    const base = catalog([OK_SOUND])
+    getPlugins.mockResolvedValue({
+      ...base,
+      plugins: [
+        {
+          ...base.plugins[0],
+          healthProbe: { ran: true, error: null, data: { ready: false, reason: "" } },
+        },
+      ],
+    })
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    // 空值（reason=""）不该摊 —— 否则每行都挂一串 `reason=`，噪声盖过信号
+    expect(await screen.findByText(/实时状态：ready=false/)).toBeInTheDocument()
+    expect(screen.queryByText(/reason/)).not.toBeInTheDocument()
+  })
+
+  it("探针没跑起来时说原因，不假装成功", async () => {
+    const base = catalog([OK_SOUND])
+    getPlugins.mockResolvedValue({
+      ...base,
+      plugins: [
+        { ...base.plugins[0], healthProbe: { ran: false, error: "ImportError: comtypes", data: null } },
+      ],
+    })
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    expect(await screen.findByText(/探针没跑起来：ImportError: comtypes/)).toBeInTheDocument()
+  })
 })

@@ -538,6 +538,35 @@ def state_of(plugin: Plugin, disabled: set[str] | None = None) -> tuple[str, lis
     return (STATE_BROKEN, reasons) if reasons else (STATE_OK, [])
 
 
+def probe_health(plugin: Plugin) -> dict[str, Any] | None:
+    """跑一次清单里声明的健康探针，返回**原始快照**；没声明就返回 `None`。
+
+    ★ **不猜 `ok`**：两个探针返回的东西形状完全不同（`warmup.status()` 是
+    `{running, done, steps}`，`wechat_uia.status()` 是 `{enabled, ready, reason}`），
+    硬凑一个 `ok` 字段等于替用户下判断 —— 而判断错了比不给更糟（界面上一片绿，
+    实际微信根本没挂上）。所以只回答三件事：**跑没跑起来**、**失败原因**、
+    **原始快照**，判断留给消费方。
+
+    ★ **绝不能拖垮调用它的端点**：`/api/plugins` 存在的理由就是「在最坏的时候还能答」
+    （见 system_api 的注释）。探针 import 失败（比如没装 comtypes）、抛异常、
+    返回的不是字典 —— 一律降级成 `ran=False` 加一条原因，而不是让整个目录 500。
+    """
+    spec = plugin.health
+    if not spec:
+        return None
+    try:
+        import importlib  # 惰性导入：本模块被 tools/ 也在用，不该替它付 import 成本
+
+        mod = importlib.import_module(spec["module"])
+        fn = getattr(mod, spec["attr"])
+        raw = fn()
+        if not isinstance(raw, dict):
+            return {"ran": False, "error": f"探针返回了 {type(raw).__name__}，不是字典", "data": None}
+        return {"ran": True, "error": None, "data": raw}
+    except Exception as exc:  # noqa: BLE001 —— 见 docstring：这里必须兜住一切
+        return {"ran": False, "error": f"{type(exc).__name__}: {exc}", "data": None}
+
+
 def catalog(*, include_disabled: bool = True) -> dict[str, Any]:
     """给 `GET /api/plugins` 用的只读目录。
 
@@ -576,7 +605,12 @@ def catalog(*, include_disabled: bool = True) -> dict[str, Any]:
                 "routes": [dict(r) for r in p.routes],
                 "legacyRoutes": [dict(r) for r in p.legacy_routes],
                 "extras": p.extras,
+                # `health` 是**声明**（要跑哪个函数），`healthProbe` 是**这次跑的结果**。
+                # 两个字段都在：只有声明，消费方无法确认探针真的跑过；只有结果，
+                # 出问题时会不知道该去看哪个函数。
                 "health": p.health,
+                # 关掉的能力不跑探针 —— 它连模块都没加载，问它健康没有意义。
+                "healthProbe": probe_health(p) if p.id in on else None,
                 "disableNote": p.disable_note,
             }
         )

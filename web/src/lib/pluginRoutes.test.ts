@@ -78,6 +78,7 @@ function asCatalog(overrides: Record<string, Partial<PluginEntry>> = {}): Plugin
     legacyRoutes: raw.legacy_routes ?? [],
     extras: {},
     health: null,
+    healthProbe: null,
     disableNote: "",
     ...overrides[raw.id],
   }))

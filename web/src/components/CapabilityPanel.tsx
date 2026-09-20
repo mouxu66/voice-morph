@@ -104,6 +104,34 @@ function Switch({
   )
 }
 
+/**
+ * 健康探针的这次结果。
+ *
+ * 后端**不替我们判断 ok**（两个探针形状完全不同，硬凑一个 `ok` 等于替用户下判断），
+ * 所以这里也只把原始快照摊开 —— 这块面板本来就是给排查用的「高级」入口，
+ * 看 `ready=false` / `done=false` 比看一个被猜出来的绿勾有用。
+ */
+function HealthProbe({ probe }: { probe: PluginEntry["healthProbe"] }) {
+  if (!probe) return null
+  if (!probe.ran) {
+    return (
+      <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
+        探针没跑起来：{probe.error}
+      </p>
+    )
+  }
+  const parts = Object.entries(probe.data ?? {})
+    // 空值不摊：否则每行都挂着一串 `rva=null · dll=null · reason=`，噪声盖过信号
+    .filter(([, v]) => v !== null && v !== "" && !(Array.isArray(v) && v.length === 0))
+    .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+  if (!parts.length) return null
+  return (
+    <p className="mt-1 font-mono text-[11px] leading-5 text-muted-foreground">
+      实时状态：{parts.join(" · ")}
+    </p>
+  )
+}
+
 /** 一个能力要装什么 —— 三项都空就不占版面 */
 function Extras({ p }: { p: PluginEntry }) {
   const py = p.extras?.python ?? []
@@ -180,6 +208,8 @@ function CapabilityRow({
       ) : null}
 
       <Extras p={p} />
+
+      <HealthProbe probe={p.healthProbe ?? null} />
 
       {p.disableNote ? (
         <p className="mt-1 text-[11px] leading-5 text-muted-foreground/80">{p.disableNote}</p>

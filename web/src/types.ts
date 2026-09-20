@@ -124,7 +124,15 @@ export interface PluginEntry {
   routes: PluginRoute[];
   legacyRoutes: PluginLegacyRoute[];
   extras: PluginExtras;
+  /** 健康探针的**声明**（要跑哪个函数） */
   health: { module: string; attr: string } | null;
+  /**
+   * 健康探针**这次跑的结果**（第 6 步补上：此前只声明不接线）。
+   * `ran=false` 表示探针自己没跑起来（缺依赖 / 抛异常），`error` 说原因；
+   * **`data` 是原始快照，后端不替你判断 ok** —— 两个探针形状完全不同，
+   * 硬凑一个 `ok` 等于替用户下判断，判断错了比不给更糟。关掉的能力为 `null`。
+   */
+  healthProbe: { ran: boolean; error: string | null; data: Record<string, unknown> | null } | null;
   /** 为什么不能关 / 关了会失去什么 */
   disableNote: string;
 }
