@@ -250,7 +250,7 @@ def _check_pytest(fast: bool) -> tuple[bool, str]:
     # pytest 清理**自己的临时目录**也会中招 → 全量出现随机数量的假红
     # （每次失败的用例都不一样，且报错与被测逻辑无关），单文件跑却全绿。
     # 关掉该 shim 只影响本 pytest 子进程，在用户终端 / CI 上这个变量本就不存在，
-    # 设了也无副作用。详见 .workbuddy/memory/2026-09-06.md 与 §2.31。
+    # 设了也无副作用。详见 .workbuddy-ai/memory/2026-09-06.md 与 §2.31。
     return _run("pytest" + ("(fast)" if fast else ""),
                 [sys.executable, "-m", "pytest", *targets, "-q", "--no-header",
                  *_PYTEST_WERROR],

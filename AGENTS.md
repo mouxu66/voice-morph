@@ -11,10 +11,15 @@
 2. **改动即补测**：每次改动后必须编写或更新相关测试，并在交付给用户前，
    确保所有测试与验证全部通过。
 3. **踩坑必记**：重要决策、环境坑、训练结论写入
-   `D:\变声\.workbuddy\memory\YYYY-MM-DD.md`（跨会话长期结论写入同目录 `MEMORY.md`）。
+   `D:\变声\.workbuddy-ai\memory\YYYY-MM-DD.md`（跨会话长期结论写入同目录 `MEMORY.md`）。
    **可复现、会再犯的坑另写入 `docs\犯错指南.md`**（症状/根因/对策/证据四要素，
    标注 ✅本机实测 / 📚社区库声称 / ❓未验证）。动 `m2_server/wechat_voice.py`
    之前先读该文件。
+
+   > **记忆目录只有这一处**（2026-09-20 已把旧的 `.workbuddy\memory\` 合并进来并删除，
+   > 备份留在 `.workbuddy\memory.bak-20260920-204235\`）。两处都会被 `.gitignore`
+   > 忽略，不进仓库 —— 但 WorkBuddy 的 `Read`/`Write`/`Edit` 对它们**读写正常**
+   > （旧的「一律 BLOCKED」说法已更正，见犯错指南 §8.5）。
 
 ## 可用技能（已装入 `.workbuddy\skills\`）
 
@@ -51,7 +56,7 @@
 ## 备注
 
 - 技能源目录 `agents\skills\` 保留不动（另一个 agent 框架使用）；本项目的可用副本在 `.workbuddy\skills\`。
-- 本文件为轻量版，只钉死"提交 + 测试 + 记录"三条；详细技术结论见 `.workbuddy\memory\MEMORY.md`。
+- 本文件为轻量版，只钉死"提交 + 测试 + 记录"三条；详细技术结论见 `.workbuddy-ai\memory\MEMORY.md`。
 
 ## 桌面端改动如何生效（防误判）
 

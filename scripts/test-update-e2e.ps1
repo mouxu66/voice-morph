@@ -145,7 +145,7 @@ function Invoke-GuestCommand {
               "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $b64)
   if ($NoWait) {
     # Start-Process 把 -ArgumentList 数组拼成命令行字符串时不会自动给含空格参数加引号，
-    # 必须手动加双引号（见 .workbuddy/memory/auto-update.md 第九节坑）。
+    # 必须手动加双引号（见 .workbuddy-ai/memory/auto-update.md 第九节坑）。
     # 注意：Wait 分支用 & @vmArgs（不加引号），两套机制不同，不可统一——
     # 若 Wait 分支也加引号，vmrun 会把引号当成参数的一部分。
     $quotedArgs = $vmArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
@@ -481,7 +481,7 @@ try {
   # 2.5) 清掉 NSIS 安装器残留（installer/elevate）再拉起 app。
   #      /S 安装不 -Wait（NSIS stub 会提前返回），所以这里必须在拉起前显式等它退干净，
   #      否则安装目录里的 exe 可能仍被锁 → app 起来即崩、Chromium 日志 0 字节。
-  #      实测证据见 .workbuddy/memory/auto-update.md 第九节（install-diag.json
+  #      实测证据见 .workbuddy-ai/memory/auto-update.md 第九节（install-diag.json
   #      procsStillRunning=["installer"]）。这是纯防御，不改链路逻辑。
   $clearInstaller = @'
 $names = @('installer', 'elevate', 'Au_')

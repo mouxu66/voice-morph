@@ -414,7 +414,7 @@ powershell -ExecutionPolicy Bypass -File D:\变声\scripts\test-update-e2e.ps1
 | `web/electron/update-ipc.cjs` | 更新 IPC + 启动静默检查 + 启动时清缓存 |
 | `docs/internal/README-vm-test.md` | VM 端到端测试手册（内部：作者本机环境专用） |
 | `scripts/test-update-e2e.ps1` | 端到端自动更新测试 |
-| `.workbuddy/memory/auto-update.md` | 更新链路全部踩坑记录 |
+| `.workbuddy-ai/memory/auto-update.md` | 更新链路全部踩坑记录 |
 
 ## 八、发版检查表（可打印）
 

@@ -60,7 +60,7 @@ npm run build        # = tsc -b && vite build，类型检查 + 打包必须过
 - 桌面端改动：`cd web && npx vite build` 后重启桌面端即生效（无需 sync_backend；asar 重打流程已于 2026-09-13 删除，只有重新分发时才跑 `npm run electron:build`）。
 
 ### 阶段 4 · 合入后
-- 踩坑/决策/环境坑写入 `D:\变声\.workbuddy\memory\YYYY-MM-DD.md`（跨会话长期结论入 `MEMORY.md`）。
+- 踩坑/决策/环境坑写入 `D:\变声\.workbuddy-ai\memory\YYYY-MM-DD.md`（跨会话长期结论入 `MEMORY.md`）。
 - 若本次修复了通用反模式（如静默 except），在记忆里登记以便后续专项清理复用。
 
 ---
@@ -95,7 +95,7 @@ npm run build        # = tsc -b && vite build，类型检查 + 打包必须过
 | 规范化提交 | `git-commit` / `conventional-commit` 技能 |
 | AI 初审 | 会话内调用「火眼眼」专家，附 diff 与 GUIDE |
 | 真正释放磁盘 | `python tools/hard_delete.py --dry-run`（先预览再删） |
-| 踩坑记录 | `D:\变声\.workbuddy\memory\YYYY-MM-DD.md` |
+| 踩坑记录 | `D:\变声\.workbuddy-ai\memory\YYYY-MM-DD.md` |
 
 ---
 

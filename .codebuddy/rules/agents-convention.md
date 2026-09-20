@@ -11,7 +11,7 @@
 2. **改动即补测**：每次改动后必须编写或更新相关测试，并在交付给用户前，
    确保所有测试与验证全部通过。
 3. **踩坑必记**：重要决策、环境坑、训练结论写入
-   `D:\变声\.workbuddy\memory\YYYY-MM-DD.md`（跨会话长期结论写入同目录 `MEMORY.md`）。
+   `D:\变声\.workbuddy-ai\memory\YYYY-MM-DD.md`（跨会话长期结论写入同目录 `MEMORY.md`）。
 
 ## 可用技能（已接 `agents/skills/`，经 `.codebuddy/skills` 链接）
 

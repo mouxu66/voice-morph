@@ -37,5 +37,5 @@
 
 ## 六、收尾
 - [ ] 破坏性清理走 `tools/hard_delete.py`，不依赖 `shutil.rmtree` 真删。
-- [ ] 踩坑/决策已写入 `D:\变声\.workbuddy\memory\YYYY-MM-DD.md`（如适用）。
+- [ ] 踩坑/决策已写入 `D:\变声\.workbuddy-ai\memory\YYYY-MM-DD.md`（如适用）。
 - [ ] PR 描述包含：改了什么、怎么验证、测试结果/截图、遗留 🟡。

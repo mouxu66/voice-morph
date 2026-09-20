@@ -14,7 +14,7 @@
  *     - 模块顶层副作用崩溃
  *   桩加载是**直接验证**：把模块真跑一遍 require，比任何静态扫描都硬。
  *
- * 手法（见 .workbuddy/memory 记录的「electron 桩装配冒烟」）：
+ * 手法（见 .workbuddy-ai/memory 记录的「electron 桩装配冒烟」）：
  *   在 require 之前把 "electron" 解析到一个桩模块，桩里 app.getPath 等全用空实现。
  *   沙箱内起不了真 Electron GUI（Chromium GPU 进程必崩），所以只能这样验主进程代码。
  *
