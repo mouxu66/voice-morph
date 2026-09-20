@@ -194,6 +194,12 @@ export interface DiagnoseInfo {
   all_ok: boolean;
   cuda: boolean;
   items: DiagnoseItem[];
+  /**
+   * 被**跳过**的体检项（第 6 步起）：相关能力全部关掉了，就没必要为它报红
+   * （"没装 RVC 就一片红"会掩盖真问题）。跳过 ≠ 通过，所以原因要一起带出来。
+   * 旧版后端没有这个字段（可选）。
+   */
+  skipped?: { key: string; label: string; reason: string }[];
 }
 
 // 后端预热（/api/system/warmup）：TTS worker / RVC / 微信播放worker 常驻化进度。

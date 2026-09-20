@@ -300,7 +300,78 @@ def test_blocked_by_tells_you_what_to_close_first(client):
     assert "sound.workshop" in by_id["core.voices"]["blockedBy"]
 
 
-# ---------------------------------------------------------------- 6. 变异验证
+# ---------------------------------------------------------------- 6. 体检跟着启用集走
+#
+# 设计稿 §八把这条列为「可关」的收益之三：现在是"没装 RVC 就一片红"，
+# 噪声掩盖真问题。关掉相关能力后，体检不该再为它报红。
+
+
+def test_diagnose_owners_exist_in_the_manifest():
+    """`_DIAGNOSE_OWNERS` 是手工维护的表，会漂 —— 至少钉住「id 都在清单里」。
+
+    写错 id 的症状极坏：那个体检项会**永远**被跳过（没人启用一个不存在的插件），
+    用户永远看不到「缺 RVC」的提示，而界面上是一片绿。
+    """
+    known = _ids()
+    import system_api
+
+    for key, owners in system_api._DIAGNOSE_OWNERS.items():
+        assert owners, f"{key} 的 owner 是空的 —— 那这项永远会被跳过"
+        for pid in owners:
+            assert pid in known, f"{key} 指向不存在的能力 {pid!r}"
+
+
+def _all_optional_off_except_rvc_live():
+    """关掉除「实时变声」外的**全部**可选能力。
+
+    用集合算而不是手写 id 列表：只关 `sound.tts` 关不掉它 —— `sound.audiobook`
+    依赖它，会被"被依赖而保留"拉回来；只关 `sound.workshop` 同理（`sound.ft`/`sound.mine`
+    依赖它）。手写列表会随着清单新增依赖而悄悄失效。
+    """
+    plugin_manifest.write_disabled(
+        {p.id for p in plugin_manifest.load_all() if not p.is_core and p.id != "sound.rvc-live"}
+    )
+
+
+def test_diagnose_skips_items_whose_capabilities_are_all_off(client):
+    _all_optional_off_except_rvc_live()
+    body = client.get("/api/diagnose").json()
+    keys = {i["key"] for i in body["items"]}
+
+    assert "tts_models" not in keys, "输字变声关了，不该再为它的模型报红"
+    assert "torch" not in keys and "cuda" not in keys, "需要 torch 的能力全关了"
+    # 没关的照旧检查（否则这条断言会被"全都跳过"蒙过去）
+    assert "backend" in keys
+    assert "rvc_root" in keys, "实时变声还开着，RVC 整合包仍要检查"
+
+    # 跳过不是"假装通过" —— 原因要原样列出来
+    skipped = {s["key"]: s["reason"] for s in body["skipped"]}
+    assert "tts_models" in skipped
+    assert "sound.tts" in skipped["tts_models"]
+
+
+def test_diagnose_skipping_goes_away_when_nothing_is_disabled(client):
+    """对照：什么都不关时，一项都不该被跳过。"""
+    body = client.get("/api/diagnose").json()
+    assert body["skipped"] == []
+
+
+def test_diagnose_skip_is_driven_by_the_owner_table(monkeypatch, client):
+    """变异：清空 owner 表 → 跳过必须全部消失。
+
+    若「跳过」是靠别的东西实现的（比如写死一份 key 列表），这条不会红，
+    而 owner 表以后改错了也不会有人发现。
+    """
+    import system_api
+
+    monkeypatch.setattr(system_api, "_DIAGNOSE_OWNERS", {})
+    _all_optional_off_except_rvc_live()
+    body = client.get("/api/diagnose").json()
+    assert "tts_models" in {i["key"] for i in body["items"]}
+    assert body["skipped"] == []
+
+
+# ---------------------------------------------------------------- 7. 变异验证
 #
 # 上面所有断言在真代码上都是绿的。要区分"没有违规"与"检查失效"，
 # 必须往真对象里注入真违规，看断言**会不会红**。

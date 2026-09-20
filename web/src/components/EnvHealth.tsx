@@ -251,6 +251,15 @@ export function EnvHealth({ open, onClose }: { open: boolean; onClose: () => voi
                   ),
                 )}
               </div>
+
+              {/* 跳过项必须说出来：否则"体检项变少了"看起来像后端坏了，
+                  而真相是"你关掉了相关能力，所以不用查它" */}
+              {diag.skipped?.length ? (
+                <p className="text-xs leading-5 text-muted-foreground">
+                  {diag.skipped.length} 项未检查（相关能力已关闭）：
+                  {diag.skipped.map((s) => s.label).join("、")}
+                </p>
+              ) : null}
             </div>
           ) : null}
         </div>

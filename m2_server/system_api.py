@@ -166,6 +166,22 @@ def disable_plugin(pid: str):
     return _toggle(pid, False)
 
 
+# 体检项 → 需要它的能力 id。这些能力**全部关掉**时，该项不再报红
+# （设计稿 §八「可关」的第 3 条收益）。
+#
+# ⚠️ 为什么手工维护而不是从清单推导：体检项的 key（`tts_models`）与清单的
+# `extras` 之间没有机器可读的对应关系（一个体检项可能横跨几个 env / 几个包）。
+# 手工表会漂，所以由 `tests/test_plugin_switch.py::test_diagnose_owners_*`
+# 钉住：每个 id 必须在清单里存在，且表里不许出现清单里没有的 key。
+_DIAGNOSE_OWNERS: dict[str, tuple[str, ...]] = {
+    "tts_models": ("sound.tts",),
+    "rvc_root": ("sound.rvc-live", "sound.offline-vc"),
+    "rvc_weights": ("sound.rvc-live",),
+    "torch": ("sound.offline-vc", "sound.audition", "sound.workshop"),
+    "cuda": ("sound.offline-vc", "sound.audition", "sound.workshop"),
+}
+
+
 @router.get("/diagnose")
 def diagnose():
     """环境体检：并行检查本机推理所需的各项依赖，返回勾叉清单。
@@ -342,7 +358,32 @@ def diagnose():
                 }
             )
 
-    return {"all_ok": all(i["ok"] for i in items), "cuda": cuda, "items": items}
+    # ---- 关掉的能力不再体检 ----
+    # 设计稿 §八把这条列为「可关」的收益之一：现在是"没装 RVC 就一片红"，
+    # 噪声掩盖真问题。所以**相关能力全部关掉时**，这项直接不报。
+    # 不报 ≠ 假装通过：跳过的原因原样列进 `skipped`，用户想看还能看到。
+    on = plugin_manifest.enabled_ids()
+    kept: list[dict] = []
+    skipped: list[dict] = []
+    for it in items:
+        owners = _DIAGNOSE_OWNERS.get(it["key"])
+        if owners and not any(o in on for o in owners):
+            skipped.append(
+                {
+                    "key": it["key"],
+                    "label": it["label"],
+                    "reason": "相关能力已关闭：" + "、".join(owners),
+                }
+            )
+            continue
+        kept.append(it)
+
+    return {
+        "all_ok": all(i["ok"] for i in kept),
+        "cuda": cuda,
+        "items": kept,
+        "skipped": skipped,
+    }
 
 
 # ---------------- 存储占用看板（B2） ----------------
