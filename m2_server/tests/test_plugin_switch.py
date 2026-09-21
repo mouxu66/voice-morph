@@ -18,6 +18,13 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
 import plugin_loader
 import plugin_manifest
 import pytest
@@ -460,6 +467,89 @@ def test_409_goes_red_when_the_guard_is_removed(monkeypatch, client):
     """
     monkeypatch.setattr(plugin_manifest, "dependents_of", lambda pid, d=None: [])
     assert client.post("/api/plugins/sound.tts/disable").status_code == 200
+
+
+# ---------------------------------------------------------------- 9. 关了之后，端点真的没了（HTTP 层）
+#
+# 上面第 6 节只钉到 `mount_plan()` 这一层（"清单说跳过"）。而用户/前端感受到的是
+# **HTTP 语义**，两者之间恰好隔着一个坑：最后的 SPA 兜底 `@app.get("/{full_path:path}")`
+# 会吞掉一切没匹配上的 GET 路径，包括 `/api/*`。
+#
+# 2026-09-21 在**已安装副本**上实测：关掉 `sound.rvc-live` 后 `/api/rvc/live/status`
+# 返回 **200 `text/html`**（index.html）。后果比 404 难查得多：前端抛
+# `Unexpected token '<'`（像前端 bug）、Network 里没有红、而验收清单里
+# 「点一下应该 404」那条判据永远不成立。所以必须把断言落到响应上，不是落到内部变量上。
+
+_M2 = Path(plugin_manifest.__file__).resolve().parent
+
+_PROBE = textwrap.dedent(
+    """
+    import json, sys
+    sys.path.insert(0, ".")
+    import plugin_manifest as pm, server
+    from fastapi.testclient import TestClient
+
+    c = TestClient(server.app)
+    result = {
+        "modules": [m for _pid, m in pm.mount_plan()],
+        "mounted": len(server._ROUTER_ORDER),
+        "broken": [r.module for r in server.plugin_loader.broken()],
+    }
+    for path in ("/api/rvc/live/status", "/api/cascade/status", "/api/health"):
+        r = c.get(path)
+        result[path] = [r.status_code, r.headers.get("content-type", "").split(";")[0]]
+    print("RESULT " + json.dumps(result))
+    """
+)
+
+
+def _boot_and_probe(out_dir: Path, disabled: str | None) -> dict:
+    """在独立子进程里真启动一次后端并探几个端点（挂载发生在 import 时，没得兼）。"""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if disabled:
+        (out_dir / "plugins.json").write_text(
+            json.dumps({"disabled": [disabled]}), encoding="utf-8"
+        )
+    env = {
+        **os.environ,
+        "PYTHONIOENCODING": "utf-8",
+        "VM_WARMUP": "0",
+        "VM_BACKEND_AUTOSYNC": "0",
+        "VM_OUTPUTS_DIR": str(out_dir),
+    }
+    proc = subprocess.run(
+        [sys.executable, "-c", _PROBE],
+        cwd=str(_M2),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert proc.returncode == 0, f"后端没起来：\n{proc.stderr[-1500:]}"
+    line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")), None)
+    assert line, f"探针没打出结果：\n{proc.stdout}\n{proc.stderr}"
+    return json.loads(line[len("RESULT ") :])
+
+
+def test_a_disabled_capability_endpoint_is_gone_at_the_http_level(tmp_path):
+    """A/B：同一段脚本、只差一个状态文件 —— 关掉的能力端点必须 404 + JSON。"""
+    on = _boot_and_probe(tmp_path / "on", None)
+    off = _boot_and_probe(tmp_path / "off", "sound.rvc-live")
+
+    assert on["broken"] == [] and off["broken"] == []
+    # A 侧：干净启动时这两个模块真在挂载计划里（否则 B 侧的"消失了"是废话）
+    assert {"rvc_live", "cascade"} <= set(on["modules"])
+    assert not {"rvc_live", "cascade"} & set(off["modules"]), "关了却还在挂载计划里"
+    assert off["mounted"] == on["mounted"] - 2
+
+    assert on["/api/rvc/live/status"] == [200, "application/json"]
+    for path in ("/api/rvc/live/status", "/api/cascade/status"):
+        assert off[path] == [404, "application/json"], (
+            f"{path} 关掉后应当是 404 + JSON，实际 {off[path]} —— "
+            "如果是 200 text/html，就是被 SPA 兜底吞了（前端只会看到 `Unexpected token '<'`）"
+        )
+    assert on["/api/health"] == off["/api/health"] == [200, "application/json"]
 
 
 def test_400_goes_red_when_core_is_no_longer_protected(monkeypatch, client):

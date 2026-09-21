@@ -215,6 +215,20 @@ if _web_dist is not None:
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def _spa(full_path: str):
+        # `/api/*` 与 `/v1/*` **不是**前端路由，绝不允许兜到 SPA 首页。
+        #
+        # 2026-09-21 在已安装副本上实测到的：关掉一个能力 → 它的端点不再挂载 →
+        # 本该 404，实际却是 `200 text/html`（index.html 被当成响应发回去）。
+        # 后果比 404 难查得多：前端 `jsonFetch` 抛 `Unexpected token '<'`（看着像
+        # 前端 bug），Network 面板里连红都没有，而验收清单里「点一下应该 404」那条
+        # 判据**永远不成立** —— 一条测不出自己目标的判据比没有判据更坏。
+        # 顺带也修掉一个更早就存在的问题：拼错任何 `/api/...` 路径都返回 200 HTML。
+        # `/v1` 是 OpenAI 兼容面（`openai_compat` 的 prefix），同理。
+        if full_path.startswith(("api/", "v1/")):
+            return JSONResponse(
+                status_code=404,
+                content={"detail": f"无此接口: /{full_path}（路径可能拼错，或其所属能力已被关闭）"},
+            )
         web_root = _web_dist.resolve()
         cand = (_web_dist / full_path).resolve()
         # is_relative_to 而非字符串 startswith：后者会放行同前缀的兄弟目录
