@@ -257,4 +257,95 @@ function section(name) {
   done();
 }
 
-process.stdout.write("\n[smoke] 全部通过 ✓（生产路径已门控，更新检查双入口 dev 守卫）\n");
+// ---- 12. 数据根（用户状态放哪）+ 旧位置迁移 ----
+// 2026-09-21 实测的坑：安装版曾经用「root 下有 media 吗」当探针，而 media/voicebank
+// 是后端自己运行时创建的 ⇒ 跑过一次后探针永远为真，数据根翻转到安装目录，用户数据
+// 从此写在 resources/backend 里（随版本覆盖 = 更新即丢）。实测证据：安装目录的
+// outputs/market 的 mtime 就是操作当天，而 %APPDATA%\voice-morph-desktop\outputs 是空的。
+{
+  const done = section("数据根: 安装版固定 userData / 源码模式不动 / 迁移只补不改不删");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "vm-dataroot-"));
+  const rootWithMedia = path.join(tmp, "install", "backend");
+  fs.mkdirSync(path.join(rootWithMedia, "media", "voicebank"), { recursive: true });
+
+  // A. ★核心：安装版即使 root 自带 media，也必须把用户状态放 userData
+  isPackaged = true;
+  assert.strictEqual(
+    backend.resolveDataRoot(rootWithMedia),
+    userDataDir,
+    "安装版的数据根必须是 userData —— root 下有 media 不能把用户数据钉在安装目录里",
+  );
+  // 旧规则确实会返回 root ⇒ 两者不同 ⇒ 会触发迁移（这就是要迁的原因）
+  assert.strictEqual(backend.legacyDataRoot(rootWithMedia), rootWithMedia);
+  assert.notStrictEqual(backend.resolveDataRoot(rootWithMedia), backend.legacyDataRoot(rootWithMedia));
+
+  // B. 源码模式：root 自带 media → 数据留在仓库里（工具/测试都指着它）
+  isPackaged = false;
+  assert.strictEqual(backend.resolveDataRoot(rootWithMedia), rootWithMedia);
+  assert.strictEqual(backend.legacyDataRoot(rootWithMedia), rootWithMedia, "源码模式新旧规则相同 ⇒ 不迁移");
+
+  // C. media 子目录名单冻结：只迁用户产出的三个，别顺手把仓库素材（assets 等）搬走
+  assert.deepStrictEqual(
+    [...backend.USER_MEDIA_SUBDIRS].sort(),
+    ["clips", "raw_videos", "voicebank"],
+    "USER_MEDIA_SUBDIRS 变了？整体拷 media 会把仓库素材一起搬走",
+  );
+
+  // D. 迁移：旧 outputs 有文件 + 新位置空 → 拷齐并记账
+  const legacy = path.join(tmp, "legacy");
+  const fresh = path.join(tmp, "fresh");
+  fs.mkdirSync(path.join(legacy, "outputs", "market"), { recursive: true });
+  fs.writeFileSync(path.join(legacy, "outputs", "plugins.json"), '{"disabled":["sound.tts"]}\n');
+  fs.writeFileSync(path.join(legacy, "outputs", "market", "a.pth"), "x".repeat(100));
+  fs.mkdirSync(path.join(legacy, "media", "voicebank", "kangaroo"), { recursive: true });
+  fs.writeFileSync(path.join(legacy, "media", "voicebank", "kangaroo", "ref.wav"), "riff");
+  fs.mkdirSync(path.join(legacy, "media", "assets"), { recursive: true });
+  fs.writeFileSync(path.join(legacy, "media", "assets", "builtin.png"), "not-user-data");
+
+  const mig1 = backend.migrateLegacyData(legacy, fresh);
+  assert.strictEqual(mig1.status, "migrated");
+  assert.strictEqual(mig1.files, 2, "outputs 下两个文件都应拷过去");
+  assert.ok(fs.existsSync(path.join(fresh, "outputs", "market", "a.pth")));
+  assert.strictEqual(
+    fs.readFileSync(path.join(fresh, "outputs", "plugins.json"), "utf-8"),
+    '{"disabled":["sound.tts"]}\n',
+    "能力开关必须跟着搬（否则用户会以为开关被重置了）",
+  );
+  assert.ok(
+    fs.existsSync(path.join(fresh, "media", "voicebank", "kangaroo", "ref.wav")),
+    "音色参考是用户数据，要迁",
+  );
+  assert.ok(
+    !fs.existsSync(path.join(fresh, "media", "assets")),
+    "media/assets 不是用户数据，不该被搬走",
+  );
+  assert.ok(fs.existsSync(path.join(legacy, "outputs", "market", "a.pth")), "**只拷不删**：旧位置必须原样保留");
+
+  // E. 再跑一次：有记账 → 不重跑
+  const mig2 = backend.migrateLegacyData(legacy, fresh);
+  assert.strictEqual(mig2.status, "skipped");
+  assert.match(mig2.reason, /迁移记录/);
+
+  // F. 目标已有用户数据 → 不覆盖（只记一条「已跳过」）
+  const legacy2 = path.join(tmp, "legacy2");
+  const used = path.join(tmp, "used");
+  fs.mkdirSync(path.join(legacy2, "outputs"), { recursive: true });
+  fs.writeFileSync(path.join(legacy2, "outputs", "old.json"), "{}");
+  fs.mkdirSync(path.join(used, "outputs"), { recursive: true });
+  fs.writeFileSync(path.join(used, "outputs", "new.json"), '{"fresh":true}');
+  const mig3 = backend.migrateLegacyData(legacy2, used);
+  assert.strictEqual(mig3.status, "skipped");
+  assert.strictEqual(fs.readFileSync(path.join(used, "outputs", "new.json"), "utf-8"), '{"fresh":true}');
+  assert.ok(!fs.existsSync(path.join(used, "outputs", "old.json")), "新位置已有数据就不该把旧的掺进去");
+  assert.ok(fs.existsSync(path.join(used, "outputs", backend.MIGRATE_MARKER)), "跳过也要记账，否则每次启动都重算");
+
+  // G. 同一个根 / 缺参数 都是 no-op
+  assert.strictEqual(backend.migrateLegacyData(fresh, fresh).status, "skipped");
+  assert.strictEqual(backend.migrateLegacyData("", fresh).status, "skipped");
+
+  isPackaged = false;
+  fs.rmSync(tmp, { recursive: true, force: true });
+  done();
+}
+
+process.stdout.write("\n[smoke] 全部通过 ✓（生产路径已门控，更新检查双入口 dev 守卫，数据根门控+迁移）\n");

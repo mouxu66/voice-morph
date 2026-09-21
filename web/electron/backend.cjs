@@ -230,17 +230,150 @@ function killProcessTree(pid) {
 }
 
 /**
- * 数据目录：安装版后端代码位于 resources 下（只读、随版本覆盖），
- * media/outputs 等用户数据必须放到可写位置。
- * 优先级：开发目录自带 media > 历史数据目录 D:\变声 > userData。
- * 通过 VM_MEDIA_DIR / VM_OUTPUTS_DIR 传给后端（m2_server/config.py 已支持）。
+ * 数据目录：放**用户状态**，通过 `VM_MEDIA_DIR` / `VM_OUTPUTS_DIR` 传给后端
+ * （`m2_server/config.py` 已支持）。里面是：
+ *   outputs/ —— 音色市场下载、桌宠皮肤、能力开关（`plugins.json`）、历史、试听/导出产物
+ *   media/   —— 用户上传的原始素材、切片、音色参考（voicebank）
+ *
+ * ⚠️ 2026-09-21 实测到的坑：这里曾经用「root 下有 media 吗」当探针，而
+ * `media/voicebank/` 是**后端自己**在运行时创建的 ⇒ 安装版跑过一次之后探针永远为真，
+ * 数据根从 userData 翻转到**安装目录**，用户数据从此写在 `resources/backend/` 里
+ * （那段目录随版本整体覆盖 = 更新即丢）。实测证据：`resources/backend/outputs/market`
+ * 的 mtime 就是当天（用户的操作写进了安装目录），而 `%APPDATA%\voice-morph-desktop\outputs`
+ * 停在第一次启动那天、是空的。**判据不能由被测系统自己制造。**
+ *
+ * 现在的规则：
+ *   · 安装版（app.isPackaged）→ 一律 `userData`；安装目录只放代码（只读、随版本覆盖）。
+ *   · 源码模式 → 保持原样：root 自带 media 就用 root（开发数据留在仓库里，工具/测试都指着它），
+ *     否则 D:\变声 有 media 就用它，再否则 userData。
  */
 const LEGACY_ROOT = "D:\\变声";
 
 function resolveDataRoot(root) {
+  if (app.isPackaged) return app.getPath("userData");
   if (fs.existsSync(path.join(root, "media"))) return root;
   if (fs.existsSync(path.join(LEGACY_ROOT, "media"))) return LEGACY_ROOT;
   return app.getPath("userData");
+}
+
+/**
+ * **旧版规则**下的数据根 —— 迁移来源。
+ *
+ * 与 `resolveDataRoot` 的老实现逐字一致：它回答的是「这台机器上旧版本把数据写哪儿了」，
+ * 所以不跟着新规则变。注意它可能指向**安装目录自身**（旧探针被后端自己创建的文件骗真时）。
+ */
+function legacyDataRoot(root) {
+  if (fs.existsSync(path.join(root, "media"))) return root;
+  if (fs.existsSync(path.join(LEGACY_ROOT, "media"))) return LEGACY_ROOT;
+  return app.getPath("userData");
+}
+
+//: 迁移完成的记账文件（放在目标 outputs/ 里）。名字不匹配任何存储清理目标（只清 *.wav / *.log），
+//: 所以不会被 `/system/storage` 的清理顺手删掉、导致迁移反复重跑。
+const MIGRATE_MARKER = ".migrated-from-legacy.json";
+//: 旧数据根里属于**用户**的 media 子目录。整体拷 media 会把 665MB 的仓库素材一起搬走，
+//: 所以只认这三个「用户产出的」目录。
+const USER_MEDIA_SUBDIRS = ["voicebank", "clips", "raw_videos"];
+
+/** 递归统计文件数与字节数（迁移报告用）。 */
+function _treeStats(dir) {
+  let files = 0;
+  let bytes = 0;
+  const walk = (d) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else {
+        files += 1;
+        try {
+          bytes += fs.statSync(p).size;
+        } catch {}
+      }
+    }
+  };
+  walk(dir);
+  return { files, bytes };
+}
+
+/** 递归复制（**只补不改**：目标已存在的文件一律不覆盖）。返回新增文件数。 */
+function _copyTree(src, dst) {
+  let copied = 0;
+  fs.mkdirSync(dst, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, e.name);
+    const d = path.join(dst, e.name);
+    if (e.isDirectory()) copied += _copyTree(s, d);
+    else if (!fs.existsSync(d)) {
+      fs.copyFileSync(s, d);
+      copied += 1;
+    }
+  }
+  return copied;
+}
+
+/**
+ * 数据根换位置时的一次性迁移：把旧数据根里的用户数据**拷**到新数据根。
+ *
+ * 三条刻意的规则：
+ *   ① **只拷不删** —— 迁移失败、拷一半、用户想反悔，原件都还在；
+ *   ② **目标已有用户数据就不动**（否则会把用户在新版本里生成的数据盖掉），只记一条
+ *      「已跳过」的记账；
+ *   ③ **记账文件存在就永不重跑** —— 否则每次启动都会重算一遍目录树。
+ *
+ * 返回 `{status: "migrated"|"skipped"|"nothing", ...}`，调用方只用来打日志。
+ */
+function migrateLegacyData(legacyRoot, dataRoot) {
+  if (!legacyRoot || !dataRoot) return { status: "skipped", reason: "参数缺失" };
+  const from = path.resolve(legacyRoot);
+  const to = path.resolve(dataRoot);
+  if (from === to) return { status: "skipped", reason: "新旧数据根相同" };
+
+  const marker = path.join(to, "outputs", MIGRATE_MARKER);
+  if (fs.existsSync(marker)) return { status: "skipped", reason: "已有迁移记录" };
+
+  const srcOutputs = path.join(from, "outputs");
+  const dstOutputs = path.join(to, "outputs");
+  const existing = fs.existsSync(dstOutputs) ? _treeStats(dstOutputs).files : 0;
+  if (existing > 0) {
+    const result = { status: "skipped", reason: "目标已有数据（不覆盖）", from, files: existing };
+    _writeMarker(marker, result);
+    return result;
+  }
+  if (!fs.existsSync(srcOutputs)) return { status: "nothing", reason: "旧数据根里没有 outputs/" };
+
+  const before = _treeStats(srcOutputs);
+  const copied = _copyTree(srcOutputs, dstOutputs);
+  const media = [];
+  for (const sub of USER_MEDIA_SUBDIRS) {
+    const s = path.join(from, "media", sub);
+    if (!fs.existsSync(s)) continue;
+    const target = path.join(to, "media", sub);
+    if (fs.existsSync(target) && _treeStats(target).files > 0) continue; // 新位置已有 → 不动
+    media.push({ sub, files: _copyTree(s, target) });
+  }
+  const result = {
+    status: "migrated",
+    from,
+    at: new Date().toISOString(),
+    files: copied,
+    bytes: before.bytes,
+    media,
+  };
+  _writeMarker(marker, result);
+  return result;
+}
+
+function _writeMarker(marker, result) {
+  try {
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, JSON.stringify(result, null, 2), "utf-8");
+  } catch {}
 }
 
 /**
@@ -372,6 +505,25 @@ async function startBackend(root) {
 
   let spawnError = "";
   const dataRoot = resolveDataRoot(root);
+  // 安装版的数据根从「安装目录」换成了 userData：把旧位置里的用户数据**拷**过去。
+  // 只补不改、只拷不删，失败也不阻塞启动（那会比丢数据更糟）。
+  const legacy = legacyDataRoot(root);
+  if (legacy !== dataRoot) {
+    try {
+      const mig = migrateLegacyData(legacy, dataRoot);
+      const line = `[data] 数据根 ${legacy} → ${dataRoot}：${mig.status} ${JSON.stringify(mig)}\n`;
+      console.log(line.trim());
+      try {
+        logStream.write(line);
+      } catch {}
+    } catch (err) {
+      const line = `[data] 迁移失败（不影响启动）：${err && err.message}\n`;
+      console.log(line.trim());
+      try {
+        logStream.write(line);
+      } catch {}
+    }
+  }
   backendProc = spawn(python, [serverPy], {
     cwd: path.join(root, "m2_server"),
     env: buildBackendEnv(root, dataRoot),
@@ -580,6 +732,10 @@ module.exports = {
   externalResourceEnv,
   buildBackendEnv,
   resolveDataRoot,
+  legacyDataRoot,
+  migrateLegacyData,
+  MIGRATE_MARKER,
+  USER_MEDIA_SUBDIRS,
   backendHealthy,
   waitForBackend,
   portInUse,
