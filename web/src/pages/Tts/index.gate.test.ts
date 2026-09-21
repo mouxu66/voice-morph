@@ -37,7 +37,7 @@ describe("TtsRoute 的 tab 门控", () => {
 
   it("hook 必须无条件调用（React 规则），显隐只发生在 tabs 数组里", () => {
     // 三行 hook 调用彼此相邻且在同一个函数体内（不在条件分支里）
-    const calls = indexSrc.search(/const tts = useTts\(\)\n  const book = useAudiobook\(bookOn\)\n  const wechat = useWechatSend\(wechatOn\)/)
+    const calls = indexSrc.search(/const tts = useTts\(\)\n {2}const book = useAudiobook\(bookOn\)\n {2}const wechat = useWechatSend\(wechatOn\)/)
     expect(calls).toBeGreaterThanOrEqual(0)
     expect(indexSrc).toContain("const tts = useTts()")
   })
