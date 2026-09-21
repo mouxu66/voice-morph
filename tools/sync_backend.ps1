@@ -91,7 +91,7 @@ function Sync-Dir {
         # 只有镜像这两条没排（副本 121MB 里几乎全是这两块）。
         if ($rel -match '(^|\\)(__pycache__|\.pytest_cache|\.git|node_modules|\.venv|tests|desktop-control)(\\|$)') { return }
         # pycache / 日志 / 备份 / 临时
-        if ($rel -match '(__pycache__|\.pyc$|\.pyo$|\.log$|\.bak$|\.tmp$)') { return }
+        if ($rel -match '(__pycache__|\.pyc$|\.pyo$|\.log$|\.bak$|\.tmp$|\.coverage$)') { return }
         $dest = Join-Path $Dst $rel
         $destDir = Split-Path -Parent $dest
         if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }

@@ -25,6 +25,8 @@ def _make_src(root: Path) -> None:
     (root / "m2_server" / "__pycache__").mkdir()
     (root / "m2_server" / "__pycache__" / "server.cpython-312.pyc").write_bytes(b"\x00")
     (root / "m2_server" / "server.log").write_text("log\n", encoding="utf-8")
+    # pytest 的覆盖率数据（`--cov` 写 cwd）：git 忽略了、两条镜像规则 2026-09-21 才补上
+    (root / "m2_server" / ".coverage").write_bytes(b"SQLite format 3\x00")
     (root / "tools").mkdir()
     (root / "tools" / "doctor.py").write_text("print('doctor')\n", encoding="utf-8")
     (root / "web" / "dist").mkdir(parents=True)
@@ -50,6 +52,8 @@ def test_first_sync_copies_and_excludes(dev_root):
     assert (tgt / "m2_server" / "server.py").read_text(encoding="utf-8").startswith("print")
     assert not (tgt / "m2_server" / "__pycache__").exists()
     assert not list(tgt.rglob("*.log"))
+    # 覆盖率产物不该跟着副本走：它既不是代码，也不该出现在「生产代码零漂移」的账上
+    assert not (tgt / "m2_server" / ".coverage").exists()
 
 
 def test_no_change_is_zero_op(dev_root):

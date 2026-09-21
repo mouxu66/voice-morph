@@ -100,9 +100,10 @@
         "to": "backend/m2_server",
         "filter": [
           "**/*",
-          "!**/__pycache__/**",
-          "!**/*.pyc",
-          "!**/tests/**"
+        "!**/__pycache__/**",
+        "!**/*.pyc",
+        "!**/tests/**",
+        "!**/.coverage"
         ]
       },
       {

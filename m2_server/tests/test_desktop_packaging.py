@@ -218,6 +218,19 @@ def test_m2_server_filter_keeps_bundled_rvc_texts(extras):
     assert (ROOT / "m2_server" / "data" / "rvc_texts.txt").is_file()
 
 
+def test_m2_server_filter_excludes_pytest_coverage(extras):
+    """pytest 的覆盖率数据（`.coverage`：`--cov` 写 cwd）不该进包。
+
+    2026-09-21 实测：`m2_server/.coverage`（52KB 的 SQLite）被 git 忽略，却被
+    **两条镜像规则与这条打包 filter 一起漏掉** —— 于是它会跟着 extraResources 进
+    安装包，也把「生产代码零漂移」的账多算出一条假漂移。
+    同一件事写在三处（autosync / sync_backend.ps1 / 这里）就必须三处都改。
+    """
+    entry = extras["backend/m2_server"]
+    assert _excluded(entry, ".coverage"), "m2_server 的 filter 没排掉 pytest 的 .coverage"
+    assert _excluded(entry, "__pycache__/server.cpython-311.pyc")
+
+
 @pytest.mark.parametrize(
     "rel",
     [

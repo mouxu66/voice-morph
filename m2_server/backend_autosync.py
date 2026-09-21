@@ -45,7 +45,11 @@ _EXCLUDE_DIRS = {
     "tests",
     "desktop-control",
 }
-_EXCLUDE_SUFFIX = (".pyc", ".pyo", ".log", ".bak", ".tmp")
+# `.coverage`：pytest 的覆盖率数据文件（`--cov` 默认写 cwd）。git 早就忽略它
+# （`.gitignore:85`），但两处镜像规则没写，于是 2026-09-21 实测它被算成「副本缺失」的
+# 漂移项、且**会进安装包**（`m2_server` 那条 extraResources filter 也没排它）——
+# 一个 JSON 里的二进制覆盖率库没必要跟着用户走。
+_EXCLUDE_SUFFIX = (".pyc", ".pyo", ".log", ".bak", ".tmp", ".coverage")
 
 # (源相对路径, 副本内目标名)——tools 同步进副本供安装版"运行环境体检"使用
 _SYNC_PAIRS: list[tuple[str, str]] = [
