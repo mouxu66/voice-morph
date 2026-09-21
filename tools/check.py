@@ -511,7 +511,13 @@ def _check_electron_load() -> tuple[bool, str]:
     node = shutil.which("node")
     if node is None:
         return False, "未找到 node（需要 Node.js）"
-    return _run("electron-load", [node, str(script)], ROOT)
+    ok, note = _run("electron-load", [node, str(script)], ROOT)
+    if not ok:
+        return ok, note
+    # 追加：已安装 app.asar 与源码主进程的陈旧审计（有装包才跑，没装则 SKIP）。
+    # 为什么挂在这步：它审的就是 electron/*.cjs 这批文件，而三条同步链路都碰不到 asar ——
+    # 源码往前走、包内主进程停在构建那天，除了这道审计没有任何门禁会报红。
+    return _run("asar-freshness", [node, str(ROOT / "tools" / "audit_asar_freshness.cjs")], ROOT)
 
 
 #: 项目自带的 PS 静态体检脚本（语法 / 吞换行 / 必填参数 / BOM）
