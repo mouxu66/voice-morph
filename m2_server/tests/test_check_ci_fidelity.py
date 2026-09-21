@@ -131,10 +131,25 @@ def test_ci_fidelity_is_not_a_default_step(check):
     而不是把它排除在外。同日又多了 `nodetest` 与 `ps1lint`（前者复刻"CI 不装 npm 依赖"，
     后者体检 scripts/*.ps1）；两者都不进 --fast，由 pre-push / CI 兜底。
     改这个集合时**两边都要动**，别只改一边做成假绿。
+
+    2026-09-21 又多了 `gate` 与 `ownership`，两者都进 --fast：
+    * `gate` = `audit_endpoint_ownership.py --check`（约 0.4s）：核心路由页裸渲染可关
+      组件 → 关掉插件后用户点出 404。缺口藏在共享组件调用链里，整页自己不调一个 API，
+      **人肉 review 追不住**（09-21 实际漏过一次）。
+    * `ownership` = `audit_plugin_deps.py --ownership-only`（约 2s）：每个 first-party
+      模块都得有归属，红的是"死代码还是漏接"必须有人做决定。症状同样是零。
+    两者与 `licenses` 同类：**漏了就补不回来 / 事后才发现**，所以都进 pre-commit。
+
+    ⚠️ 本用例只在**全量**跑（不在 `FAST_TESTS` 里）—— 也就是说改了 `STEPS`
+    集合后 `--fast` 是绿的、`pre-push`/CI 才红。2026-09-21 就是这样：`gate`
+    与 `ownership` 两次提交各自只跑了 `--fast`，直到全量才发现这条没同步。
+    改 `STEPS` 请顺手跑一次全量（或至少 `pytest m2_server/tests/test_check_ci_fidelity.py`）。
     """
     assert "ci-fidelity" not in check.STEPS
     assert set(check.STEPS) == {
         "licenses",
+        "gate",
+        "ownership",
         "requires",
         "electron",
         "ps1lint",
