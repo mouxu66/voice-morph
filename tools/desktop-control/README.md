@@ -88,8 +88,27 @@ $DC -Action type -ArgsFile /tmp/args.json
   ① 有人显式 `-Out` 指回仓库；② 本地磁盘上还有历史遗留的旧产物。
 - 真的需要把产物放进仓库时用 `-Out D:\变声\tools\desktop-control\out`，但**别忘了它可能被提交**。
 
+**收尾（2026-09-21 已完成）**：工作树里那份历史遗留产物已**移出**工作树 ——
+`tools/desktop-control/out/`（48 个文件 / 90MB，全是全分辨率截图与动作 JSON）
+挪到了库外 `D:/tmp/dc-out-residue-20260921/`。此前 09-21 重写历史时另有一份
+全量备份在 `D:/tmp/dc-out-backup/out/`（87 个文件 / 95MB，**多出**那 39 个已从工作树
+移除的 jpg 与 `_clip.txt`）。两份都在库外，逐字节核对过一致。
+
+于是 `tools/desktop-control/` 现在**只有源码**（`dc.ps1` / `cdp.py` / `pet.py` / 本文件），
+一条命令即可确认：
+
+```bash
+git ls-files tools/desktop-control/    # 只应列出上面这 4 个文件
+ls tools/desktop-control/              # 不该再出现 out/
+```
+
+这样「工作树里存在桌面截图」这件事本身被消除了，不再依赖 `.gitignore` 兜住 ——
+按 §8.22 的说法：靠纪律不如靠结构。那个 ignore 规则**保留**，因为 `-Out` 指回仓库
+这条口子还在，且它成本为零。
+
 > ⚠️ 隐私红线不变：截图是**真实桌面**，`%TEMP%` 也不是保险箱（同机其他进程可读）。
 > 用完就删（`Remove-Item "$env:TEMP\desktop-control\*"`）；要长期留证请先裁剪/模糊。
+> 库外那两份归档同理 —— 它们只是「移走」不是「销毁」，按上面同一条红线处理。
 
 ## 已知边界（别指望它）
 

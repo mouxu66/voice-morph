@@ -141,3 +141,84 @@ def test_readme_documents_temp_outdir():
     assert "TEMP" in readme or "Temp" in readme, (
         "README 没说明产物现在落在 %TEMP%\\desktop-control"
     )
+
+
+# ------------------------------------------ 第 4 层：残留不能回来（2026-09-21） ----
+#
+# 前三层管的是「新产物不再落进工作树」。但工作树里还**留着**一份历史遗留产物
+# （`tools/desktop-control/out/`，48 个全分辨率截图，90MB）。2026-09-21 已把它
+# 移到库外 `D:/tmp/dc-out-residue-20260921/`（另有全量备份 `D:/tmp/dc-out-backup/out/`，
+# 多出那 39 个早先从工作树移除的 jpg 与 `_clip.txt`）；两份都逐字节核对过一致。
+#
+# 于是 `tools/desktop-control/` 现在只有源码。下面把「源码目录里不该有产物」
+# 钉成结构判据 —— 这才是真正的修法（按犯错指南 §8.22：靠纪律不如靠结构）。
+# 光有 gitignore 是「纪律型」防护：它只在有人正确使用 git 时才生效。
+
+
+def _tracked_under(rel: str) -> list[str]:
+    """git 跟踪的、位于 rel 目录下的文件（相对仓库根）。"""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--", rel],
+            cwd=str(_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover —— 没 git 就跳过判断
+        pytest.skip("跑不了 git ls-files（非 git 工作树？）")
+    if out.returncode != 0:
+        pytest.skip(f"git ls-files 失败：{out.stderr.strip()[:200]}")
+    return [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+
+
+def test_no_screenshots_tracked_in_desktop_control():
+    """★ 工作树里不许**跟踪**任何桌面控制产物。
+
+    这条比 gitignore 更强：ignore 只影响 `git add .`，而 `git add -f`、
+    改过的 ignore 规则、或别的工具都可能把截图塞进来。这里是直接问 git
+    「你到底跟踪了哪些」—— 与 ignore 规则是否写对无关。
+    """
+    tracked = _tracked_under("tools/desktop-control")
+    assert tracked, "git ls-files 一个文件都没返回 —— 路径写错了吗？"
+    bad = [
+        f
+        for f in tracked
+        if not f.endswith((".md", ".ps1", ".py", ".cjs"))
+    ]
+    assert bad == [], (
+        f"tools/desktop-control/ 下跟踪了产物类文件（截图/JSON/文本 dump）：{bad}\n"
+        f"这些是真实桌面截图，仓库是公开的。产物应落在工作树外（默认 %TEMP%），"
+        f"历史残留见本文件末段注释。"
+    )
+
+
+def test_out_dir_absent_from_work_tree():
+    """★ `out/` 目录不该存在 —— 它存在就等于工作树里躺着一堆桌面截图。
+
+    红了的修法：把它移出工作树（`mv tools/desktop-control/out <库外路径>`），
+    别就地删 —— 那是证据/备份，先移走再决定。若你**故意**用 `-Out` 指回了仓库，
+    用完请一并移走：README 已写明这条口子的代价。
+    """
+    out = _ROOT / "tools" / "desktop-control" / "out"
+    if not out.exists():
+        return
+    residue = sorted(p.name for p in out.iterdir())
+    assert not residue, (
+        f"工作树里又出现了桌面截图产物：tools/desktop-control/out/ 有 {len(residue)} 个文件"
+        f"（如 {residue[:3]}）。\n"
+        f"请移出工作树：mv tools/desktop-control/out D:/tmp/dc-out-residue-<日期>/"
+    )
+
+
+def test_readme_records_the_residue_is_out_of_work_tree():
+    """README 必须记下「残留已移出工作树」这件事与库外位置。
+
+    没有这条，下一个人看到 `out/` 不见了会以为被误删，或者重新把它建回来。
+    """
+    text = _README.read_text(encoding="utf-8")
+    assert "收尾（2026-09-21 已完成）" in text, "README 没记这次收尾"
+    for token in ("dc-out-residue-20260921", "dc-out-backup"):
+        assert token in text, f"README 没写明库外路径 {token!r} —— 归档找不到等于丢了"
