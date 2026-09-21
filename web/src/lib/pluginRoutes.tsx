@@ -23,7 +23,7 @@
  * 3. **图标在清单里是字符串**（`"Home"`），要经下面那张**静态**注册表映射回组件。
  *    不能用 `import * as icons from "lucide-react"` —— 那会把一千多个图标全打进包里。
  */
-import { lazy, useCallback, useEffect, useState, type ComponentType, type LazyExoticComponent } from "react"
+import { lazy, useCallback, useEffect, useSyncExternalStore, type ComponentType, type LazyExoticComponent } from "react"
 import { AudioLines, Home, Library, Mic2, PawPrint, Radio, Speech, Wrench, type LucideIcon } from "lucide-react"
 import { getPlugins } from "@/api/client"
 import type { PluginCatalog, PluginEntry } from "@/types"
@@ -207,66 +207,117 @@ export type CatalogState =
   | { status: "ready"; catalog: PluginCatalog }
   | { status: "error"; message: string }
 
-let cached: PluginCatalog | null = null
-let inflight: Promise<PluginCatalog> | null = null
+/**
+ * 首次失败后的自动重试预算。
+ *
+ * 后端是主进程 spawn 的，而窗口**不等它**就 loadFile 了（`main.cjs` 里
+ * `startBackend()` 只负责 spawn，不 waitForBackend），所以前端的第一次
+ * `/api/plugins` 会赶在端口 bind 之前发出去 —— **失败是常态，不是异常**。
+ * App 里的 health / voices 靠 5s 轮询自愈，清单没道理要用户手点「重试」。
+ * 预算用完（约 60s，够后端冷启动）就停下，把按钮留给用户，不无限打后端。
+ */
+export const CATALOG_RETRY = { delayMs: 2000, max: 30 } as const
 
-function loadCatalog(): Promise<PluginCatalog> {
-  if (cached) return Promise.resolve(cached)
-  // 合并并发请求：`App` 与 `StudioNav` 都会调这个 hook，不该发两次
-  inflight ??= getPlugins()
-    .then((c) => {
-      cached = c
-      return c
+/**
+ * 清单状态是**模块级单例**，不是每个组件各存一份 —— 这是踩过的坑。
+ *
+ * 以前 cache 是模块级的、state 却是各组件自己的 `useState`，于是「主区域点重试」
+ * 只让点按钮那个实例重新拉：`reload()` 清了 cache 也填上了 cache，但别的实例的
+ * `useEffect` 不重跑、谁也不会再去读，于是**永远停在 error**。
+ * 症状（2026-09-21 用户截图）：主区域已经恢复正常，左侧导航却一直是一句
+ * 「读不到能力清单，导航暂不可用」——看起来像这个应用根本没接插件。
+ *
+ * 所以状态本身必须是共享的：所有消费者订阅同一份，谁 reload 都全体恢复。
+ * 改动前请先看 `pluginRoutes.catalog.test.tsx`（那两条 ★ 就是钉这件事的）。
+ */
+let state: CatalogState = { status: "loading" }
+let inflight: Promise<void> | null = null
+let retryTimer: ReturnType<typeof setTimeout> | null = null
+let retriesLeft = CATALOG_RETRY.max
+const listeners = new Set<() => void>()
+
+function setState(next: CatalogState): void {
+  state = next
+  for (const notify of listeners) notify()
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+  }
+}
+
+/** `useSyncExternalStore` 要求「状态没变就返回同一个引用」—— state 只在变化时换对象。 */
+function getState(): CatalogState {
+  return state
+}
+
+function clearRetryTimer(): void {
+  if (retryTimer !== null) {
+    clearTimeout(retryTimer)
+    retryTimer = null
+  }
+}
+
+/** 失败后按预算自动再来一次（后端冷启动那几秒不该要用户手点）。 */
+function scheduleRetry(): void {
+  if (retryTimer !== null || retriesLeft <= 0) return
+  retriesLeft -= 1
+  retryTimer = setTimeout(() => {
+    retryTimer = null
+    loadCatalog()
+  }, CATALOG_RETRY.delayMs)
+}
+
+/** 拉一次清单。并发合并（App 与 StudioNav 同时挂载只发一次请求）；
+ *  成功/失败都写进共享 state，所有消费者一起更新。 */
+function loadCatalog(): void {
+  if (state.status === "ready" || inflight) return
+  inflight = getPlugins()
+    .then((catalog) => {
+      retriesLeft = CATALOG_RETRY.max
+      clearRetryTimer()
+      setState({ status: "ready", catalog })
+    })
+    .catch((e: unknown) => {
+      setState({ status: "error", message: e instanceof Error ? e.message : String(e) })
+      scheduleRetry()
     })
     .finally(() => {
       inflight = null
     })
-  return inflight
 }
 
-/** 清缓存 —— **只给测试用**（真实进程里清单在一个会话内不变）。 */
+/** 清缓存并重开一轮预算 —— 给 `reload()` 与测试用（真实进程里清单在一个会话内不变）。 */
 export function resetCatalogCache(): void {
-  cached = null
+  clearRetryTimer()
+  retriesLeft = CATALOG_RETRY.max
   inflight = null
+  setState({ status: "loading" })
 }
 
 /**
- * 读一次能力清单（模块级缓存，全会话只发一次请求）。
+ * 读能力清单（模块级单例，全会话共享一份状态）。
  *
- * 失败时返回 `status: "error"` 而**不是**静默降级成空清单 —— 空清单会让界面变成
+ * 失败时是 `status: "error"` 而**不是**静默降级成空清单 —— 空清单会让界面变成
  * 「一个导航项都没有、所有路由都不存在」的样子，用户只会看到白屏而不知道后端出了问题。
  * 所以由调用方把这个状态显式渲染出来，并给一个重试入口。
+ *
+ * ⚠️ 别把 state 改回组件自己的 `useState`：那样 `reload()` 只能救点按钮的那个实例，
+ * 其余消费者（侧栏、页面里的门控）会永远停在 error。
  */
 export function usePluginCatalog(): { state: CatalogState; reload: () => void } {
-  const [state, setState] = useState<CatalogState>(
-    cached ? { status: "ready", catalog: cached } : { status: "loading" },
-  )
-  const [nonce, setNonce] = useState(0)
+  const snapshot = useSyncExternalStore(subscribe, getState, getState)
 
   useEffect(() => {
-    if (cached) {
-      setState({ status: "ready", catalog: cached })
-      return
-    }
-    let alive = true
-    setState({ status: "loading" })
     loadCatalog()
-      .then((c) => {
-        if (alive) setState({ status: "ready", catalog: c })
-      })
-      .catch((e: unknown) => {
-        if (!alive) return
-        setState({ status: "error", message: e instanceof Error ? e.message : String(e) })
-      })
-    return () => {
-      alive = false
-    }
-  }, [nonce])
+  }, [])
 
   const reload = useCallback(() => {
     resetCatalogCache()
-    setNonce((n) => n + 1)
+    loadCatalog()
   }, [])
 
-  return { state, reload }
+  return { state: snapshot, reload }
 }
