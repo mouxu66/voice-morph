@@ -576,10 +576,12 @@ def test_manifest_attaches_local_images():
     with_img = [i for i in items if i.get("image")]
     assert with_img, "精选清单应有配图条目"
     assert all(i["image"].startswith("/api/market/image/") for i in with_img)
-    # 懒羊羊双源条目各自命中（URL 按 voice_id，不带扩展名）
+    # 懒羊羊双源条目各自命中（URL 路径按 voice_id，不带扩展名）
+    # 注：URL 还带 `?v=<size>-<mtime_ns>` 内容指纹（见 market_images.image_url），
+    # 所以这里比对 path 部分 —— 指纹正是让"换图后浏览器不拿 24h 旧缓存"生效的东西。
     by_vid = {i["voice_id"]: i for i in items}
-    assert by_vid["lanyangyang"]["image"].endswith("/lanyangyang")
-    assert by_vid["katoong_lanyangyang"]["image"].endswith("/katoong_lanyangyang")
+    assert by_vid["lanyangyang"]["image"].split("?")[0].endswith("/lanyangyang")
+    assert by_vid["katoong_lanyangyang"]["image"].split("?")[0].endswith("/katoong_lanyangyang")
 
 
 def test_api_market_image_serves_and_guards():

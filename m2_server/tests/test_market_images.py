@@ -31,10 +31,32 @@ def test_local_image_path_priority(img_dirs):
 
 
 def test_image_url_shape(img_dirs):
+    """URL 形状：voice_id 归一化小写 + 带内容指纹（?v=size-mtime）。"""
     mi, cache, _ = img_dirs
     (cache / "kiki.png").write_bytes(b"x")
-    assert mi.image_url("KIKI") == "/api/market/image/kiki"  # voice_id 归一化小写
+    url = mi.image_url("KIKI")
+    base, _, stamp = url.partition("?")
+    assert base == "/api/market/image/kiki"          # voice_id 归一化小写
+    assert stamp.startswith("v=") and stamp != "v="  # 指纹非空
     assert mi.image_url("ghost") is None
+
+
+def test_image_url_stamp_changes_with_content(img_dirs):
+    """★ 内容一变，指纹必须跟着变。
+
+    这是"远程图库换图能立刻可见"的唯一保障：配图端点带
+    `Cache-Control: max-age=86400`，URL 不含指纹的话，作者推了新图、
+    客户端也同步到了，Chromium 仍会拿旧图顶 24h（端口固定 → 源不变）。
+    """
+    mi, cache, _ = img_dirs
+    f = cache / "kiki.png"
+    f.write_bytes(b"old-content")
+    first = mi.image_url("kiki")
+    f.write_bytes(b"new-content-much-longer")   # 换图（大小与 mtime 都变）
+    second = mi.image_url("kiki")
+    assert first != second, "换图后 URL 未变 → 浏览器会继续用 24h 缓存的旧图"
+    # 内容不变则 URL 稳定，24h 缓存照旧生效（不白白重复传输）
+    assert mi.image_url("kiki") == second
 
 
 def test_sync_remote_disabled(img_dirs, monkeypatch):

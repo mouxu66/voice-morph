@@ -7,6 +7,10 @@
      （随安装包分发，作为出厂默认）
   3. 都没有        前端按分类配色 + 首字母占位（image 字段缺省）
 
+返回给前端的 URL 带内容指纹（`?v=<size>-<mtime>`，见 `image_url()`）——
+配图端点是 `Cache-Control: max-age=86400`，没有指纹的话"换图"要等 24h 才可见，
+远程图库那套「推文件即更新」的设计就废了。
+
 远程图库（业界做法：Modrinth icon_url / CurseForge thumbnail / GitHub 图床+CDN 缓存）：
   图源中心化、客户端零配置——默认图库 repo 内置（mouxu66/voice-market-assets，public），
   所有用户桌面端启动/刷新市场时自动经 jsdelivr 同步；作者换图 = 往仓库推文件。
@@ -87,10 +91,32 @@ def local_image_path(voice_id: str) -> Path | None:
 
 
 def image_url(voice_id: str) -> str | None:
-    """有本地配图则返回 /api 相对路径（前端过 mediaUrl 转绝对），否则 None。"""
-    if local_image_path(voice_id) is None:
+    """有本地配图则返回 /api 相对路径（前端过 mediaUrl 转绝对），否则 None。
+
+    带 `?v=<size>-<mtime_ns>` 内容指纹，**这是远程图库能生效的前提**：
+    `market_api.market_image()` 返回 `Cache-Control: public, max-age=86400`，
+    而 URL 原本只含 voice_id —— 于是「作者推新图 → 客户端同步到新图」之后，
+    Chromium 仍会拿缓存里那份旧图顶 **24 小时**（后端端口固定 8000，
+    源与 URL 都没变），图库「换图即生效」的承诺直接失效。
+    带上指纹后：文件一变 URL 就变 → 缓存自然失效；文件没变则 URL 稳定、
+    24h 缓存照旧生效（省掉重复传输）。
+
+    指纹用 size+mtime 而不是内容哈希：列表接口一次要算 30 条，
+    读内容（约 300KB）会让每次 `/api/market` 都多一轮磁盘 IO；
+    stat 是免费的，而 size+mtime 对"换图"这件事足够敏感。
+    """
+    path = local_image_path(voice_id)
+    if path is None:
         return None
-    return f"{API_PREFIX}/market/image/{str(voice_id).strip().lower()}"
+    vid = str(voice_id).strip().lower()
+    try:
+        st = path.stat()
+        # 用 mtime_ns 而不是 int(mtime)：后者截断到秒，"同一秒内换成同样大小的图"
+        # 会得到同一个指纹（NTFS 的精度是 100ns，白白丢掉）
+        stamp = f"?v={st.st_size:x}-{st.st_mtime_ns:x}"
+    except OSError:
+        stamp = ""      # stat 失败不该让整条列表挂掉；退回无指纹（仍是合法 URL）
+    return f"{API_PREFIX}/market/image/{vid}{stamp}"
 
 
 def sync_remote(force: bool = False) -> dict:
