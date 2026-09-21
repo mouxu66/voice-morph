@@ -285,7 +285,11 @@ powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
   ⚠️ `torch` / `torchaudio` **必须从 CUDA 索引装**（脚本已内置）——直接 `pip install torch`
   会装成 CPU 版，症状是"能跑但不用显卡"（静默失效，不报错）。
 - 应用启动后若后端没起来，会弹窗说明原因并指向 `tools\` 下的脚本，不会只给你一个空界面。
-- 后端运行日志：`%APPDATA%\<应用名>\backend.log`。
+- 后端运行日志：`%APPDATA%\voice-morph-desktop\backend.log`（安装版与源码模式共用这一个目录）。
+- **用户数据在 `%APPDATA%\voice-morph-desktop\` 下**：`outputs\`（音色市场、桌宠皮肤、能力开关 `plugins.json`、试听产物）
+  与 `media\`（参考音、切片、素材）。安装目录只放代码 —— 换版本不会碰这两处（2026-09-21 起，
+  更早的版本把 `outputs\` 写在安装目录里，会被更新连带替换；首次启动会自动迁移，见
+  `docs/分发与打包说明.md` §七）。
 
 可选能力各自独立，缺了不影响其它功能：
 
@@ -451,7 +455,8 @@ python m2_server/server.py
 - **日志即 `stdout`**。`m2_server` 顶层 66 个模块里，9 个用 `logging`、16 个直接 `print()`，
   全仓**没有** `logging.basicConfig`。原因是后端以**子进程**形态被 Electron 托管：
   `backend.cjs` 捕获它的 stdout/stderr，转发到主进程控制台并落盘到
-  `%APPDATA%\变声工坊\backend.log`（`app.getPath("userData")` 下）。再加一层级别开关
+  `%APPDATA%\voice-morph-desktop\backend.log`（`app.getPath("userData")` 下 —— 目录名取包内
+  `package.json` 的 `name`，不是 `productName` 的"变声工坊"）。再加一层级别开关
   只有配置成本、没有收益。
 - 因此直接 `python m2_server/server.py` 时，日志就是你的终端输出，**没有 `--log-level` 可调**。
 - 子任务的独立日志落在 `outputs/` 下：级联变声 `outputs/cascade_run.log`、
