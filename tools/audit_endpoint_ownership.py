@@ -577,6 +577,17 @@ def load_baseline() -> set[str]:
 
 
 def main() -> int:
+    # 输出编码不是装饰（2026-09-21 实测）：Windows 下 stdout 被**重定向**时（管道/文件 ——
+    # pytest 的子进程、CI 日志、`> out.txt` 都是）按 ANSI(cp936) 编码，而本文件要打印的
+    # `⚠️` / `✓` / `✗` 是 GBK **之外**的字 → UnicodeEncodeError。
+    # 症状极具误导性：**判定其实通过，退出码却是 1**（门禁假红），且报告只打了一半
+    # （崩在第 615 行，后面的章节全丢了）。控制台直连时不触发（走 WriteConsoleW），
+    # 所以它只在重定向/子进程里现形。真切不了也无所谓，不该因编码设置失败而挂掉。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true", help="门禁模式：有未登记的问题就 exit 1")
     ap.add_argument("--json", action="store_true", help="输出 JSON")

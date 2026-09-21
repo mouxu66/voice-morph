@@ -327,6 +327,13 @@ def run_pipeline_tool(args: dict, client_get, client_post, client_post_form) -> 
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 输出编码不是装饰：Windows 下 stdout 被重定向（管道/文件）时按 ANSI(cp936) 编码，
+    # 而流水线进度里的 `✓`/`⚠️` 在 GBK 之外 → UnicodeEncodeError + 进度断掉。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
     ap = argparse.ArgumentParser(
         description="素材→切片→质检→建音色→训练集 无人值守流水线")
     ap.add_argument("--file", action="append", default=[],

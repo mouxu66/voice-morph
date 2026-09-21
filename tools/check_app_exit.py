@@ -93,6 +93,13 @@ def port_listening(port: int) -> bool:
 
 
 def main() -> int:
+    # 输出编码不是装饰：Windows 下 stdout 被重定向（管道/文件）时按 ANSI(cp936) 编码，
+    # 而本文件要打印的 `✓`/`✗` 在 GBK 之外 → UnicodeEncodeError + 报告断掉。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
     if "--no-close" in sys.argv:
         pids, wins = app_pids(), app_windows()
         print(f"进程 {len(pids)} 个: {pids}")

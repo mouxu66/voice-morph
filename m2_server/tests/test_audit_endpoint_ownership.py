@@ -255,6 +255,13 @@ def test_check_mode_exit_code_matches_findings(ao):
         [sys.executable, str(TOOLS / "audit_endpoint_ownership.py"), "--check"],
         capture_output=True,
         text=True,
+        # **必须显式钉 encoding**（同 test_githooks._run）：这个工具的报告里有 `⚠️`/`✓`
+        # 等 GBK 之外的字，它自己会把 stdout reconfigure 成 UTF-8；父进程若按
+        # locale(cp936) 解，就是 `UnicodeDecodeError: 'gbk' codec can't decode byte 0xaa`
+        # —— 2026-09-21 实测：`tools/check.py`（全量）在 Windows 上恒红，`--fast` 却绿
+        # （FAST_TESTS 里没有本文件），所以没人发现。
+        encoding="utf-8",
+        errors="replace",
         cwd=str(ROOT),
     )
     assert proc.returncode == expected, (

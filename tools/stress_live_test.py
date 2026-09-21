@@ -609,6 +609,13 @@ def run_ramp(exp: str):
 
 
 def main():
+    # 输出编码不是装饰：Windows 下 stdout 被重定向（管道/文件）时按 ANSI(cp936) 编码，
+    # 而压力测试报告里的 `✓`/`⚠️` 在 GBK 之外 → UnicodeEncodeError + 报告断掉。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--exp", default=RVC_EXP)
     ap.add_argument("--only", choices=list(PROFILES) + [None], default=None)

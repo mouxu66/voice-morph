@@ -532,6 +532,16 @@ def _print_third_party(rep: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 输出编码不是装饰（2026-09-21 实测）：Windows 下 stdout 被**重定向**时（管道/文件 ——
+    # pytest 的子进程、CI 日志、`> out.txt` 都是）按 ANSI(cp936) 编码，而本文件要打印的
+    # `⚠️` / `✅` / `❌` 是 GBK **之外**的字 → UnicodeEncodeError，报告在「共用模块」
+    # 那一段（第 481 行）当场断掉。控制台直连时不触发（走 WriteConsoleW），所以它只在
+    # 重定向/子进程里现形。真切不了也无所谓，不该因编码设置失败而挂掉。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
     ap = argparse.ArgumentParser(description="插件可选依赖 + 模块归属审计")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--verbose", "-v", action="store_true", help="列出每个插件的完整第三方闭包 / 独占模块")

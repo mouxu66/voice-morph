@@ -411,6 +411,11 @@ def test_ownership_gate_exit_code():
         [sys.executable, str(_TOOLS / "audit_plugin_deps.py"), "--json"],
         capture_output=True,
         text=True,
+        # 同 test_audit_endpoint_ownership：子进程的输出编码由**它自己**决定
+        # （这个工具会把 stdout reconfigure 成 UTF-8），父进程必须跟着钉 UTF-8，
+        # 否则 `text=True` 按 locale(cp936) 解 UTF-8 的中文 JSON 会 UnicodeDecodeError。
+        encoding="utf-8",
+        errors="replace",
         cwd=str(_ROOT),
     )
     assert proc.returncode == expected, f"--json 退出码 {proc.returncode} 与判定 {expected} 不一致"

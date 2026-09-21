@@ -94,6 +94,14 @@ def hard_delete(path: str | Path, dry_run: bool = False) -> int:
 
 
 def main() -> int:
+    # 输出编码不是装饰：Windows 下 stdout 被重定向（管道/文件）时按 ANSI(cp936) 编码，
+    # 而本文件要打印的 `✓` 等符号在 GBK 之外 → UnicodeEncodeError + 删到一半就断掉
+    # （「哪些删了」的账最不该丢）。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     dry = "--dry-run" in sys.argv[1:]
     if not args or "--help" in sys.argv[1:] or "-h" in sys.argv[1:]:

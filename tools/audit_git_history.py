@@ -394,6 +394,14 @@ def _waivable(n_secret: int, n_head: int) -> bool:
 
 
 def main() -> int:
+    # 输出编码不是装饰：Windows 下 stdout 被重定向（管道/文件）时按 ANSI(cp936) 编码，
+    # 而本文件要打印的 `⚠️` 等符号在 GBK 之外 → UnicodeEncodeError + 报告断掉。
+    # 控制台直连时不触发（走 WriteConsoleW），所以只在重定向/子进程里现形。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
     ap = argparse.ArgumentParser(description="扫 git 全历史的凭据、机器指纹与第三方素材名")
     ap.add_argument("--verbose", action="store_true", help="打印命中的上下文片段")
     ap.add_argument("--allow-history-only", action="store_true",

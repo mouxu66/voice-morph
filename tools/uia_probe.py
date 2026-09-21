@@ -348,6 +348,13 @@ def find_controls(hwnd, keywords, max_depth=25):
 
 
 def main():
+    # 输出编码不是装饰：Windows 下 stdout 被重定向（管道/文件）时按 ANSI(cp936) 编码，
+    # 而探针输出里的 `⚠️` 等符号在 GBK 之外 → UnicodeEncodeError + 报告断掉。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--scan-only", action="store_true", help="只读 dll 文件，不碰微信进程")
     ap.add_argument("--activate", action="store_true", help="写内存热激活（谨慎）")

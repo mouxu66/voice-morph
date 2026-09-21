@@ -49,12 +49,19 @@ def _run_py(code: str, tmp_out: Path, extra_path: str = "") -> subprocess.Comple
     parts = [extra_path, str(M2)] if extra_path else [str(M2)]
     env["PYTHONPATH"] = os.pathsep.join(parts)
     env["VM_OUTPUTS_DIR"] = str(tmp_out)  # 不碰真实 outputs/
+    # 子进程的输出编码由环境**双向钉死**：不钉的话，它按 locale（Windows=cp936）吐字节，
+    # 而这里按 locale 解 —— 看着总能跑通，直到有人在 UTF-8 模式下跑（`tools/check.py`
+    # 就给子进程设了 `PYTHONIOENCODING=utf-8`），于是解码侧炸在
+    # `UnicodeDecodeError: 'gbk' codec can't decode byte 0xad`（2026-09-21 实测）。
+    env["PYTHONIOENCODING"] = "utf-8"
     return subprocess.run(
         [sys.executable, "-c", code],
         cwd=str(M2),
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=300,
     )
 
