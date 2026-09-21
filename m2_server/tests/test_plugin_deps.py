@@ -278,3 +278,139 @@ def test_requirements_parser_skips_comments_and_flags(tmp_path):
         encoding="utf-8",
     )
     assert apd._requirements(req) == {"dotenv", "uvicorn"}
+
+
+# ============================ first-party 模块归属（2026-09-21 补） ============================
+#
+# 上面管的是「要装什么包」；这一段管「关掉插件 X 到底会卸载哪些自家模块」。
+#
+# 为什么值得单独钉：插件化的卖点是「不需要的能力可以关掉」，但**关掉之后省掉了什么**
+# 一直没人能答。`rvc_common` 被 9 个插件拉进去，`common` / `qwen3_tts` 十几个人人要用——
+# 只看 plugin.json 完全看不出来，只能现场读 import 图。
+#
+# 三种归属的含义完全不同，混淆的代价是实打实的：
+#   · **独占**：关掉那个插件它就真不加载了 → 才适合写进「省掉什么」。
+#   · **共用**：关谁都关不掉。若有人把它当某插件的私产、写进「关掉时跳过加载」的
+#     清单，另一个插件立刻断链 —— 这就是「关谁会断链」的答案。
+#   · **无人可达**：死代码或开发工具，必须显式登记，否则下一个人分不清是"故意的"
+#     还是"漏接了"。
+
+
+@pytest.fixture(scope="module")
+def ownership():
+    return apd.analyze_ownership(plugin_manifest.load_all())
+
+
+def test_ownership_partitions_are_disjoint(ownership):
+    """三类归属必须互斥且不重叠 —— 重叠了说明闭包算错了（曾踩过：把插件 seeds
+    也算进 always_on，闭包被吞掉，共用 19→0、独占 30）。"""
+    shared = set(ownership["shared"])
+    exclusive = set(ownership["exclusive"])
+    always_on = set(ownership["always_on"])
+    assert not (shared & exclusive), f"既共用又独占：{shared & exclusive}"
+    assert not (shared & always_on), f"既共用又是基建：{shared & always_on}"
+    assert not (exclusive & always_on), f"既独占又是基建：{exclusive & always_on}"
+
+
+def test_always_on_is_small(ownership):
+    """`always_on` 是「不经过任何插件 router 就能从入口到达」的模块，必须很小。
+
+    它一旦变大（比如把插件 seeds 也算进去），`per_plugin` 里的一切都会被扣光，
+    报告会退化成「共用 0 个」这种看似干净、实则什么都没说的状态。
+    """
+    assert len(ownership["always_on"]) <= 12, (
+        f"运行时基建有 {len(ownership['always_on'])} 个，像是又混进了插件闭包："
+        f"{ownership['always_on']}"
+    )
+    assert "server" in ownership["always_on"]
+    assert "plugin_loader" in ownership["always_on"]
+
+
+def test_shared_modules_exist(ownership):
+    """共用模块不该为空 —— 全空就意味着判据又退化了（见上一条）。"""
+    assert len(ownership["shared"]) >= 5, f"共用模块只剩 {len(ownership['shared'])} 个，判据可疑"
+    # 这些是结构性的，几乎不可能变成独占
+    for must in ("common", "rvc_common"):
+        assert must in ownership["shared"], f"{must} 应被多个插件共用，却不在共用表里"
+
+
+def test_every_module_has_ownership(ownership):
+    """★ 门禁：每个 first-party 模块都必须有归属（插件闭包 / 运行时基建 / 已登记）。
+
+    红了的修法：确认该模块的用途 —— 是开发工具就加进 `ORPHAN_OK`（带 kind 与理由）；
+    确实是遗留死代码就删掉。**不要**用「加个空白名单」糊过去。
+    """
+    assert ownership["unregistered"] == [], (
+        f"这些模块没人可达也没登记：{ownership['unregistered']}\n"
+        f"分不清是死代码还是漏接 —— 见 tools/audit_plugin_deps.py 的 ORPHAN_OK。"
+    )
+
+
+def test_no_stale_orphan_registrations(ownership):
+    """登记的条目必须真的还在「无人可达」里。
+
+    这条是防「登记表变成摆设」：模块被重新接上之后条目还留着，下次真出现问题时
+    会误以为"已经处理过了"。实测靠它删掉了 5 条过期的手写子进程登记。
+    """
+    assert ownership["stale_orphan_entries"] == [], (
+        f"这些已不再是孤儿（被谁引用了），请从 ORPHAN_OK 删掉："
+        f"{ownership['stale_orphan_entries']}"
+    )
+
+
+def test_orphan_kinds_are_known(ownership):
+    """`kind` 只允许四种值 —— 顺带把分类口径钉住，防止有人塞个 "other" 糊过去。"""
+    allowed = {"devtool", "test-infra", "dead"}
+    for mod, rec in ownership["orphan_ok"].items():
+        assert rec["kind"] in allowed, f"{mod} 的 kind={rec['kind']!r} 不在 {allowed} 里"
+        assert rec["why"].strip(), f"{mod} 没写理由 —— 登记表要能回答「为什么它不进插件闭包」"
+
+
+def test_subprocess_entries_are_attributed(ownership):
+    """★ 子进程入口的归属必须是**算出来的**，不靠手写。
+
+    `import` 图看不见子进程依赖（`Path(__file__).parent / "x.py"`），所以这 5 个
+    入口曾经全是「没人管」。现在由「源码里出现 `"x.py"` 字面量」这条边自动归属：
+    谁起它，就属于谁。这条用例就是钉住「这条边还存在」——
+    哪天有人把 `SCORE_PY = ...` 改成别种写法，这里会红，提示登记表要补回去。
+    """
+    per_plugin = ownership["per_plugin"]
+    # 试音间评分器：只有 sound.audition 起它
+    assert "audition_score" in per_plugin["sound.audition"], (
+        "audition_score 没被归属到 sound.audition —— 子进程引用的检测边失效了？"
+    )
+    assert "cascade_stream" in per_plugin["sound.rvc-live"], "cascade_stream 应归 sound.rvc-live"
+    assert "qwen3_tts_service" in per_plugin["sound.tts"], "TTS worker 应归 sound.tts"
+    # 它们都不该出现在「无人可达」里
+    for m in ("audition_score", "cascade_stream", "offline_vc_infer", "qwen3_tts_service"):
+        assert m not in ownership["unowned"], f"{m} 又被当成孤儿了 —— 检测边退化"
+
+
+def test_script_refs_detects_path_constants(tmp_path, monkeypatch):
+    """子进程引用检测本身：`Path(__file__).parent / "worker.py"` 要能认出来。"""
+    (tmp_path / "worker.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "caller.py").write_text(
+        'from pathlib import Path\n'
+        'WORKER = Path(__file__).resolve().parent / "worker.py"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(apd, "_SOURCE_ROOTS", (tmp_path,))
+    assert apd._script_refs("caller") == {"worker"}, "没认出子进程入口的路径常量"
+    # 反向：不存在的名字不该被当成模块
+    (tmp_path / "other.py").write_text('P = "nope.py"\n', encoding="utf-8")
+    assert apd._script_refs("other") == set()
+
+
+def test_ownership_gate_exit_code():
+    """`main()` 的退出码要跟着 `ok` 走 —— 门禁靠它，不能恒 0。"""
+    import subprocess
+
+    rep = apd.analyze()
+    expected = 0 if rep["ok"] else 1
+    proc = subprocess.run(
+        [sys.executable, str(_TOOLS / "audit_plugin_deps.py"), "--json"],
+        capture_output=True,
+        text=True,
+        cwd=str(_ROOT),
+    )
+    assert proc.returncode == expected, f"--json 退出码 {proc.returncode} 与判定 {expected} 不一致"

@@ -425,6 +425,25 @@ def _unhide_node_modules(hidden) -> None:
             _say(f"[nodetest] ✗ 手工执行：mv {NODE_MODULES_HIDDEN} web/node_modules")
 
 
+def _check_ownership() -> tuple[bool, str]:
+    """first-party 模块归属门禁：每个 `m2_server/*.py` 都得有归属。
+
+    「归属」= 被某个插件的 router 闭包可达 / 是运行时基建 / 已登记在 `ORPHAN_OK`。
+    没有归属的模块只有两种可能，**两种都要人做决定**：
+      · 死代码（重构后没人引用了）—— 该删；
+      · 开发工具（人手动跑的验收脚本）—— 该登记，否则下一个人分不清是哪种。
+
+    为什么进 fast：这类腐烂**零症状**。删掉最后一处 import 时不会有任何报错，
+    模块就那么躺着；等半年后有人 grep 到它、以为还能用，才发现早就断了。
+    约 2s（主要是 plugin_manifest 的 import 成本），换来的是「归属表不会悄悄过期」
+    —— 工具还会报「已不再是孤儿」的过期登记，逼着把登记表也擦干净。
+    """
+    script = ROOT / "tools" / "audit_plugin_deps.py"
+    if not script.exists():
+        return False, "未找到 tools/audit_plugin_deps.py"
+    return _run("ownership", [sys.executable, str(script), "--ownership-only"], ROOT)
+
+
 def _check_endpoint_ownership() -> tuple[bool, str]:
     """能力门控门禁：核心页不许**裸渲染**可关插件的组件/面板。
 
@@ -522,6 +541,7 @@ def _check_ps1_lint() -> tuple[bool, str]:
 STEPS = {
     "licenses": lambda fast: _check_licenses(),
     "gate": lambda fast: _check_endpoint_ownership(),
+    "ownership": lambda fast: _check_ownership(),
     "requires": lambda fast: _check_requires(),
     "electron": lambda fast: _check_electron_load(),
     "ps1lint": lambda fast: _check_ps1_lint(),
@@ -758,9 +778,12 @@ def main(argv: list[str] | None = None) -> int:
     # nodetest 不进 fast：8 个 node 进程的启动开销就 3.5s，而 pre-commit 只有 8s 预算 ——
     # 让钩子变慢，人就该开始绕过它了。全量 / pre-push / CI 都会跑。
     names = [n.strip() for n in args.only.split(",") if n.strip()] or [
-        # gate 紧跟 licenses：也是"漏了就补不回来"的那类（用户点一下 404 才知道），
-        # 且同样是纯本地文本解析（约 0.2s），所以进 fast。
-        "licenses", "gate", "requires", "electron", "ps1lint", "ruff", "nodetest", "pytest", "web"
+        # gate / ownership 紧跟 licenses：三者的共同点是**漏了就零症状**——
+        # 许可漏登记要等分发才违规；门控漏挂要等用户点出 404；模块丢归属要等半年后
+        # 有人误用早已断掉的代码。都属于「只能在那一次提交拦住」的类别，故进 fast。
+        # 成本：gate 约 0.5s、ownership 约 2.5s（大头是 plugin_manifest 的 import）。
+        "licenses", "gate", "ownership", "requires", "electron", "ps1lint",
+        "ruff", "nodetest", "pytest", "web"
     ]
     if args.fast:
         names = [n for n in names if n not in ("web", "nodetest", "ps1lint")]
