@@ -20,6 +20,7 @@ import contextlib
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # 仅为下方字符串注解提供类型名，运行时零开销
@@ -57,6 +58,108 @@ class RvcEngine:
     pth: str
 
 
+def diagnose_pth(pth: str) -> str:
+    """说清「这个权重文件为什么不可用」—— 不靠 torch 的报错文案。
+
+    由来（2026-09-21）：本机 `auto_rb` 音色报「PyTorch 2.6 weights_only」，
+    于是被记成「PyTorch 版本问题」。实测真因是**文件本身不是权重**：
+    它正好是 `tests/test_market_search_install.py` 的夹具
+    （`b"\\x80\\x02" + os.urandom(512*1024-2)`，512KiB 随机数据 + 两个假魔数字节），
+    大概率是某次测试没隔离掉 `RVC_ROOT` 把它写进了真实 `D:/RVC`。
+    `weights_only=False` 同样加载不了 —— 但 torch 的报错**主动建议**改用
+    `weights_only=False`，把人往「安全设置挡了路」的方向带偏。
+
+    所以这里做的是**结构判读**（不反序列化、不执行任何代码，故对不可信文件安全）：
+      · `PK` 开头  → torch 1.6+ 的 zip 容器：能开且含 `data.pkl` 才算像样
+      · `\\x80` 开头 → 旧版 pickle 流：用 pickletools 走前缀，早期就非法即非权重
+      · 其它      → 根本不是 PyTorch 存档（多半下到了错误页面）
+    """
+    import zipfile
+
+    p = Path(pth)
+    try:
+        size = p.stat().st_size
+    except OSError as exc:
+        return f"文件读不到：{exc}"
+    try:
+        head = p.read_bytes()[:4]
+    except OSError as exc:
+        return f"文件读不到：{exc}"
+
+    prefix = f"{size:,} 字节"
+    if head[:2] == b"PK":
+        try:
+            with zipfile.ZipFile(p) as z:
+                names = z.namelist()
+        except zipfile.BadZipFile as exc:
+            return f"{prefix}；zip 容器已损坏（{exc}）—— 多半是下载不完整"
+        if any(n.endswith("data.pkl") for n in names):
+            return f"{prefix}；zip 容器可读且含 data.pkl —— 张量数据本身可能损坏"
+        return f"{prefix}；zip 容器可读但**没有 data.pkl**（顶层条目：{names[:4]}）—— 不是权重文件"
+
+    if head[:1] == b"\x80":
+        import pickletools
+
+        try:
+            with open(p, "rb") as f:
+                for i, _op in enumerate(pickletools.genops(f)):
+                    if i >= 2000:  # 只看前缀：state dict 可能很大，没必要走完
+                        return f"{prefix}；pickle 流前缀合法（损坏可能在深处）"
+        except Exception as exc:  # noqa: BLE001 —— pickletools 抛什么都有可能
+            return (
+                f"{prefix}；pickle 流在**早期就非法**"
+                f"（{type(exc).__name__}: {exc}）—— 不是完整的权重文件"
+            )
+        return f"{prefix}；pickle 流前缀合法（损坏可能在深处）"
+
+    return f"{prefix}；文件头 {head[:2]!r} 既不是 zip(PK) 也不是 pickle(\\x80) —— 多半下到了错误页面"
+
+
+def load_checkpoint(pth: str, torch) -> object:
+    """加载 RVC 权重，并把失败原因翻译成**可行动**的话。
+
+    ★ 刻意保留 `weights_only=True`：实测本机**所有真实** RVC 权重
+    （`assets/pretrained/*.pth`、`logs/kangaroo_v2/*.pth`、`logs/katoong_*/*.pth`）
+    在 `weights_only=True` 下都能正常加载，键为 `weight/config/info/version/sr`。
+    也就是说这个安全设置**不挡任何正常模型**，只挡「文件根本不是权重」。
+    所以正确的修法是**说清原因**，而不是照 torch 的报错建议去关掉它 ——
+    关掉之后既救不了损坏文件，又给第三方 ckpt 的 `__reduce__` 载荷开了门
+    （音色市场的权重来自公网，正是威胁模型）。
+    """
+    try:
+        cpt = torch.load(pth, map_location="cpu", weights_only=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"RVC 权重加载失败：{pth}\n"
+            f"  结构判读：{diagnose_pth(pth)}\n"
+            f"  原始错误：{type(exc).__name__}: {str(exc).splitlines()[0][:200]}\n"
+            f"  这**不是 PyTorch 版本问题**：torch 的报错会建议你改用 "
+            f"`weights_only=False`，但本项目刻意不允许 —— 实测所有正常 RVC 权重"
+            f"都能在 weights_only=True 下加载，加载不了说明文件本身不是权重。\n"
+            f"  处理：确认该音色文件完整（多半需删除后从音色市场重装）。"
+        ) from exc
+
+    # 形状校验：真 RVC 音色 ckpt 是 dict 且含 weight（config 用于建网）。
+    # ⚠️ 注意 `assets/pretrained/*.pth`（D40k/f0G40k 等）是**训练用的底模**，
+    #    形状是 {model, iteration, learning_rate} —— 它们由 RVC 自己的训练脚本加载，
+    #    **不经过这里**。实测（2026-09-21）混进来时那句「实际是 ['model', ...]」
+    #    就是有用的线索，故保留实际键名并可给出针对性提示。
+    if not isinstance(cpt, dict) or "weight" not in cpt or "config" not in cpt:
+        got = list(cpt.keys())[:6] if isinstance(cpt, dict) else type(cpt).__name__
+        hint = ""
+        if isinstance(cpt, dict) and "model" in cpt and "weight" not in cpt:
+            hint = (
+                "\n  提示：这是**预训练底模**（键为 model/iteration/learning_rate），"
+                "不是音色权重 —— 底模由 RVC 训练脚本使用，不能当音色加载。"
+            )
+        raise RuntimeError(
+            f"RVC 权重格式不对：{pth}\n"
+            f"  期望含 weight/config 的 dict，实际是 {got}\n"
+            f"  结构判读：{diagnose_pth(pth)}{hint}"
+        )
+    return cpt
+
+
 def load_vc(pth: str, index: str = "") -> RvcEngine:
     """加载 RVC 模型（离线子进程与级联常驻共用同一套逻辑）。
 
@@ -86,9 +189,8 @@ def load_vc(pth: str, index: str = "") -> RvcEngine:
         config.is_half = True
 
         # 手动填充 VC 实例（get_vc 依赖 weight_root 环境变量与 Gradio 回调，绕开它）
-        # weights_only=True：仅允许 dict/list/str/int/tensor 等基础类型反序列化，
-        # 防止第三方 ckpt 的 __reduce__ 载荷触发任意代码执行（坏文件此处即报错，不后移）
-        cpt = torch.load(pth, map_location="cpu", weights_only=True)
+        # 加载与「为什么加载不了」的判读都在 load_checkpoint 里（见其 docstring）。
+        cpt = load_checkpoint(pth, torch)
         tgt_sr = cpt["config"][-1]
         cpt["config"][-3] = cpt["weight"]["emb_g.weight"].shape[0]  # n_spk
         if_f0 = cpt.get("f0", 1)

@@ -334,3 +334,60 @@ def test_send_text_starts_pending_apply_and_frees_it_on_tts_failure(tmp_path, mo
     assert e.value.status_code == 500
     assert "tts boom" in e.value.detail
     assert calls == ["apply", "restore"]  # 预热被 abandon()：切了卡又还原，无残留
+
+
+# -------- 渲染侧只传 voice_id，不自己复制「voicebank → RVC 实验名」的约定 --------
+#
+# 由来（2026-09-21 复核）：`web/electron/pet-actions.cjs` 的 send_text 载荷里
+# `rvc_voice: ""` 被记成「桌宠面板单音色写死」。实际是**刻意的委托** ——
+# 后端在 `rvc_voice` 为空时按 `voice_id` 推（见上面 resolve_rvc_voice 那组用例）。
+# 复核结论：
+#   · 桌宠面板**有**音色下拉（`pet.html` 的 `#voiceSel`，从 `/api/voices` 灌、
+#     只留 `has_reference` 的、选中项存 localStorage），不是单音色；
+#   · `rvc_voice: ""` → 后端推 `kangaroo → kangaroo_v2`，实测可用。
+#
+# 那为什么还要钉？因为「留空」看起来太像漏填了，已经被误报两次。这条用例的价值
+# 不是防功能回归（功能没坏），而是**防有人把它"补成"一个写死的音色名** ——
+# 那会让所有用户被锁到同一个音色上，而且改的人会以为自己在修 bug。
+#
+# 同理，下面也钉住「面板必须保留音色选择入口」：真要是有人把下拉删了、
+# 退回单音色，那才是这个条目描述的那个 bug。
+
+_ELECTRON = _ROOT.parent / "web" / "electron"
+
+
+def test_pet_actions_delegates_rvc_voice_to_backend():
+    """★ `rvc_voice` 必须留空（交给后端推），不能被写成具体音色名。"""
+    src = (_ELECTRON / "pet-actions.cjs").read_text(encoding="utf-8")
+
+    assert 'rvc_voice: ""' in src, (
+        "pet-actions.cjs 不再把 rvc_voice 留空 —— 若你把它改成了具体音色名，"
+        "请先读 tool 端注释：那会让所有用户锁到同一音色（后端本来会按 voice_id 推）。"
+    )
+    # 反例：不许出现 `rvc_voice: "xxx"` 这种写死
+    import re
+
+    hardcoded = re.findall(r'rvc_voice:\s*"([^"]+)"', src)
+    assert hardcoded == [], f"rvc_voice 被写死成了 {hardcoded} —— 应留空交给后端按 voice_id 推"
+
+    # 载荷必须把面板选的音色带上，否则后端无从推
+    assert "voice_id: voiceId" in src, "send_text 载荷没带上面板选的 voice_id"
+
+
+def test_pet_panel_keeps_a_voice_selector():
+    """★ 桌宠面板必须保留音色选择入口（真正的「单音色写死」是这样的）。"""
+    html = (_ELECTRON / "pet" / "pet.html").read_text(encoding="utf-8")
+
+    assert 'id="voiceSel"' in html, "桌宠面板的音色下拉没了 —— 这才是真的单音色写死"
+    assert "/api/voices" in html, "音色下拉没有从 /api/voices 灌数据"
+    assert "has_reference" in html, "应只列有参考音频的音色（没参考的合不了 TTS）"
+    assert "localStorage" in html, "选中的音色应持久化，否则每次重开都要重选"
+
+
+def test_pet_panel_passes_selected_voice():
+    """面板点「发送」时要把下拉里选的音色传下去（不能传空常量）。"""
+    html = (_ELECTRON / "pet" / "pet.html").read_text(encoding="utf-8")
+    assert "window.pet.sendText(text, voiceId)" in html, (
+        "面板发送时没用上选中的音色 —— 传空/常量就等于单音色"
+    )
+    assert "const voiceId = voiceSel.value" in html, "voiceId 应取自下拉当前值"

@@ -252,6 +252,12 @@ function doSendTextToWechat(text, voiceId) {
     sub: "合成 + 换声中，约 1~2 分钟… 完成后自动发到微信，<b>别动键鼠</b>",
     remainS: null, progress: -1,
   });
+  // `rvc_voice` 留空是**刻意的**：由后端按 `voice_id → RVC 实验名` 的约定自己推
+  // （`rvc_convert.resolve_rvc_voice`，实测 `kangaroo → kangaroo_v2`）。
+  // 两套命名本来就不一样（voicebank 用 `kangaroo`、RVC 实验是 `kangaroo_v2`），
+  // 把约定复制到渲染侧只会多一个会漂的副本。面板选的音色经 `voice_id` 传下去即可。
+  // ⚠️ 别把这里「补成」一个具体音色名 —— 那会让所有用户都被锁到一个音色上，
+  //    而且看起来像修 bug，实际是退化成单音色（2026-09-21 复核确认现状无误）。
   backendPost("/api/wechat/send_text",
     { text, voice_id: voiceId || "", rvc_voice: "", pitch: 0, index_rate: 0.5 },
     (data, code) => {
