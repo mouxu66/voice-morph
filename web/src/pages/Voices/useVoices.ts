@@ -4,7 +4,22 @@ import { useAppStore } from "@/store/useAppStore"
 import { friendlyError } from "@/lib/errors"
 import type { VoiceInfo } from "@/types"
 
-export function useVoices() {
+/**
+ * 音色库页的状态与动作。
+ *
+ * `mineOn` / `workshopOn` 来自能力清单（C 类门控，2026-09-21 补）：
+ * 「音色挖掘」与「音色工坊」都是**可关**能力（`sound.mine` / `sound.workshop`），
+ * 但它们的 UI 长在**核心页** `core.voices`（恒注册）上。关掉插件后端点不再挂载，
+ * 界面却照旧渲染 → 用户点一下就 404。所以这里比照 `useAudiobook(enabled)` 的写法
+ * 收两个开关：关掉时**连轮询都不发**（端点不存在，轮询只是空转刷 404）。
+ *
+ * 两个开关是分开的，因为依赖不同：
+ *   · `mineOn`      → `mineRun/minePreview/mineSave/getMineState`（只在已有切片上挖）
+ *   · `workshopOn`  → `runPipeline/getPipelineStatus`（上传素材后要跑流水线切片）
+ * 「导入素材 / 文件夹 / 录音」这三条路都要先切片再挖，所以同时要 `workshopOn`；
+ * 而「开始挖掘」直接吃已有切片，只要 `mineOn`。返回值里的 `ingestOn` 就是这个与。
+ */
+export function useVoices(mineOn = true, workshopOn = true) {
   const { backendUp, voices, setVoices, selectedVoiceId, selectVoice, selectedClips, clips, clearSelectedClips } = useAppStore()
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -39,13 +54,13 @@ export function useVoices() {
 
   // 页面打开时同步后端已有挖掘结果（刷新后候选不丢）
   useEffect(() => {
-    if (!backendUp) return
+    if (!mineOn || !backendUp) return
     getMineState().then(setMine).catch(() => { /* 后端未启动时忽略 */ })
-  }, [backendUp])
+  }, [mineOn, backendUp])
 
   // 挖掘状态轮询（running 时每 3s，结束后再拉一次即停）
   useEffect(() => {
-    if (!backendUp) return
+    if (!mineOn || !backendUp) return
     if (!mine.running) return
     mineTimer.current = window.setInterval(async () => {
       try {
@@ -54,9 +69,10 @@ export function useVoices() {
       } catch { /* 忽略轮询错误 */ }
     }, 3000)
     return () => { if (mineTimer.current) window.clearInterval(mineTimer.current) }
-  }, [mine.running, backendUp])
+  }, [mineOn, mine.running, backendUp])
 
   const startMine = useCallback(async () => {
+    if (!mineOn) return
     setErrorMessage(""); setFeedback(""); setPreview(null)
     try {
       setMine((s) => ({ ...s, running: true, stage: "running", message: "正在转写与提取声纹…" }))
@@ -64,10 +80,11 @@ export function useVoices() {
     } catch (error) {
       setMine((s) => ({ ...s, running: false, stage: "error", message: friendlyError(error, "挖掘启动失败") }))
     }
-  }, [mineSim, mineMinCluster])
+  }, [mineOn, mineSim, mineMinCluster])
 
   // 多渠道音源共用流程：上传素材 → 解析切片 → 自动按当前参数挖掘
   const ingestFiles = useCallback(async (media: File[], verbLabel: string) => {
+    if (!mineOn || !workshopOn) return
     setImporting(true)
     setErrorMessage(""); setFeedback(""); setPreview(null)
     try {
@@ -104,7 +121,7 @@ export function useVoices() {
     } finally {
       setImporting(false)
     }
-  }, [mineSim, mineMinCluster])
+  }, [mineOn, workshopOn, mineSim, mineMinCluster])
 
   // 批量导入文件夹：webkitdirectory 选择 → 共用导入流程
   const importFolder = useCallback(async (files: File[] | undefined) => {
@@ -208,6 +225,7 @@ export function useVoices() {
 
   // 试听候选：用代表切片合成一句与视频无关的新文本
   const tryPreview = useCallback(async (clip: string) => {
+    if (!mineOn) return
     setPreviewing(clip); setErrorMessage("")
     try {
       const r = await minePreview(clip)
@@ -217,10 +235,11 @@ export function useVoices() {
     } finally {
       setPreviewing("")
     }
-  }, [])
+  }, [mineOn])
 
   // 保存候选为正式音色（含同簇成员），成功后自动选中并刷新
   const saveCandidate = useCallback(async (clip: string, members: string[]) => {
+    if (!mineOn) return
     const id = voiceIdInput.trim() || clip.slice(-8)
     setBusy(true); setErrorMessage("")
     try {
@@ -234,12 +253,13 @@ export function useVoices() {
     } finally {
       setBusy(false)
     }
-  }, [voiceIdInput, loadVoices, selectVoice])
+  }, [mineOn, voiceIdInput, loadVoices, selectVoice])
 
   return {
     backendUp, voices, selectedVoiceId, selectVoice, selectedClips, selectedDuration, loading, busy,
     voiceIdInput, setVoiceIdInput, errorMessage, feedback, loadVoices, createVoice, deleteVoice,
     audioUrl: (voice: VoiceInfo) => mediaUrl(`/media/voicebank/${voice.id}/${voice.reference}`),
+    mineOn, ingestOn: mineOn && workshopOn,
     mine, startMine, previewing, preview, tryPreview, saveCandidate,
     mineSim, setMineSim, mineMinCluster, setMineMinCluster,
     importing, importMessage, importFolder, importFiles,

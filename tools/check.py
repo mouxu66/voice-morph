@@ -425,6 +425,25 @@ def _unhide_node_modules(hidden) -> None:
             _say(f"[nodetest] ✗ 手工执行：mv {NODE_MODULES_HIDDEN} web/node_modules")
 
 
+def _check_endpoint_ownership() -> tuple[bool, str]:
+    """能力门控门禁：核心页不许**裸渲染**可关插件的组件/面板。
+
+    为什么进这个入口：「核心页坏掉」的症状是**用户点一下 404**，而且看不出原因
+    （`core.*` 路由恒注册，核心页怎么会坏？）。2026-09-21 就漏过一次 —— `/voices`
+    归 `core.voices`，却渲染了打 `sound.audition` 的组件，关掉试音间后音色库点击即 404。
+    那次是靠人肉 grep 追出来的，说明**光靠 review 追不住**：缺口藏在「共享组件调用链」里，
+    整页自己不调一个 API，看上去人畜无害。
+
+    判据见 tools/audit_endpoint_ownership.py：沿 import 图算每个**核心路由入口**的
+    传递依赖，若含可关插件而链上无人点过该插件 id（= 没人门控）就报红。
+    纯本地文本解析、零依赖，与 licenses 一样进 --fast。
+    """
+    script = ROOT / "tools" / "audit_endpoint_ownership.py"
+    if not script.exists():
+        return False, "未找到 tools/audit_endpoint_ownership.py"
+    return _run("gate", [sys.executable, str(script), "--check"], ROOT)
+
+
 def _check_licenses() -> tuple[bool, str]:
     """第三方许可登记门禁：`THIRD_PARTY_NOTICES.md` 的覆盖性必须对得上当前依赖集。
 
@@ -502,6 +521,7 @@ def _check_ps1_lint() -> tuple[bool, str]:
 
 STEPS = {
     "licenses": lambda fast: _check_licenses(),
+    "gate": lambda fast: _check_endpoint_ownership(),
     "requires": lambda fast: _check_requires(),
     "electron": lambda fast: _check_electron_load(),
     "ps1lint": lambda fast: _check_ps1_lint(),
@@ -731,12 +751,16 @@ def main(argv: list[str] | None = None) -> int:
     # requires + electron 都进 fast：合计约 0.25s，专治「拆文件漏 require」
     # 这类启动即崩、编译器又不报的 bug（2026-09-12 事故）。
     # licenses 进 fast：许可漏登记只有"加依赖那一次提交"能拦，且只要 0.05s。
+    # gate 进 fast：门控漏挂的症状是"核心页点一下 404"，同样是零症状、事后才发现，
+    # 且约 0.2s。
     # ps1lint 不进 fast：要起一个 PowerShell 进程（约 1s），而 scripts/*.ps1 改动很少；
     # pre-push 与 CI 都会跑到它，不必占 pre-commit 的预算。
     # nodetest 不进 fast：8 个 node 进程的启动开销就 3.5s，而 pre-commit 只有 8s 预算 ——
     # 让钩子变慢，人就该开始绕过它了。全量 / pre-push / CI 都会跑。
     names = [n.strip() for n in args.only.split(",") if n.strip()] or [
-        "licenses", "requires", "electron", "ps1lint", "ruff", "nodetest", "pytest", "web"
+        # gate 紧跟 licenses：也是"漏了就补不回来"的那类（用户点一下 404 才知道），
+        # 且同样是纯本地文本解析（约 0.2s），所以进 fast。
+        "licenses", "gate", "requires", "electron", "ps1lint", "ruff", "nodetest", "pytest", "web"
     ]
     if args.fast:
         names = [n for n in names if n not in ("web", "nodetest", "ps1lint")]
