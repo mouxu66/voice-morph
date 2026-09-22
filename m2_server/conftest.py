@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import NoReturn
 
@@ -17,6 +18,43 @@ os.environ.setdefault("VM_WARMUP", "0")
 # 会杀进程 + 拉起 Weixin.exe（真机副作用、还可能把用户的微信弄掉线）。
 # 强制置 0；需要覆盖的用例自己 monkeypatch.setenv。
 os.environ["VM_WECHAT_RESTART"] = "0"
+
+# ★ 数据目录（outputs/ 与 media/）必须在**任何 m2_server 模块被导入之前**切到临时目录
+# （2026-09-22）。
+#
+# 为什么不能靠 `monkeypatch.setattr(config, "OUTPUTS_DIR", ...)`：
+# 一批模块把它**早绑定**成模块级常量 ——
+#     market_preview.MARKET_DIR = cfg.OUTPUTS_DIR / "market"
+#     market_images.CACHE_DIR  = OUTPUTS_DIR / "market" / "imgs_cache"  # from config import OUTPUTS_DIR
+#     finetune.FT_DIR          = cfg.MEDIA_DIR / "ft"
+#     cascade.STATE_FILE / history.HISTORY_FILE / runtime.OUT / …（全仓 40+ 处）
+# 它们是**导入时求值**的，导入之后再改 `cfg.*` 对它们**完全无效、且不报错**
+# （见 docs/犯错指南.md §8.36）。
+#
+# 后果实测：跑全量时真实 `outputs/market/` 里累积了 20+ 个**夹具名**的 sidecar
+# （auto_rb / busy_rb / circular / mutex / no_idx / test_voice …，最早可追到 2026-09-06）、
+# `outputs/market/imgs_cache/.revision` 被覆写成远端版本号、
+# `media/ft/dstkoi/status.json`（用户真实微调任务的状态）被改写成测试数据 ——
+# 也就是**动了用户的真实数据**。
+#
+# 更阴的是**时序**：这些写入常常来自**活过用例 teardown 的后台线程** ——
+#   · `market_preview.generate()` 起 daemon 线程，`_maybe_backoff()` 还会
+#     `sleep(_BACKOFF_S=20)` 后再写一次；
+#   · `finetune._train_job()` 起的训练线程在用例结束后才落 status.json。
+# monkeypatch 在 teardown 就还原了 ⇒ 后段的写入落回**真实**目录。
+# 所以「单跑一个文件」根本看不出来（进程退出把线程杀了），
+# 必须"这个文件跑完还有别的文件在跑"才复现（实测：`test_market_search_install.py`
+# 加任意一个文件一起跑 → 立刻泄漏 3 个）。见 §8.37。
+#
+# 放在**本文件**而不是 `tests/conftest.py`：pytest 先加载 `m2_server/conftest.py`，
+# 而 `tests/conftest.py` 在导入期就会 `import config` —— 晚一步就来不及了。
+# 用**环境变量**而不是直接改 `config` 模块属性：`config` 此刻还没被导入，
+# 让它自己在导入时算出正确的值，是最不容易漏的写法（同上面的 `VM_WARMUP`）。
+# 一行替掉 40+ 处早绑定常量各自的补丁，且以后新增模块**自动被覆盖**。
+_VM_TEST_OUTPUTS = tempfile.mkdtemp(prefix="vm-test-outputs-")
+os.environ["VM_OUTPUTS_DIR"] = _VM_TEST_OUTPUTS
+_VM_TEST_MEDIA = tempfile.mkdtemp(prefix="vm-test-media-")
+os.environ["VM_MEDIA_DIR"] = _VM_TEST_MEDIA
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:

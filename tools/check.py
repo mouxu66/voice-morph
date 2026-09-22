@@ -120,6 +120,11 @@ FAST_TESTS = [
     # 2026-09-13 那个明文证书密码就是从".githooks 只按文件名拦密钥"的缝里进的仓库，
     # 放进 --fast 才能在提交那一刻拦住。
     "m2_server/tests/test_check_secrets.py",
+    # 数据目录隔离不变量（约 1s，纯静态 + session 取值）：
+    # 钉住 m2_server/conftest.py 里 VM_OUTPUTS_DIR / VM_MEDIA_DIR 那几行 ——
+    # 少了它们，跑全量就会往用户真实的 outputs/ 与 media/ 里写（见 docs/犯错指南.md §8.36/§8.37）。
+    # 放进 --fast 才能在提交那一刻拦住，而不是等 pre-push 的全量。
+    "m2_server/tests/test_output_isolation.py",
 ]
 
 
