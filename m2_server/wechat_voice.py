@@ -102,6 +102,31 @@ PLAY_LEAD_S = float(os.environ.get("VM_WECHAT_PLAY_LEAD_S", "0.8"))
 # 自动按键流程失败时是否自动降级为「引导式手动发送」（播放到 CABLE + 用户自己按住说话）
 AUTO_FALLBACK = os.environ.get("VM_WECHAT_AUTO_FALLBACK", "1") == "1"
 
+# ---- 长文分段发送的预算（2026-09-23，见 docs/微信语音-长文分段发送方案.md §2）----
+# 微信语音单条硬上限 60s，到点自动结束并发送 —— **平台限制，无解**。
+# 所以问题不是"能不能超过"，而是"怎么保证整段话都发出去"：把「一次发一条 wav」
+# 改成「一次发一批 ≤MAX_CHUNK_S 的 wav」，切分点落在句子/静音处。
+#
+# 现状最要命的不是截断本身，而是**没有人在发之前知道它有多长**：_record_and_send 第 5 步
+# 是 _wait_play_done(proc, duration) —— 音频多长微信就录多长，到 60s 被切掉，剩下的丢了。
+# _uia_verify_sent 里那句"疑似 60s 截断复发"是**事后报警**；本组常量把它前移成**事前预算**。
+MAX_MSG_S = 60.0  # 微信硬上限，不可调
+# 单条可承载的音频预算 = 60 − PLAY_LEAD_S(0.8) − TAIL_S(0.3) − FINISH_LAG(0.3) − SAFETY(4.6)。
+# SAFETY_S 的四项构成（别省，这段余量买的是"绝不静默截断"）：UIA 秒数整数向上取整 ±1.0；
+# TTS 语速随句子/音色波动 1.5；声卡驱动缓冲与收尾抖动 1.1；微信侧自身计数余量 1.0。
+FINISH_LAG_S = 0.3  # time.sleep(0.15) + 点发送钮的延迟
+SAFETY_S = float(os.environ.get("VM_WECHAT_SAFETY_S", "4.6"))
+MAX_CHUNK_S = float(
+    os.environ.get("VM_WECHAT_MAX_CHUNK_S", str(MAX_MSG_S - 0.8 - 0.3 - FINISH_LAG_S - SAFETY_S))
+)  # 默认 54.0
+# 下限：微信语音最短 1s（说话时间太短会被拒）。短于此的尾段并入上一段，
+# 能并则并、不能并就补静音 —— 而不是发一条 1.2 秒的。
+MIN_CHUNK_S = float(os.environ.get("VM_WECHAT_MIN_CHUNK_S", "2.5"))
+# 段间停顿：等录音浮层消失之后再等这一小段，避免衔接太生硬。
+BATCH_GAP_S = float(os.environ.get("VM_WECHAT_BATCH_GAP_S", "0.8"))
+# 段内句子之间拼接的静音（pack_chunks 的 gap_s 默认值从这里来，单位秒）
+SENT_GAP_S = float(os.environ.get("VM_WECHAT_SENT_GAP_S", "0.3"))
+
 # ---- 录音前的微信重启（2026-09-11 引入，2026-09-17 起默认关闭）----
 # 微信绑定采集设备是在**进程启动时**，改默认麦克风对它不热生效 → 必须重启它才会
 # 重新枚举到 CABLE Output。但强杀微信（taskkill /F）副作用是退回登录界面要求重新登录，
@@ -1437,6 +1462,60 @@ def _trim_edges(
         return path
 
 
+# ---------------- 分包算法（纯函数，可单测） ----------------
+
+
+def pack_chunks(
+    durs: list[float],
+    max_s: float = MAX_CHUNK_S,
+    min_s: float = MIN_CHUNK_S,
+    gap_s: float = SENT_GAP_S,
+) -> list[tuple[int, int]]:
+    """按**实测时长**把句子贪心装箱成 ≤max_s 的若干段，返回 [(起, 止)] 左闭右开。
+
+    这是整个分段方案的**唯一硬判据**所在：返回的每一段，加上 PLAY_LEAD_S/TAIL_S/
+    FINISH_LAG_S 都必须 ≤60。所以它是纯函数、必须被单测 + 变异测试覆盖。
+
+    为什么用实测时长而不是"字数 ÷ 语速"估算：字数→秒数只是代理量，中英混排、
+    数字（"2026 年 9 月 22 日"读出来比看起来长）、标点停顿都会让它偏；**偏小的方向
+    就是静默截断**，代价最大。而为了分包本来就要逐句合成，`sf.read` 一下就有真实秒数。
+
+    单句自己就超预算的情形**不在这里处理** —— 那需要"再切一次并重新合成"，
+    不是纯函数能决定的，由调用方做三级降级（见 _split_for_budget）。
+    """
+    if max_s <= 0:
+        raise ValueError("max_s 必须为正")
+    out: list[tuple[int, int]] = []
+    i, n = 0, len(durs)
+    while i < n:
+        j, acc = i, 0.0
+        while j < n:
+            # 段内句子之间要留 gap；本段第一句前面没有 gap
+            add = durs[j] + (gap_s if j > i else 0.0)
+            if acc + add > max_s and j > i:
+                break
+            acc += add
+            j += 1
+        out.append((i, j))
+        i = j
+    # 尾段太短 → 并入上一段（能并则并，避免发一条 1.2 秒的）
+    if len(out) >= 2 and sum(durs[out[-1][0] : out[-1][1]]) < min_s:
+        last = out.pop()
+        if last[1] == n:
+            prev = out[-1]
+            out[-1] = (prev[0], last[1])
+    return out
+
+
+def _chunk_plan_ok(durs: list[float], plan: list[tuple[int, int]], gap_s: float = SENT_GAP_S) -> bool:
+    """校验一份分包方案确实守预算（含句间 gap）。返回 False 就是有段会超 60s。"""
+    for a, b in plan:
+        span = sum(durs[a:b]) + gap_s * max(b - a - 1, 0)
+        if PLAY_LEAD_S + span + TAIL_S + FINISH_LAG_S > MAX_MSG_S:
+            return False
+    return True
+
+
 # ---------------- 主流程 ----------------
 
 
@@ -2004,88 +2083,112 @@ def _uia_verify_sent(before_msg: str | None, expect_s: float, before_count: int 
     return out
 
 
-def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
-    """执行一次微信语音自动发送。pre_apply：send_text 预热的切卡任务（与 TTS 并行）。
+def _prepare_env(pre_apply: _PendingApply | None = None, steps: list[str] | None = None) -> dict:
+    """录音环境准备：必要时重启微信，再把默认麦克风切到 CABLE Output。**批次内只做一次。**
 
-    传了 pre_apply 就只 .result() 等它收尾（不再同步跑第二次 apply）；
-    不传（直连 /send_voice、tools/*）保持原地同步切卡，行为不变。
+    pre_apply：send_text 预热的切卡任务（与 TTS 并行）。传了就只 .result() 等它收尾
+    （不再同步跑第二次 apply）；不传（直连 /send_voice、tools/*）保持原地同步切卡，行为不变。
+
+    ⚠️ 调用方必须在 `finally` 里配对 `_safe_restore()`（或用 _send_batch，它已经管了）——
+    否则用户的默认麦会留在 CABLE 上。
+
+    从 _do_send 第 2 步抽出，行为完全相同（2026-09-23 分段重构）。
     """
-    steps: list[str] = []
+    steps = steps if steps is not None else []
+    _tw = time.time()
+    _ta = time.time()
+    if pre_apply is not None:
+        env = pre_apply.result()
+        if isinstance(env, dict) and env.get("kind") == "recording_env":
+            steps.append(
+                f"[{time.time()-_tw:.1f}s] {env['summary']}"
+                f"（准备已与 TTS 并行，此处仅等 {time.time()-_ta:.1f}s）"
+            )
+        else:  # 兼容旧契约（测试里的假任务 / 老调用方）
+            steps.append(
+                f"[{time.time()-_tw:.1f}s] 麦克风已切到 CABLE Output"
+                f"（切卡已与 TTS 并行，此处仅等 {time.time()-_ta:.1f}s）"
+            )
+    else:
+        env = _prepare_recording_env()
+        steps.append(f"[{time.time()-_tw:.1f}s] {env.get('summary', '麦克风已切到 CABLE Output')}")
+    return env
 
-    # 1) 定位 wav：指定名 → outputs 下精确匹配；否则最近的 tts_*.wav
+
+def _resolve_wav(req: SendVoiceReq):
+    """定位要发的 wav：指定名 → outputs 下精确匹配；否则最近的 tts_*.wav。
+
+    返回 (Path, None) 或 (None, JSONResponse 错误)。从 _do_send 第 1 步抽出。
+    """
     if req.wav:
         wav = (cfg.OUTPUTS_DIR / req.wav) if not Path(req.wav).is_absolute() else Path(req.wav)
         if not wav.exists():
-            return JSONResponse(
+            return None, JSONResponse(
                 status_code=404,
                 content={"ok": False, "outcome": "failed", "error": f"找不到音频 {req.wav}"},
             )
-    else:
-        cands = sorted(cfg.OUTPUTS_DIR.glob("tts_*.wav"), key=lambda p: p.stat().st_mtime)
-        if not cands:
-            return JSONResponse(
-                status_code=404,
-                content={
-                    "ok": False,
-                    "outcome": "failed",
-                    "error": "outputs/ 下没有 TTS 产物，先在网页上合成一条语音",
-                },
-            )
-        wav = cands[-1]
-    duration = _wav_duration(wav)
-    steps.append(f"音频: {wav.name}（{duration:.1f}s）")
+        return wav, None
+    cands = sorted(cfg.OUTPUTS_DIR.glob("tts_*.wav"), key=lambda p: p.stat().st_mtime)
+    if not cands:
+        return None, JSONResponse(
+            status_code=404,
+            content={
+                "ok": False,
+                "outcome": "failed",
+                "error": "outputs/ 下没有 TTS 产物，先在网页上合成一条语音",
+            },
+        )
+    return cands[-1], None
 
-    # UIA 就绪判定必须等微信真的起来了再做（见下方 2.5 与 _await_uia_active 的注释）。
-    # 这里只放占位，保证异常路径也能安全引用。
-    uia_active = False
-    before_msg = None
-    before_count = -1
 
-    restored = False
-    bind_warning = ""  # 录音环境告警（微信绑错设备 → 可能录成静音），随本次落进发送历史
-    proc = None  # 后台播放进程（异常路径要能 kill）
+def _record_and_send(
+    wav: Path,
+    duration: float,
+    uia_active: bool | None = None,
+    before_msg: str | None = None,
+    before_count: int = -1,
+    steps: list[str] | None = None,
+    env: dict | None = None,
+    index: int | None = None,
+    total: int | None = None,
+    gap_s: float = 0.0,
+    reuse_restore: bool = False,
+) -> dict:
+    """录制并发送**一条** wav（= 原 _do_send 的第 3~6 步 + 校验 + 落历史）。
+
+    这是批次与单条共用的内核：`_do_send` 就是"只有一条的批次"，
+    两条路径走同一段代码 —— 避免"批次修好了、单条还漏着"。
+
+    ⚠️ 调用方负责**环境准备**（_prepare_env）与**声卡还原**：本函数只做一条的
+    录制/发送/落历史。单条路径（_do_send）自己管还原；批次路径（_send_batch）
+    在 finally 里统一还原一次（reuse_restore=False 时必须还原）。
+
+    ``uia_active``/``before_msg``/``before_count``：由调用方在**本段开始前**取好的
+    UIA 基线。**必须每段重取** —— 沿用第一条的 before_count 会让第二条起永远判成
+    "已新增"（基线没动），见 D10。
+
+    ``gap_s``：本段开始前等录音浮层消失 + 这一小段停顿（段间衔接，见 D9）。
+
+    返回与 _do_send 同构的 dict。**不抛异常**：异常内部处理并返回
+    outcome=failed / manual_fallback（与 _do_send 的历史契约一致）。
+    """
+    steps = steps if steps is not None else []
+    env = env if isinstance(env, dict) else {}
+    bind_warning = env.get("warning", "")
     _tw = time.time()
+    proc = None
+    prefix = f"[第 {index+1}/{total} 条] " if (index is not None and total is not None) else ""
+
+    # 段间：先等上一次的录音浮层消失（它是 _trigger_record 的前置条件，残留会让后续全失败），
+    # 再留 gap_s 停顿。**不要**用固定 sleep 当同步手段（速查表第 55 条）。
+    if index is not None and index > 0:
+        _await_overlay_gone(gap_s)
+        steps.append(f"{prefix}上一段录音浮层已消失，停顿 {gap_s:.1f}s 后继续")
+
+    if not steps or not any("音频:" in s for s in steps):
+        steps.append(f"{prefix}音频: {wav.name}（{duration:.1f}s）")
+
     try:
-        # 2) 录音环境准备：必要时重启微信（关键，见模块 docstring），
-        #    然后把默认麦克风切到 CABLE Output（微信从这里录；apply 自动备份原设备）。
-        #    send_text 已把这一步提前到与 TTS 并行（pre_apply），这里只等尾差；
-        #    没有预热任务时原地同步完成。
-        _ta = time.time()
-        if pre_apply is not None:
-            env = pre_apply.result()
-            if isinstance(env, dict) and env.get("kind") == "recording_env":
-                steps.append(
-                    f"[{time.time()-_tw:.1f}s] {env['summary']}"
-                    f"（准备已与 TTS 并行，此处仅等 {time.time()-_ta:.1f}s）"
-                )
-            else:  # 兼容旧契约（测试里的假任务 / 老调用方）
-                steps.append(
-                    f"[{time.time()-_tw:.1f}s] 麦克风已切到 CABLE Output"
-                    f"（切卡已与 TTS 并行，此处仅等 {time.time()-_ta:.1f}s）"
-                )
-        else:
-            env = _prepare_recording_env()
-            steps.append(
-                f"[{time.time()-_tw:.1f}s] {env.get('summary', '麦克风已切到 CABLE Output')}"
-            )
-
-        # 录音环境告警单独拎出来：除了拼进 steps 给前端，还要落进发送历史。
-        # 2026-09-18 事故复盘：它此前只活在 API 响应里，前端把 summary 尾部那句 ⚠
-        # 当成了"上次残留的旧文案"忽略 → 静音语音被当成成功发出去，事后无从追查。
-        bind_warning = env.get("warning", "") if isinstance(env, dict) else ""
-
-        # 2.5) UIA 就绪判定 —— **必须在上面录音环境准备之后**（微信此时才真的起来了）。
-        #      见 _await_uia_active 的 docstring：判早了会让所有"含重启微信"的发送
-        #      一律退化到按坐标盲点的像素链路。
-        uia_active = _await_uia_active()
-        steps.append("UIA 结构化访问就绪" if uia_active else "UIA 不可用（走像素链路）")
-        if uia_active:
-            try:
-                before_msg = _uia.latest_voice_message()
-                before_count = len(_uia.voice_messages() or [])
-            except Exception:
-                before_msg, before_count = None, -1
-
         # 3) 起播放（常驻 worker 复用 / 一次性子进程）。冷导入若发生，与下面的 UI 准备并行。
         _t_play = time.time()
         proc = _start_play(wav)
@@ -2111,17 +2214,17 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
         _prep_t.join()
         if play_ready:
             steps.append(
-                f"[{time.time()-_tw:.1f}s] 播放就绪（冷导入 {time.time()-_t_play:.1f}s，"
+                f"{prefix}[{time.time()-_tw:.1f}s] 播放就绪（冷导入 {time.time()-_t_play:.1f}s，"
                 f"已与 UI 准备并行）"
             )
         else:
-            steps.append("⚠ 未等到播放开始信号，仍按原计划录音（开头可能被削）")
+            steps.append(f"{prefix}⚠ 未等到播放开始信号，仍按原计划录音（开头可能被削）")
 
         # 4) 点语音按钮开始录制（UI 已并行准备好，直接复用；准备失败则退回原路径重算）
         _trigger_record(ui=_ui if not _ui.get("err") else None)
         if RECORD_METHOD == "mic":
             steps.append(
-                f"[{time.time()-_tw:.1f}s] "
+                f"{prefix}[{time.time()-_tw:.1f}s] "
                 + (
                     "UIA 已点击语音按钮，开始录音"
                     if _record_via == "uia"
@@ -2129,21 +2232,20 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
                 )
             )
         else:
-            steps.append(f"[{time.time()-_tw:.1f}s] 已按住 {RECORD_KEY.upper()} 开始录音")
+            steps.append(f"{prefix}[{time.time()-_tw:.1f}s] 已按住 {RECORD_KEY.upper()} 开始录音")
 
         # 5) 等 wav 真正播完（播完 = 子进程退出 / worker 回 done）
         _wait_play_done(proc, duration)
-        steps.append(f"[{time.time()-_tw:.1f}s] 已播放 {duration:.1f}s 到微信录音")
+        steps.append(f"{prefix}[{time.time()-_tw:.1f}s] 已播放 {duration:.1f}s 到微信录音")
 
         # 6) 结束录音并发送
         #    播放脚本尾部已自带 TAIL_S 静音，这里只留极小缓冲给声卡驱动（再多就是白录空白）
         time.sleep(0.15)
         via = _record_via
         sent = _finish_record()
-        _hist_appended = False
         if sent:
             steps.append(
-                f"[{time.time()-_tw:.1f}s] "
+                f"{prefix}[{time.time()-_tw:.1f}s] "
                 + {
                     "uia": "UIA 点击语音按钮录音 → 已点发送钮，语音已发送",
                     "realclick": "已点击语音按钮 → 已点发送钮，语音已发送",
@@ -2152,7 +2254,7 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
             )
             # 发送已成功：先落历史（后台写回校验/还原结果都依赖它）
             _append_history(wav, duration, "ok", warning=bind_warning)
-            _hist_appended = True
+            hist_appended = True
             # UIA 校验只是安全网，放后台线程不阻塞返回（省 ~0.5-3s）
             if uia_active:
                 # 路径在起线程时**就地取一次**存进局部变量，由 lambda 闭包带走。
@@ -2166,27 +2268,44 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
                     ),
                     daemon=True,
                 ).start()
-                steps.append("UIA 发送后校验：后台线程进行中（结果写入发送历史）")
-            # 声卡还原 ~3s，放后台线程：下一步切卡由 _restore_lock 等它收尾，不抢设备，
-            # 也不阻塞本次返回（省 ~3s 同步等待）。
-            # 把本次的历史文件路径**传进去**（见 _restore_async docstring：线程异步，
-            # 让它自己去读全局 HISTORY_FILE 会跨越作用域、读写到不同文件）。
-            threading.Thread(target=_restore_async, args=(HISTORY_FILE,), daemon=True).start()
-            steps.append(f"[{time.time()-_tw:.1f}s] 声卡还原已交后台线程（不阻塞返回，约 3s）")
-        else:
-            steps.append("未找到发送按钮，已取消录音（本次未发送）")
-            restored, restore_err = _safe_restore()
+                steps.append(f"{prefix}UIA 发送后校验：后台线程进行中（结果写入发送历史）")
+            if reuse_restore:
+                # 批次路径：还原由 _send_batch 的 finally 统一做一次，这里不动声卡
+                steps.append(f"{prefix}声卡还原交由批次统一处理（批次结束一次性还原）")
+            else:
+                # 声卡还原 ~3s，放后台线程：下一步切卡由 _restore_lock 等它收尾，不抢设备，
+                # 也不阻塞本次返回（省 ~3s 同步等待）。
+                # 把本次的历史文件路径**传进去**（见 _restore_async docstring：线程异步，
+                # 让它自己去读全局 HISTORY_FILE 会跨越作用域、读写到不同文件）。
+                threading.Thread(target=_restore_async, args=(HISTORY_FILE,), daemon=True).start()
+                steps.append(f"{prefix}[{time.time()-_tw:.1f}s] 声卡还原已交后台线程（不阻塞返回，约 3s）")
             return {
                 "ok": True,
-                "outcome": "cancelled",
+                "outcome": "ok",
                 "method": RECORD_METHOD,
                 "wav": wav.name,
                 "duration_s": round(duration, 1),
                 "steps": steps,
-                "restored": restored,
-                "restore_error": restore_err,
-                "_history": _append_history(wav, duration, "cancelled", warning=bind_warning),
+                "restored": None,
+                "warning": bind_warning,
+                "_history": (
+                    True if hist_appended else _append_history(wav, duration, "ok", warning=bind_warning)
+                ),
             }
+
+        steps.append(f"{prefix}未找到发送按钮，已取消录音（本次未发送）")
+        restored, restore_err = (False, "") if reuse_restore else _safe_restore()
+        return {
+            "ok": True,
+            "outcome": "cancelled",
+            "method": RECORD_METHOD,
+            "wav": wav.name,
+            "duration_s": round(duration, 1),
+            "steps": steps,
+            "restored": restored,
+            "restore_error": restore_err,
+            "_history": _append_history(wav, duration, "cancelled", warning=bind_warning),
+        }
     except Exception as exc:
         # 失败也要：⓪掐掉后台播放（否则会一直往 CABLE 灌声音）
         #            ①松开录音键/鼠标（防止按住不放卡死）②还原声卡（reset 兜底）
@@ -2197,7 +2316,7 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
             pass
         with contextlib.suppress(Exception):
             _finish_record()
-        restored, restore_err = _safe_restore()
+        restored, restore_err = (False, "") if reuse_restore else _safe_restore()
         # 自动降级：模拟按键/播放失败 → 引导式手动发送（播放到 CABLE，用户自己按 Alt）
         if AUTO_FALLBACK:
             fb = _guided_fallback(wav, duration, steps)
@@ -2225,22 +2344,220 @@ def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
             },
         )
 
-    # 6) 声卡还原已在上一步交后台线程（_restore_async），此处不阻塞直接返回。
-    #    立即返回的 restored 记为 None（pending），最终结果由后台线程写回发送历史。
-    #    warning 同时进响应体与历史：响应给当前这次弹窗用，历史给事后追查用
-    #    （2026-09-18 事故：它此前只拼在 steps 文案里，两处都没人接）。
+
+def _overlay_visible() -> bool:
+    """录音浮层当前是否还在（UIA 优先，像素兜底）。任何异常都当"看不见"。"""
+    if _uia_ready():
+        try:
+            if _uia.overlay_exists():
+                return True
+        except Exception as e:
+            logger.debug("[wechat] UIA 浮层检测失败，本轮到像素: %s", e)
+    h = _foreground_wechat()
+    return bool(h and _find_green_send(_window_rect(h), retries=1))
+
+
+def _await_overlay_gone(gap_s: float = BATCH_GAP_S, timeout: float | None = None) -> bool:
+    """等微信的录音浮层消失，再留 gap_s 停顿。返回是否等到。
+
+    为什么必须等：`_trigger_record()` 的前置条件是**上一次的录音浮层已经消失**
+    —— 浮层残留会让后续每一次点击都落在浮层上（速查表第 11 条：「前一次失败后，
+    后续全部失败」）。批次内连续发送正是最容易被这条打中的场景。
+
+    **不用固定 sleep 当同步手段**（速查表第 55 条：固定 sleep 换轮询）。
+    """
+    if timeout is None:
+        timeout = gap_s + 2.0
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if not _overlay_visible():
+                break
+        except Exception:
+            break
+        time.sleep(0.2)
+    if gap_s > 0:
+        time.sleep(gap_s)
+    return True
+
+
+def _check_budget(duration: float) -> str:
+    """单条预算护栏：返回空串 = 可以发；否则返回拒绝原因。
+
+    ⚠️ **这是这条 bug 唯一的防复发机制。** 任何绕过分包的调用方（直连 /send_voice、
+    tools/*、将来的新入口）都在这里被拦住，而不是发一条注定被 60s 截断的语音。
+
+    变异测试要求：把本函数的判据删掉，断言"超长单条被拒发"的用例**必须变红**。
+    """
+    total = PLAY_LEAD_S + duration + TAIL_S + FINISH_LAG_S
+    if total <= MAX_MSG_S and duration <= MAX_CHUNK_S:
+        return ""
+    return (
+        f"这段音频 {duration:.1f}s 超过单条上限（预算 {MAX_CHUNK_S:.0f}s，"
+        f"微信硬上限 {MAX_MSG_S:.0f}s），直接发会被平台静默截断、后半段丢失。"
+        f"请改用分段发送（会自动切成多条语音）。"
+    )
+
+
+def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
+    """执行一次微信语音自动发送。pre_apply：send_text 预热的切卡任务（与 TTS 并行）。
+
+    传了 pre_apply 就只 .result() 等它收尾（不再同步跑第二次 apply）；
+    不传（直连 /send_voice、tools/*）保持原地同步切卡，行为不变。
+
+    2026-09-23 起内部改为 `_prepare_env` → `_record_and_send`（**签名与返回结构一个字没改**），
+    于是"单条"就是"只有一条的批次" —— 批次修好了单条不会还漏着。被 3 个真机回归脚本
+    （tools/tts_and_send.py、wechat_e2e_check.py、wechat_regression.py）与 4 个测试文件
+    共 20+ 条用例依赖，改动前先跑它们。
+    """
+    steps: list[str] = []
+
+    # 1) 定位 wav
+    wav, err = _resolve_wav(req)
+    if err is not None:
+        return err
+    duration = _wav_duration(wav)
+    steps.append(f"音频: {wav.name}（{duration:.1f}s）")
+
+    # 1.5) ★ 预算护栏：超预算就拒发，绝不发一条注定被截断的。
+    #      这是"任何绕过分包的调用方也不会静默出错"的兜底。
+    if (reject := _check_budget(duration)):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "outcome": "too_long",
+                "error": reject,
+                "wav": wav.name,
+                "duration_s": round(duration, 1),
+                "max_chunk_s": MAX_CHUNK_S,
+                "steps": steps,
+            },
+        )
+
+    # 录音环境告警由 _record_and_send 从 env 里取（它负责拼 steps 与落历史），这里不重复取。
+    env = _prepare_env(pre_apply, steps)
+
+    # 2.5) UIA 就绪判定 —— **必须在录音环境准备之后**（微信此时才真的起来了）。
+    #      见 _await_uia_active 的 docstring：判早了会让所有"含重启微信"的发送
+    #      一律退化到按坐标盲点的像素链路（test_do_send_judges_uia_after_recording_env 守这条）。
+    uia_active = _await_uia_active()
+    steps.append("UIA 结构化访问就绪" if uia_active else "UIA 不可用（走像素链路）")
+    before_msg, before_count = None, -1
+    if uia_active:
+        try:
+            before_msg = _uia.latest_voice_message()
+            before_count = len(_uia.voice_messages() or [])
+        except Exception:
+            before_msg, before_count = None, -1
+
+    # 3~6) 录制并发送（含失败降级）
+    return _record_and_send(
+        wav,
+        duration,
+        uia_active=uia_active,
+        before_msg=before_msg,
+        before_count=before_count,
+        steps=steps,
+        env=env,
+        reuse_restore=False,  # 单条路径自己还原（保持原行为：后台线程还原）
+    )
+
+
+def _send_batch(
+    wavs: list[Path],
+    pre_apply: _PendingApply | None = None,
+    on_progress=None,
+) -> dict:
+    """**有序 wav 列表** → 一次录音环境准备 + 循环发送 + 统一还原。
+
+    这是 D7/D13 的落点：入参是"有序 wav 列表"，**分包只是造出这个列表的策略**。
+    文字入口造出逐句装箱的结果，音频入口造出静音切分的结果，两者都走这里；
+    需要"两个来源一起发"时由前端拼成一个列表交过来 —— **绝不在这里串联两次批次**
+    （否则切卡两次、可能重启微信两次，还会被 _send_lock 的 409 挡下第二次）。
+
+    失败策略（D12）：**失败即停**，并回传 remaining_text 供"继续发剩下的"。
+    继续发看起来"多送几条"，但失败通常意味着环境已经坏了（声卡/浮层/微信被抢焦点），
+    后面几条只会变成静音或噪声音频 —— 发出去一条错的不如不发。
+    """
+    steps: list[str] = []
+    total = len(wavs)
+    if total == 0:
+        return {
+            "ok": True,
+            "outcome": "ok",
+            "total_chunks": 0,
+            "sent_chunks": 0,
+            "failed_index": None,
+            "steps": ["没有需要发送的音频"],
+        }
+
+    results: list[dict] = []
+    env = _prepare_env(pre_apply, steps)
+    try:
+        for k, wav in enumerate(wavs):
+            duration = _wav_duration(wav)
+            # ★ 每段重取 UIA 基线（D10）：沿用第一条会让第 2 条起永远判成"已新增"
+            uia_active = _await_uia_active()
+            before_msg, before_count = None, -1
+            if uia_active:
+                try:
+                    before_msg = _uia.latest_voice_message()
+                    before_count = len(_uia.voice_messages() or [])
+                except Exception:
+                    before_msg, before_count = None, -1
+
+            seg_steps: list[str] = []
+            res = _record_and_send(
+                wav,
+                duration,
+                uia_active=uia_active,
+                before_msg=before_msg,
+                before_count=before_count,
+                steps=seg_steps,
+                env=env,
+                index=k,
+                total=total,
+                gap_s=BATCH_GAP_S,
+                reuse_restore=True,  # 还原统一由本函数的 finally 做一次
+            )
+            results.append(res)
+            steps += seg_steps
+            if on_progress:
+                with contextlib.suppress(Exception):
+                    on_progress(k + 1, total, duration)
+            if not isinstance(res, dict) or res.get("outcome") != "ok":
+                return _batch_result(results, wavs, steps, failed_index=k)
+        return _batch_result(results, wavs, steps)
+    finally:
+        # ★ 一次，且失败也要还原（D7）。reuse_restore=True 时各段不再各自还原。
+        _safe_restore()
+
+
+def _batch_result(
+    results: list[dict], wavs: list[Path], steps: list[str], failed_index: int | None = None
+) -> dict:
+    """把逐段结果折成批次响应（§7 的出口形状）。"""
+    sent = sum(1 for r in results if isinstance(r, dict) and r.get("outcome") == "ok")
+    outcomes = [r.get("outcome") for r in results if isinstance(r, dict)]
+    # 整批只要有一条是 manual_fallback，就要让用户知道（它不是失败，但要人按 Alt）
+    if failed_index is None:
+        outcome = "manual_fallback" if "manual_fallback" in outcomes else "ok"
+    else:
+        outcome = "partial" if sent else (outcomes[-1] if outcomes else "failed")
+    total = len(wavs)
     return {
-        "ok": True,
-        "outcome": "ok",
-        "method": RECORD_METHOD,
-        "wav": wav.name,
-        "duration_s": round(duration, 1),
-        "steps": steps,
-        "restored": None,
-        "warning": bind_warning,
-        "_history": (
-            True if _hist_appended else _append_history(wav, duration, "ok", warning=bind_warning)
+        "ok": outcome != "failed",
+        "outcome": outcome,
+        "total_chunks": total,
+        "sent_chunks": sent,
+        "failed_index": failed_index,
+        "wavs": [w.name for w in wavs],
+        "duration_s": round(sum(r.get("duration_s") or 0 for r in results if isinstance(r, dict)), 1),
+        "warning": next(
+            (r.get("warning") for r in results if isinstance(r, dict) and r.get("warning")), ""
         ),
+        "steps": steps,
     }
 
 
