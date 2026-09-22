@@ -13,7 +13,7 @@
       "path": "/workshop",
       "module": "Workshop",
       "export": "WorkshopRoute",
-      "nav": { "label": "训练变声", "icon": "Mic2", "group": "start", "order": 40 }
+      "nav": { "label": "训练变声", "icon": "Mic2", "group": "more", "order": 10 }
     }
   ],
   "legacy_routes": [{ "path": "/discover", "redirect": "/workshop?tab=discover" }],

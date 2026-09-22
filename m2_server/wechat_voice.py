@@ -1452,6 +1452,47 @@ class SendTextReq(BaseModel):
     index_rate: float = 0.5
 
 
+def _voice_has_reference(voice_id: str) -> bool:
+    """该音色是否有 reference.wav（TTS 合成的前提，与 common.voice_ref 同一判据）。"""
+    from common import is_valid_voice_id
+    from runtime import VOICEBANK
+
+    if not voice_id or not is_valid_voice_id(voice_id):
+        return False
+    return (VOICEBANK / voice_id / "reference.wav").exists()
+
+
+def _tts_ref_for(want: str, rvc_voice: str) -> tuple[str, str]:
+    """给一个「只有 RVC 权重、没有参考音」的音色借一段 TTS 参考音。
+
+    返回 `(拿去合成的 voice_id, 借自谁的音色名或空串)`。
+
+    **只给 send_text 用，别挪去做 /api/tts 的通用回退。** 两条链路里 RVC 的地位相反：
+      · send_text：末尾必过 RVC，音色由 RVC 决定 → 语气借谁的都不影响"像不像"；
+      · /api/tts：没有 RVC，参考音**就是**音色本身 → 借一段别的声音来合成，
+        结果是"看起来能用、其实完全不是那个音色"，比直接报错更糟。
+
+    为什么只在 `rvc_voice` 非空时才借：没有 RVC 覆盖时，借来的参考音会直接决定
+    输出音色 —— 那是在拿别人的声音冒充用户选的音色，必须让它照原样报错。
+
+    借的对象按"用户意图"排序：主界面当前选中的音色 → 音色库里第一个有参考音的。
+    都借不到就原样返回 want，让 synth_wav 抛它本来就该抛的那个 400/404。
+    """
+    if not want or not rvc_voice or _voice_has_reference(want):
+        return want, ""
+    from common import selected_voice
+    from runtime import VOICEBANK
+
+    cur = selected_voice()
+    if cur and cur != want and _voice_has_reference(cur):
+        return cur, cur
+    # glob 而不是 iterdir：音色库目录不存在时它返回空集而不是抛 FileNotFoundError
+    for ref in sorted(VOICEBANK.glob("*/reference.wav")):
+        if ref.parent.name != want:
+            return ref.parent.name, ref.parent.name
+    return want, ""
+
+
 @router.post("/send_text")
 def send_text(req: SendTextReq):
     """一键：文字 → TTS → RVC 换声 → 全自动发成微信语音消息。
@@ -1483,19 +1524,28 @@ def send_text(req: SendTextReq):
         # 立刻起后台任务与合成并行（见 _PendingRecordingEnv）。
         # 合成/组装任何一步失败，下面的 except 会 abandon() 兜底还原声卡。
         apply_task = _PendingRecordingEnv()
+        from rvc_convert import resolve_rvc_voice
         from tts_api import synth_wav
 
-        wav, duration_s, _vid = synth_wav(req.text, req.voice_id)
+        # 「谁在说」先定，再看「怎么说」—— 顺序不能反：
+        #   · 显式给了 rvc_voice 就用它；否则按 voicebank id → RVC 实验名的约定推
+        #     （kangaroo → kangaroo_v2），推不到就照发并在 steps 里说清楚音色会不像。
+        #   · want 为空 = 桌宠面板选了"主界面选中"，交给 common.selected_voice() 定，
+        #     推 RVC 时必须用同一个 want，否则又退回"不换声"（旧行为）。
+        from common import selected_voice
+
+        want = req.voice_id or selected_voice()
+        rvc_voice = req.rvc_voice or resolve_rvc_voice(want) or ""
+        # 市场装的音色只有 logs/<id>/<id>.pth、没有 reference.wav，直接拿它当 TTS 参考音
+        # 会被 voice_ref() 拒掉整条请求（以前就是这么 400 的，桌宠下拉因此只能把这类
+        # 音色整个滤掉 —— 用户在市场装的音色在面板里根本选不到）。
+        tts_voice, borrowed = _tts_ref_for(want, rvc_voice)
+        wav, duration_s, _vid = synth_wav(req.text, tts_voice)
         steps = [
             f"合成: {wav.name}（{duration_s:.1f}s，voice={_vid or '默认'}，用时 {time.time()-_t0:.1f}s）"
         ]
-        # 没显式给 rvc_voice 时，按 voicebank id → RVC 实验名的约定推一个
-        # （kangaroo → kangaroo_v2）。推不到就照发，并在 steps 里说清楚音色会不像。
-        rvc_voice = req.rvc_voice
-        if not rvc_voice:
-            from rvc_convert import resolve_rvc_voice
-
-            rvc_voice = resolve_rvc_voice(_vid or req.voice_id) or ""
+        if borrowed:
+            steps.append(f"「{want}」没有参考音，语气借自 {borrowed}（音色由 RVC 决定，不影响像不像）")
         if rvc_voice:
             from rvc_convert import rvc_convert as _rvc
 

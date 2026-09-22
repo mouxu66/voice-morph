@@ -13,7 +13,7 @@
       "path": "/audition",
       "module": "Audition",
       "export": "AuditionRoute",
-      "nav": { "label": "试音间", "icon": "AudioLines", "group": "start", "order": 20 }
+      "nav": { "label": "试音间", "icon": "AudioLines", "group": "start", "order": 50 }
     }
   ],
   "legacy_routes": [],

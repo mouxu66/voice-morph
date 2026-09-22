@@ -1387,21 +1387,66 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && panelOpen) hidePanel();
 });
 
-// 音色下拉：/api/voices 里挑有参考音频的（没参考的 RVC 模型合不了 TTS）
+// 音色下拉的数据：voice_id -> 是否有参考音。无参考音的不能单独试听（见 syncVoiceGates）
+let voiceRefMap = {};
+
+/**
+ * 音色下拉。`/api/voices` 合并了两个来源（音色库档案 + RVC 实验目录），这里挑出**真能用**的：
+ *   · 有参考音（has_reference）→ 能当 TTS 的语气参考，也能被 RVC 换成它自己；
+ *   · 没参考音但有可推理权重（pth_exists，市场装的大多是这种）→ **仍然可选**：
+ *     `send_text` 会借一段别的参考音做语气，末尾再由 RVC 换成它（音色由 RVC 决定）；
+ *   · 两者都没有（只有语料、还没训练）→ 不列，列出来只会点一次错一次。
+ *
+ * 2026-09-22 之前这里只列 `has_reference` 的音色，依据是"没参考的 RVC 模型合不了 TTS"。
+ * 局部结论没错，但把整条路堵死了：用户在「音色市场」装的音色一个都选不到，面板里永远
+ * 只剩自训的那两个 —— 用户看到的就是"只能选两个音色"。现在按"这个音色能不能用"
+ * 而不是"它有没有参考音"来筛，后端 `_tts_ref_for` 补齐了缺的那半段。
+ */
 async function loadVoices() {
   try {
     const r = await fetch("http://127.0.0.1:8000/api/voices", { cache: "no-store" });
     if (!r.ok) return;
     const j = await r.json();
-    const usable = (j.voices || []).filter((v) => v.has_reference);
+    const usable = (j.voices || []).filter((v) => v.has_reference || v.pth_exists);
+    voiceRefMap = {};
+    for (const v of usable) voiceRefMap[v.id] = !!v.has_reference;
     const saved = localStorage.getItem(VOICE_KEY) || "";
     const cur = voiceSel.value || saved;
     const opts = [new Option("主界面选中", "")];
-    for (const v of usable) opts.push(new Option(v.display_name || v.id, v.id));
+    for (const v of usable) {
+      // 原生 <option> 渲染不了彩色徽标，沿用主界面 voiceLabel 的约定：名字 +（来源）
+      const tag = v.source === "market" ? "市场" : "自训";
+      opts.push(new Option(`${v.display_name || v.id}（${tag}）`, v.id));
+    }
     voiceSel.innerHTML = "";
     opts.forEach((o) => voiceSel.add(o));
     voiceSel.value = usable.some((v) => v.id === cur) ? cur : "";
   } catch {}
+  syncVoiceGates();   // 下拉换了一批 → 试听按钮的可用性跟着重算
+}
+
+/**
+ * 「试听」的可用性跟着选中音色走。
+ *
+ * 无参考音的音色（市场装的实时变声模型）**不能**单独试听：试听走 `/api/tts`，
+ * 那条链里没有 RVC，参考音就是音色本身 —— 借一段别人的声音合出来只会误导，
+ * 所以宁可禁用并说清原因，也别让用户点了才收到一句「音色 [xxx] 不存在」。
+ * 「合成并发送」**不受影响**：那条链末尾有 RVC，音色由 RVC 决定，借的只是语气。
+ *
+ * 禁用态走 `dataset.gated` 而不是直接设 disabled —— `setBusy()` 收尾时会把按钮
+ * 重新启用，用 dataset 才能让"被门控"这件事在忙态结束后仍然成立。
+ */
+function syncVoiceGates() {
+  const id = voiceSel.value || "";
+  const hasRef = !id || voiceRefMap[id] !== false;   // ""=主界面选中，按可用处理
+  previewBtn.dataset.gated = hasRef ? "0" : "1";
+  previewBtn.disabled = !hasRef;
+  previewBtn.title = hasRef
+    ? "只合成并试听，满意再点发送"
+    : "这个音色没有参考音（市场装的实时变声模型），不能单独试听；直接点「合成并发送」，会用 RVC 换成它的音色";
+  voiceSel.title = hasRef
+    ? "合成用的音色（默认=主界面当前选中）"
+    : "合成时借一段参考音做语气，再由 RVC 换成它 —— 发出去就是它（试听不可用）";
 }
 
 /**
@@ -1471,7 +1516,8 @@ function refreshSendLabel() {
     「合成中」动辄十几秒，只把按钮变灰用户会以为卡死，转圈才看得见在动。 */
 function setBusy(btn, on) {
   if (!btn) return;
-  btn.disabled = !!on;
+  // gated=1 的按钮是被规则禁用的（如无参考音音色的「试听」），忙态结束不能把它放开
+  btn.disabled = !!on || btn.dataset.gated === "1";
   btn.classList.toggle("busy", !!on);
 }
 
@@ -1534,6 +1580,7 @@ async function doSendText() {
   setTimeout(() => { setBusy(sendBtn, false); refreshPanel(); }, 25000);   // TTS+录音发送可能要十几秒
 }
 previewBtn.addEventListener("click", doPreview);
+voiceSel.addEventListener("change", syncVoiceGates);
 sendBtn.addEventListener("click", doSendText);
 sayEl.addEventListener("keydown", (e) => { if (e.key === "Enter") doSendText(); });
 liveBtn.addEventListener("click", () => { void toggleLive(); });

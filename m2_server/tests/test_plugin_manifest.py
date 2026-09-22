@@ -407,6 +407,12 @@ def test_studio_nav_no_longer_hardcodes_nav_items():
 #
 # 第 4 步之后清单是 IA 的**唯一**来源：改 `plugin.json` 就是改产品。没有这两条门禁，
 # 少一个 nav 项、挪一下 `order`、删一条旧路由重定向，不会有任何东西发现。
+#
+# 2026-09-22 用户拍板重排（原因见 `docs/犯错指南.md` §2.35）：
+#   「开始」组此前放的是**专业向**的「训练变声」，而**每天要用的**「我的音色」（音色库
+#   + 音色市场两个 tab）与「实时变声」却被折在默认收起的「更多功能」里。后果很具体：
+#   用户从市场装完音色后，找不到任何能选中它的入口，只觉得「音色选不了」。
+#   现在：「开始」= 能**选/用**音色，「更多功能」= 能**造/调**音色。
 _FROZEN_ROUTES: tuple[tuple[str, str, str], ...] = (
     # (path, module, export)
     ("/home", "Home", "HomeRoute"),
@@ -433,14 +439,15 @@ _FROZEN_LEGACY: tuple[tuple[str, str], ...] = (
 
 _FROZEN_NAV: tuple[tuple[str, str, str, str, int], ...] = (
     # (path, label, icon, group, order) —— 已按 group + order 排成用户看到的先后
+    # 「开始」= 选音色 + 用它；「更多功能」= 造音色 + 调它（用户 09-22 拍板）
     ("/home", "首页", "Home", "start", 10),
-    ("/audition", "试音间", "AudioLines", "start", 20),
+    ("/voices", "我的音色", "Library", "start", 20),
     ("/tts", "输字变声", "Speech", "start", 30),
-    ("/workshop", "训练变声", "Mic2", "start", 40),
-    ("/offlinevc", "工具箱", "Wrench", "start", 50),
-    ("/voices", "我的音色", "Library", "more", 10),
-    ("/live", "实时变声", "Radio", "more", 20),
-    ("/pet-market", "桌宠皮肤", "PawPrint", "more", 30),
+    ("/live", "实时变声", "Radio", "start", 40),
+    ("/audition", "试音间", "AudioLines", "start", 50),
+    ("/offlinevc", "工具箱", "Wrench", "start", 60),
+    ("/workshop", "训练变声", "Mic2", "more", 10),
+    ("/pet-market", "桌宠皮肤", "PawPrint", "more", 20),
 )
 
 

@@ -15,7 +15,9 @@ import pytest  # noqa: E402
 
 pytest.importorskip("fastapi")
 
+import common  # noqa: E402
 import config as cfg  # noqa: E402
+import runtime  # noqa: E402
 import rvc_convert  # noqa: E402
 import tts_api  # noqa: E402
 import wechat_voice as wv  # noqa: E402
@@ -24,6 +26,16 @@ import wechat_voice as wv  # noqa: E402
 @pytest.fixture(autouse=True)
 def isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "OUTPUTS_DIR", tmp_path)
+    # 音色库也指向临时目录：send_text 现在会看「这个音色有没有参考音」（_voice_has_reference
+    # → runtime.VOICEBANK），不隔离就会去读开发机的 D:/变声/media/voicebank ——
+    # 开发机装了 kangaroo、CI 没装，同一条用例两边结论不同。
+    # 默认只放一个有参考音的 kangaroo：现有用例大多用它，且都不该依赖「没有参考音」。
+    vb = tmp_path / "voicebank"
+    (vb / "kangaroo").mkdir(parents=True)
+    (vb / "kangaroo" / "reference.wav").write_bytes(b"RIFF")
+    monkeypatch.setattr(runtime, "VOICEBANK", vb)
+    # 当前选中音色同理（selected_voice.json 也是本机状态）；需要它的用例自行覆盖
+    monkeypatch.setattr(common, "selected_voice", lambda: "")
     monkeypatch.setattr(wv, "HISTORY_FILE", tmp_path / "wechat_send_history.json")
     # 绝不能让单测真去点微信 / 真跑 RVC / 真加载 TTS
     monkeypatch.setattr(wv, "_uia_ready", lambda: False)
@@ -46,6 +58,15 @@ def isolate(tmp_path, monkeypatch):
     # 这里默认打桩，需要记录调用的测试自行覆盖。
     monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
     yield tmp_path
+
+
+def _add_ref_voice(tmp_path: Path, *ids: str) -> Path:
+    """在隔离出的音色库里造几个「有参考音」的音色（给借用参考音的用例用）。"""
+    vb = tmp_path / "voicebank"
+    for i in ids:
+        (vb / i).mkdir(parents=True, exist_ok=True)
+        (vb / i / "reference.wav").write_bytes(b"RIFF")
+    return vb
 
 
 def _fake_send(tmp_path, monkeypatch, ret=None):
@@ -122,6 +143,63 @@ def test_resolve_rvc_voice_none_when_missing(monkeypatch):
 # ---------------- /api/wechat/send_text ----------------
 
 
+# -------- 无参考音的音色（市场装的）也能发：借一段参考音做语气，音色交给 RVC --------
+#
+# 由来（2026-09-22 用户实测，原话「只能选择两个音色」）：用户在「音色市场」装了几个
+# 卡通音色，桌宠面板的下拉里一个都看不到，永远只有自训的那两个。根因不在下拉的
+# 过滤写法，而在**链路缺了半段** —— 市场装的是 `logs/<id>/<id>.pth` 推理权重，
+# 没有 reference.wav，而 `voice_ref()` 对这类音色直接抛错，整条 send_text 会 400。
+# 但 send_text 末尾必过 RVC、音色由 RVC 决定，所以语气借谁的都行。
+#
+# 下面两条是**不能借**的护栏，比“能不能借”更重要：
+#   · 没有 RVC 兜底时不借（否则会拿别人的声音冒充用户选的音色）；
+#   · 借不到时不编，原样传下去让 synth_wav 抛它本该抛的错。
+
+
+def test_tts_ref_for_keeps_voice_with_reference(tmp_path, monkeypatch):
+    """有参考音的音色不动 —— 借用只在"缺参考音"时才发生。"""
+    _add_ref_voice(tmp_path, "kangaroo")
+    monkeypatch.setattr(common, "selected_voice", lambda: "other")
+    assert wv._tts_ref_for("kangaroo", "kangaroo_v2") == ("kangaroo", "")
+
+
+def test_tts_ref_for_borrows_selected_voice(tmp_path, monkeypatch):
+    """市场音色（无参考音）→ 借主界面当前选中的那个音色做语气。"""
+    _add_ref_voice(tmp_path, "kangaroo", "aaa_first")
+    monkeypatch.setattr(common, "selected_voice", lambda: "kangaroo")
+    assert wv._tts_ref_for("lazy_sheep", "lazy_sheep") == ("kangaroo", "kangaroo")
+
+
+def test_tts_ref_for_falls_back_to_first_bank_voice(tmp_path, monkeypatch):
+    """没有选中的音色 → 退到音色库里第一个有参考音的（取目录名升序，结果可复现）。"""
+    _add_ref_voice(tmp_path, "aaa_first", "kangaroo")
+    assert wv._tts_ref_for("lazy_sheep", "lazy_sheep") == ("aaa_first", "aaa_first")
+
+
+def test_tts_ref_for_skips_self(tmp_path, monkeypatch):
+    """选中项就是那个缺参考音的音色 → 绝不能"借它自己"（借不到等于没变）。"""
+    _add_ref_voice(tmp_path, "kangaroo")
+    monkeypatch.setattr(common, "selected_voice", lambda: "lazy_sheep")
+    assert wv._tts_ref_for("lazy_sheep", "lazy_sheep") == ("kangaroo", "kangaroo")
+
+
+def test_tts_ref_for_never_borrows_without_rvc(tmp_path, monkeypatch):
+    """★ 没有 RVC 兜底时绝不借：借来的参考音会直接决定输出音色。
+
+    那是在拿别人的声音冒充用户选的音色 —— 比"直接报错"更难发现、更误导。
+    所以"声音不像"要比"发出去了但是别人的声音"好。
+    """
+    _add_ref_voice(tmp_path, "kangaroo")
+    monkeypatch.setattr(common, "selected_voice", lambda: "kangaroo")
+    assert wv._tts_ref_for("lazy_sheep", "") == ("lazy_sheep", "")
+
+
+def test_tts_ref_for_returns_want_when_nothing_to_borrow(tmp_path, monkeypatch):
+    """借不到就不编：原样返回，让 synth_wav 抛它本来就该抛的 400/404。"""
+    monkeypatch.setattr(runtime, "VOICEBANK", tmp_path / "empty_bank")
+    assert wv._tts_ref_for("lazy_sheep", "lazy_sheep") == ("lazy_sheep", "")
+
+
 def test_send_text_full_chain(tmp_path, monkeypatch):
     """文字 → 合成 → RVC 换声 → 发送，steps 里要说清楚换了哪个音色。
 
@@ -141,6 +219,36 @@ def test_send_text_honors_explicit_rvc_voice(tmp_path, monkeypatch):
     calls = _fake_send(tmp_path, monkeypatch)
     wv.send_text(wv.SendTextReq(text="你好", voice_id="kangaroo", rvc_voice="katoong_manbo"))
     assert calls["rvc"][1] == "katoong_manbo"
+
+
+def test_send_text_borrows_reference_for_market_voice(tmp_path, monkeypatch):
+    """市场音色端到端：语气借自 kangaroo，换声换成的还是用户选的那个。
+
+    这就是用户在面板里选「懒羊羊（市场）」时走的那条路。
+    """
+    _add_ref_voice(tmp_path, "kangaroo")
+    monkeypatch.setattr(common, "selected_voice", lambda: "kangaroo")
+    calls = _fake_send(tmp_path, monkeypatch)
+    res = wv.send_text(wv.SendTextReq(text="你好", voice_id="lazy_sheep"))
+    assert res["ok"] is True
+    assert calls["synth"][1] == "kangaroo"      # 语气借来的
+    assert calls["rvc"][1] == "lazy_sheep_v2"   # ★ 音色还是用户选的那个
+    assert any("语气借自" in s for s in res["steps"]), "借了参考音就得在 steps 里说清楚"
+
+
+def test_send_text_empty_voice_uses_selected_for_both(tmp_path, monkeypatch):
+    """`voice_id` 留空 = 面板选的「主界面选中」：TTS 与 RVC 必须用**同一个**音色。
+
+    ⚠️ 护栏：把 want 与「TTS 实际用的音色」拆开之后很容易写错成
+    `resolve_rvc_voice("")` → 推不到 → 静默退回"不换声"（⾳色会明显不像），
+    而且失败得很安静，不像报错那样有人发现。
+    """
+    calls = _fake_send(tmp_path, monkeypatch)
+    monkeypatch.setattr(common, "selected_voice", lambda: "kangaroo")
+    res = wv.send_text(wv.SendTextReq(text="你好"))
+    assert calls["synth"][1] == "kangaroo"
+    assert calls["rvc"][1] == "kangaroo_v2"
+    assert not any("语气借自" in s for s in res["steps"]), "这个音色自带参考音，不该走借用"
 
 
 def test_send_text_warns_when_no_rvc(tmp_path, monkeypatch):
@@ -343,7 +451,7 @@ def test_send_text_starts_pending_apply_and_frees_it_on_tts_failure(tmp_path, mo
 # 后端在 `rvc_voice` 为空时按 `voice_id` 推（见上面 resolve_rvc_voice 那组用例）。
 # 复核结论：
 #   · 桌宠面板**有**音色下拉（`pet.html` 的 `#voiceSel`，从 `/api/voices` 灌、
-#     只留 `has_reference` 的、选中项存 localStorage），不是单音色；
+#     留 `has_reference` **或** `pth_exists` 的、选中项存 localStorage），不是单音色；
 #   · `rvc_voice: ""` → 后端推 `kangaroo → kangaroo_v2`，实测可用。
 #
 # 那为什么还要钉？因为「留空」看起来太像漏填了，已经被误报两次。这条用例的价值
@@ -380,8 +488,31 @@ def test_pet_panel_keeps_a_voice_selector():
 
     assert 'id="voiceSel"' in html, "桌宠面板的音色下拉没了 —— 这才是真的单音色写死"
     assert "/api/voices" in html, "音色下拉没有从 /api/voices 灌数据"
-    assert "has_reference" in html, "应只列有参考音频的音色（没参考的合不了 TTS）"
     assert "localStorage" in html, "选中的音色应持久化，否则每次重开都要重选"
+
+
+def test_pet_panel_lists_market_voices_too():
+    """★ 下拉必须连「只有 RVC 权重、没有参考音」的市场音色一起列出来。
+
+    由来（2026-09-22 用户实测，原话「只能选择两个音色」）：这里以前过滤成
+    `v.has_reference`，理由是“没参考的 RVC 模型合不了 TTS”。局部结论没错，
+    但把整条路堵死了 —— 用户在音色市场装的音色一个都选不到，下拉里永远只剩自训的
+    那两个。后端 `_tts_ref_for` 补上了缺的那半段后，筛选条件应该改成
+    “这个音色能不能用”（有参考音 **或** 有可推理权重）。
+
+    钉住两条：① 用 OR 而不是只留 has_reference；② 选项文案带上来源，
+    否则用户分不清哪个是市场的、哪个是自己训的。
+    """
+    html = (_ELECTRON / "pet" / "pet.html").read_text(encoding="utf-8")
+
+    assert "v.has_reference || v.pth_exists" in html, (
+        "音色下拉又只列 has_reference 的音色了 —— 市场装的（只有 .pth）会整批消失"
+    )
+    # 选项文案：`${v.display_name}（${tag}）`，tag 来自 source 字段（与主界面 voiceLabel 同一约定）
+    assert 'v.source === "market" ? "市场" : "自训"' in html, (
+        "下拉选项没标来源 —— 用户分不清哪个是市场装的、哪个是自己训的"
+    )
+    assert "（${tag}）" in html, "来源标记没有落到选项文案上"
 
 
 def test_pet_panel_passes_selected_voice():
