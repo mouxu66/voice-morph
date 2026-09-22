@@ -258,6 +258,7 @@ def first_party_closure(seeds: list[str]) -> set[str]:
 #   devtool     —— 人手动跑的验收/生成工具，不在任何请求链路上
 #   test-infra  —— pytest 基建 / 用例（不是运行时模块）
 #   dead        —— 已确认无任何引用的遗留代码，**建议清理**
+#                 （2026-09-22 清空：`_audio_backend` / `fast_tts` 两个已按登记删除）
 #
 # ⚠️ 这里**没有** subprocess 类：子进程入口的归属是**算得出来的**（见 `_SCRIPT_PATH_RE`），
 #    2026-09-21 起由工具自动归属，不需要人来记。曾在此登记过 5 条（audition_score /
@@ -269,8 +270,6 @@ ORPHAN_OK: dict[str, tuple[str, str]] = {
     "make_test_audio": ("devtool", "生成合成测试音频，无真实素材时验证链路"),
     "conftest": ("test-infra", "pytest 的 sys.path/conftest 基建"),
     "test_wechat_voice": ("test-infra", "wechat_voice 的逻辑层回归用例（放在 m2_server 下而非 tests/）"),
-    "_audio_backend": ("dead", "★ 死代码：两个 patch_* 函数全仓零调用，其要绕的 torchcodec ABI 问题也已无人提及 —— 建议删"),
-    "fast_tts": ("dead", "★ 死代码：被 qwen3_tts_service 的 faster 后端取代（其注释明写「彻底移除 fast_tts.py」）—— 建议删"),
 }
 
 # 子进程入口的**发现方式**（2026-09-21 加）：模块里出现 `"xxx.py"` 字面量，

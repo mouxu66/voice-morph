@@ -20,8 +20,8 @@ def _try_import_torch():
 
     为什么要这层包装（2026-09-20，插件化第 5 步）：torch 是**可选能力**的重依赖
     （`sound.offline-vc` / `sound.workshop` 的 demucs / 打分器），**不是核心依赖** ——
-    实测核心插件里没有任何模块在模块级 import 它（模块级的只有 `fast_tts.py` 与
-    `qwen3_tts_service.py`，而前者已无人引用、后者跑在独立 `venv312` 子进程里）。
+    实测核心插件里没有任何模块在模块级 import 它（模块级的只有 `qwen3_tts_service.py`，
+    它跑在独立 `venv312` 子进程里；当年同类的 `fast_tts.py` 已无人引用，2026-09-22 删除）。
     所以「轻量预设」（不装 torch，省 ~2GB）下，体检类端点必须照常 200，
     把「缺 torch」当成**一条可展示的结论**，而不是让它自己 500 ——
     那等于在最需要看「哪里缺」的时候把面板关掉。
