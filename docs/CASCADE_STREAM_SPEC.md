@@ -24,10 +24,16 @@
 | 能力 | 位置 | 接口 |
 |---|---|---|
 | ASR | TTS worker `127.0.0.1:8001` | `POST /transcribe` `{path}` → `{text, quality}` |
-| TTS（已加速） | 同上 | `POST /tts` `{text, language, ref_audio, ref_text, fast:true}` → wav bytes，响应头 `X-Fast-TTS: 1/0` |
-| 声纹/健康检查 | 同上 | `POST /emb`、`GET /health` → `{status, version, fast_tts}` |
+| TTS（已加速） | 同上 | `POST /tts` `{text, language, ref_audio, ref_text}` → wav bytes，响应头 `X-Fast-TTS: 1/0` |
+| 声纹/健康检查 | 同上 | `POST /emb`、`GET /health` → `{status, version, tts_engine, warmed_up}` |
 | 声卡切换 | `m2_server/audio_config.ps1` | `powershell -NoProfile -ExecutionPolicy Bypass -File <ps1> -action apply\|restore\|reset` |
 | 音色参考音频 | `tts_models/ref/*.wav`（兜底用，可用 `VM_DEFAULT_REF` 覆盖） | 22.05kHz 单声道，约 3s |
+
+> ⚠️ **2026-09-22 校订**：`/tts` 的 `fast` 请求参数已是**遗留空操作** ——
+> 调用方（`cascade_stream.py`）仍会发 `"fast": true`，但端点**不读它**（`body.get("fast")`
+> 只出现在 `/transcribe`）。加速**恒开**：`_tts_blocking` 只走 faster 原生
+> `generate_voice_clone`（自带 CUDA Graph，`warmup()` 已捕获），故 `X-Fast-TTS` **恒为 `1`**。
+> 旧的 `fast_tts.py`（自建 CUDA Graph 引擎）已于 2026-09-22 删除。
 
 **实测性能基线（2026-08-30）**
 
@@ -255,7 +261,10 @@ async def tts(req: Request):        # async，但里面是同步 GPU 推理
 | 与 RVC 互斥 | 实时运行中启动级联返回 409 | 接口测试 |
 
 **性能回归基线**（若实施后低于此值说明有问题）：
-ASR RTF 11.3、TTS RTF ~2.0。若 TTS 掉到 1.0 以下，检查是否回退到了原版路径（看 `X-Fast-TTS` 头）。
+ASR RTF 11.3、TTS RTF ~2.0。★ 2026-09-22 校订：**「回退到了原版路径」这条排查法已作废** ——
+`fast_tts.py` 已删，`/tts` 只走 faster 原生 `generate_voice_clone`（`_tts_blocking` 无条件返回
+`fast_used=True`），`X-Fast-TTS` 恒为 `1`，**没有可回退的旧路径**。
+TTS 变慢应查：显存/模型状态、`_GPU_LOCK` 排队、以及分段数（`seg_chars`）是否被调小。
 
 ## 十、交付物清单
 

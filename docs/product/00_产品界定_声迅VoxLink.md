@@ -95,7 +95,7 @@
 
 | 资产 | 位置 | 实测能力 |
 |------|------|---------|
-| **PC 后端** | `m2_server/`（FastAPI :8000） | 级联变声（ASR→TTS 文字中转，p95 延迟统计）、RVC 实时变声、RVC 训练（阶段/进度/自动质检 QC）、离线变声、TTS 克隆合成（含 fast_tts）、**微信语音全自动发送**（wechat_voice.py：虚拟声卡+Alt 快捷键+降级+历史）、**DSP 效果链**（effects.py：混响/回声/EQ/变调）、**产出历史**（history.py：tts/offlinevc/audiobook/fx/mine）、有声书（audiobook.py）、**Seed-VC 引擎**（seed_vc.py）、实时 ASR 字幕（--asr-only 子进程）、素材流水线（切片/打标/说话人分离/质检/音调建议）、loopback 采集、PC 声卡一键最优/恢复、API Key 鉴权 |
+| **PC 后端** | `m2_server/`（FastAPI :8000） | 级联变声（ASR→TTS 文字中转，p95 延迟统计）、RVC 实时变声、RVC 训练（阶段/进度/自动质检 QC）、离线变声、TTS 克隆合成（含 CUDA Graph 加速）、**微信语音全自动发送**（wechat_voice.py：虚拟声卡+Alt 快捷键+降级+历史）、**DSP 效果链**（effects.py：混响/回声/EQ/变调）、**产出历史**（history.py：tts/offlinevc/audiobook/fx/mine）、有声书（audiobook.py）、**Seed-VC 引擎**（seed_vc.py）、实时 ASR 字幕（--asr-only 子进程）、素材流水线（切片/打标/说话人分离/质检/音调建议）、loopback 采集、PC 声卡一键最优/恢复、API Key 鉴权 |
 | **移动端 App** | `mobile/`（Expo 54 + RN 0.81 + expo-router + zustand，约 1200 行业务代码） | 四 Tab：**主控台**（后端连接、级联/RVC 实时遥控启停、PC 训练与流水线状态镜像）、**离线变声**（手机录音→上传 PC RVC→回传播放/分享，pitch/index_rate/denoise 可调，与实时互斥保护显卡）、**TTS**、**音色库**（RVC 状态/QC 徽标）；设置页配对 host + API Key |
 | **桌面控制端** | `voice-morph-desktop/`（变声工坊.exe，Electron 已打包） | PC 侧图形控制台 |
 | **音色资产** | `media/voicebank/`（RVC voicebank，含袋鼠骑士） | 已验证的克隆训练与推理链路 |
