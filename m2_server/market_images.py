@@ -48,7 +48,14 @@ _CDN_TPL = "https://cdn.jsdelivr.net/gh/{repo}@main/{path}"
 _FALLBACK_TPL = "https://raw.githubusercontent.com/{repo}/main/{path}"
 
 _lock = threading.Lock()
-_state = {"last_sync": 0.0, "revision": None, "ok": None, "error": "", "downloaded": 0}
+_state = {
+    "last_sync": 0.0,
+    "revision": None,
+    "ok": None,
+    "error": "",
+    "downloaded": 0,
+    "failed": 0,
+}
 
 
 def _http_get(url: str, timeout=_HTTP_TIMEOUT) -> bytes | None:
@@ -145,7 +152,41 @@ def _snapshot() -> dict:
         "ok": _state["ok"],
         "error": _state["error"],
         "downloaded": _state["downloaded"],
+        "failed": _state["failed"],
     }
+
+
+def _valid_entry(vid, rel) -> tuple[str, str, str] | None:
+    """校验并归一化一条清单条目 → (voice_id, rel, ext)；脏条目返回 None。
+
+    下载与"查缺"共用同一份判据，避免两处口径漂移（一处放行、另一处拦住）。
+    """
+    vid = str(vid).strip().lower()
+    rel = str(rel).lstrip("/")
+    ext = Path(rel).suffix.lower().lstrip(".")
+    if (
+        not re.fullmatch(r"[a-z0-9_]{1,64}", vid)
+        or not rel
+        or ".." in rel
+        or ext not in _IMG_EXTS
+    ):
+        return None
+    return vid, rel, ext
+
+
+def _entries(doc: dict) -> list[tuple[str, str, str]]:
+    """清单 → 合法条目列表（脏条目丢弃，不发请求）。"""
+    out = []
+    for vid, rel in (doc.get("imgs") or {}).items():
+        e = _valid_entry(vid, rel)
+        if e is not None:
+            out.append(e)
+    return out
+
+
+def _missing(entries: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+    """其中本地缓存**还没有**的那些。"""
+    return [e for e in entries if not (CACHE_DIR / f"{e[0]}.{e[2]}").is_file()]
 
 
 def _sync_locked() -> None:
@@ -158,35 +199,53 @@ def _sync_locked() -> None:
     last_revision = _state.get("revision")
     if last_revision is None and REVISION_FILE.is_file():
         last_revision = REVISION_FILE.read_text("utf-8").strip()
-    if revision == last_revision and revision:
+
+    entries = _entries(doc)
+    # ★ 两种触发条件，作用**不同**，不能合并成"只下缺的"：
+    #   ① revision 变了 → 清单内容可能变了。作者换图常常**不改文件名**
+    #      （改的是同一张 `diyin.png` 的内容）→ 必须**全量重下**，
+    #      否则同名新图永远盖不掉本地旧文件，"换图"看起来没生效。
+    #   ② revision 没变、但本地缺文件 → 上次同步没下全。下载循环里单个文件
+    #      失败是 `continue` 跳过，但循环结束后**仍然写入新 revision** →
+    #      下次只看 revision 就会整体跳过，**缺的文件永远补不上**。
+    #      2026-09-18 实测过一次：安装版缓存长期停在 12/30 张，
+    #      而因为 `local_image_path()` 缓存优先，其余 18 张静默回退到打包图，
+    #      表面完全看不出来。
+    revision_changed = not revision or revision != last_revision
+    todo = entries if revision_changed else _missing(entries)
+    if not todo:
         _state.update(
-            ok=True, error="", revision=revision or None, last_sync=time.time(), downloaded=0
+            ok=True, error="", revision=revision or None,
+            last_sync=time.time(), downloaded=0, failed=0,
         )
         REVISION_FILE.write_text(revision, "utf-8")
         return
-    downloaded = 0
-    for vid, rel in doc["imgs"].items():
-        vid = str(vid).strip().lower()
-        rel = str(rel).lstrip("/")
-        ext = Path(rel).suffix.lower().lstrip(".")
-        # 先验证（vid 白名单 + 相对路径 + 扩展名），再下载——脏条目不发请求
-        if (
-            not re.fullmatch(r"[a-z0-9_]{1,64}", vid)
-            or not rel
-            or ".." in rel
-            or ext not in _IMG_EXTS
-        ):
-            continue
+
+    downloaded = failed = 0
+    for vid, rel, ext in todo:
         content = _http_get(_CDN_TPL.format(repo=_REPO, path=rel)) or _http_get(
             _FALLBACK_TPL.format(repo=_REPO, path=rel)
         )
         if content is None:
+            failed += 1
             continue
         (CACHE_DIR / f"{vid}.{ext}").write_bytes(content)
         downloaded += 1
     _state.update(
-        ok=True, error="", revision=revision or None, last_sync=time.time(), downloaded=downloaded
+        ok=failed == 0,
+        error="" if failed == 0 else f"{failed} 张下载失败（下次同步自动补拉）",
+        revision=revision or None,
+        last_sync=time.time(),
+        downloaded=downloaded,
+        failed=failed,
     )
+    # revision **照写**，即使这次有文件失败 —— 因为上面 ② 的补拉机制会接手：
+    # 下次 `revision_changed=False` → `todo = _missing(...)` → 只重试缺的那几张。
+    #
+    # 反过来（失败就不写）看着更"严谨"，实际有个更糟的退化：
+    # 若某张图**永久**失败（远程仓库里那张坏了/被删了但清单仍引用它），
+    # revision 就永远写不进去 → 每次同步都当"首次"→ **每次都全量重下全部图**。
+    # 而照写的话，永久失败的那张每次只重试它自己 1 张，开销可忽略。
     REVISION_FILE.write_text(revision, "utf-8")
 
 

@@ -110,3 +110,130 @@ def test_sync_remote_unreachable_is_safe(img_dirs, monkeypatch):
     st = mi.sync_remote(force=True)
     assert st["ok"] is False and st["error"]
     assert (cache / "keep.png").read_bytes() == b"old"
+
+
+# ------------------------------------------------ 补拉（2026-09-22 新增）
+#
+# 同步的三种触发条件**作用不同**，各有专门用例钉住：
+#   ① revision 变了           → 全量重下（换图常常不改文件名！）
+#   ② revision 没变 + 本地缺   → 只补缺的（上次下到一半的自愈）
+#   ③ revision 没变 + 不缺     → 快速返回，一张都不请求
+
+
+def test_sync_repairs_partial_download(img_dirs, monkeypatch):
+    """★ 核心回归：上次"下到一半"，revision 已写入 —— 下次必须**自动补上**缺的那几张。
+
+    这是 2026-09-18 实测的现场（安装版缓存长期停在 12/30 张）：下载循环里
+    单个文件失败是 `continue` 跳过，但循环结束后**仍然写入新 revision** →
+    下次 revision 相同就整体 return → 缺的文件永远补不上。
+    而因为 `local_image_path()` 是缓存优先，其余静默回退到打包图，
+    表面上完全看不出来。
+
+    把 `todo = entries if revision_changed else _missing(entries)`
+    改成 `todo = entries if revision_changed else []` 本用例会红。
+    """
+    mi, cache, _ = img_dirs
+    monkeypatch.setattr(mi, "_REPO", "u/r")
+    manifest = {
+        "revision": "r1",
+        "imgs": {"a": "imgs/a.png", "b": "imgs/b.png", "c": "imgs/c.png"},
+    }
+    broken = {"b.png", "c.png"}   # 模拟网络抖动：这两张下不动
+
+    def fake_get(url, timeout=None):
+        if url.endswith("images.json"):
+            return json.dumps(manifest).encode()
+        return None if url.rsplit("/", 1)[-1] in broken else b"DATA"
+
+    monkeypatch.setattr(mi, "_http_get", fake_get)
+
+    st1 = mi.sync_remote(force=True)
+    assert st1["downloaded"] == 1 and st1["failed"] == 2
+    assert st1["ok"] is False, "没同步完整就该如实报 False"
+    assert sorted(p.name for p in cache.glob("*.png")) == ["a.png"]
+
+    broken.clear()   # 网络恢复 → 下一次同步必须自愈
+    st2 = mi.sync_remote(force=True)
+    assert st2["downloaded"] == 2, "缺的两张没被补上（这正是 12/30 张那个 bug）"
+    assert st2["failed"] == 0 and st2["ok"] is True
+    assert sorted(p.name for p in cache.glob("*.png")) == ["a.png", "b.png", "c.png"]
+
+
+def test_sync_redownloads_all_on_revision_change(img_dirs, monkeypatch):
+    """★ revision 变了 → **全量重下**，即使本地文件都在。
+
+    为什么不能优化成"本地已有就跳过"：作者换图**常常不改文件名**
+    （改的是同一张 `diyin.png` 的内容）。若按存在性跳过，同名新图永远
+    盖不掉本地旧文件 → 用户端"换图"看起来完全没生效。
+    把 `todo = entries if revision_changed else _missing(entries)`
+    改成 `todo = _missing(entries)` 本用例会红。
+    """
+    mi, cache, _ = img_dirs
+    monkeypatch.setattr(mi, "_REPO", "u/r")
+    manifest = {"revision": "r1", "imgs": {"a": "imgs/a.png"}}
+    payload = {"v": b"OLD"}
+
+    def fake_get(url, timeout=None):
+        if url.endswith("images.json"):
+            return json.dumps(manifest).encode()
+        return payload["v"]
+
+    monkeypatch.setattr(mi, "_http_get", fake_get)
+
+    mi.sync_remote(force=True)
+    assert (cache / "a.png").read_bytes() == b"OLD"
+
+    payload["v"] = b"NEW-CONTENT-LONGER"   # 作者换图：文件名不变，只换内容
+    manifest["revision"] = "r2"
+    st = mi.sync_remote(force=True)
+    assert st["downloaded"] == 1, "revision 变了却没重下 → 同名新图永远盖不掉旧文件"
+    assert (cache / "a.png").read_bytes() == b"NEW-CONTENT-LONGER"
+
+
+def test_sync_permanent_failure_retries_only_that_one(img_dirs, monkeypatch):
+    """某张图**永久**失败时，每次同步只重试它自己 —— 不能退化成每次全量重下。
+
+    这正是"有失败就不写 revision"那种看似严谨的写法会踩的坑：
+    永久失败 → revision 永远写不进去 → 每次同步都当"首次" → 每次都下全部图。
+    （所以实现里**照写** revision，让补拉机制接管。）
+    """
+    mi, cache, _ = img_dirs
+    monkeypatch.setattr(mi, "_REPO", "u/r")
+    manifest = {
+        "revision": "r1",
+        "imgs": {f"v{i}": f"imgs/v{i}.png" for i in range(5)},
+    }
+    calls: list[str] = []
+
+    def fake_get(url, timeout=None):
+        calls.append(url)
+        if url.endswith("images.json"):
+            return json.dumps(manifest).encode()
+        return None if url.endswith("v4.png") else b"DATA"   # v4 永久失败
+
+    monkeypatch.setattr(mi, "_http_get", fake_get)
+
+    st1 = mi.sync_remote(force=True)
+    assert st1["downloaded"] == 4 and st1["failed"] == 1
+    assert (cache / ".revision").read_text() == "r1", "照写 revision 才能走补拉路径"
+
+    calls.clear()
+    st2 = mi.sync_remote(force=True)
+    tried = {c.rsplit("/", 1)[-1] for c in calls if not c.endswith("images.json")}
+    assert tried == {"v4.png"}, f"应只重试失败的那张，实际请求了 {sorted(tried)}"
+    assert st2["downloaded"] == 0 and st2["failed"] == 1
+
+
+def test_sync_partial_failure_error_is_actionable(img_dirs, monkeypatch):
+    """部分失败时 error 要提到"补拉" —— 状态是给人看的，得能看出会自愈。"""
+    mi, _, _ = img_dirs
+    monkeypatch.setattr(mi, "_REPO", "u/r")
+    manifest = {"revision": "r1", "imgs": {"a": "imgs/a.png"}}
+    monkeypatch.setattr(
+        mi, "_http_get",
+        lambda url, timeout=None: json.dumps(manifest).encode()
+        if url.endswith("images.json") else None,
+    )
+    st = mi.sync_remote(force=True)
+    assert st["failed"] == 1 and st["ok"] is False
+    assert "补拉" in st["error"]
