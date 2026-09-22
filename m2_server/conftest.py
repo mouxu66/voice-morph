@@ -34,7 +34,8 @@ os.environ["VM_WECHAT_RESTART"] = "0"
 # 后果实测：跑全量时真实 `outputs/market/` 里累积了 20+ 个**夹具名**的 sidecar
 # （auto_rb / busy_rb / circular / mutex / no_idx / test_voice …，最早可追到 2026-09-06）、
 # `outputs/market/imgs_cache/.revision` 被覆写成远端版本号、
-# `media/ft/dstkoi/status.json`（用户真实微调任务的状态）被改写成测试数据 ——
+# `media/ft/dstkoi/status.json` 被改写成测试数据（`dstkoi` 同样是夹具名；
+# 要害是它落在**用户数据根 `media/`** 里，与文件名无关）——
 # 也就是**动了用户的真实数据**。
 #
 # 更阴的是**时序**：这些写入常常来自**活过用例 teardown 的后台线程** ——
