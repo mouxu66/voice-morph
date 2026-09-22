@@ -461,6 +461,175 @@ def test_send_text_starts_pending_apply_and_frees_it_on_tts_failure(tmp_path, mo
 # 同理，下面也钉住「面板必须保留音色选择入口」：真要是有人把下拉删了、
 # 退回单音色，那才是这个条目描述的那个 bug。
 
+# -------- /preview_text：不发送的 TTS+RVC 试听（市场装的音色也能听到真声音） --------
+#
+# 由来（2026-09-22）：面板以前把「试听」**禁用**给"没有参考音的音色"，因为试听走
+# `/api/tts`，而那条链要求音色自带参考音 → 市场装的音色点了只会 404。
+# 新端点补上 RVC 那一步（语气借参考音、音色由 RVC 决定），并在合成不出可用声音时
+# 退回 market_preview 的固定样板句。
+#
+# 这一组里最值钱的不是"能试听"，而是 **"试听绝不碰微信与声卡"** ——
+# 一旦它顺手调了 _do_send / _prepare_recording_env，用户点一下「试听」就会莫名其妙
+# 发出去一条语音。这条用"所有微信侧入口都被打桩 + 断言一个都没被调"来守。
+
+
+@pytest.fixture
+def preview_env(tmp_path, monkeypatch):
+    """试听链路的打桩：TTS / RVC / 质量关全过，并记录微信侧有没有被碰到。"""
+    touched: dict = {"wechat": []}
+
+    def _synth(text, voice_id="", *a, **kw):
+        touched["synth"] = (text, voice_id)
+        f = tmp_path / "tts_preview.wav"
+        f.write_bytes(b"RIFF")
+        return f, 3.0, voice_id
+
+    def _rvc(wav, voice, pitch=0, index_rate=0.5):
+        touched["rvc"] = (Path(wav).name, voice, pitch, index_rate)
+        out = tmp_path / f"{Path(wav).stem}_{voice}.wav"
+        out.write_bytes(b"RIFF")
+        return out
+
+    import market_preview
+
+    monkeypatch.setattr(tts_api, "synth_wav", _synth)
+    monkeypatch.setattr(rvc_convert, "rvc_convert", _rvc)
+    monkeypatch.setattr(rvc_convert, "resolve_model", lambda v: (Path("x.pth"), None))
+    # ⚠️ 必须打桩：真实 _quality_ok 会去解码 "RIFF" 这类假文件，解不开就判不合格
+    # → 每条用例都意外走进样板句兜底，测出来的东西完全不是想测的。
+    monkeypatch.setattr(market_preview, "_quality_ok", lambda p: (True, ""))
+    # 微信侧：任何一处被碰到都记下来，下面用"必须为空"守"不发送"
+    monkeypatch.setattr(wv, "_do_send", lambda *a, **k: touched["wechat"].append("_do_send"))
+    monkeypatch.setattr(
+        wv, "_prepare_recording_env", lambda: touched["wechat"].append("_prepare_recording_env")
+    )
+    monkeypatch.setattr(
+        wv, "_PendingRecordingEnv", lambda: touched["wechat"].append("_PendingRecordingEnv")
+    )
+    monkeypatch.setattr(wv, "_run_audio", lambda a: touched["wechat"].append(f"_run_audio:{a}"))
+    return touched
+
+
+def test_preview_text_tts_then_rvc(tmp_path, monkeypatch, preview_env):
+    """市场音色（无参考音）试听：语气借自 kangaroo，换声换成用户选的那个。"""
+    _add_ref_voice(tmp_path, "kangaroo")
+    monkeypatch.setattr(common, "selected_voice", lambda: "kangaroo")
+    r = wv.preview_text(wv.PreviewTextReq(text="你好", voice_id="lazy_sheep"))
+    assert r["ok"] is True
+    assert r["source"] == "text"
+    assert preview_env["synth"] == ("你好", "kangaroo")  # 语气借来的
+    assert preview_env["rvc"][1] == "lazy_sheep_v2"  # ★ 音色还是用户选的那个
+    assert r["borrowed"] == "kangaroo"
+    assert r["url"].startswith("/api/media/outputs/")
+
+
+def test_preview_text_never_touches_wechat(tmp_path, monkeypatch, preview_env):
+    """★ 试听绝不能碰微信与声卡：不发送、不切卡、不占发送锁。
+
+    这是用户对这个端点的唯一要求（"不发送的试听"）—— 一旦失效，点「试听」会直接
+    发出去一条语音，而且失败得很安静。
+    """
+    _add_ref_voice(tmp_path, "kangaroo")
+    monkeypatch.setattr(common, "selected_voice", lambda: "kangaroo")
+    wv.preview_text(wv.PreviewTextReq(text="你好", voice_id="lazy_sheep"))
+    assert preview_env["wechat"] == [], f"试听碰到了微信/声卡：{preview_env['wechat']}"
+    assert not wv._send_lock.locked(), "试听不该占发送锁（会把用户真正的发送堵住）"
+
+
+def test_preview_text_keeps_tts_when_rvc_fails(tmp_path, monkeypatch, preview_env):
+    """音色**自带**参考音而换声炸了 → 保留 TTS 结果（＝今天的 /api/tts 行为），不报错。
+
+    这里保留是对的：参考音本身就是这个音色，所以 TTS 结果的音色没跑。
+    """
+    _add_ref_voice(tmp_path, "kangaroo")
+    monkeypatch.setattr(
+        rvc_convert, "rvc_convert", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("rvc boom"))
+    )
+    r = wv.preview_text(wv.PreviewTextReq(text="你好", voice_id="kangaroo"))
+    assert r["ok"] is True and r["source"] == "text"
+    assert r["borrowed"] == ""
+    assert any("RVC 换声失败" in s for s in r["steps"])
+
+
+def test_preview_text_never_hands_over_the_borrowed_voice(tmp_path, monkeypatch, preview_env):
+    """★ 借了参考音又没换成声 → 必须退样板句，绝不能把借来的嗓音当成「这个音色」。
+
+    这是本条链路上唯一会"拿别人的声音冒充用户选的音色"的口子，而且很隐蔽：音频能播、
+    时长正常、steps 里也只是个 ⚠。用户对这个端点的要求就是"听到它真正的声音，而不是
+    听到借来的嗓音"—— 一旦这里改回"保留 TTS 结果"，他听到的恰好是袋鼠的嗓音。
+    """
+    import market_preview
+
+    _add_ref_voice(tmp_path, "kangaroo")
+    monkeypatch.setattr(common, "selected_voice", lambda: "kangaroo")
+    monkeypatch.setattr(
+        rvc_convert, "rvc_convert", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("rvc boom"))
+    )
+    monkeypatch.setattr(
+        market_preview,
+        "generate",
+        lambda vid, download=None: {"status": "ready", "url": "/api/media/outputs/market/x.wav"},
+    )
+    r = wv.preview_text(wv.PreviewTextReq(text="你好", voice_id="lazy_sheep"))
+    assert r["source"] == "sample", "借来的嗓音被当成这个音色交出去了"
+    assert any("不是「lazy_sheep」的声音" in s for s in r["steps"])
+    # 样板句不是用户打的字 → 面板靠这个字段拒绝把它当待发产物
+    assert "样板句" in r["note"]
+
+
+def test_preview_text_falls_back_to_sample_when_silent(tmp_path, monkeypatch, preview_env):
+    """TTS 吐静音（市场/卡通音色最容易出的一种）→ 退回样板句，绝不播一段空白。"""
+    import market_preview
+
+    _add_ref_voice(tmp_path, "kangaroo")
+    monkeypatch.setattr(common, "selected_voice", lambda: "kangaroo")
+    monkeypatch.setattr(market_preview, "_quality_ok", lambda p: (False, "静音（RMS 过低）"))
+    monkeypatch.setattr(
+        market_preview,
+        "generate",
+        lambda vid, download=None: {
+            "status": "ready",
+            "url": "/api/media/outputs/market/x_preview.wav",
+        },
+    )
+    r = wv.preview_text(wv.PreviewTextReq(text="你好", voice_id="lazy_sheep"))
+    assert r["ok"] is True and r["source"] == "sample"
+    assert "样板句" in r["note"]
+    assert any("改用样板句试听" in s for s in r["steps"])
+
+
+def test_preview_text_falls_back_to_sample_when_tts_raises(monkeypatch, preview_env):
+    """TTS 直接抛错 → 同样退样板句，而且因为是异步生成要如实报 generating。"""
+    import market_preview
+
+    monkeypatch.setattr(
+        tts_api, "synth_wav", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("tts boom"))
+    )
+    monkeypatch.setattr(market_preview, "generate", lambda vid, download=None: {"status": "generating"})
+    r = wv.preview_text(wv.PreviewTextReq(text="你好", voice_id="lazy_sheep"))
+    assert r["ok"] is False and r["source"] == "sample"
+    assert r["status"] == "generating"
+    assert "再点一次" in r["error"]
+
+
+def test_preview_text_rejects_empty_text():
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as e:
+        wv.preview_text(wv.PreviewTextReq(text="   "))
+    assert e.value.status_code == 400
+
+
+def test_preview_text_route_registered():
+    """面板调的是这个路由，改名了得有人发现（同 send_text 的写法）。"""
+    import server
+    from fastapi.testclient import TestClient
+
+    client = TestClient(server.app)
+    resp = client.post("/api/wechat/preview_text", json={"text": "  "})
+    assert resp.status_code == 400  # 路由在，被参数校验拦下（404 才是没注册）
+
+
 _ELECTRON = _ROOT.parent / "web" / "electron"
 
 
@@ -513,6 +682,36 @@ def test_pet_panel_lists_market_voices_too():
         "下拉选项没标来源 —— 用户分不清哪个是市场装的、哪个是自己训的"
     )
     assert "（${tag}）" in html, "来源标记没有落到选项文案上"
+
+
+def test_pet_preview_uses_the_non_sending_endpoint():
+    """★ 面板「试听」必须走不发送的 preview_text，而不是 /api/tts。
+
+    `/api/tts` 里没有 RVC，市场装的音色（只有 .pth）会 404 —— 这正是当初把「试听」
+    禁用掉的原因。同时必须回传 `sendable`：后端退回样板句时，面板不能把主按钮切成
+    「发送试听」，否则发出去的是固定样板句，不是用户打的字。
+    """
+    src = (_ELECTRON / "pet-actions.cjs").read_text(encoding="utf-8")
+    body = src[src.index("function previewWechatTextFromPet") :]
+    body = body[: body.index("\n}\n") + 3]
+
+    assert '"/api/wechat/preview_text"' in body, "试听没走不发送的 preview_text 端点"
+    assert '"/api/tts"' not in body, "试听又走回 /api/tts 了 —— 市场音色会 404"
+    assert "sendable" in body, "没回传 sendable —— 样板句会被当成本次待发产物"
+
+
+def test_pet_panel_does_not_send_the_sample_sentence():
+    """★ 退回样板句时**不能**把它设成待发产物。
+
+    面板的「试听 → 发送」是两步：试听产物会被当作要发的内容。样板句不是用户打的字，
+    一旦进了 lastPreview，主按钮变成「发送试听」，发出去的就不是人话了。
+    """
+    html = (_ELECTRON / "pet" / "pet.html").read_text(encoding="utf-8")
+    assert "r.sendable === false" in html, "面板没区分样板句与用户的文字"
+    # 样板句分支必须把 lastPreview 清掉（而不是设进去）
+    gate = html[html.index("r.sendable === false") :]
+    gate = gate[: gate.index("previewAudio")]
+    assert "lastPreview = null" in gate, "样板句被设进了 lastPreview —— 主按钮会变成「发送试听」"
 
 
 def test_pet_panel_passes_selected_voice():

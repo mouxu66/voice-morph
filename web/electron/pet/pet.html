@@ -1387,14 +1387,12 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && panelOpen) hidePanel();
 });
 
-// 音色下拉的数据：voice_id -> 是否有参考音。无参考音的不能单独试听（见 syncVoiceGates）
-let voiceRefMap = {};
-
 /**
  * 音色下拉。`/api/voices` 合并了两个来源（音色库档案 + RVC 实验目录），这里挑出**真能用**的：
  *   · 有参考音（has_reference）→ 能当 TTS 的语气参考，也能被 RVC 换成它自己；
  *   · 没参考音但有可推理权重（pth_exists，市场装的大多是这种）→ **仍然可选**：
- *     `send_text` 会借一段别的参考音做语气，末尾再由 RVC 换成它（音色由 RVC 决定）；
+ *     `send_text` / `preview_text` 会借一段别的参考音做语气，末尾再由 RVC 换成它
+ *     （音色由 RVC 决定），所以选得中、也试听得成；
  *   · 两者都没有（只有语料、还没训练）→ 不列，列出来只会点一次错一次。
  *
  * 2026-09-22 之前这里只列 `has_reference` 的音色，依据是"没参考的 RVC 模型合不了 TTS"。
@@ -1408,8 +1406,6 @@ async function loadVoices() {
     if (!r.ok) return;
     const j = await r.json();
     const usable = (j.voices || []).filter((v) => v.has_reference || v.pth_exists);
-    voiceRefMap = {};
-    for (const v of usable) voiceRefMap[v.id] = !!v.has_reference;
     const saved = localStorage.getItem(VOICE_KEY) || "";
     const cur = voiceSel.value || saved;
     const opts = [new Option("主界面选中", "")];
@@ -1426,27 +1422,21 @@ async function loadVoices() {
 }
 
 /**
- * 「试听」的可用性跟着选中音色走。
+ * 「试听」的可用性（现已**不需要禁用任何音色**，这里只负责把当前音色写进 tooltip）。
  *
- * 无参考音的音色（市场装的实时变声模型）**不能**单独试听：试听走 `/api/tts`，
- * 那条链里没有 RVC，参考音就是音色本身 —— 借一段别人的声音合出来只会误导，
- * 所以宁可禁用并说清原因，也别让用户点了才收到一句「音色 [xxx] 不存在」。
- * 「合成并发送」**不受影响**：那条链末尾有 RVC，音色由 RVC 决定，借的只是语气。
- *
- * 禁用态走 `dataset.gated` 而不是直接设 disabled —— `setBusy()` 收尾时会把按钮
- * 重新启用，用 dataset 才能让"被门控"这件事在忙态结束后仍然成立。
+ * 以前的版本会禁用"没参考音的音色"（市场装的实时变声模型），因为试听只走 `/api/tts`，
+ * 而那条链要求音色自带参考音，否则直接 404。
+ * 现在试听走 `/api/wechat/preview_text`：借一段参考音做语气 → RVC 换成目标音色，
+ * 且后端在三段降级里会退回固定样板句（见 `preview_text` 的 docstring），
+ * 所以**下拉里列出的每个音色都能试听** —— 能被列出的前提就是它 has_reference ∨ pth_exists。
  */
 function syncVoiceGates() {
+  const named = (voiceSel.options[voiceSel.selectedIndex] || {}).text || "";
   const id = voiceSel.value || "";
-  const hasRef = !id || voiceRefMap[id] !== false;   // ""=主界面选中，按可用处理
-  previewBtn.dataset.gated = hasRef ? "0" : "1";
-  previewBtn.disabled = !hasRef;
-  previewBtn.title = hasRef
-    ? "只合成并试听，满意再点发送"
-    : "这个音色没有参考音（市场装的实时变声模型），不能单独试听；直接点「合成并发送」，会用 RVC 换成它的音色";
-  voiceSel.title = hasRef
-    ? "合成用的音色（默认=主界面当前选中）"
-    : "合成时借一段参考音做语气，再由 RVC 换成它 —— 发出去就是它（试听不可用）";
+  previewBtn.title = id
+    ? `试听「${named}」：用你输入的文字合成，末尾过 RVC 换成这个音色（只播放，不发送）`
+    : "试听（默认=主界面当前选中）：用你输入的文字合成，末尾过 RVC（只播放，不发送）";
+  voiceSel.title = "合成用的音色（默认=主界面当前选中）";
 }
 
 /**
@@ -1499,7 +1489,13 @@ function refreshCapVisibility() {
   };
   hide("engRow", !CAP.live);      // 「麦克风」+ 引擎二选一分段
   hide("live", !CAP.live);        // 「开 RVC / 开 千问」按钮
+  // ⚠️ 「最近发送」「试听」「发送」三个都属于 hook.wechat（后两个打的是
+  //    /api/wechat/*）—— 关掉它之后这些接口根本不存在，留着就是一按 404 的按钮。
+  //    试听曾经就是这么给市场音色变成死钮的（那次是把按钮禁用，也不是消失），
+  //    所以这里一并收：能力没了就该看不见，而不是点了才知道。
   hide("recent", !CAP.wechat);    // 「最近发送」（点一条重发）
+  hide("preview", !CAP.wechat);   // 「试听」（不发送的 TTS+RVC 试听）
+  hide("send", !CAP.wechat);      // 「合成并发送」
 }
 
 function refreshPanel() { loadVoices(); loadRecent(); refreshSendLabel(); refreshEngineSeg(); refreshCapVisibility(); }
@@ -1516,8 +1512,7 @@ function refreshSendLabel() {
     「合成中」动辄十几秒，只把按钮变灰用户会以为卡死，转圈才看得见在动。 */
 function setBusy(btn, on) {
   if (!btn) return;
-  // gated=1 的按钮是被规则禁用的（如无参考音音色的「试听」），忙态结束不能把它放开
-  btn.disabled = !!on || btn.dataset.gated === "1";
+  btn.disabled = !!on;
   btn.classList.toggle("busy", !!on);
 }
 
@@ -1535,6 +1530,8 @@ function setStatus(text, cls) {
 }
 
 function doPreview() {
+  // 试听端点归 hook.wechat；能力关了就退回一个明确提示，别静静地去打一个不存在的路由。
+  if (!CAP.wechat) { setStatus("微信发送能力已关闭，试听不可用", "err"); return; }
   const text = sayEl.value.trim();
   if (!text || !window.pet || !window.pet.previewText) return;
   const voiceId = voiceSel.value || "";
@@ -1594,9 +1591,18 @@ if (window.pet && window.pet.onPreviewResult) {
   window.pet.onPreviewResult((r) => {
     setBusy(previewBtn, false);   // 结果已回，不必再等那个 60s 兜底计时器
     if (!r || !r.ok) { setStatus("合成失败：" + ((r && r.error) || "未知错误"), "err"); return; }
-    lastPreview = { wav: r.wav, url: r.url, duration_s: r.duration_s };
-    refreshSendLabel();           // 主按钮切到「发送试听」
-    setStatus(`已合成 ${r.duration_s || "?"}s，试听中…满意就点「发送试听」`, "ok");
+    // `sendable === false` = 后端退回了**固定样板句**（你的文字没合出可用声音）：
+    // 那是拿来确认"音色对不对"的，不是你要发的东西 —— 绝不能设进 lastPreview，
+    // 否则主按钮会变成「发送试听」，发出去的是样板句而不是你打的字。
+    if (r.sendable === false) {
+      lastPreview = null;
+      refreshSendLabel();         // 保持「合成并发送」
+      setStatus(`${r.note || "你的文字没合出可用声音，改听固定样板句"}（${r.duration_s || "?"}s）`, "ok");
+    } else {
+      lastPreview = { wav: r.wav, url: r.url, duration_s: r.duration_s };
+      refreshSendLabel();         // 主按钮切到「发送试听」
+      setStatus(`已合成 ${r.duration_s || "?"}s，试听中…满意就点「发送试听」`, "ok");
+    }
     try {
       if (previewAudio) previewAudio.pause();
       previewAudio = new Audio(r.url);

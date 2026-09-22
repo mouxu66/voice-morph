@@ -1467,7 +1467,8 @@ def _tts_ref_for(want: str, rvc_voice: str) -> tuple[str, str]:
 
     返回 `(拿去合成的 voice_id, 借自谁的音色名或空串)`。
 
-    **只给 send_text 用，别挪去做 /api/tts 的通用回退。** 两条链路里 RVC 的地位相反：
+    **只给 send_text / preview_text 这两条「末尾必过 RVC」的链路用，
+    别挪去做 /api/tts 的通用回退。** 两条链路里 RVC 的地位相反：
       · send_text：末尾必过 RVC，音色由 RVC 决定 → 语气借谁的都不影响"像不像"；
       · /api/tts：没有 RVC，参考音**就是**音色本身 → 借一段别的声音来合成，
         结果是"看起来能用、其实完全不是那个音色"，比直接报错更糟。
@@ -1491,6 +1492,164 @@ def _tts_ref_for(want: str, rvc_voice: str) -> tuple[str, str]:
         if ref.parent.name != want:
             return ref.parent.name, ref.parent.name
     return want, ""
+
+
+class PreviewTextReq(BaseModel):
+    """试听请求：与 `SendTextReq` 同形，但**不发送任何东西、不碰声卡**。"""
+
+    text: str
+    voice_id: str = ""
+    rvc_voice: str = ""
+    pitch: int = 0
+    index_rate: float = 0.5  # 与 send_text 同值：试听要预测"发出去是什么样"，不是修辞过的版本
+
+
+def _preview_quality_ok(path: Path) -> tuple[bool, str]:
+    """试听输出质量关：复用 market_preview 的判据（静音/破音/削顶/NaN/截断）。
+
+    为什么必须过这一关：本机 TTS 对卡通 / 市场音色的零样本克隆**会吐 1s 纯静音**
+    （`market_preview` 的 docstring 记了这条 2026-09-06 的实测），而"试听听到一段空白"
+    比"试听不可用"更糟 —— 用户会以为这个音色坏了，而其实只是 TTS 没合好。
+    质检模块本身不可用时按合格处理：试听不该因为质检不可用而整体失败。
+    """
+    try:
+        from market_preview import _quality_ok
+
+        return _quality_ok(path)
+    except Exception:  # noqa: BLE001
+        return True, ""
+
+
+def _preview_sample(voice_id: str, reason: str, steps: list[str]):
+    """退回「固定样板句」试听：market_preview（中性真人源句 → RVC，voice-to-voice）。
+
+    这是仓库里最稳的一条试听路 —— 2026-09-07 特意把它从"截取袋鼠参考音当源句"
+    换成中性源句，就是为了压掉"每个音色试听都带袋鼠腔"。所以这里的兜底不是
+    "降级成不可用"，而是"降级成听固定句"：至少能确认音色本身是对的。
+
+    注意 `generate()` 是异步的（后台线程），首次会返回 generating —— 如实把它
+    报给前端并让用户再点一次，不在这里自旋等待（试听是交互动作，不该卡住请求）。
+    """
+    steps.append(f"⚠ 改用样板句试听：{reason}")
+    try:
+        import market_preview
+
+        st = market_preview.generate(voice_id)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "source": "sample", "error": f"样板句试听也不可用：{e}", "steps": steps},
+        )
+    if st.get("status") == "ready":
+        return {
+            "ok": True,
+            "source": "sample",
+            "url": st["url"],
+            "text": market_preview.PREVIEW_TEXT,
+            "steps": steps,
+            "note": "这条是固定样板句，不是你输入的文字（你的文字没合出可用的声音）",
+        }
+    if st.get("status") == "generating":
+        return {
+            "ok": False,
+            "source": "sample",
+            "status": "generating",
+            "error": "样板句试听正在生成，等几秒再点一次「试听」",
+            "steps": steps,
+        }
+    return {
+        "ok": False,
+        "source": "sample",
+        "status": st.get("status") or "failed",
+        "error": st.get("error") or f"样板句试听不可用（{st.get('status')}）",
+        "steps": steps,
+    }
+
+
+@router.post("/preview_text")
+def preview_text(req: PreviewTextReq):
+    """试听：文字 → TTS（借参考音做语气）→ RVC 换成目标音色 → 返回可播放 wav。
+
+    **不碰微信、不碰声卡、不占发送锁** —— 这是它跟 send_text 的唯一区别，也正因如此
+    它才能给"市场装的音色"提供试听：这类音色只有 RVC 权重、没有参考音，`/api/tts`
+    会直接 404，面板以前就是因此把「试听」禁用掉的。
+
+    为何不直接给 `/api/tts` 加个参数：那条链里**没有 RVC**，参考音**就是**音色本身 ——
+    让它去借一段别的声音会合出"看着能用、其实不是这个音色"的结果（见 `_tts_ref_for`）。
+    借用参考音与换声必须绑在一起做，所以单独一条端点。
+
+    四段降级，顺序都是「先给真东西，再退回能用的东西」：
+      1. 正常：TTS(借参考音) → RVC(目标音色) —— 听到的就是"发出去会是什么样"；
+      2. 推不出目标模型 / 音色自带参考音而 RVC 失败 → 保留 TTS 结果
+         （＝今天的 `/api/tts` 行为：参考音本身就是这个音色，所以它仍是对的）；
+      3. **借了参考音又没换成声** → 退回样板句。此时 TTS 结果是"借来那个人的嗓音"，
+         保留它等于拿别人的声音冒充用户选的音色 —— 这正是本端点要解决的问题，不能自己犯；
+      4. 输出不过质量关（典型：TTS 吐静音）→ 退回样板句。
+    """
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="text 不能为空")
+    from common import selected_voice
+    from rvc_convert import resolve_rvc_voice
+    from tts_api import synth_wav
+
+    steps: list[str] = []
+    want = req.voice_id or selected_voice()
+    rvc_voice = req.rvc_voice or resolve_rvc_voice(want) or ""
+    # 与 send_text 用**同一个**借参考音规则 → 试听听到的语气就是发出去的语气
+    tts_voice, borrowed = _tts_ref_for(want, rvc_voice)
+    try:
+        wav, duration_s, vid = synth_wav(req.text, tts_voice)
+    except HTTPException as e:
+        return _preview_sample(want, f"TTS 失败：{e.detail}", steps)
+    except Exception as e:  # noqa: BLE001
+        return _preview_sample(want, f"TTS 失败：{e}", steps)
+    if borrowed:
+        steps.append(f"「{want}」没有参考音，语气借自 {borrowed}")
+    # 2) RVC 换声；推不出目标模型就保持 TTS 结果（与今天的 /api/tts 一致）
+    if rvc_voice:
+        try:
+            from rvc_convert import rvc_convert
+
+            wav = rvc_convert(wav, rvc_voice, req.pitch, req.index_rate)
+            duration_s = round(_wav_duration(wav), 1)
+            steps.append(f"RVC 换声 → {rvc_voice}")
+        except Exception as e:  # noqa: BLE001
+            # ★ 借了参考音又没换成声 = **你现在听到的是借来那个人的嗓音**。
+            # 这是本条链路上唯一会"拿别人的声音冒充你选的音色"的口子，而且很隐蔽：
+            # 音频能播、时长正常、步骤里也只是个 ⚠ —— 但音色是错的。
+            # 用户对这个端点的要求原话是"能听到它真正的声音，而不是…听到借来的嗓音"，
+            # 所以这里不能沿用在 /api/tts 里成立的"保留 TTS 结果"：
+            # 那条链里参考音**就是**音色本身，保留它是对的结果；这里不是。
+            # 退回样板句（那是这个音色**自己**的 RVC 渲染）比给一段错音色的更诚实。
+            if borrowed:
+                return _preview_sample(
+                    want,
+                    f"RVC 换声失败（{e}）—— 借来的参考音会留在音频里，这段不是「{want}」的声音",
+                    steps,
+                )
+            steps.append(f"⚠ RVC 换声失败，本次试听是 TTS 原声（{e}）")
+    # 3) 质量关：静音/破音一律退回样板句，绝不把一段空白当成功播给用户
+    ok, why = _preview_quality_ok(wav)
+    if not ok:
+        return _preview_sample(want, f"合成结果不合格（{why}）", steps)
+    # **刻意不登记进作品历史**（`history.register`）：
+    #   ① 语义上试听是中间产物，不是"作品" —— 每点一次试听就往作品库塞一行是噪声；
+    #   ② 安全上 `history.HISTORY_FILE` 是**导入时早绑定**的（`cfg.OUTPUTS_DIR / ...`，
+    #      同 `docs/犯错指南.md` §8.36 的 MARKET_DIR 那一类）—— 单测只能 patch `cfg`，
+    #      早绑定的常量照旧指向真实 outputs/，于是"跑一遍单测往用户作品库里塞记录"
+    #      （同样的事这个仓在 §2.24 已经踩过一次）。不写就彻底没这个面。
+    return {
+        "ok": True,
+        "source": "text",
+        "voice_id": want,
+        "rvc_voice": rvc_voice,
+        "tts_voice": vid,
+        "borrowed": borrowed,
+        "wav": wav.name,
+        "url": f"/api/media/outputs/{wav.name}",
+        "duration_s": duration_s,
+        "steps": steps,
+    }
 
 
 @router.post("/send_text")

@@ -85,7 +85,19 @@ function sendWechatWav(wavName, knownDurationS) {
   }, 180000);
 }
 
-/** 桌宠快捷面板「试听」：只合成不发送，产物信息回传面板供播放。 */
+/**
+ * 桌宠快捷面板「试听」：只合成不发送，产物信息回传面板供播放。
+ *
+ * 走 `/api/wechat/preview_text`（不发送的 TTS+RVC 试听），**不是** `/api/tts`：
+ *   · `/api/tts` 里没有 RVC 那一步，而市场装的音色（只有 .pth、没有参考音）会直接 404
+ *     —— 面板当初就是因此把「试听」整个禁用掉的；
+ *   · 这条端点会借一段参考音做语气、再由 RVC 换成目标音色，听到的正是"发出去会是什么样"。
+ *
+ * `source` 必须一并回传：后端在你的文字没合出可用声音时会退回**固定样板句**
+ * （voice-to-voice，仓库里最稳的那条路）。那种情况下 `sendable=false` ——
+ * 面板绝不能把主按钮切成「发送试听」，否则发出去的是样板句，不是用户打的字。
+ * 超时给到 180s：TTS 首次要加载 worker，冷启动可能几十秒。
+ */
 function previewWechatTextFromPet(text, voiceId) {
   const petWin = getPetWin();
   if (!petWin || !text) return;
@@ -94,24 +106,40 @@ function previewWechatTextFromPet(text, voiceId) {
     lines: ["先合一段给你听听～"],
     action: "think", motion: "work", duration: 6000,
   });
-  backendPost("/api/tts", { text, text_language: "zh", voice_id: voiceId || "" }, (data, code) => {
-    if (!data.ok || !data.url) {
-      const err = (data.detail && String(data.detail)) || `HTTP ${code}`;
-      petGuideFail(err);
-      petWin.webContents.send("pet:preview-result", { ok: false, error: String(err) });
-      return;
-    }
-    const wav = String(data.url).split("/").pop();
-    petWin.webContents.send("pet:preview-result", {
-      ok: true, wav, duration_s: data.duration_s,
-      url: `http://127.0.0.1:${BACKEND_PORT}${data.url}`,
-    });
-    showPetGuide({
-      title: "试听",
-      lines: [`好了（${data.duration_s || "?"}秒），听听看`, "满意就点「发送」"],
-      action: "play", motion: "nod", duration: 8000,
-    });
-  });
+  backendPost("/api/wechat/preview_text",
+    { text, text_language: "zh", voice_id: voiceId || "" },
+    (data, code) => {
+      if (!data.ok || !data.url) {
+        const err = (data.detail && String(data.detail))
+          || (data.error && String(data.error)) || `HTTP ${code}`;
+        petGuideFail(err);
+        petWin.webContents.send("pet:preview-result", {
+          ok: false, error: String(err), source: data.source || "",
+        });
+        return;
+      }
+      const sample = data.source === "sample";
+      const wav = data.wav || String(data.url).split("/").pop();
+      petWin.webContents.send("pet:preview-result", {
+        ok: true, wav, duration_s: data.duration_s,
+        url: `http://127.0.0.1:${BACKEND_PORT}${data.url}`,
+        source: data.source || "text",
+        note: data.note || "",
+        sendable: !sample,
+      });
+      showPetGuide(sample
+        ? {
+            title: "试听（样板句）",
+            lines: [data.note || "你的文字没合出可用声音，换成固定样板句", "音色本身是对的，可以放心发"],
+            action: "play", motion: "nod", duration: 8000,
+          }
+        : {
+            title: "试听",
+            lines: [`好了（${data.duration_s || "?"}秒），听听看`, "满意就点「发送」"],
+            action: "play", motion: "nod", duration: 8000,
+          });
+    },
+    180000);
 }
 
 /** 桌宠「发送微信语音」：把 outputs/ 下最近一次 TTS 合成发出去。 */

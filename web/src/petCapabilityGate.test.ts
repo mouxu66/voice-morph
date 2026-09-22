@@ -129,11 +129,30 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
     expect(html).toContain('refreshCapVisibility()')
   })
 
-  it('收起来的控件正好是那三处', () => {
-    const fn = html.slice(html.indexOf('function refreshCapVisibility()'))
-    expect(fn.slice(0, 600)).toContain('hide("engRow", !CAP.live)')
-    expect(fn.slice(0, 600)).toContain('hide("live", !CAP.live)')
-    expect(fn.slice(0, 600)).toContain('hide("recent", !CAP.wechat)')
+  it('收起来的控件正好是那五处', () => {
+    // 窗口给足以至于加了注释也不会假红：以前是死写 600，而门控函数里现在有一段
+    // 解释"为什么试听/发送也要收"的注释，离得稍远就把断言挤出去。
+    const fn = html.slice(html.indexOf('function refreshCapVisibility()'), html.indexOf('function refreshCapVisibility()') + 1200)
+    for (const call of [
+      'hide("engRow", !CAP.live)',
+      'hide("live", !CAP.live)',
+      'hide("recent", !CAP.wechat)',
+      'hide("preview", !CAP.wechat)',
+      'hide("send", !CAP.wechat)',
+    ]) {
+      expect(fn, `refreshCapVisibility 漏了 ${call}`).toContain(call)
+    }
+  })
+
+  it('★ 试听/发送两个按钮也归 hook.wechat 管（否则关了能力就是一按 404）', () => {
+    // 两者的后端都是 wechat_voice.py 里的路由，跟「最近发送」同一个插件。
+    // 试听按钮正是因为这个才曾经对市场音色变成死钮 —— 现在补了不发送的端点，
+    // 但端点仍归 hook.wechat，所以可见性必须跟着 CAP.wechat 走。
+    expect(html).toContain('id="preview"')
+    expect(html).toContain('hide("preview", !CAP.wechat)')
+    // 点了也要能自辩（按钮可能因 CSS/缓存没被藏住）
+    const body = html.slice(html.indexOf('function doPreview()'), html.indexOf('function doSendText()'))
+    expect(body).toContain('if (!CAP.wechat)')
   })
 
   it('★ 清单必须先到位再轮询（否则第一帧就去打被关掉的接口）', () => {
