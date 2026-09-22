@@ -117,7 +117,9 @@ MAX_MSG_S = 60.0  # 微信硬上限，不可调
 FINISH_LAG_S = 0.3  # time.sleep(0.15) + 点发送钮的延迟
 SAFETY_S = float(os.environ.get("VM_WECHAT_SAFETY_S", "4.6"))
 MAX_CHUNK_S = float(
-    os.environ.get("VM_WECHAT_MAX_CHUNK_S", str(MAX_MSG_S - 0.8 - 0.3 - FINISH_LAG_S - SAFETY_S))
+    os.environ.get(
+        "VM_WECHAT_MAX_CHUNK_S", f"{MAX_MSG_S - 0.8 - 0.3 - FINISH_LAG_S - SAFETY_S:.1f}"
+    )
 )  # 默认 54.0
 # 下限：微信语音最短 1s（说话时间太短会被拒）。短于此的尾段并入上一段，
 # 能并则并、不能并就补静音 —— 而不是发一条 1.2 秒的。
@@ -1482,6 +1484,9 @@ def pack_chunks(
 
     单句自己就超预算的情形**不在这里处理** —— 那需要"再切一次并重新合成"，
     不是纯函数能决定的，由调用方做三级降级（见 _split_for_budget）。
+
+    ⚠️ 返回的每段**已守预算**（含 gap），但**单句超预算时例外**：那种段照样原样返回，
+    调用方必须先降级再发。用 `_chunk_plan_ok()` 自检，别假设输出天然合法。
     """
     if max_s <= 0:
         raise ValueError("max_s 必须为正")
@@ -1498,20 +1503,34 @@ def pack_chunks(
             j += 1
         out.append((i, j))
         i = j
-    # 尾段太短 → 并入上一段（能并则并，避免发一条 1.2 秒的）
+    # 尾段太短 → 并入上一段（能并则并，避免发一条 1.2 秒的）。
+    # ⚠️ 只在**并入后仍守预算**时才并：否则最后两条气泡的总时长会破 60s
+    #    （pack_chunks([54.0, 1.0]) 就是这样 —— 并进去是 55.3s 音频，实发 56.7s，
+    #     虽然侥幸没到 60，但已经吃穿了 SAFETY 余量，属于"赌一把"而不是"保证"）。
+    #    宁可多发一条短气泡，也不赌 —— 多一条气泡的成本远低于漏一句话。
     if len(out) >= 2 and sum(durs[out[-1][0] : out[-1][1]]) < min_s:
-        last = out.pop()
-        if last[1] == n:
-            prev = out[-1]
+        prev, last = out[-2], out[-1]
+        merged_span = sum(durs[prev[0] : last[1]]) + gap_s * max(last[1] - prev[0] - 1, 0)
+        if merged_span <= max_s:
+            out.pop()
             out[-1] = (prev[0], last[1])
     return out
 
 
-def _chunk_plan_ok(durs: list[float], plan: list[tuple[int, int]], gap_s: float = SENT_GAP_S) -> bool:
-    """校验一份分包方案确实守预算（含句间 gap）。返回 False 就是有段会超 60s。"""
+def _chunk_plan_ok(
+    durs: list[float], plan: list[tuple[int, int]], gap_s: float = SENT_GAP_S
+) -> bool:
+    """校验一份分包方案确实守预算。返回 False 就是有段会吃穿余量或破 60s。
+
+    判据与 `_check_budget` **必须是同一条**（否则"自检通过"和"护栏放行"会打架）：
+    每段既要 `≤ MAX_CHUNK_S`（含 SAFETY 余量），也要实发 `≤ MAX_MSG_S`（物理上限）。
+    """
+    eps = 1e-6
     for a, b in plan:
         span = sum(durs[a:b]) + gap_s * max(b - a - 1, 0)
-        if PLAY_LEAD_S + span + TAIL_S + FINISH_LAG_S > MAX_MSG_S:
+        if span > MAX_CHUNK_S + eps:
+            return False
+        if PLAY_LEAD_S + span + TAIL_S + FINISH_LAG_S > MAX_MSG_S + eps:
             return False
     return True
 
@@ -2387,16 +2406,35 @@ def _check_budget(duration: float) -> str:
     ⚠️ **这是这条 bug 唯一的防复发机制。** 任何绕过分包的调用方（直连 /send_voice、
     tools/*、将来的新入口）都在这里被拦住，而不是发一条注定被 60s 截断的语音。
 
+    判据就是 §2 那条：`PLAY_LEAD_S + audio + TAIL_S + FINISH_LAG_S ≤ 60`，
+    **并且** `audio ≤ MAX_CHUNK_S`（后者已经把 SAFETY_S 余量扣掉了）。
+    为什么两条都要：第一条是物理上限（防止真的到点被切），第二条是**余量纪律** ——
+    只查第一条的话，55.4s 会"恰好卡在 59.9s"通过，而 SAFETY_S 里那 4.6s 就是为了
+    应付"UIA 秒数取整 / TTS 语速波动 / 驱动抖动 / 微信自身计数"的。
+    赌这 4.6s 换来的只是"少一条气泡"，代价却是"静默截断一整句"。
+
+    ⚠️ 用 `eps` 比较：`MAX_CHUNK_S` 是从算式推出来的浮点数，`54.0 <= 54.00000000000001`
+    成立但反过来不成立；不设 eps 会让"恰好等于预算"这个合法边界被误拒。
+
     变异测试要求：把本函数的判据删掉，断言"超长单条被拒发"的用例**必须变红**。
     """
-    total = PLAY_LEAD_S + duration + TAIL_S + FINISH_LAG_S
-    if total <= MAX_MSG_S and duration <= MAX_CHUNK_S:
+    eps = 1e-6
+    if duration <= MAX_CHUNK_S + eps and PLAY_LEAD_S + duration + TAIL_S + FINISH_LAG_S <= MAX_MSG_S + eps:
         return ""
+    need_chunks = _min_chunks_for(duration)
     return (
         f"这段音频 {duration:.1f}s 超过单条上限（预算 {MAX_CHUNK_S:.0f}s，"
         f"微信硬上限 {MAX_MSG_S:.0f}s），直接发会被平台静默截断、后半段丢失。"
-        f"请改用分段发送（会自动切成多条语音）。"
+        f"请改用分段发送（这段会切成约 {need_chunks} 条语音）。"
     )
+
+
+def _min_chunks_for(duration: float, max_s: float | None = None) -> int:
+    """至少要切成几条才装得下（护栏提示语用；批量场景的准确条数以 pack_chunks 为准）。"""
+    max_s = max_s if max_s is not None else MAX_CHUNK_S
+    if max_s <= 0:
+        return 1
+    return max(1, int(duration / max_s) + (1 if duration % max_s else 0))
 
 
 def _do_send(req: SendVoiceReq, pre_apply: _PendingApply | None = None):
