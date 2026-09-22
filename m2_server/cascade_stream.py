@@ -392,7 +392,6 @@ class Worker:
                 "language": "Chinese",
                 "ref_audio": ref_audio,
                 "ref_text": ref_text,
-                "fast": True,
             },
         )
         if r.status_code != 200 or not r.content:
@@ -425,7 +424,6 @@ class Worker:
                 "language": "Chinese",
                 "ref_audio": ref_audio,
                 "ref_text": ref_text,
-                "fast": True,
                 "seg_chars": seg_chars,
             },
         )

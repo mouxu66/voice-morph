@@ -125,6 +125,10 @@ FAST_TESTS = [
     # 少了它们，跑全量就会往用户真实的 outputs/ 与 media/ 里写（见 docs/犯错指南.md §8.36/§8.37）。
     # 放进 --fast 才能在提交那一刻拦住，而不是等 pre-push 的全量。
     "m2_server/tests/test_output_isolation.py",
+    # 接口契约（约 0.2s，纯 AST 对账）：钉住「客户端发的字段 ⊆ 端点读的字段」。
+    # 防的是「死参数」—— 发了、不报错、也不生效（`cascade_stream` 曾给 /tts 发 `fast`，
+    # 而那端点根本不读它）。见 docs/犯错指南.md §8.38。
+    "m2_server/tests/test_tts_payload_contract.py",
 ]
 
 
