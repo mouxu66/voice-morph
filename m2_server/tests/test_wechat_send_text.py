@@ -30,6 +30,14 @@ def isolate(tmp_path, monkeypatch):
     # → runtime.VOICEBANK），不隔离就会去读开发机的 D:/变声/media/voicebank ——
     # 开发机装了 kangaroo、CI 没装，同一条用例两边结论不同。
     # 默认只放一个有参考音的 kangaroo：现有用例大多用它，且都不该依赖「没有参考音」。
+    #
+    # ⚠️ 2026-09-23 分段改造后**两个都要 patch**，只 patch 一个会假绿：
+    #   · `runtime.VOICEBANK` —— `_voice_has_reference` / `_tts_ref_for` 看它（判"有没有"）；
+    #   · `cfg.MEDIA_DIR`     —— `common.voice_ref` 从它拼路径（取"拿哪一段"）。
+    # 以前只 patch 前者没事，因为 TTS 走的是被打桩的 `synth_wav`，`voice_ref` 根本没被调；
+    # 现在 `_synth_sentence` → `_voice_ref_for` → `voice_ref` 真的会读盘，
+    # 两个常量不同源（一个 tmp_path、一个真 media/）就会去找真音色库。
+    monkeypatch.setattr(cfg, "MEDIA_DIR", tmp_path)
     vb = tmp_path / "voicebank"
     (vb / "kangaroo").mkdir(parents=True)
     (vb / "kangaroo" / "reference.wav").write_bytes(b"RIFF")
@@ -69,20 +77,53 @@ def _add_ref_voice(tmp_path: Path, *ids: str) -> Path:
     return vb
 
 
+def _write_wav(path: Path, seconds: float = 3.0, sr: int = 16000, amp: float = 0.3) -> Path:
+    """写一个**真** wav（有实际音频内容，不是 b"RIFF"）。
+
+    为什么必须是真的：分段链路要 `_trim_edges`（按 RMS 找有声边界）与 `_wav_duration`
+    （读帧数/采样率）。写假字节 → 裁剪直接放弃（整段"静音"）→ 时长恒为 0 →
+    `pack_chunks` 永远只出一段、预算护栏永远放行，**测试会自洽地全绿而什么都没测到**。
+    填正弦波而不是全零：全零会被 `_trim_edges` 判成"整段静音"（同样的自欺）。
+    """
+    import numpy as np
+    import soundfile as sf
+
+    n = int(sr * seconds)
+    t = np.arange(n, dtype=np.float32) / sr
+    # 首尾各留 0.05s 静音，保证 _trim_edges 有可裁的边界（贴近 TTS 真实产物）
+    wave_ = (amp * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+    pad = int(sr * 0.05)
+    if n > 2 * pad:
+        wave_[:pad] = 0.0
+        wave_[-pad:] = 0.0
+    sf.write(str(path), wave_, sr, format="WAV")
+    return path
+
+
 def _fake_send(tmp_path, monkeypatch, ret=None):
-    """打桩 TTS / RVC / _do_send，返回记录用的 dict。"""
+    """打桩 TTS / RVC / _do_send，返回记录用的 dict。
+
+    TTS 打的是 `wv._synth_sentence`（分段链路的单句合成接缝），**不是** `tts_api.synth_wav`：
+    2026-09-23 起 send_text 走「逐句合成 → 实测时长装箱」，刻意不走 synth_wav
+    （后者走 ICL 语气克隆 + 每句落一个 tts_*.wav，见该函数 docstring）。
+    所以这里要打的是新的那个出口；断言仍看 `calls["synth"][1]`（＝TTS 实际用的音色），
+    因为"TTS 与 RVC 必须同一个音色"这条护栏没变。
+    """
     calls = {}
 
-    def _synth(text, voice_id="", *a, **kw):
-        calls["synth"] = (text, voice_id)
-        f = tmp_path / "tts_fake.wav"
-        f.write_bytes(b"RIFF")
-        return f, 3.0, voice_id or "kangaroo"
+    def _synth_sentence(sentence, voice_id="", *a, **kw):
+        # 逐句调用 → 记「最后一句 + 音色」。单句文本时 calls["synth"][0] 就是全文。
+        calls.setdefault("synth_all", []).append((sentence, voice_id))
+        calls["synth"] = (sentence, voice_id)
+        f = tmp_path / f"tts_fake_{len(calls['synth_all'])}.wav"
+        _write_wav(f, seconds=3.0)
+        return f.read_bytes()
 
     def _rvc(wav, voice, pitch=0, index_rate=0.5):
         calls["rvc"] = (Path(wav).name, voice, pitch, index_rate)
         out = tmp_path / f"{Path(wav).stem}_{voice}.wav"
-        out.write_bytes(b"RIFF")
+        _write_wav(out, seconds=3.0)
+        calls["rvc_out"] = out.name
         return out
 
     def _do(req, pre_apply=None):
@@ -93,7 +134,7 @@ def _fake_send(tmp_path, monkeypatch, ret=None):
             calls["pre_apply_consumed"] = True
         return {"ok": True, "outcome": "ok", "steps": ["已发送"], "restored": True}
 
-    monkeypatch.setattr(tts_api, "synth_wav", _synth)
+    monkeypatch.setattr(wv, "_synth_sentence", _synth_sentence)
     monkeypatch.setattr(rvc_convert, "rvc_convert", _rvc)
     monkeypatch.setattr(rvc_convert, "resolve_model", lambda v: (Path("x.pth"), None))
     monkeypatch.setattr(wv, "_do_send", _do)
@@ -210,7 +251,9 @@ def test_send_text_full_chain(tmp_path, monkeypatch):
     assert res["ok"] is True
     assert calls["synth"][0] == "你好"
     assert calls["rvc"][1] == "kangaroo_v2"  # 自动推出 RVC 实验名
-    assert calls["send"] == "tts_fake_kangaroo_v2.wav"  # 发的是**换声后**的文件
+    # 发的是**换声后**的文件（不断言具体文件名：分段链路下它是 wxchunk_*，名字是实现细节）
+    assert calls["send"] == calls["rvc_out"]
+    assert calls["send"] != calls["rvc"][0], "发出去的还是换声前的文件 —— RVC 白跑了"
     assert calls.get("pre_apply_consumed") is True  # 切卡任务被 _do_send 消费
     assert any("RVC 换声" in s for s in res["steps"])
 
@@ -252,13 +295,23 @@ def test_send_text_empty_voice_uses_selected_for_both(tmp_path, monkeypatch):
 
 
 def test_send_text_warns_when_no_rvc(tmp_path, monkeypatch):
-    """找不到 RVC 音色时照发，但必须显式警告——否则又是一条"不像袋鼠"的语音。"""
+    """找不到 RVC 音色时照发，但必须显式警告——否则又是一条"不像袋鼠"的语音。
+
+    ⚠️ 这里的音色必须是**有参考音**的（kangaroo）：本用例要测的是"TTS 能合成、
+    但推不出 RVC 模型"，所以推不出 RVC 靠的是打桩 `resolve_rvc_voice`。
+    以前写 `voice_id="nosuch"` 也能过，只是因为 TTS 被打桩、不存在这个音色的事实
+    从未被验证 —— 那时它测的其实还是这条路径，只是"蹭"过去的。
+    2026-09-23 分段链路真的会去读参考音了，`nosuch` 会先 400（音色不存在），
+    那是**另一条**用例（test_send_text_rejects_voice_without_reference）的事。
+    """
     calls = _fake_send(tmp_path, monkeypatch)
     monkeypatch.setattr(rvc_convert, "resolve_rvc_voice", lambda v: None)
-    res = wv.send_text(wv.SendTextReq(text="你好", voice_id="nosuch"))
+    res = wv.send_text(wv.SendTextReq(text="你好", voice_id="kangaroo"))
     assert "rvc" not in calls  # 没换声
     assert any("未换声" in s for s in res["steps"])
-    assert calls["send"] == "tts_fake.wav"  # 发的是原始 TTS 产物
+    # 发的是**未换声**的产物：既没有 RVC 输出，也不是换声后的名字
+    assert "rvc_out" not in calls
+    assert not calls["send"].endswith("_kangaroo_v2.wav")
 
 
 def test_send_text_rejects_empty_text():
@@ -424,24 +477,85 @@ def test_do_send_without_pre_apply_keeps_sync_apply(tmp_path, monkeypatch):
 
 
 def test_send_text_starts_pending_apply_and_frees_it_on_tts_failure(tmp_path, monkeypatch):
-    """send_text 一拿锁就起预热任务；TTS 失败走 abandon 兜底还原声卡。"""
+    """send_text 一拿锁就起预热任务；TTS 失败走 abandon 兜底还原声卡。
+
+    ⚠️ 这里打的是 `wv._synth_sentence`（分段链路的单句合成出口）。
+    以前打 `tts_api.synth_wav`，2026-09-23 分段改造后那条路已经不在 send_text 上了 ——
+    继续打它会变成"桩没被调用、真 TTS 模型被加载"，这条用例就测不到任何东西。
+    """
     calls = []
 
     def fake_run(a):
         calls.append(a)
         return {"ok": True}
 
+    def boom(sentence, voice_id="", *a, **kw):
+        raise RuntimeError("tts boom")
+
     monkeypatch.setattr(wv, "_run_audio", fake_run)
-    monkeypatch.setattr(
-        tts_api, "synth_wav", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("tts boom"))
-    )
+    monkeypatch.setattr(wv, "_synth_sentence", boom)
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as e:
-        wv.send_text(wv.SendTextReq(text="你好"))
+        wv.send_text(wv.SendTextReq(text="你好", voice_id="kangaroo"))
     assert e.value.status_code == 500
     assert "tts boom" in e.value.detail
     assert calls == ["apply", "restore"]  # 预热被 abandon()：切了卡又还原，无残留
+
+
+def test_send_text_rejects_voice_without_reference(tmp_path, monkeypatch):
+    """★ 音色没有参考音 → 400，而且**在合成之前**就拒掉（别让用户白等 TTS）。
+
+    与上面那条分开钉：那条是"合成阶段炸了 → 500"；这条是"请求本身就不可满足 → 400"。
+    两者都会 abandon 预热，但状态码不同 —— 前端据此区分"重试"与"换个音色"。
+    """
+    calls = []
+    monkeypatch.setattr(wv, "_run_audio", lambda a: calls.append(a) or {"ok": True})
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as e:
+        wv.send_text(wv.SendTextReq(text="你好", voice_id="no_such_voice"))
+    assert e.value.status_code == 400
+    assert "参考音" in e.value.detail
+    assert calls == ["apply", "restore"]
+
+
+def test_send_text_rejects_voice_that_cannot_be_synthesized(tmp_path, monkeypatch):
+    """★ 音色合法、有参考音，但合成器直接抛 HTTPException → 原样上抛，不包成 500。
+
+    分段链路里合成器抛的 4xx 是"用户能自己修"的错误（音色没装好/参考音损坏）。
+    包成 500 会把"换个音色就行"误导成"服务端坏了"，让人去翻日志而不是换音色。
+    """
+    calls = []
+    monkeypatch.setattr(wv, "_run_audio", lambda a: calls.append(a) or {"ok": True})
+    from fastapi import HTTPException
+
+    def reject(sentence, voice_id="", *a, **kw):
+        raise HTTPException(status_code=404, detail="音色没了")
+
+    monkeypatch.setattr(wv, "_synth_sentence", reject)
+    with pytest.raises(HTTPException) as e:
+        wv.send_text(wv.SendTextReq(text="你好", voice_id="kangaroo"))
+    assert e.value.status_code == 404  # 不是 500
+    assert calls == ["apply", "restore"]
+
+
+def test_send_text_surfaces_synth_runtime_error_as_500(tmp_path, monkeypatch):
+    """合成器抛**非** HTTPException（模型崩了）→ 500，且带上失败的是第几句。"""
+    calls = []
+    monkeypatch.setattr(wv, "_run_audio", lambda a: calls.append(a) or {"ok": True})
+    from fastapi import HTTPException
+
+    def boom(sentence, voice_id="", *a, **kw):
+        raise RuntimeError("cuda oom")
+
+    monkeypatch.setattr(wv, "_synth_sentence", boom)
+    with pytest.raises(HTTPException) as e:
+        wv.send_text(wv.SendTextReq(text="你好", voice_id="kangaroo"))
+    assert e.value.status_code == 500
+    assert "第 1 句合成失败" in e.value.detail  # 定位到句，长文里能知道断在哪
+    assert "cuda oom" in e.value.detail
+    assert calls == ["apply", "restore"]
 
 
 # -------- 渲染侧只传 voice_id，不自己复制「voicebank → RVC 实验名」的约定 --------

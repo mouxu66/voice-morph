@@ -1750,6 +1750,142 @@ def preview_text(req: PreviewTextReq):
     }
 
 
+# ---------------- 文字入口的分包（逐句合成 → 实测时长 → 装箱） ----------------
+
+
+def _synth_sentence(sentence: str, tts_voice: str) -> bytes:
+    """单句合成 → wav 字节。分段链路里 TTS 的唯一出口，单独成函数是为了可注入。
+
+    为什么不复用 `tts_api.synth_wav`（那才是 TTS 的"正式"入口）：
+      · `synth_wav` 会传 `ref_text`，即走 **ICL 语气克隆**；分段链路要的是
+        **x-vector 纯声纹**（`ref_text=""`，见 `_split_for_budget` 的 D3 理由②）；
+      · `synth_wav` 每句都会落一个 `tts_*.wav`（长文就是几十个文件），
+        而这里本来就落 `wxseg_*.wav`，再叠一层是双份垃圾。
+    两者是**刻意的分叉**，不是懒得复用 —— 同款 x-vector 路线在 `audiobook.py` 已实测。
+    """
+    from qwen3_tts import tts as qwen_tts
+
+    return qwen_tts(
+        sentence,
+        ref_audio=str(_voice_ref_for(tts_voice)[0]),
+        ref_text="",
+        language="Chinese" if _looks_zh(sentence) else "English",
+        voice_id=tts_voice,
+    )
+
+
+def _split_for_budget(
+    text: str,
+    tts_voice: str,
+    want: str,
+    rvc_voice: str,
+    pitch: int,
+    index_rate: float,
+    steps: list[str],
+    synth=None,
+) -> tuple[list[Path], list[str]]:
+    """长文 → 逐句合成 → 按实测时长装箱 → 逐段拼接/换声 → 若干 ≤54s 的 wav。
+
+    为什么**逐句合成**而不是整段合成后再切（D3，三条都不是偏好问题）：
+      1. 切分点必须落在句子边界 —— 整段在 54 秒处硬切会把词切成两半；
+      2. 稳定性：audiobook.py 实测记录，逐句走 x-vector 声纹克隆（ref_text 置空）
+         批任务更稳，且 8GB 显存下 ICL 长参考会跌进 WDDM 共享内存慢路径，
+         **整段长文正是最长的那个参考**；
+      3. 失败面小：单句失败只毁一句，可重试可跳过；整段失败就全废。
+
+    为什么用**实测时长**而不是字数估算（D2）：字数→秒数只是代理量，中英混排、
+    数字（"2026 年 9 月 22 日"读出来比看起来长）、标点停顿都会让它偏；
+    **偏小的方向就是静默截断**，代价最大。而逐句合成后 `sf.read` 一下就有真实秒数。
+
+    返回 (wav 列表, 说明 steps)。只有一段时仍返回长度 1 的列表 ——
+    调用方据此判断"要不要分包"，不另开分支。
+
+    `synth` 是单句合成器（`(句子, tts_voice) -> wav 字节`），默认 `_synth_sentence`。
+    它是个**显式接缝**：单测里没有 TTS 模型，必须能替换掉；而在生产路径上
+    用默认值，调用方不必知道。
+    """
+    from audiobook import split_sentences
+    from pydub import AudioSegment
+
+    synth = synth or _synth_sentence
+    sents = split_sentences(text)
+    if not sents:
+        raise HTTPException(status_code=400, detail="text 里没有可合成的句子")
+    steps.append(f"断句：{len(sents)} 句（复用 audiobook.split_sentences）")
+
+    # 逐句合成 + 记实测时长。参考音取 voice_ref(tts_voice) —— 与 audiobook 同款 x-vector 路线。
+    # 先在这里探一次参考音：探不到就直接 400（"这个音色没参考音"是用户可自己修的错误），
+    # 不必等第一句合成失败才发现，也避免把"音色不存在"报成"第 1 句合成失败"。
+    _voice_ref_for(tts_voice)
+    stamp = int(time.time() * 1000)
+    seg_paths: list[Path] = []
+    durs: list[float] = []
+    for i, s in enumerate(sents):
+        try:
+            wav_bytes = synth(s, tts_voice)
+        except HTTPException:
+            # 音色/参考音这类"用户能自己修"的错误原样上抛（400/404），别包成 500
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"第 {i+1} 句合成失败: {e}") from e
+        p = cfg.OUTPUTS_DIR / f"wxseg_{stamp}_{i + 1:04d}.wav"
+        p.write_bytes(wav_bytes)
+        # 裁首尾静音再量时长：TTS 产物常带 0.5~1s 静音，不裁会让预算算虚（偏大），
+        # 也把静音录进微信里（用户听到的是"开头一段空白"）。
+        p = _trim_edges(p)
+        seg_paths.append(p)
+        durs.append(_wav_duration(p))
+
+    plan = pack_chunks(durs)
+    if not _chunk_plan_ok(durs, plan):
+        # 不该发生（pack_chunks 自己守预算）；真发生说明判据与现实脱节，
+        # 宁可拒发也不要发一条会被截断的。
+        bad = [f"{i}({d:.1f}s)" for i, d in enumerate(durs) if d > MAX_CHUNK_S]
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"分包后仍有段超预算（{', '.join(bad) or '未知'}）——"
+                f"单句过长时需先降级切分（见方案 D5）"
+            ),
+        )
+
+    outs: list[Path] = []
+    for k, (a, b) in enumerate(plan):
+        seg = AudioSegment.empty()
+        for j in range(a, b):
+            if j > a:
+                seg += AudioSegment.silent(duration=int(SENT_GAP_S * 1000), frame_rate=24000)
+            seg += AudioSegment.from_wav(str(seg_paths[j]))
+        raw = cfg.OUTPUTS_DIR / f"wxchunk_{stamp}_{k + 1:02d}.wav"
+        seg.export(str(raw), format="wav")
+        if rvc_voice:
+            from rvc_convert import rvc_convert as _rvc
+
+            raw = _rvc(raw, rvc_voice, pitch, index_rate)
+        outs.append(raw)
+        steps.append(
+            f"第 {k + 1}/{len(plan)} 条：{b - a} 句 / "
+            f"{sum(durs[a:b]) + SENT_GAP_S * max(b - a - 1, 0):.1f}s（预算 {MAX_CHUNK_S:.0f}s）"
+        )
+    return outs, steps
+
+
+def _looks_zh(s: str) -> bool:
+    """句子是否以中文为主（决定 TTS 的 language 提示）。不引入新依赖，按字符占比判。"""
+    zh = sum(1 for c in s if "\u4e00" <= c <= "\u9fff")
+    return zh * 2 >= max(len(s.strip()), 1)
+
+
+def _voice_ref_for(voice_id: str):
+    """取参考音；失败时给出可执行的提示（不泄漏内部路径细节到用户可见文案）。"""
+    from common import voice_ref
+
+    try:
+        return voice_ref(voice_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"音色 {voice_id} 没有可用参考音: {e}") from e
+
+
 @router.post("/send_text")
 def send_text(req: SendTextReq):
     """一键：文字 → TTS → RVC 换声 → 全自动发成微信语音消息。
@@ -1781,15 +1917,13 @@ def send_text(req: SendTextReq):
         # 立刻起后台任务与合成并行（见 _PendingRecordingEnv）。
         # 合成/组装任何一步失败，下面的 except 会 abandon() 兜底还原声卡。
         apply_task = _PendingRecordingEnv()
-        from rvc_convert import resolve_rvc_voice
-        from tts_api import synth_wav
-
         # 「谁在说」先定，再看「怎么说」—— 顺序不能反：
         #   · 显式给了 rvc_voice 就用它；否则按 voicebank id → RVC 实验名的约定推
         #     （kangaroo → kangaroo_v2），推不到就照发并在 steps 里说清楚音色会不像。
         #   · want 为空 = 桌宠面板选了"主界面选中"，交给 common.selected_voice() 定，
         #     推 RVC 时必须用同一个 want，否则又退回"不换声"（旧行为）。
         from common import selected_voice
+        from rvc_convert import resolve_rvc_voice
 
         want = req.voice_id or selected_voice()
         rvc_voice = req.rvc_voice or resolve_rvc_voice(want) or ""
@@ -1797,31 +1931,66 @@ def send_text(req: SendTextReq):
         # 会被 voice_ref() 拒掉整条请求（以前就是这么 400 的，桌宠下拉因此只能把这类
         # 音色整个滤掉 —— 用户在市场装的音色在面板里根本选不到）。
         tts_voice, borrowed = _tts_ref_for(want, rvc_voice)
-        wav, duration_s, _vid = synth_wav(req.text, tts_voice)
-        steps = [
-            f"合成: {wav.name}（{duration_s:.1f}s，voice={_vid or '默认'}，用时 {time.time()-_t0:.1f}s）"
-        ]
+        steps: list[str] = []
         if borrowed:
             steps.append(f"「{want}」没有参考音，语气借自 {borrowed}（音色由 RVC 决定，不影响像不像）")
-        if rvc_voice:
-            from rvc_convert import rvc_convert as _rvc
-
-            _t1 = time.time()
-            wav = _rvc(wav, rvc_voice, req.pitch, req.index_rate)
-            steps.append(f"RVC 换声 → {rvc_voice}（用时 {time.time()-_t1:.1f}s）")
-        else:
+        if not rvc_voice:
             steps.append("⚠ 没找到对应 RVC 音色，未换声（会是普通播音腔）")
-        _t2 = time.time()
-        res = _do_send(SendVoiceReq(wav=wav.name), pre_apply=apply_task)
-        steps.append(f"微信录制发送（用时 {time.time()-_t2:.1f}s）")
-        # _do_send 成功时返回 dict，失败可能返回 JSONResponse
-        if isinstance(res, dict):
-            res["steps"] = steps + list(res.get("steps", []))
-            res["wav"] = wav.name
-        else:
-            # 早退路径（404 等）没走到 pre_apply 消费点，必须收尾还原声卡
-            if apply_task is not None:
+
+        # 2026-09-23 分段发送：长文**逐句合成 → 实测时长装箱 → 一次发一批 ≤54s 的 wav**。
+        # 背景：微信单条语音 60s 硬上限，到点自动结束并发送，后半段静默丢失。
+        # 老实现是整段一次性 synth_wav → 一个 wav → 超 60s 必被截断（用户实测报的问题）。
+        # 短文本（一句话装得下）走同一段代码，只是 plan 只有一段 —— 不另开分支，
+        # 否则"分包修好了、单条还漏着"。
+        _t1 = time.time()
+        wavs, steps = _split_for_budget(
+            req.text,
+            tts_voice,
+            want,
+            rvc_voice,
+            req.pitch,
+            req.index_rate,
+            steps,
+        )
+        steps.insert(
+            0,
+            f"合成分包：{len(wavs)} 条，用时 {time.time()-_t1:.1f}s"
+            f"（逐句合成，实测时长装箱到 ≤{MAX_CHUNK_S:.0f}s）",
+        )
+        if rvc_voice:
+            steps.append(f"RVC 换声 → {rvc_voice}")
+        if len(wavs) == 1:
+            # 单条：走 _do_send（它内部就是"只有一条的批次"），保持既有返回形状不变
+            _t2 = time.time()
+            res = _do_send(SendVoiceReq(wav=wavs[0].name), pre_apply=apply_task)
+            steps.append(f"微信录制发送（用时 {time.time()-_t2:.1f}s）")
+            if isinstance(res, dict):
+                res["steps"] = steps + list(res.get("steps", []))
+                res["wav"] = wavs[0].name
+                res["total_chunks"] = 1
+                res["sent_chunks"] = 1 if res.get("outcome") == "ok" else 0
+                res["wavs"] = [wavs[0].name]
+            elif apply_task is not None:
+                # 早退路径（404 等）没走到 pre_apply 消费点，必须收尾还原声卡
                 apply_task.abandon()
+            return res
+
+        # 多条：走批次内核 —— 环境准备与声卡还原**整批只做一次**（D7）。
+        # 每条都切一次卡会白等 N×6s，而且反复切卡本身就是故障源。
+        _t2 = time.time()
+        res = _send_batch(wavs, pre_apply=apply_task)
+        steps.append(f"微信录制发送 {len(wavs)} 条（用时 {time.time()-_t2:.1f}s）")
+        res["steps"] = steps + list(res.get("steps", []))
+        res["wav"] = wavs[0].name
+        res["voice_id"] = want
+        res["rvc_voice"] = rvc_voice
+        res["tts_voice"] = tts_voice
+        res["borrowed"] = borrowed
+        # 失败时回传"剩下的原文"（D12），界面可据此提供「继续发剩下的」
+        if res.get("failed_index") is not None:
+            res["remaining_wavs"] = [w.name for w in wavs[res["failed_index"] :]]
+        # 批次结果可能不是 ok（partial / failed / manual_fallback），仍返回 200：
+        # 前端按 outcome 展示，避免"发了 2 条成功 1 条失败"被当成整条请求失败。
         return res
     except HTTPException:
         if apply_task is not None:

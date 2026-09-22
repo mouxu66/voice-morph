@@ -28,7 +28,6 @@ pytest.importorskip("fastapi")
 import config as cfg  # noqa: E402
 import wechat_voice as wv  # noqa: E402
 
-
 # ---------------- 夹具 ----------------
 
 
@@ -53,8 +52,8 @@ def _fit_60(audio_s: float) -> float:
 def test_budget_constants_add_up():
     """预算算式是硬判据：60 − LEAD − TAIL − LAG − SAFETY = MAX_CHUNK_S。"""
     expected = wv.MAX_MSG_S - wv.PLAY_LEAD_S - wv.TAIL_S - wv.FINISH_LAG_S - wv.SAFETY_S
-    assert wv.MAX_CHUNK_S == pytest.approx(expected)
-    assert wv.MAX_CHUNK_S == pytest.approx(54.0)
+    assert pytest.approx(expected) == wv.MAX_CHUNK_S
+    assert pytest.approx(54.0) == wv.MAX_CHUNK_S
     # 余量必须真的存在：预算 + 固定开销 + 余量 = 60
     assert _fit_60(wv.MAX_CHUNK_S) + wv.SAFETY_S == pytest.approx(wv.MAX_MSG_S)
 
