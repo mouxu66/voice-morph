@@ -11,6 +11,7 @@
 """
 
 import json
+import subprocess
 import time
 import warnings
 import zipfile
@@ -149,32 +150,17 @@ def test_uninstall_bundle_only_resets(iso, tmp_path):
 # ---- 远端皮肤安装编排（monkeypatch 下载层） ----
 
 
-def _fake_gif_zip(ffmpeg: str, tmp_path) -> str:
+def _fake_gif_zip(ffmpeg_run, tmp_path) -> str:
     """造一个含单帧 gif 的 zip 源码包（模拟 OpenGameArt 猫素材 zip）。
 
-    `ffmpeg` 由 conftest 的 `ffmpeg_bin` 夹具传入：本机没装 ffmpeg → skip，
-    CI 上没装 → fail（2026-09-13 这三条就是 WinError 2，见 conftest.py 顶部）。
+    `ffmpeg_run` 由 conftest 提供（可执行路径由它自己带上）。两种情况会 skip：
+    · 本机没装 ffmpeg（2026-09-13 那三条就是 WinError 2，见 conftest.py 顶部）
+    · **系统资源不足**，创建不了子进程（2026-09-22：全量跑后段 WinError 1450，
+      报出来像产品缺陷，真因是环境资源耗尽 —— 见 conftest 里 `ffmpeg_run` 的 docstring）
     """
-    import subprocess
-
     gif = tmp_path / "anim.gif"
-    r = subprocess.run(
-        [
-            ffmpeg,
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc2=size=64x48:rate=2",
-            "-t",
-            "1",
-            "-loop",
-            "0",
-            str(gif),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
+    r = ffmpeg_run(
+        ["-y", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=2", "-t", "1", "-loop", "0", str(gif)]
     )
     assert r.returncode == 0, r.stderr[-300:]
     zp = tmp_path / "cat.zip"
@@ -184,9 +170,9 @@ def _fake_gif_zip(ffmpeg: str, tmp_path) -> str:
     return str(zp)
 
 
-def test_install_remote_gif_skin(iso, tmp_path, monkeypatch, ffmpeg_bin):
+def test_install_remote_gif_skin(iso, tmp_path, monkeypatch, ffmpeg_run):
     """pixel-cat（gif-multi + zip 源）安装：入队 → 下载 → 解压 → 转换 → 校验 → preview。"""
-    zip_path = _fake_gif_zip(ffmpeg_bin, tmp_path)
+    zip_path = _fake_gif_zip(ffmpeg_run, tmp_path)
 
     def fake_download(url: str, dst, box):
         import shutil
@@ -233,9 +219,9 @@ def test_install_same_id_rejects(iso, tmp_path, monkeypatch):
         time.sleep(0.05)
 
 
-def test_install_queue_two_then_both_done(iso, tmp_path, monkeypatch, ffmpeg_bin):
+def test_install_queue_two_then_both_done(iso, tmp_path, monkeypatch, ffmpeg_run):
     """两个不同皮肤先后入队：第一个下载时第二个排队，第一个完成后第二个自动接续，最终都完成。"""
-    zip_path = _fake_gif_zip(ffmpeg_bin, tmp_path)
+    zip_path = _fake_gif_zip(ffmpeg_run, tmp_path)
     pix = {
         "size": [4, 4],
         "palette": {"0": [255, 255, 255, 255], "1": [0, 0, 0, 255]},
@@ -373,9 +359,9 @@ def test_detail_returns_license_and_states(iso):
         iso.detail("no-such")
 
 
-def test_uninstall_remote_removes_dir(iso, tmp_path, monkeypatch, ffmpeg_bin):
+def test_uninstall_remote_removes_dir(iso, tmp_path, monkeypatch, ffmpeg_run):
     """远端皮肤卸载物理删除目录；应用态复位默认。"""
-    test_install_remote_gif_skin(iso, tmp_path, monkeypatch, ffmpeg_bin)  # 复用安装流程
+    test_install_remote_gif_skin(iso, tmp_path, monkeypatch, ffmpeg_run)  # 复用安装流程
     assert (iso.PET_SKINS_DIR / "pixel-cat" / "skin.json").exists()
     r = iso.uninstall("pixel-cat")
     assert r["uninstalled"] == "pixel-cat"
@@ -505,3 +491,70 @@ def test_api_search_detail_cancel(iso_api, monkeypatch):
     pr = c.get("/api/pet-market/progress").json()
     assert isinstance(pr.get("items"), list)
     assert "active" in pr and "queued" in pr
+
+
+# ---- conftest 的 `ffmpeg_run`：资源不足要 skip，不是产品问题 ----
+
+
+def _winerror(code: int, msg: str = "测试构造的错误") -> OSError:
+    """造一个带指定 `winerror` 的 OSError。
+
+    Windows 上 `winerror` 由 C 层在真实系统调用失败时填，构造出来的实例要手工补。
+    """
+    exc = OSError(msg)
+    exc.winerror = code
+    return exc
+
+
+def _run_expecting_skip(ffmpeg_run, monkeypatch, exc: OSError):
+    """让底层 `subprocess.run` 抛 `exc`，返回 `ffmpeg_run` 实际抛出的异常。
+
+    ⚠️ 用 `pytest.raises(BaseException)` + 显式判类型，而不是
+    `pytest.raises(期望类型)` —— 后者拿到**别的**异常会原样放行，若那个异常恰好是
+    skip，整条用例会变成「跳过」而**退出码仍是 0**，守卫静默失效
+    （2026-09-22 实测踩到，见 `docs/犯错指南.md` §8.33）。
+    """
+    def _boom(*_a, **_kw):
+        raise exc
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    with pytest.raises(BaseException) as ei:
+        ffmpeg_run(["-version"])
+    return ei.value
+
+
+@pytest.mark.parametrize("code", [8, 1450, 1455])
+def test_ffmpeg_run_skips_on_system_resource_exhaustion(ffmpeg_run, monkeypatch, code):
+    """★ 系统资源不足（WinError 8 / 1450 / 1455）→ skip，而不是报红。
+
+    2026-09-22 实测（junit 取证）：全量跑到后段时 `test_install_remote_gif_skin`
+    报 `OSError: [WinError 1450] 系统资源不足，无法完成请求的服务。`，
+    报出来像产品缺陷，真因是**环境资源耗尽**（同一次全量里
+    `test_offline_vc_infer_pth_guard.py` 也因内存不足假红，两条同源）。
+
+    把 conftest 里那段 winerror 判定删掉（或让它抛），本用例会红。
+    """
+    exc = _run_expecting_skip(ffmpeg_run, monkeypatch, _winerror(code))
+    assert isinstance(exc, pytest.skip.Exception), (
+        f"WinError {code} 是环境资源问题，应当 skip；"
+        f"实际抛的是 {type(exc).__name__}：{exc}"
+    )
+    assert "资源" in str(exc), f"skip 理由要说清是资源问题，实际：{exc}"
+
+
+def test_ffmpeg_run_still_raises_on_missing_exe(ffmpeg_run, monkeypatch):
+    """★ 对照：**ffmpeg 真的没了**（WinError 2）必须照常抛 —— skip 不能掩盖真问题。
+
+    没有这条，「资源不足就 skip」会退化成「什么 OSError 都 skip」，
+    于是"环境配置坏了"（ffmpeg 被删/路径失效）也会被静默跳过。
+    """
+    exc = _run_expecting_skip(ffmpeg_run, monkeypatch, _winerror(2, "系统找不到指定的文件。"))
+    assert isinstance(exc, OSError), f"WinError 2 必须照常抛，实际抛了 {type(exc).__name__}：{exc}"
+    assert not isinstance(exc, pytest.skip.Exception)
+
+
+def test_ffmpeg_run_returns_real_result(ffmpeg_run):
+    """正常路径：包装层没有破坏「真能跑起 ffmpeg 并拿到结果」。"""
+    r = ffmpeg_run(["-version"])
+    assert r.returncode == 0, r.stderr[-300:]
+    assert "ffmpeg" in (r.stdout or "").lower()

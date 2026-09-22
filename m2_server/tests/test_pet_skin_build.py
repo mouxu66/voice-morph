@@ -6,13 +6,12 @@
 - skin.json 读写、缺省状态回退（listen→idle / build→play）、字段白名单
 - 非法 id 拒绝、缺 sheet 告警
 
-依赖 ffmpeg（走 conftest 的 `ffmpeg_bin` 夹具：本机没装 → skip，CI 上没装 → fail），
-无真实网络。2026-09-13 CI 首跑时这里 4 条 ERROR 就是 ffmpeg 缺失（WinError 2），
-见 conftest.py 顶部「本机资源探测」。
+依赖 ffmpeg（走 conftest 的 `ffmpeg_run` 夹具：本机没装 → skip；**系统资源不足**建不了
+子进程 → skip），无真实网络。2026-09-13 CI 首跑时这里 4 条 ERROR 就是 ffmpeg 缺失
+（WinError 2），见 conftest.py 顶部「本机资源探测」。
 """
 
 import json
-import subprocess
 
 import pytest
 from pet_skin_build import (
@@ -26,32 +25,27 @@ from pet_skin_build import (
 )
 
 
-@pytest.fixture(scope="module")
-def ffmpeg(ffmpeg_bin):
-    """本模块沿用短名 `ffmpeg`：路径由 conftest 的 `ffmpeg_bin` 提供（含 skip 语义）。"""
-    return ffmpeg_bin
-
-
-def _run(ffmpeg, args):
-    r = subprocess.run([ffmpeg, "-y", *args], capture_output=True, text=True, timeout=120)
+def _run(ffmpeg_run, args):
+    r = ffmpeg_run(["-y", *args])
     assert r.returncode == 0, r.stderr[-400:]
 
 
 @pytest.fixture(scope="module")
-def atlas_png(ffmpeg, tmp_path_factory):
+def atlas_png(ffmpeg_run, tmp_path_factory):
     """8 列 × 3 行的 atlas：每帧 64×48（第 0 行蓝色、第 1 行绿色、第 2 行红色）。"""
     p = tmp_path_factory.mktemp("media") / "atlas.png"
     # 用 testsrc 生成 8*64 x 3*48 的画布
-    _run(ffmpeg, ["-f", "lavfi", "-i", "testsrc2=size=512x144:rate=1", "-frames:v", "1", str(p)])
+    _run(ffmpeg_run, ["-f", "lavfi", "-i", "testsrc2=size=512x144:rate=1", "-frames:v", "1", str(p)])
     return p
 
 
 @pytest.fixture(scope="module")
-def gif_file(ffmpeg, tmp_path_factory):
+def gif_file(ffmpeg_run, tmp_path_factory):
     """4 帧 64×48 gif 动画。"""
     p = tmp_path_factory.mktemp("media") / "anim.gif"
     _run(
-        ffmpeg, ["-f", "lavfi", "-i", "testsrc2=size=64x48:rate=4", "-t", "1", "-loop", "0", str(p)]
+        ffmpeg_run,
+        ["-f", "lavfi", "-i", "testsrc2=size=64x48:rate=4", "-t", "1", "-loop", "0", str(p)],
     )
     return p
 

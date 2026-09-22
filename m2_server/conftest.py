@@ -1,6 +1,7 @@
 # 让 pytest 能直接 import m2_server 内的模块（config / rvc_live / server）
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import NoReturn
@@ -106,6 +107,58 @@ def ffmpeg_path() -> str:
 def ffmpeg_bin() -> str:
     """ffmpeg 可执行路径（session 级）。需要真 ffmpeg 的用例依赖它即可自动跳过。"""
     return ffmpeg_path()
+
+
+# Windows 上「系统资源不足」的错误码 —— 必须与「ffmpeg 不存在」区分开。
+# 这三个都是"这次跑不动"，不是"这环境没有"。
+_RESOURCE_EXHAUSTED_WINERRORS = {
+    8: "ERROR_NOT_ENOUGH_MEMORY（内存不足）",
+    1450: "ERROR_NO_SYSTEM_RESOURCES（系统资源不足）",
+    1455: "ERROR_COMMITMENT_LIMIT（页面文件/提交内存不足）",
+}
+
+
+@pytest.fixture(scope="session")
+def ffmpeg_run(ffmpeg_bin):
+    """跑 ffmpeg 造测试素材；**系统资源不足** → skip（不是产品问题）。
+
+    为什么要包一层（2026-09-22 实测，junit 取证）：全量跑到后段时本机提交内存/
+    句柄接近上限，`subprocess.run` 在 CreateProcess 阶段抛
+
+        OSError: [WinError 1450] 系统资源不足，无法完成请求的服务。
+
+    报出来是「测试失败」，而且失败用例在不同次全量里会漂移 —— 看着像产品缺陷。
+    同一次全量里 `test_offline_vc_infer_pth_guard.py` 也因内存不足假红
+    （`DefaultCPUAllocator: not enough memory`），两条**同源**：环境资源耗尽。
+    这类"测试自己造素材"的调用是资源敏感点（要创建子进程），所以统一走这里。
+
+    ⚠️ 为什么这里不像 `missing_local` 那样"CI 上 fail"：
+    `missing_local` 处理的是**确定性缺失**（ffmpeg 没装 ⇒ 环境准备一定坏了），
+    而这里是**瞬时资源竞争** —— 同一份环境上一次绿、这一次红，没有确定性判据。
+    在 CI 上 fail 只会把偶发噪声变成必现阻塞，反而更掩盖真问题。
+
+    只豁免上面那三个 Windows 资源耗尽错误码；其余 `OSError` **照常抛** ——
+    尤其 `FileNotFoundError`（WinError 2）是"ffmpeg 真的没了"，那是真问题。
+
+    用法：`ffmpeg_run(["-y", "-f", "lavfi", "-i", "...", str(out)])`
+    （可执行路径由夹具自己带上，调用处只传参数）。
+    """
+
+    def _run(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run(
+                [ffmpeg_bin, *args], capture_output=True, text=True, timeout=timeout
+            )
+        except OSError as exc:
+            kind = _RESOURCE_EXHAUSTED_WINERRORS.get(getattr(exc, "winerror", None))
+            if kind is None:
+                raise
+            pytest.skip(
+                f"系统资源不足，无法创建 ffmpeg 子进程：{kind}（{exc}）—— 这是**环境问题**"
+                f"（全量跑后段提交内存/句柄接近上限），不是产品问题；单独跑该文件即为绿。"
+            )
+
+    return _run
 
 
 @pytest.fixture(scope="session")

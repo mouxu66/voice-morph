@@ -8,7 +8,6 @@
 """
 
 import json
-import subprocess
 import time
 import urllib.parse
 from pathlib import Path
@@ -36,17 +35,18 @@ def _reset_scan(iso):
     pet_scan._reset()
 
 
-def _mk_gif(ffmpeg: str, tmp_path: Path, name: str, frames: int = 4) -> Path:
+def _mk_gif(ffmpeg_run, tmp_path: Path, name: str, frames: int = 4) -> Path:
     """用 ffmpeg 生成一个真实小 gif（测试替换下载源用）；默认多帧走 hstack 路径。
 
-    `ffmpeg` 由 conftest 的 `ffmpeg_bin` 夹具传入（原来硬编码字面量 `"ffmpeg"`，
-    2026-09-13 CI 上直接 WinError 2）。夹具同时统一了"优先用 winget 完整 build"
-    这个生产侧约定（见 common.find_ffmpeg）。
+    `ffmpeg_run` 由 conftest 提供（可执行路径由它自己带上）。夹具同时统一了
+    "优先用 winget 完整 build"这个生产侧约定（见 common.find_ffmpeg），
+    以及两种 skip：没装 ffmpeg（原来硬编码字面量 `"ffmpeg"`，2026-09-13 CI 上
+    直接 WinError 2）、**系统资源不足**建不了子进程（2026-09-22 全量后段实测
+    WinError 1450，报出来像产品缺陷）。
     """
     out = tmp_path / name
-    r = subprocess.run(
+    r = ffmpeg_run(
         [
-            ffmpeg,
             "-y",
             "-f",
             "lavfi",
@@ -57,10 +57,7 @@ def _mk_gif(ffmpeg: str, tmp_path: Path, name: str, frames: int = 4) -> Path:
             "-loop",
             "0",
             str(out),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
+        ]
     )
     assert r.returncode == 0, r.stderr[-300:]
     return out
@@ -255,10 +252,10 @@ def test_scan_pixel_json_goes_live(iso, tmp_path, monkeypatch, ffmpeg_bin):
     assert disc and disc[0]["installed"] is True
 
 
-def test_scan_gif_merges_states(iso, tmp_path, monkeypatch, ffmpeg_bin):
+def test_scan_gif_merges_states(iso, tmp_path, monkeypatch, ffmpeg_run):
     """同一仓库多个 gif：合并成一个皮肤，idle/play 按文件名关键字分状态。"""
-    idle = _mk_gif(ffmpeg_bin, tmp_path, "idle.gif")
-    walk = _mk_gif(ffmpeg_bin, tmp_path, "walking.gif")
+    idle = _mk_gif(ffmpeg_run, tmp_path, "idle.gif")
+    walk = _mk_gif(ffmpeg_run, tmp_path, "walking.gif")
     gif_map = pet_scan._gif_map_from_names(["idle.gif", "walking.gif"])
     assert gif_map["idle"] == "idle.gif" and gif_map["play"] == "walking.gif"
 
