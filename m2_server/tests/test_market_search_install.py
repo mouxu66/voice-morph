@@ -11,6 +11,7 @@ import time
 import urllib.parse
 
 import config
+import market_preview as mp
 import market_search as ms
 import pytest
 from market_download import ALLOWED_HOSTS, DownloadManager, MarketError
@@ -21,6 +22,11 @@ from market_manifest import get_manifest
 PTH_DATA = b"\x80\x02" + os.urandom(512 * 1024 - 2)  # 512KB 伪权重
 IDX_DATA = os.urandom(64 * 1024)  # 64KB 伪索引
 MIRROR_DATA = b"\x80\x02" + os.urandom(128 * 1024 - 2)  # 镜像文件（内容刻意不同，也过魔数校验）
+
+# ★ 导入时刻的「真实」outputs/market：给守卫用例当标尺。
+# autouse 的 fake_out 会在**每个**用例里把 mp.MARKET_DIR patch 到 tmp_path，
+# 所以必须在这里（patch 之前）取一次真值。
+_REAL_MARKET_DIR = mp.MARKET_DIR
 
 
 class _Ctx:
@@ -705,12 +711,30 @@ def old_dir(tmp_path):
     return tmp_path / "old"
 
 
-@pytest.fixture()
+@pytest.fixture(autouse=True)
 def fake_out(tmp_path, monkeypatch):
-    """隔离 preview/qc 产物目录，避免测试污染真实 outputs。"""
+    """隔离 preview/qc 产物目录，避免测试污染真实 outputs。
+
+    ★ 2026-09-22：**必须同时 patch 两处，只 patch 一处仍会泄漏** ——
+      · `config.OUTPUTS_DIR`：`market_install` 的清理路径**每次读 cfg**
+        （卸载/回滚时删 `_preview.wav` / `_preview.json`），patch 它即可命中；
+      · `market_preview.MARKET_DIR`：它是**模块级常量（导入时早绑定）**，
+        改 `config.OUTPUTS_DIR` 对它**毫无影响**。只 patch 前者时，安装收尾的
+        `try_auto_preview()` 照样把 sidecar 写进**真实的** `outputs/market/`
+        （实测：跑完全量后那里多出 `auto_rb` / `busy_rb` / `circular` 三个夹具名的
+        sidecar —— 与 §8.24 同源，只是走的是预览路径而非权重路径）。
+
+    改成 `autouse`：原先只有回滚那一条用例显式请求它，其余 20 多条安装用例
+    全都在往真实目录写。
+    """
     out = tmp_path / "out"
     out.mkdir(parents=True)
+    # `market_preview` 只在**导入时**建一次 MARKET_DIR（`market_preview.py:71`），
+    # 写入时不再建 → patch 之后必须自己把目录建出来，否则落盘会失败被
+    # `contextlib.suppress` 静默吞掉，守卫会看到"没写"而误判。
+    (out / "market").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(config, "OUTPUTS_DIR", out)
+    monkeypatch.setattr(mp, "MARKET_DIR", out / "market")
     return out
 
 
@@ -959,3 +983,49 @@ def test_search_skip_beyond_ms_block(monkeypatch):
     assert r1["next_skip"] == 50
     r2 = ms.search("all", "q", limit=50, skip=50)
     assert r2["items"][0]["id"] == "hf-47", "skip=50 = 3 魔搭 + 47 HF"
+
+
+# ---------------- 隔离守卫（2026-09-22） ----------------
+
+
+def test_auto_preview_never_writes_real_market_dir(server_url, mgr, fake_rvc, old_dir):
+    """★ 守卫：安装收尾会 fire-and-forget 触发 `try_auto_preview()`，
+    其 sidecar **必须**落在隔离目录里，**绝不能**写进真实的 `outputs/market/`。
+
+    为什么需要这条：`market_preview.MARKET_DIR` 是**模块级常量（导入时早绑定）**，
+    只 patch `config.OUTPUTS_DIR` 对它**无效** —— 泄漏因此是"静默"的，
+    要等跑完全量、去翻真实目录才发现多了几个夹具名的 sidecar（§8.24 同源，
+    只是走的是预览路径而非权重路径）。
+
+    变异测试：把 `fake_out` 里的 `mp.MARKET_DIR` patch 去掉 → 本用例必须红。
+    """
+    ins = InstallManager(manager=mgr, old_dir=old_dir)
+
+    # ★ 用「前后快照」而不是「文件不存在」：真实目录里可能**已经**有历史残留
+    #   （修复前每跑一次全量就多留一个），拿 `exists()` 当判据会把它误判成
+    #   "本次泄漏" → 守卫假红。改成比对 (size, mtime_ns)，只看**本次**有没有动它。
+    leaked = _REAL_MARKET_DIR / "guard_rb_preview.json"
+
+    def _stamp() -> tuple[int, int] | None:
+        if not leaked.exists():
+            return None
+        st = leaked.stat()
+        return (st.st_size, st.st_mtime_ns)
+
+    before = _stamp()
+    _install_v1(ins, "guard_rb", server_url)
+
+    # `generate()` 起的是 daemon 线程 → sidecar 异步落盘，轮询等它出现
+    sidecar = mp.MARKET_DIR / "guard_rb_preview.json"
+    deadline = time.time() + 20.0
+    while time.time() < deadline and not sidecar.exists():
+        time.sleep(0.05)
+
+    assert sidecar.exists(), (
+        f"预览 sidecar 没落在隔离目录 {mp.MARKET_DIR} —— 生成线程没跑到，"
+        f"那这条守卫就没在验任何东西（不是「通过」）"
+    )
+    assert _stamp() == before, (
+        f"本用例把预览 sidecar 写进了**真实的** {_REAL_MARKET_DIR} —— "
+        f"测试污染了开发机数据目录。多半是 `market_preview.MARKET_DIR`（模块级常量）没被 patch。"
+    )
