@@ -4,123 +4,276 @@
 <meta charset="utf-8" />
 <title>提示</title>
 <style>
-  /* 置顶提示横幅：全屏顶部居中，大字号 + 倒计时 + 进度条，任何窗口上都可见 */
+  /* ============================================================
+     微信发语音时的置顶引导横幅（重设计 2026-09-23）
+     ------------------------------------------------------------
+     它只活十几秒，却压在微信聊天窗之上，所以设计目标只有一条：
+     「像教练的手势，而不是系统的报错弹窗」。做到这点靠三件事——
+       1. 卡片本体永远中性（不跟阶段变色），阶段色只落在图标底与进度条；
+       2. 没有实心描边/外发光，只有 1px 细边 + 一层柔和投影；
+       3. 层级正确：「别动键鼠」这类动作指令在副文，不在主标题。
+     主题跟随系统（prefers-color-scheme），与主应用默认的「跟随系统」一致。
+     窗口尺寸/位置由主进程 alt-hint.cjs 决定，本文件只管长相。
+     ============================================================ */
+  :root {
+    /* 暗色（默认）：直接对齐主应用 tokens（surface #161b26 / t-200 #e2e8f0 / t-400 #94a3b8） */
+    --card-bg: rgba(22, 27, 38, 0.94);
+    --card-border: rgba(255, 255, 255, 0.08);
+    --card-shadow: 0 10px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --t-strong: #e2e8f0;
+    --t-muted: #94a3b8;
+    --warn: #f59e0b;
+    --track: rgba(255, 255, 255, 0.06);
+    --key-bg: rgba(255, 255, 255, 0.08);
+    --key-border: rgba(255, 255, 255, 0.16);
+    --key-fg: #f8fafc;
+    /* 阶段语义色（RGB 三元组，便于按透明度派生图标底） */
+    --st-brand: 124 92 240;    /* #7c5cf0 */
+    --st-brand-2: 56 189 248;  /* #38bdf8 */
+    --st-danger: 248 113 113;  /* #f87171 */
+    --st-ok: 52 211 153;       /* #34d399 */
+    --st-ok-2: 110 231 183;    /* #6ee7b7 */
+    --font: Inter, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  }
+  /* 亮色：与主应用 data-theme="light" 的令牌同档（-600/-700 而非 -400），
+     否则同一组透明度在浅底上会「糊掉」—— 亮卡在白底上会看不出边界。 */
+  @media (prefers-color-scheme: light) {
+    :root {
+      --card-bg: rgba(255, 255, 255, 0.97);
+      --card-border: rgba(15, 23, 42, 0.08);
+      --card-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+      --t-strong: #0f172a;
+      --t-muted: #64748b;
+      --warn: #d97706;
+      --track: rgba(15, 23, 42, 0.08);
+      --key-bg: rgba(15, 23, 42, 0.05);
+      --key-border: rgba(15, 23, 42, 0.14);
+      --key-fg: #0f172a;
+      --st-brand: 105 76 222;    /* #694cde */
+      --st-brand-2: 14 165 233;  /* #0ea5e9 */
+      --st-danger: 220 38 38;    /* #dc2626 */
+      --st-ok: 5 150 105;        /* #059669 */
+      --st-ok-2: 16 185 129;     /* #10b981 */
+    }
+  }
+
   html, body {
     margin: 0; padding: 0; background: transparent;
     overflow: hidden; user-select: none;
   }
   #wrap {
     width: 100vw; height: 100vh;
+    box-sizing: border-box;
     display: flex; align-items: flex-start; justify-content: center;
-    padding-top: 3vh;
+    padding-top: 8px;
+    animation: enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
+  /* 从「更靠上」滑下来：横幅本来就贴在屏幕上方，从上边缘进入最自然 */
+  @keyframes enter {
+    from { opacity: 0; transform: translateY(-8px); }
+    to   { opacity: 1; transform: none; }
+  }
+
   #card {
     width: 520px; box-sizing: border-box;
-    padding: 16px 20px 14px;
-    border-radius: 16px;
-    background: linear-gradient(135deg, rgba(15, 23, 42, 0.94), rgba(30, 41, 59, 0.94));
-    border: 2px solid rgba(56, 189, 248, 0.65);
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 0 4px rgba(56, 189, 248, 0.12);
-    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
-    color: #f8fafc;
-    text-align: center;
+    display: flex; flex-direction: column;
+    border-radius: 14px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    box-shadow: var(--card-shadow);
+    font-family: var(--font);
+    color: var(--t-strong);
+    overflow: hidden;   /* 让底部进度条被圆角裁切 */
+    /* 阶段色：卡片本体不吃，只给图标底与进度条 */
+    --stage: var(--st-brand);
+    --stage-2: var(--st-brand-2);
   }
-  #card.stage-prep   { border-color: rgba(245, 158, 11, 0.7); }
-  #card.stage-press  { border-color: rgba(239, 68, 68, 0.8); }
-  #card.stage-release{ border-color: rgba(16, 185, 129, 0.8); }
-  #card.stage-done   { border-color: rgba(16, 185, 129, 0.8); }
+  /* 合成 / 发送中：品牌紫（这是「这个产品在干活」的颜色） */
+  #card.stage-prep   { --stage: var(--st-brand);  --stage-2: var(--st-brand-2); }
+  /* 该你按 Alt 了：红 —— 唯一需要用户动手的一刻，值得最高注意力 */
+  #card.stage-press  { --stage: var(--st-danger); --stage-2: var(--st-brand); }
+  /* 已发出：绿 */
+  #card.stage-release,
+  #card.stage-done   { --stage: var(--st-ok);     --stage-2: var(--st-ok-2); }
+
+  .row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px;
+  }
+  .icon-box {
+    flex: none;
+    width: 36px; height: 36px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgb(var(--stage) / 0.16);
+    color: rgb(var(--stage));   /* SVG 用 currentColor 取色，换阶段无需改标记 */
+  }
+  .icon-box svg { display: block; }
+  .texts { flex: 1 1 auto; min-width: 0; }
 
   #title {
-    font-size: 30px; font-weight: 800; letter-spacing: 1px; line-height: 1.25;
+    font-size: 16px; font-weight: 500; line-height: 1.4;
+    color: var(--t-strong);
   }
-  #title .big { font-size: 38px; }
   #sub {
-    margin-top: 6px; font-size: 16px; color: #cbd5e1; line-height: 1.5;
+    margin-top: 4px;
+    font-size: 13px; line-height: 1.55;
+    color: var(--t-muted);
   }
-  #sub b { color: #fbbf24; }
+  /* 副文里的强调：唯一一处琥珀色。它是这十几秒里用户真正必须照做的那句 */
+  #sub b { color: var(--warn); font-weight: 600; }
+
+  /* 键帽：把「按 Alt」「按 Esc」画成键，比写成文字更好认 */
+  kbd {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 42px; height: 22px; padding: 0 8px; margin: 0 2px;
+    box-sizing: border-box;
+    border-radius: 6px;
+    background: var(--key-bg);
+    border: 1px solid var(--key-border);
+    color: var(--key-fg);
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    letter-spacing: 0.02em; line-height: 1;
+    vertical-align: -0.18em;
+  }
+  #sub kbd { min-width: 32px; height: 18px; font-size: 11px; padding: 0 6px; }
+
   #countdown {
-    margin-top: 10px; font-size: 20px; font-weight: 700;
-    color: #fbbf24; font-variant-numeric: tabular-nums;
+    flex: none;
+    font-family: var(--mono); font-size: 12px;
+    font-variant-numeric: tabular-nums;   /* 等宽数字：秒数跳动时不会左右抖 */
+    color: var(--t-muted); white-space: nowrap;
+    padding-left: 4px;
   }
-  #bar {
-    margin-top: 10px; height: 10px; border-radius: 999px;
-    background: rgba(148, 163, 184, 0.25); overflow: hidden;
+
+  /* 3px 进度条：不抢视线，但告诉用户「还要多久」 */
+  .track {
+    height: 3px; flex: none;
+    background: var(--track);
   }
-  #bar > i {
+  .track > i {
     display: block; height: 100%; width: 0%;
-    border-radius: 999px; transition: width 100ms linear;
-    background: linear-gradient(90deg, #f59e0b, #ef4444);
+    background: linear-gradient(90deg, rgb(var(--stage)), rgb(var(--stage-2)));
+    transition: width 120ms linear;
   }
-  #card.stage-release #bar > i, #card.stage-done #bar > i { background: linear-gradient(90deg, #10b981, #34d399); }
-  /* 未知时长时的「转圈」进度条 */
-  #bar > i.indeterminate {
+  /* 时长未知（后端没给 progress）时的「来回找」进度条 */
+  .track > i.indeterminate {
     width: 40% !important;
-    animation: slide 1.1s ease-in-out infinite;
+    animation: slide 1.15s ease-in-out infinite;
   }
   @keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
-  #icon {
-    font-size: 34px; line-height: 1; margin-bottom: 4px;
+
+  /* 无障碍：系统开了「减少动态」就都别动 */
+  @media (prefers-reduced-motion: reduce) {
+    #wrap { animation: none; }
+    .track > i { transition: none; }
+    .track > i.indeterminate { animation: none; width: 100% !important; margin-left: 0 !important; opacity: 0.5; }
   }
-  /* 按住 Alt 时红点脉冲，提醒「现在按住」 */
-  #pulse {
-    display: inline-block; width: 14px; height: 14px; border-radius: 50%;
-    background: #ef4444; margin-right: 10px;
-    animation: pulse 0.8s infinite; vertical-align: 2px;
-  }
-  #card:not(.stage-press) #pulse { display: none; }
-  @keyframes pulse { 50% { opacity: 0.25; transform: scale(0.8); } }
 </style>
 </head>
 <body>
 <div id="wrap">
   <div id="card" class="stage-prep">
-    <div id="icon">🎤</div>
-    <div id="title">准备播放语音</div>
-    <div id="sub">音频马上开始，请先切到微信聊天窗口</div>
-    <div id="countdown">2 秒后开始…</div>
-    <div id="bar"><i></i></div>
+    <div class="row">
+      <div class="icon-box" id="iconBox"></div>
+      <div class="texts">
+        <div id="title">正在发送语音</div>
+        <div id="sub"></div>
+      </div>
+      <div id="countdown"></div>
+    </div>
+    <div class="track"><i id="bar"></i></div>
   </div>
 </div>
 <script>
-  // 渲染层：接收主进程推送的阶段与倒计时
+  // 渲染层：只负责把主进程推来的阶段画出来。鼠标事件全程穿透（主进程 setIgnoreMouseEvents）。
+  const wrap = document.getElementById("wrap");
   const card = document.getElementById("card");
+  const iconBox = document.getElementById("iconBox");
   const titleEl = document.getElementById("title");
   const subEl = document.getElementById("sub");
   const cdEl = document.getElementById("countdown");
-  const barEl = document.querySelector("#bar > i");
-  const iconEl = document.getElementById("icon");
+  const barEl = document.getElementById("bar");
 
-  // 每个阶段的图标与提示词
-  const STAGE = {
-    prep:    { icon: "🎤", text: "准备播放语音" },
-    press:   { icon: "", text: "按住 Alt 说话！" },
-    release: { icon: "✅", text: "松开 Alt，语音已发送！" },
-    done:    { icon: "✅", text: "完成" },
+  // 图标自带 currentColor，颜色交给 CSS 的 --stage（阶段切换时不用重拼 SVG）
+  const ICONS = {
+    // 声波：机器在出声
+    prep: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 10v4M8 6.5v11M12 3v18M16 6.5v11M20 10v4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>',
+    // 麦克风：该你说话了
+    press: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="9" y="2.5" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.9"/><path d="M5 11a7 7 0 0 0 14 0" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M12 18v3.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>',
+    // 对勾：发出去了
+    release: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 12.5l5 5L20 6.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    done: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 12.5l5 5L20 6.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   };
 
+  // 标题按阶段给：主标题讲「现在发生什么」，具体数据留在 sub（调用方提供）
+  const TITLES = {
+    prep: "正在发送语音",
+    press: '现在按住 <kbd>Alt</kbd> 说话',
+    release: '松开 <kbd>Alt</kbd>，语音已发送',
+    done: "已完成",
+  };
+
+  const STAGES = ["prep", "press", "release", "done"];
+
+  function render(g) {
+    if (!g || !g.stage) return;
+    const stage = STAGES.indexOf(g.stage) >= 0 ? g.stage : "prep";
+
+    // className 直接赋值：它同时清掉上一次的阶段类，避免旧阶段色残留
+    card.className = "stage-" + stage;
+    iconBox.innerHTML = ICONS[stage];
+    titleEl.innerHTML = TITLES[stage];
+
+    // 副文用调用方原文（保留其 <b> 强调，如「别动键鼠」）。
+    // 唯一改写：把 <b>Alt</b> 升级成键帽 —— 主进程那侧还在用 <b> 标按键，
+    // 在这里收口就不必为了改长相而重打 asar。
+    let sub = String(g.sub || "")
+      .replace(/\n/g, "<br>")
+      .replace(/<b>\s*Alt\s*<\/b>/gi, "<kbd>Alt</kbd>");
+    // 标题已经说了「现在按住 Alt 说话」，副文再重复一遍，这一行就会被挤到折行、
+    // 「取消」孤零零掉到第二行。剥掉这个前缀：信息没丢（它在标题里），副文才装得下。
+    // 调用方文案以后变了也不怕 —— 正则不匹配就原样保留，是安全降级。
+    if (stage === "press") {
+      sub = sub.replace(/^\s*现在按住\s*<kbd>Alt<\/kbd>\s*[，,、]?\s*/, "");
+    }
+    // 按住说话阶段（唯一注册了 Esc 的阶段，见 alt-hint.cjs armCancelKey）
+    // 旧版从没说出口过怎么取消 —— 补上，且只在真的能取消时补。
+    if (stage === "press" && sub && !/Esc/i.test(sub)) sub += " · 按 <kbd>Esc</kbd> 取消";
+    subEl.innerHTML = sub;
+    subEl.style.display = sub ? "block" : "none";
+
+    // 倒计时：press 是真递减（「还剩」），prep 只推一次不递减（「约」，别写成倒计时骗人）
+    if (g.remainS != null) {
+      cdEl.style.display = "block";
+      cdEl.textContent = (stage === "press" ? "还剩 " : "约 ") + g.remainS + "s";
+    } else {
+      cdEl.style.display = "none";
+    }
+
+    // progress: -1 = 时长未知 → 来回找；0~1 = 确定进度；null/undefined = 维持现状
+    if (g.progress === -1) {
+      barEl.classList.add("indeterminate");
+      barEl.style.width = "";
+    } else {
+      barEl.classList.remove("indeterminate");
+      if (g.progress != null) {
+        const p = Math.max(0, Math.min(1, Number(g.progress) || 0));
+        barEl.style.width = (p * 100).toFixed(1) + "%";
+      }
+    }
+  }
+
+  // 窗口 hide→show 不重载页面，所以入场动画得手动重播，否则「第二次发语音」就没有出场感
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    wrap.style.animation = "none";
+    void wrap.offsetWidth;   // 强制回流，让动画从头播
+    wrap.style.animation = "";
+  });
+
   if (window.altHint && window.altHint.onHint) {
-    window.altHint.onHint((g) => {
-      if (!g || !g.stage) return;
-      const s = STAGE[g.stage] || STAGE.prep;
-      card.className = "stage-" + g.stage;
-      iconEl.textContent = s.icon;
-      titleEl.innerHTML = (g.stage === "press")
-        ? '<span id="pulse"></span>按住 <b style="color:#f87171;font-size:44px;">Alt</b> 说话！'
-        : s.text;
-      subEl.innerHTML = (g.sub || "").replace(/\n/g, "<br>");
-      if (g.remainS != null) {
-        cdEl.style.display = "block";
-        cdEl.textContent = `还剩 ${g.remainS} 秒`;
-      } else {
-        cdEl.style.display = "none";
-      }
-      if (g.progress === -1) {
-        barEl.classList.add("indeterminate");
-      } else {
-        barEl.classList.remove("indeterminate");
-        if (g.progress != null) barEl.style.width = (g.progress * 100).toFixed(1) + "%";
-      }
-    });
+    window.altHint.onHint(render);
   }
 </script>
 </body>
