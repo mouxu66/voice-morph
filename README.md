@@ -251,7 +251,7 @@ python tools\check.py --ci-fidelity   # 复刻 CI：在只装 requirements-dev.t
 本机多装的包（包括别的包顺手带进来的**传递依赖**）会把"依赖没声明"这类问题整个挡住。
 它自动从 `.github/workflows/ci.yml` 读版本号、建 `.venv-ci/`、跑 CI 同一条命令，
 并在结尾诚实列出没被复刻的差异（runner 镜像 / Linux 大小写 / `npm ci` 全新安装）。
-来龙去脉见 `docs/犯错指南.md` §3.9、§3.36。
+来龙去脉见 `docs/犯错档案-工程.md` §3.9、§3.36。
 
 前端单测：`cd web && npm run test:run`（vitest + jsdom）。
 **它的门禁位置是 `tools/check.py` 的 `web` 步**（tsc 之后），不在 `--fast` 里；

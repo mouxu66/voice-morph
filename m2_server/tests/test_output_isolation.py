@@ -1,6 +1,6 @@
 """★ 守卫：测试会话里，**导入时刻**的 `cfg.OUTPUTS_DIR` / `cfg.MEDIA_DIR` 不许是真实目录。
 
-为什么需要（2026-09-22，`docs/犯错指南.md` §8.36 / §8.37）：
+为什么需要（2026-09-22，`docs/犯错档案-工程.md` §8.36 / §8.37）：
 `config.OUTPUTS_DIR` / `MEDIA_DIR` 被一批模块在**导入时**取走变成模块级常量
 （`market_preview.MARKET_DIR`、`market_images.CACHE_DIR`、`finetune.FT_DIR`、
 `cascade.STATE_FILE` …，全仓 40+ 处）。导入之后再

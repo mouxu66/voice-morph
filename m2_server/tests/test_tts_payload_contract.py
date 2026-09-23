@@ -3,7 +3,7 @@
 起因（2026-09-22）：`cascade_stream` 给 `/tts` 与 `/tts_stream` 发了 `"fast": True`，
 但这两个端点根本不读它 —— `fast` 是 `_transcribe()`（Whisper 解码）的参数，
 只有 `/transcribe` 认。于是那两处是**死参数**：不报错、不生效、只误导读者
-（会让人以为「传了 fast 就真的 fast 了」）。详见 docs/犯错指南.md §8.38。
+（会让人以为「传了 fast 就真的 fast 了」）。详见 `docs/犯错档案-工程.md` §8.38。
 
 覆盖全仓「后端 → worker」的 3 条链路：
   · cascade_stream.py —— requests.post(self.base + "/x", json={…})

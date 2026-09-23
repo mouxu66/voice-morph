@@ -12,14 +12,20 @@
    确保所有测试与验证全部通过。
 3. **踩坑必记**：重要决策、环境坑、训练结论写入
    `D:\变声\.workbuddy-ai\memory\YYYY-MM-DD.md`（跨会话长期结论写入同目录 `MEMORY.md`）。
-   **可复现、会再犯的坑另写入 `docs\犯错指南.md`**（症状/根因/对策/证据四要素，
-   标注 ✅本机实测 / 📚社区库声称 / ❓未验证）。动 `m2_server/wechat_voice.py`
-   之前先读该文件。
+   **可复现、会再犯的坑写进 `docs\` 的三份之一**（症状/根因/对策/证据四要素，
+   标注 ✅本机实测 / 📚社区库声称 / ❓未验证；**2026-09-23 起 `犯错指南.md` 已拆开**，
+   因为它涨到 4511 行 —— 而"动代码前必读"的东西不该有 4511 行）：
+   - `docs\犯错指南.md`（~300 行）：**动代码前读这一份** —— 速查表 / 铁律 / 检查清单 / 诊断命令。
+     新坑属于"每次改动都适用"的 → 在这里加一行速查表；
+   - `docs\犯错档案-微信.md`：微信语音发送 / UIA / 虚拟声卡 / 浮层（§2.x、§5.x）。
+     **动 `m2_server/wechat_voice.py`、`wechat_proc.py`、`wechat_uia.py` 之前先读它**；
+   - `docs\犯错档案-工程.md`：CI / 门禁 / 测试 / 打包 / 桌面控制（§3.x、§8.x）。
+   两份档案的 §编号沿用拆分前的原值，所以代码与测试注释里的引用不用改（`docs\README.md` 有索引）。
 
    > **记忆目录只有这一处**（2026-09-20 已把旧的 `.workbuddy\memory\` 合并进来并删除，
    > 备份留在 `.workbuddy\memory.bak-20260920-204235\`）。两处都会被 `.gitignore`
    > 忽略，不进仓库 —— 但 WorkBuddy 的 `Read`/`Write`/`Edit` 对它们**读写正常**
-   > （旧的「一律 BLOCKED」说法已更正，见犯错指南 §8.5）。
+   > （旧的「一律 BLOCKED」说法已更正，见`docs/犯错档案-工程.md` §8.5）。
 
 ## 可用技能（已装入 `.workbuddy\skills\`）
 
@@ -94,7 +100,7 @@
   别指望它同步前端；② **自动更新帮不上**——它查 GitHub Releases，而线上 Releases 为空 →
   每次 404 静默返回，即便发版也是整套安装包替换。
   （源码模式 `npm run electron:dev` 改完重启即生效，用不上这条。）
-- `tools/sync_backend.ps1` 与 `resources/backend/{m2_server,web_dist}` 副本：⚠️**这是源码根下的 staging 目录，不是"已安装的那份"**。已安装的桌面端只读 `%LOCALAPPDATA%\Programs\voice-morph-desktop\resources\backend`，而 `backend_autosync.py`（后端启动时自动跑，`VM_BACKEND_AUTOSYNC=0` 可关）**只写 staging、不写它** → 装好的那份会**悄悄过期**（2026-09-18 实测过一次，见 `docs/犯错指南.md` §2.34）。给已安装的那份更新必须**显式指定目标**：
+- `tools/sync_backend.ps1` 与 `resources/backend/{m2_server,web_dist}` 副本：⚠️**这是源码根下的 staging 目录，不是"已安装的那份"**。已安装的桌面端只读 `%LOCALAPPDATA%\Programs\voice-morph-desktop\resources\backend`，而 `backend_autosync.py`（后端启动时自动跑，`VM_BACKEND_AUTOSYNC=0` 可关）**只写 staging、不写它** → 装好的那份会**悄悄过期**（2026-09-18 实测过一次，见 `docs/犯错档案-微信.md` §2.34）。给已安装的那份更新必须**显式指定目标**：
   ```bash
   $dst = "$env:LOCALAPPDATA\Programs\voice-morph-desktop\resources\backend"
   & tools\sync_backend.ps1 -WhatIfSync -TargetRoot $dst   # 先看会动什么
@@ -109,8 +115,8 @@
      "$LOCALAPPDATA/Programs/voice-morph-desktop/resources/backend/web/electron/pet/pet.html"
   python tools/verify_backend_sync.py   # 只读核验；pet 也在比对范围内（10 个文件）
   ```
-  ⚠️ **别用 `md5sum` 比对**：Git Bash 的 `md5sum` 遇到含反斜杠的 Windows 路径会在哈希前加 `\` 前缀，一侧相对一侧绝对时**全假红**（68 个 .py 全报不一致），两侧都用绝对路径时**全假绿**（更危险，会把混装放过去）——见 `docs/犯错指南.md` §2.28。要手工比就用 `cmp -s A B`。
-  需要重打包的只有 `web/electron/*.cjs` 这类**主进程**文件 —— 别把两者混为一谈（`docs/犯错指南.md` 速查表第 25/31 条）。
+  ⚠️ **别用 `md5sum` 比对**：Git Bash 的 `md5sum` 遇到含反斜杠的 Windows 路径会在哈希前加 `\` 前缀，一侧相对一侧绝对时**全假红**（68 个 .py 全报不一致），两侧都用绝对路径时**全假绿**（更危险，会把混装放过去）——见 `docs/犯错档案-微信.md` §2.28。要手工比就用 `cmp -s A B`。
+  需要重打包的只有 `web/electron/*.cjs` 这类**主进程**文件 —— 别把两者混为一谈（`docs/犯错指南.md` 速查表第 27/32 条）。
   ⚠️ **但 asar 里那份 pet 副本也得跟**（2026-09-23 实测澄清）：`web/package.json` 的 `extraResources`
   **不含** `web/electron/pet`，所以**全新安装的机器**上磁盘副本根本不存在 → `PET_DIR` 回退到 asar 内置那份。
   只拷磁盘副本 = 「本机对、发给别人/重装退回旧版」，而且 `tools/audit_asar_freshness.cjs` 把

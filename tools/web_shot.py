@@ -7,7 +7,7 @@
     python tools/web_shot.py --route /home --sizes 1280      # 只验一档
     python tools/web_shot.py --route /audition --themes dark
 
-为什么要有它（`docs/犯错指南.md` §3.22 / §3.26）：
+为什么要有它（`docs/犯错档案-工程.md` §3.22 / §3.26）：
   - 别让用户当眼睛。截图 + `scrollWidth` 量测能挡住"看着挺对其实 768px 顶出视口"。
   - **必须先播种 localStorage**，否则被首启引导挡住，截出来的是引导页。
   - 路由是 **HashRouter**，所以要访问 `#/route`。

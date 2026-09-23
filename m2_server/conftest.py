@@ -47,7 +47,7 @@ os.environ["VM_PLUGIN_SEED"] = "0"
 #     finetune.FT_DIR          = cfg.MEDIA_DIR / "ft"
 #     cascade.STATE_FILE / history.HISTORY_FILE / runtime.OUT / …（全仓 40+ 处）
 # 它们是**导入时求值**的，导入之后再改 `cfg.*` 对它们**完全无效、且不报错**
-# （见 docs/犯错指南.md §8.36）。
+# （见 `docs/犯错档案-工程.md` §8.36）。
 #
 # 后果实测：跑全量时真实 `outputs/market/` 里累积了 20+ 个**夹具名**的 sidecar
 # （auto_rb / busy_rb / circular / mutex / no_idx / test_voice …，最早可追到 2026-09-06）、

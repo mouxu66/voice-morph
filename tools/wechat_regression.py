@@ -6,7 +6,7 @@
     本脚本              **回归**：发一条已知时长的语音，按三条硬判据判成败，
                         退出码 0/1 可直接给 CI、计划任务、或"我改完想确认一下"用
 
-三条判据（来自 docs/犯错指南.md §3.3，缺一不可）：
+三条判据（来自 `docs/犯错指南.md` §3.3，缺一不可）：
 
     1. 终态      steps 里出现「已点…发送」这类终态——`outcome=ok` 只代表代码
                  路径走完，不代表微信真收到
@@ -89,7 +89,7 @@ def judge_duration(audio_secs: float, reported_secs: float | None) -> tuple[bool
         return False, "读不到语音消息时长（UIA 未就绪或消息不存在）"
     if reported_secs >= TRUNCATED_SECS:
         return False, (f"显示 {reported_secs:.0f}\" —— 60s 截断复发：录音的按下状态"
-                       f"没被解除（犯错指南 §2.2）")
+                       f"没被解除（`docs/犯错档案-微信.md` §2.2）")
     expected = audio_secs + DURATION_OVERHEAD
     if abs(reported_secs - expected) <= DURATION_TOL:
         return True, f"时长 {reported_secs:.0f}\"（音频 {audio_secs:.1f}s，期望 ≈{expected:.1f}s）"
@@ -283,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     if passed:
         print("  结论：链路正常")
         return 0
-    print("  结论：链路异常 —— 先按 docs/犯错指南.md §3.3 的三条判据定位")
+    print("  结论：链路异常 —— 先按 `docs/犯错指南.md` §3.3 的三条判据定位")
     return 1
 
 

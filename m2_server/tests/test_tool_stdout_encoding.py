@@ -77,7 +77,7 @@ def test_the_detector_actually_bites(tmp_path):
     """守卫自己要先有牙：造两个假工具，验它分别**报出**与**放过**。
 
     没有这一条，上面那个「清单为空」的断言在**规则本身写坏**时也会绿
-    （`docs/犯错指南.md` §8.21 的病：两边都空 = 白绿）。
+    （`docs/犯错档案-工程.md` §8.21 的病：两边都空 = 白绿）。
     """
     bad = tmp_path / "bad_tool.py"
     bad.write_text('def main():\n    print("⚠️ 没门\n")\n', encoding="utf-8")
@@ -251,7 +251,7 @@ def test_tests_reading_our_own_subprocesses_pin_encoding():
     这条比 `test_qwen3_tts_shutdown.test_system_command_calls_specify_encoding` 管的那批
     更进一步：那批管的是 `m2_server/*.py` 调 **Windows 系统命令**（GBK 输出）；
     这条管的是**测试**调**我们自己的脚本**（UTF-8 输出）——「谁写的谁定编码」，
-    两侧不一致时必有一侧炸（`docs/犯错指南.md` §8.25）。
+    两侧不一致时必有一侧炸（`docs/犯错档案-工程.md` §8.25）。
     """
     offenders = _tests_spawning_own_python_without_encoding()
     assert not offenders, (

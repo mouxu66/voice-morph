@@ -27,7 +27,7 @@
 哈希其实一样，但 ``cut -d' ' -f1`` 拿到的字符串字面不等 →
 **一侧相对路径一侧绝对路径时全部文件假红**（本机实测 68 个 .py 全报不一致）；
 更危险的是**两侧都用绝对路径时全部假绿**，把「半新半旧混装」放过去
-（见 ``docs/犯错指南.md`` §2.28 / §2.29）。
+（见 `docs/犯错档案-微信.md` §2.28 / §2.29）。
 
 本脚本用 Python 按字节比对，不受 shell 路径形态影响，且一次遍历同时报出
 「内容不一致 / 目标缺失 / 目标多余」三类差异。
@@ -237,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     print('   $dst = "$env:LOCALAPPDATA\\Programs\\voice-morph-desktop\\resources\\backend"')
     print("   & D:\\变声\\tools\\sync_backend.ps1 -WhatIfSync -TargetRoot $dst   # 先看会动什么")
     print("   & D:\\变声\\tools\\sync_backend.ps1           -TargetRoot $dst   # 再真同步")
-    print("   ⚠️ 桌宠文件（web/electron/pet）不在 sync 范围内，需单独拷（见 docs/犯错指南.md §2.29）")
+    print("   ⚠️ 桌宠文件（web/electron/pet）不在 sync 范围内，需单独拷（见 `docs/犯错档案-微信.md` §2.29）")
     print("   ⚠️ sync_backend.ps1 不含 web/dist → web_dist，前端要用 backend_autosync 或手动拷")
     return 1
 

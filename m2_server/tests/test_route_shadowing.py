@@ -76,7 +76,7 @@ def _routes() -> list[tuple[str, str, str, str]]:
                 # 而它的 `route.path` 就是 `/api/health`。再拼一次会得到
                 # `/api/api/health` —— 而这个错误**不会**让任何用例变红，
                 # 只会让下面两条守护**静默失效**（2026-09-20 变异测试抓到的，
-                # 见 `docs/犯错指南.md` §8.19）。对账见
+                # 见 `docs/犯错档案-工程.md` §8.19）。对账见
                 # `test_rebuilt_route_table_matches_the_app`。
                 out.append((plugin_id, module, method, route.path))
         if len(out) == before:

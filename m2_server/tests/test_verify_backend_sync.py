@@ -3,7 +3,7 @@
 为什么值得测：
     「核验工具」本身如果失灵，比没有更危险 —— 它会给出**假的安心感**。
     本项目的直接教训是 `md5sum` 那类"看起来在比对、其实全假红/全假绿"的手段
-    （`docs/犯错指南.md` §2.28），以及 `diff --include` 把缺失文件过滤掉造成
+    （`docs/犯错档案-微信.md` §2.28），以及 `diff --include` 把缺失文件过滤掉造成
     "零差异"假象（§2.30）。所以这个脚本必须被证明**真的能咬住漂移**。
 
 测试策略：全部在 `tmp_path` 里构造 src/dst，不碰真实副本。
@@ -191,7 +191,7 @@ def test_sync_pairs_rename_mapping_is_covered():
     pairs = dict(vbs.backend_autosync._SYNC_PAIRS)
     assert pairs.get("web/dist") == "web_dist", (
         "_SYNC_PAIRS 里 web/dist → web_dist 的改名映射丢了，"
-        "前端副本将不再被核验（见 docs/犯错指南.md §2.29）"
+        "前端副本将不再被核验（见 `docs/犯错档案-微信.md` §2.29）"
     )
     assert pairs.get("m2_server") == "m2_server"
     assert pairs.get("tools") == "tools"

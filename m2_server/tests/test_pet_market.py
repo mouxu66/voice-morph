@@ -512,7 +512,7 @@ def _run_expecting_skip(ffmpeg_run, monkeypatch, exc: OSError):
     ⚠️ 用 `pytest.raises(BaseException)` + 显式判类型，而不是
     `pytest.raises(期望类型)` —— 后者拿到**别的**异常会原样放行，若那个异常恰好是
     skip，整条用例会变成「跳过」而**退出码仍是 0**，守卫静默失效
-    （2026-09-22 实测踩到，见 `docs/犯错指南.md` §8.33）。
+    （2026-09-22 实测踩到，见 `docs/犯错档案-工程.md` §8.33）。
     """
     def _boom(*_a, **_kw):
         raise exc

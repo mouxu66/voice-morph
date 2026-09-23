@@ -68,7 +68,7 @@ fastapi / pydantic / pydub / demucs / sounddevice / webrtcvad / comtypes / pytes
 源码 <https://github.com/pytest-dev/pytest-cov>）。
 它只是**开发时**依赖（`requirements-dev.txt`），不进发行物 ——
 加它是因为 `pyproject.toml` 的 addopts 默认带 `--cov`，少了它连参数解析都过不去
-（`docs/犯错指南.md` §3.36）。
+（`docs/犯错档案-工程.md` §3.36）。
 librosa — **ISC**；Pillow — **HPND**；requests / python-multipart / pyaudiowpatch — **Apache-2.0**。
 
 **2026-09-20 新增 7 条 —— 登记口径扩大到了插件清单**（第 5 步「拆 core/extra」的对偶）。

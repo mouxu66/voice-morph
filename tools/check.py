@@ -45,7 +45,7 @@
     因为 `Pillow` / `comtypes` 从未写进任何 requirements —— 本机有只是因为它们是
     **别的包的传递依赖**（Pillow←gradio/matplotlib，comtypes←pycaw/uiautomation）。
     更阴的是 `from PIL import ...` 写在函数体里，`import server` 干净环境照样成功，
-    "能启动"这个检查完全没看见缺口。细节见 docs/犯错指南.md §3.9。
+    "能启动"这个检查完全没看见缺口。细节见 `docs/犯错档案-工程.md` §3.9。
 
     本模式就是这个事故的机器对策：拿**干净 venv** 跑 CI 那条命令。
 
@@ -61,7 +61,7 @@
     轴① 依赖集 —— 干净 venv 解决（上面那套）。
     轴② 本机资源 —— ffmpeg / `D:\\RVC` / 微调产物 / 开发机屏幕分辨率这类"开发机有、
          runner 没有"的东西。**2026-09-13 CI 首跑红的 13 条全部来自这根轴**，
-         而当时只复刻了轴①，绿灯照样放行（细节见 docs/犯错指南.md §3.10）。
+         而当时只复刻了轴①，绿灯照样放行（细节见 `docs/犯错档案-工程.md` §3.10）。
          对策分两层，缺一层都拦不住：
              (a) `VM_BARE_RUNNER=1` —— m2_server/conftest.py 的资源探测把一切都判为
                  "不存在"，于是做了守卫的用例干净 skip、跳过集与 CI 对齐；
@@ -78,7 +78,7 @@
 
 - **必须设 `CODEBUDDY_SAFE_DELETE_ENABLED=0`**：本机 safe-delete shim 会把
   `shutil.rmtree` 包装成「移回收站」，触发 bulk guard → `raise SystemExit(1)`，
-  表现为 pytest 随机挂几个、vite build 直接失败（见 docs/犯错指南.md §3.5）。
+  表现为 pytest 随机挂几个、vite build 直接失败（见 `docs/犯错指南.md` §3.5）。
 - **必须设 `VM_WARMUP=0`**：server.py 导入期会预热 TTS/RVC，测试里绝不能真起
   那个吃显存的子进程（conftest.py 用 setdefault 兜了一层，这里再钉死）。
 - **ruff 只用 `F,E9`**：默认规则集会掺进大量行宽/风格建议，噪音会让人开始无视
@@ -122,12 +122,12 @@ FAST_TESTS = [
     "m2_server/tests/test_check_secrets.py",
     # 数据目录隔离不变量（约 1s，纯静态 + session 取值）：
     # 钉住 m2_server/conftest.py 里 VM_OUTPUTS_DIR / VM_MEDIA_DIR 那几行 ——
-    # 少了它们，跑全量就会往用户真实的 outputs/ 与 media/ 里写（见 docs/犯错指南.md §8.36/§8.37）。
+    # 少了它们，跑全量就会往用户真实的 outputs/ 与 media/ 里写（见 `docs/犯错档案-工程.md` §8.36/§8.37）。
     # 放进 --fast 才能在提交那一刻拦住，而不是等 pre-push 的全量。
     "m2_server/tests/test_output_isolation.py",
     # 接口契约（约 0.2s，纯 AST 对账）：钉住「客户端发的字段 ⊆ 端点读的字段」。
     # 防的是「死参数」—— 发了、不报错、也不生效（`cascade_stream` 曾给 /tts 发 `fast`，
-    # 而那端点根本不读它）。见 docs/犯错指南.md §8.38。
+    # 而那端点根本不读它）。见 `docs/犯错档案-工程.md` §8.38。
     "m2_server/tests/test_tts_payload_contract.py",
 ]
 
@@ -247,7 +247,7 @@ def _check_ruff() -> tuple[bool, str]:
 #: **不影响用例结果** —— 于是测试全绿、而它声称覆盖的路径其实没跑通（假绿）。
 #: 2026-09-18 实测：全绿 890 passed 的背后藏着 3 处线程异常
 #: （mock 签名写错 / 子进程解码失败），加这个开关后一次全部现形
-#: （docs/犯错指南.md §2.32）。加之前已确认全量 905 passed、fast 151 passed
+#: （`docs/犯错档案-微信.md` §2.32）。加之前已确认全量 905 passed、fast 151 passed
 #: 都不会因此变红。
 _PYTEST_WERROR = ["-W", "error::pytest.PytestUnhandledThreadExceptionWarning"]
 
@@ -274,7 +274,7 @@ def _check_web() -> tuple[bool, str]:
     （`web/src/components/SetupBanner.test.tsx`）是在修“能力加载失败不提示”时加的，
     而在此之前 `package.json` 里那几个 `test*` 脚本是**从未有测试文件、也从未被任何门禁调用**
     的死脚本（`web/src` 下一个 `.test.tsx` 都没有）。
-    加测试而不接门禁 = 犯错指南 §3.15 / §3.23 那族错误（测试存在却从不在门禁里跑 → 慢慢腐烂），
+    加测试而不接门禁 = `docs/犯错档案-工程.md` §3.15 / §3.23 那族错误（测试存在却从不在门禁里跑 → 慢慢腐烂），
     所以“加第一个前端单测”这件事必须连同这一步一起做。
 
     顺序：先 tsc（它管能不能构建，失败得最快），再 vitest。
@@ -312,7 +312,7 @@ def _stray_electron_requires(path: Path) -> list[int]:
     为什么是硬错误（2026-09-14 CI 事故）：本步在 CI 的 backend job 里跑，而那个 job
     **不装 npm 依赖**。于是任何 `require("electron")` / `require.resolve("electron")`
     都会 `MODULE_NOT_FOUND` —— 脚本只能在装了 `web/node_modules` 的本机跑，又回到
-    "测试存在却从不在门禁里跑"的老坑（犯错指南 §3.15）。
+    "测试存在却从不在门禁里跑"的老坑（`docs/犯错档案-工程.md` §3.15）。
     正确写法：先 `installElectronStub(...)`，再 require 受测模块。
 
     本机有 node_modules，所以**本地跑是绿的**，光看结果发现不了 —— 只能静态拦。
@@ -664,7 +664,7 @@ def _ensure_ci_venv(recreate: bool) -> tuple[Path | None, str, str]:
     """建/更新瘦 venv。返回（venv 里的解释器, 想要的版本, 实际用的版本）。
 
     用 `venv --clear` 实现重建：它删目录内容是 stdlib 行为，**不走 shutil.rmtree**
-    —— 本机的 safe-delete shim 会拦 rmtree（见 docs/犯错指南.md §3.5）。
+    —— 本机的 safe-delete shim 会拦 rmtree（见 `docs/犯错指南.md` §3.5）。
     """
     ci_text = _ci_workflow_text()
     want = _ci_python_version(ci_text)
