@@ -19,6 +19,24 @@ os.environ.setdefault("VM_WARMUP", "0")
 # 强制置 0；需要覆盖的用例自己 monkeypatch.setenv。
 os.environ["VM_WECHAT_RESTART"] = "0"
 
+# 测试环境禁止「首次运行播种插件状态」（2026-09-23）。
+#
+# `plugin_manifest.ensure_state_file()` 在 `server.py::_mount_all()` 开头把默认套餐
+# （「标准」= 变声本体，3 项）落成一份 `outputs/plugins.json`。它必须在 `mount_plan()`
+# **之前**跑，而 `_mount_all()` 是 `import server` 时执行的 —— 也就是说：
+#
+#   · `tests/test_plugin_switch.py` 等模块在**顶层**就 `import server`，那是 pytest 的
+#     **收集阶段**，比任何夹具都早。于是播种会真的发生，`server._ROUTER_ORDER` 只剩下
+#     本体的 router（其余 9 项被跳过），而期望「19 项全挂」的那批用例会集体变红：
+#     `test_manifest_covers_exactly_the_registered_routers`（清单 26 个 router 对不上）、
+#     `test_all_plugins_are_ok_on_a_healthy_start`（期望 counts = 19/19/0/0）…
+#   · 更要命的是**那时 `STATE_FILE` 还没被下面的会话级夹具挪走** —— 播种会写在
+#     夹具接管之前的那个路径上，于是"到底写了哪份"取决于哪个测试模块先被收集。
+#
+# 一行环境变量把"取决于收集顺序"变成"一定不发生"。需要验证播种行为的用例
+# `monkeypatch.delenv("VM_PLUGIN_SEED")` + 自己的 `STATE_FILE`，见 `test_plugin_switch.py`。
+os.environ["VM_PLUGIN_SEED"] = "0"
+
 # ★ 数据目录（outputs/ 与 media/）必须在**任何 m2_server 模块被导入之前**切到临时目录
 # （2026-09-22）。
 #

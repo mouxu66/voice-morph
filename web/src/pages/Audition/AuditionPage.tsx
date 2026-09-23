@@ -483,7 +483,13 @@ function LivePanel(p: ReturnType<typeof useAudition>) {
 
 export function AuditionPage() {
   const p = useAudition()
-  const [witMode, setWitMode] = useState<"batch" | "live">("batch")
+  const [witModeState, setWitMode] = useState<"batch" | "live">("batch")
+  // 「一个个实时试」这一档打的是 `rvcLive*`（归可关插件 `sound.rvc-live`）。
+  // 关掉它之后那一档下面渲染的全是打不通的端点，所以：
+  //   ① 按钮不出现；② 已停在这一档的会话落回批量档。
+  // 用一个**派生**的 witMode 而不是逐处改判断：下面十来处 `witMode === "live"`
+  // 全部自动拿到正确结果，不会漏掉某一处。
+  const witMode = p.liveOn ? witModeState : "batch"
 
   const pickedCount = p.selected.length
   const progress = useMemo(() => {
@@ -595,7 +601,9 @@ export function AuditionPage() {
                 ["batch", "一次试多个", "一个声音 × 多个音色，并排听"],
                 ["live", "一个个实时试", "对着麦克风，点哪个换哪个"],
               ] as const
-            ).map(([key, label, desc]) => (
+            )
+              .filter(([key]) => key !== "live" || p.liveOn)
+              .map(([key, label, desc]) => (
               <button
                 key={key}
                 type="button"
@@ -614,7 +622,7 @@ export function AuditionPage() {
                 </span>
                 <span className="mt-0.5 block text-[11px] text-muted-foreground">{desc}</span>
               </button>
-            ))}
+              ))}
           </div>
 
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,330px)_minmax(0,1fr)]">

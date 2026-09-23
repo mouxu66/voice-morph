@@ -74,6 +74,10 @@ def test_standard_preset_is_the_default():
     pm = pe._manifest()
     assert pm.DEFAULT_PRESET == "standard"
     assert pe.resolve()["preset"] == "standard"
+    # 默认套餐必须**逐字**等于变声本体（`BODY_IDS`）。
+    # 静态断言（不看状态文件）：`setup_env.ps1` 不带 `-Preset` 时走的就是这一条 ——
+    # 它一旦与运行时的默认偏离，症状是"装了一套包、跑的是另一套能力"，很难看出。
+    assert pm.PRESETS["standard"] == list(pm.BODY_IDS), "默认套餐跑离了本体定义"
 
 
 def test_presets_come_from_the_manifest_not_from_here():

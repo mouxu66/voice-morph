@@ -48,7 +48,10 @@ function capabilityEntryTitle(counts: PluginCatalog["counts"]): string {
     return `${counts.broken} 项能力没加载起来（缺依赖或启动失败）—— 点开看具体原因`
   }
   if (counts.disabled) {
-    return `${counts.disabled} 项能力已关闭（你自己关的），关掉的不加载、不占显存 —— 点开管理`
+    // 不再写「你自己关的」：首次运行会按默认套餐（本体）种一份状态，
+    // 那些"关闭"是**出厂设置**而不是用户点出来的，写成"你自己关的"就是假话。
+    // 「不是坏了」这一层由上面的 `counts.broken` 分支承担，不靠这句话。
+    return `${counts.disabled} 项能力已关闭，关掉的不加载、不占显存 —— 点开管理`
   }
   return `共 ${counts.total} 项能力 · 按套餐或逐项开关`
 }

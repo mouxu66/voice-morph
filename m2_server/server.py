@@ -184,6 +184,17 @@ def _mount_all() -> None:
     「先装配完、再起副作用」的性质 —— warmup 会起一个加载 4.9G 模型的线程，
     让它和其它模块的 import 抢着跑没有好处。
     """
+    # ★ 首次运行：先把默认套餐（「标准」= 变声本体）落成一份显式状态，**再**算挂载计划。
+    # 顺序不能反 —— `mount_plan()` 是读着 `disabled_ids()` 算出来的
+    # （见 `ensure_state_file` 的注释）。已有配置文件时是 no-op：老用户
+    # （含刚在设置页调过开关的）不受影响。
+    _seeded = plugin_manifest.ensure_state_file()
+    if _seeded is not None:
+        print(
+            f"[plugins] 首次运行：按默认套餐 {plugin_manifest.DEFAULT_PRESET!r} 初始化，"
+            f"关闭 {len(_seeded)} 项能力（设置页可逐项开启）"
+        )
+
     # `mount_plan()` 是模块名的唯一来源，且**第 6 步起默认跳过被关掉的能力** ——
     # 关掉就要真的不 import（不拉 torch/CUDA 上下文、不吃显存），
     # 只让前端不显示的话是「省了个入口，没省资源」。

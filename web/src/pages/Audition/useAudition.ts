@@ -25,6 +25,7 @@ import {
 import { friendlyError } from "@/lib/errors"
 import { notify } from "@/lib/notify"
 import { setOvcHandoff } from "@/lib/ovcHandoff"
+import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
 
 export type TrialVoice = {
   /** RVC 实验名 / 市场 voice_id —— 语音链路一律用这个 key（voicebank id 是另一套命名） */
@@ -49,6 +50,14 @@ const ENV_POLL_MS = 8000
 const TASK_POLL_MS = 2000
 
 export function useAudition() {
+  // 「实时试音」那一档打的是 `rvcLive*`，归**可关插件 `sound.rvc-live`**，
+  // 而本页路由属 `sound.audition`（它只 requires sound.offline-vc）——
+  // 「试音间开着、实时变声关着」是可达状态，那一档的按钮点下去就是 404。
+  // 所以在这里读一次清单，把开关喂给：① `refreshLive`（不再空轮询）② 返回给页面显隐入口。
+  const { state: catalogState } = usePluginCatalog()
+  const catalog = catalogState.status === "ready" ? catalogState.catalog : null
+  const liveOn = pluginVisible(catalog, "sound.rvc-live")
+
   const [env, setEnv] = useState<AuditionEnv | null>(null)
   const [myVoices, setMyVoices] = useState<RvcVoice[]>([])
   const [market, setMarket] = useState<MarketItem[]>([])
@@ -129,6 +138,7 @@ export function useAudition() {
   }, [])
 
   const refreshLive = useCallback(async () => {
+    if (!liveOn) return // 端点已不再挂载，别空转（调用点很多，拦在这里一处就够）
     try {
       const st = await rvcLiveStatus()
       setLiveRunning(!!st.live_running)
@@ -137,7 +147,7 @@ export function useAudition() {
     } catch {
       /* 同上 */
     }
-  }, [])
+  }, [liveOn])
 
   // ---- 首屏：环境 + 备选音色 + 源 + 任务 + 实时状态 ----
   useEffect(() => {
@@ -532,6 +542,8 @@ export function useAudition() {
 
     liveExp,
     liveRunning,
+    /** 「实时试音」那一档是否可用（`sound.rvc-live` 开着） */
+    liveOn,
     liveBusy,
     liveMonitorOn,
     startLive,

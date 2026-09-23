@@ -59,6 +59,39 @@ def load_plugins() -> tuple[dict[str, str], dict[str, bool], set[str]]:
     return module2plugin, is_core, all_ids
 
 
+def load_plugin_requires() -> dict[str, list[str]]:
+    """→ 插件 id → 它的 `requires`（硬依赖，清单里的声明）。"""
+    out: dict[str, list[str]] = {}
+    for f in sorted(glob.glob(os.path.join(M2, "plugins", "*", "plugin.json"))):
+        with open(f, encoding="utf-8") as fh:
+            d = json.load(fh)
+        out[d["id"]] = list(d.get("requires") or [])
+    return out
+
+
+def requires_closure(pid: str, requires: dict[str, list[str]]) -> set[str]:
+    """`pid` **一旦启用**就必定同时启用的插件集（含自身与传递 `requires`）。
+
+    为什么它是「不报缺口」的依据：`plugin_manifest.enabled_ids()` 有一条**复活**逻辑 ——
+    被启用插件 `requires` 的插件，即使被用户关掉也会被复活（否则依赖方起来就是 broken）。
+    所以「宿主插件在 ⇒ 它 requires 的那一串也一定在」，这些 id 出现在页内
+    **永远不可能是缺口**，报出来就是假红。
+
+    反过来说，**不在**这个集合里的才要查：宿主开着、它却关得掉 —— 那正是
+    `sound.workshop` 开着而 `sound.ft` 关掉时「微调 tab 还在、`finetune` 端点没了」的形态。
+    这条正是旧判据（"非核心路由一律不需要页内门控"）漏掉的方向。
+    """
+    out = {pid}
+    stack = [pid]
+    while stack:
+        cur = stack.pop()
+        for req in requires.get(cur, ()):
+            if req not in out:
+                out.add(req)
+                stack.append(req)
+    return out
+
+
 # --------------------------------------------------------------- 路由入口
 
 def load_route_entries() -> dict[str, str]:
@@ -291,6 +324,64 @@ def load_callers() -> dict[str, set[str]]:
     return out
 
 
+# 裸打后端的写法：与 `load_client_funcs` 用同一组正则（那边只扫 `api/client.ts` 一个文件）
+_RAW_REQUESTS = (_FETCH, _FETCH_TPLBASE, _XHR)
+
+
+def load_raw_endpoints(
+    routes: list[tuple[str, str]], module2plugin: dict[str, str]
+) -> dict[str, dict[str, set[str]]]:
+    """前端文件 → 它**绕开 `client.ts`** 直接请求的端点（插件 id → 端点路径）。
+
+    为什么需要（2026-09-23 补）：归属链原本只有一条 ——
+    `client.ts` 导出函数 → 后端模块 → 插件。凡是不走 `client.ts`、自己
+    `fetch(BASE + "/x")` 的文件，在这张图里**根本不存在**。实测
+    `pages/Effects/useEffects.ts` 就是这样的：它打 `sound.effects` 的
+    `/effects/catalog`、`/effects/apply`，而 `client.ts` 里**没有任何 effects 函数**
+    （grep 为空）⇒ 整个 `sound.effects` 对审计不可见 ⇒ 关掉它之后 `OfflineVc` 页的
+    「效果器」tab 照旧渲染，而审计一声不吭。
+
+    解析不出来的路径**静默跳过**：裸 `fetch` 里混着静态资源与媒体 URL
+    （`${base}/index.json`、`mediaUrl(...)`、blob 地址），它们不是端点，
+    报成「未定位」只会淹没白名单机制。代价是「裸 fetch 的路径拼错」不报 ——
+    这个取舍是明确的，别当成遗漏。
+    """
+    out: dict[str, dict[str, set[str]]] = {}
+    for dp, _dn, fn in os.walk(WEB_SRC):
+        for f in fn:
+            if not f.endswith((".ts", ".tsx")) or ".test." in f:
+                continue
+            p = os.path.join(dp, f)
+            rel = os.path.relpath(p, WEB_SRC).replace(os.sep, "/")
+            if rel == "api/client.ts":
+                continue  # 那一份已由 load_client_funcs 覆盖，别双重计数
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    s = fh.read()
+            except OSError:
+                continue
+            hits: dict[str, set[str]] = collections.defaultdict(set)
+            for rx in _RAW_REQUESTS:
+                for groups in rx.findall(s):
+                    u = next((g for g in groups if g), "") if isinstance(groups, tuple) else groups
+                    if not u:
+                        continue
+                    # 与 load_client_funcs 同一套清洗：剥 BASE 前缀、在 `${` 处截断、
+                    # 抹掉尾部空段（`/ft/` → `/ft`）与 query
+                    u = _BASE_PREFIX.sub("", u).split("${")[0].split("?")[0]
+                    u = (u.rstrip("/") or "/").rstrip("` ")
+                    if not u.startswith("/"):
+                        continue
+                    mod = path_to_module(u, routes)
+                    plug = module2plugin.get(mod) if mod else None
+                    if plug is None:
+                        continue  # 静态资源 / 媒体 URL —— 不是端点，见函数说明
+                    hits[plug].add(f"fetch {u}")
+            if hits:
+                out[rel] = {k: set(v) for k, v in hits.items()}
+    return out
+
+
 # --------------------------------------------------------------- 组件依赖闭包
 
 # 本地组件 import：`import { X } from "@/components/..."` / `from "./X"` / `from "../X"`
@@ -431,8 +522,16 @@ def analyze() -> dict:
             fn_owner[name] = res
 
     # 每个前端文件：**直接**用到哪些插件
+    # 两个来源合并：① 经 `client.ts` 的函数调用；② 绕开它的裸 `fetch`/`xhr`。
+    # 少了 ②，`sound.effects` 这类「client.ts 里没有对应函数」的能力完全不可见
+    # （见 load_raw_endpoints）。
     direct: dict[str, dict[str, set[str]]] = {}
     file_unknown: dict[str, list[tuple[str, str]]] = {}
+    raw = load_raw_endpoints(routes, module2plugin)
+    for rel, mapping in raw.items():
+        merged = direct.setdefault(rel, {})
+        for plug, keys in mapping.items():
+            merged.setdefault(plug, set()).update(keys)
     for rel, names in sorted(callers.items()):
         plugs: dict[str, set[str]] = collections.defaultdict(set)
         unknown: list[tuple[str, str]] = []
@@ -442,7 +541,9 @@ def analyze() -> dict:
             for u, plug in fn_owner.get(n, []):
                 plugs[plug].add(n)
         if plugs:
-            direct[rel] = {p: set(v) for p, v in plugs.items()}
+            merged = direct.setdefault(rel, {})
+            for p, v in plugs.items():
+                merged.setdefault(p, set()).update(v)
         if unknown:
             file_unknown[rel] = unknown
 
@@ -479,10 +580,12 @@ def analyze() -> dict:
         {"fn": n, "url": u} for n, us in sorted(fn_unresolved.items()) for u in us
     ]
 
-    # ★ 核心判据：核心路由页有没有「裸渲染可关组件」
+    # ★ 核心判据：路由页有没有「裸渲染可关组件」
     entries = load_route_entries()
     mentions = load_source_mentions(all_ids)
-    ungated = find_ungated_core_entries(file_rows, entries, is_core, mentions, deps)
+    requires = load_plugin_requires()
+    always_on = {pid: requires_closure(pid, requires) for pid in all_ids}
+    ungated = find_ungated_core_entries(file_rows, entries, is_core, mentions, deps, always_on)
 
     return {
         "plugins_total": len(all_ids),
@@ -529,17 +632,29 @@ def find_ungated_core_entries(
     is_core: dict[str, bool],
     mentions: dict[str, set[str]],
     deps: dict[str, set[str]],
+    always_on: dict[str, set[str]] | None = None,
 ) -> list[dict]:
-    """找出「核心路由页 → 传递依赖可关插件 → 却没人为它门控」的文件。
+    """找出「路由页 → 传递依赖可关插件 → 却没人为它门控」的文件。
 
     这是本脚本的**核心判据**，直指 2026-09-21 那个真实缺口：
     `/voices` 是 `core.voices`（路由恒注册），却渲染了打 `sound.audition` 的组件。
     关掉试音间 → 音色库页照旧渲染那几个面板 → 点一下 404。
 
-    判定：对每个 **core 插件的路由入口**，看它闭包里有没有可关插件 P；
+    判定：对每个路由入口，看它闭包里有没有「**它存在时仍可被关掉**」的插件 P；
     有的话，再看「从入口到 P 的路径上**有没有任何文件点过 P 的 id**」——
     点过 = 它在某处做了门控（自己门、或让下游组件自己门）；
     一个都没点过 = **没人管**，就是缺口。
+
+    ⚠️ **判据在 2026-09-23 改过一次，别退回旧版**。旧版一进来就
+    `if not is_core.get(pid): continue`，理由写的是「非核心路由：整条路由会随插件
+    消失，不需要页内门控」。那句话只考虑了**宿主**插件被关的情形，漏掉了另一个
+    完全可达的状态：**宿主开着、被它托管的 tab 那个插件关着**。
+    `sound.ft` 不被 `sound.workshop` 依赖，所以「工坊在、微调关」是很正常的状态 ——
+    此时 `/workshop` 路由存在，页内「微调」tab 却指向已卸载的 `finetune`。
+
+    正确的「不报」依据不是「宿主是否核心」，而是「该插件是不是**注定和宿主同生共死**」：
+    宿主自身、核心（不可关）、以及宿主的 `requires` 闭包（关不掉，会被复活）。
+    这三类之外的都要查 —— 与宿主是核心还是可关**无关**。
 
     （下游组件若自带门控 —— 比如组件内部 `if (!pluginVisible(...)) return null` ——
     也算「点过」，所以不会误报。）
@@ -547,14 +662,16 @@ def find_ungated_core_entries(
     by_file = {r["file"]: r for r in file_rows}
     problems: list[dict] = []
     for entry, pid in sorted(entries.items()):
-        if not is_core.get(pid):
-            continue  # 非核心路由：整条路由会随插件消失，不需要页内门控
         row = by_file.get(entry)
         if not row or not row["gated"]:
             continue
+        # 这条路由**存在**时必定同样启用的插件：自身 + requires 闭包 + 核心。
+        # `always_on` 缺省时退化成「只有自身」，那是保守方向（可能多报，不会假绿）。
+        safe = set((always_on or {}).get(pid) or {pid})
         # 这条链上（入口 + 中间层 + 末端）任何一个点了该插件 id，都算做了门控
         for p in row["gated"]:
-            # 该插件的门控是否出现在**链上任何一环**（含入口自身与所有中间层）
+            if p in safe or is_core.get(p):
+                continue  # 注定与宿主同生共死 / 核心不可关 —— 不可能是缺口
             chain_of_p = {entry} | set(row["chain"].get(p, ()))
             if not any(p in mentions.get(f, set()) for f in chain_of_p):
                 problems.append(

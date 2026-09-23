@@ -4,9 +4,9 @@
   "kind": "builtin",
   "category": "sound",
   "order": 120,
-  "summary": "RVC 实时变声与级联变声，经虚拟声卡注入微信/游戏/会议",
+  "summary": "RVC 实时变声与级联变声（含训练集生成与模型状态），经虚拟声卡注入微信/游戏/会议",
   "requires": ["core.audio", "core.voices"],
-  "routers": ["rvc_live", "cascade"],
+  "routers": ["rvc_live", "cascade", "rvc_dataset_api"],
   "hooks": [],
   "routes": [
     {
@@ -32,5 +32,5 @@
     "models": []
   },
   "health": null,
-  "disable": { "note": "关闭后实时变声页消失；不影响离线转换与 TTS" }
+  "disable": { "note": "关闭后实时变声页消失（含它的训练集生成/模型状态）；不影响离线转换与音色微调" }
 }

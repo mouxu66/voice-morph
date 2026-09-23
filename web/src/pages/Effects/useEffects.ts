@@ -37,7 +37,7 @@ type Feedback = { tone: "ok" | "error" | "info"; text: string }
 // /api 基址：与 client.ts 共用同一处判定，避免"各 hook 各写一份"（2026-09-13 收敛）
 const BASE = backendPrefix() + "/api"
 
-export function useEffects() {
+export function useEffects(enabled = true) {
   const [catalog, setCatalog] = useState<FxMeta[]>([])
   const [chain, setChain] = useState<FxStep[]>([])
   const [sourceFile, setSourceFile] = useState<File | null>(null)
@@ -63,7 +63,9 @@ export function useEffects() {
   }, [])
 
   // 目录加载（一次即可，后端目录静态）
+  // `enabled=false`（关掉 sound.effects）时直接不请求：`/effects/*` 已不再挂载。
   useEffect(() => {
+    if (!enabled) return
     let alive = true
     void (async () => {
       try {
@@ -77,7 +79,7 @@ export function useEffects() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [enabled])
 
   // 释放 objectURL，防内存泄漏
   const _swapSource = useCallback((f: File | null) => {

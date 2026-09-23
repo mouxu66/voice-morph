@@ -1,13 +1,35 @@
 import { useEffect, useState } from "react"
 import { CheckCircle2, FileAudio, FolderCheck, Globe, TriangleAlert } from "lucide-react"
 import { getRvcModel, type RvcModelStatus } from "@/api/client"
+import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
 
+/**
+ * RVC 模型状态卡。
+ *
+ * 它打 `/rvc/model`，归**可关插件 `sound.rvc-live`**（`rvc_dataset_api.py`），
+ * 而这张卡住在 TTS 页（路由属 `sound.tts`）—— 两个能力谁也不依赖谁，
+ * 所以「TTS 开着、实时变声关着」是可达状态。那种状态下端点不再挂载，
+ * 卡片会一路显示「检测失败」，用户会去重训一个其实已经训好的模型。
+ *
+ * 所以卡片**自己门控**（2026-09-23 由 `tools/audit_endpoint_ownership.py` 的
+ * 跨插件判据抓出）：能力关掉就整块不渲染。这是审计说明里明确认可的形态 ——
+ * 「下游组件自带门控也算点过」就能满足那条门禁。
+ *
+ * ⚠️ 门控的 id 必须是 **`sound.rvc-live`**，不是 `sound.ft`：`/rvc/model` 属于
+ * `rvc_dataset_api`（RVC 训练流水线的数据面），它当天从句清单错划给 `sound.ft` 的是个 bug ——
+ * 这卡描述的是「实时变声模型」，跟 `sound.ft`（用录音继续训练 TTS 音色）是两件事。
+ */
 export function RvcDatasetCard() {
+  const { state } = usePluginCatalog()
+  const catalog = state.status === "ready" ? state.catalog : null
+  const liveOn = pluginVisible(catalog, "sound.rvc-live")
+
   const [m, setM] = useState<RvcModelStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
+    if (!liveOn) return
     let alive = true
     getRvcModel()
       .then((r) => {
@@ -26,7 +48,10 @@ export function RvcDatasetCard() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [liveOn])
+
+  // hooks 全部调完才能早退（React 规则）
+  if (!liveOn) return null
 
   const ready = m?.trained ?? false
   const exp = m?.exp ?? ""

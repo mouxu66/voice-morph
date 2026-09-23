@@ -124,7 +124,7 @@ export const SCRIPT_SENTENCES: string[] = [
 
 export type FtAuditionResult = { tuned_url: string; xvec_url?: string };
 
-export function useFt() {
+export function useFt(enabled = true) {
   const [voiceId, setVoiceId] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [status, setStatus] = useState<FtStatus | null>(null);
@@ -163,8 +163,9 @@ export function useFt() {
   }, [voiceId]);
 
   // 轮询处理/训练状态
+  // `enabled=false`（关掉 sound.ft）时直接不轮询：端点已不再挂载，轮询只会空转打 404。
   useEffect(() => {
-    if (!voiceId) return;
+    if (!enabled || !voiceId) return;
     let alive = true;
     const poll = async () => {
       try {
@@ -185,7 +186,7 @@ export function useFt() {
     void poll();
     const t = window.setInterval(() => void poll(), 2000);
     return () => { alive = false; window.clearInterval(t); };
-  }, [voiceId, runQc]);
+  }, [enabled, voiceId, runQc]);
 
   const startRecording = useCallback(async () => {
     setError("");

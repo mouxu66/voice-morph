@@ -194,8 +194,43 @@ def test_no_mention_anywhere_is_flagged(ao):
     assert set(got[0]["chain"]) == {"pages/X/index.tsx", "mid.tsx", "leaf.tsx"}
 
 
-def test_non_core_entry_is_not_flagged(ao):
-    """非核心路由不需要页内门控 —— 整条路由会随插件一起消失，别误报。"""
+def _hosted_fixture(
+    ao,
+    *,
+    route_plugin: str,
+    gated: str,
+    requires: dict[str, list[str]],
+    mentions: set[str] | None = None,
+):
+    """构造「宿主的页里托管了另一个可关插件的 tab」的最小场景。"""
+    row = {
+        "file": "pages/W/index.tsx",
+        "core": [],
+        "gated": [gated],
+        "funcs": {gated: ["f"]},
+        "chain": {gated: ["pages/W/index.tsx"]},
+        "direct": True,
+        "unresolved": [],
+        "mixed": False,
+    }
+    return ao.find_ungated_core_entries(
+        [row],
+        {"pages/W/index.tsx": route_plugin},
+        {route_plugin: False, gated: False},
+        {"pages/W/index.tsx": set(mentions or ())},
+        {},
+        {route_plugin: ao.requires_closure(route_plugin, requires)},
+    )
+
+
+def test_route_plugin_itself_needs_no_in_page_gate(ao):
+    """页面嵌的是**自己**插件的组件 —— 整条路由会随插件一起消失，别误报。
+
+    ⚠️ 别把这条读成「非核心路由一律不需要页内门控」：那个论断在 2026-09-23 被证明
+    是错的（它只考虑了宿主被关，漏了「宿主开着、被托管插件关着」）。
+    这里不报的真正原因是 **gated 就是路由自己的插件**，它与路由同生共死。
+    对照用例见下面的 `test_hosted_plugin_on_a_non_core_route_is_flagged`。
+    """
     rows = [
         {
             "file": "pages/Y/index.tsx",
@@ -216,6 +251,113 @@ def test_non_core_entry_is_not_flagged(ao):
         {},
     )
     assert got == []
+
+
+# ---------------------------------------- ④.5 宿主页托管别的插件（2026-09-23 修的盲区）
+
+def test_requires_closure_is_transitive_and_cycle_safe(ao):
+    """`requires` 闭包要传递、要含自身，且环上不能死循环。
+
+    它是「哪些插件注定与宿主同生共死」的唯一判据 —— 算错会直接影响门禁方向
+    （算大 = 假绿放过真缺口，算小 = 把已修好的地方报红）。
+    """
+    requires = {"a": ["b"], "b": ["c"], "c": []}
+    assert ao.requires_closure("a", requires) == {"a", "b", "c"}
+    assert ao.requires_closure("b", requires) == {"b", "c"}
+    assert ao.requires_closure("c", requires) == {"c"}
+    assert ao.requires_closure("x", {"x": ["y"], "y": ["x"]}) == {"x", "y"}
+    # 清单里不存在的 id 不能炸（拿别人的闭包算时会出现）
+    assert ao.requires_closure("nobody", requires) == {"nobody"}
+
+
+def test_hosted_plugin_on_a_non_core_route_is_flagged(ao):
+    """★ 宿主开着、被它托管的 tab 那个插件关着 —— 旧判据整条放过去的方向。
+
+    这就是 2026-09-23 修的真 bug：`/workshop` 属 `sound.workshop`，页内「微调」tab
+    打的是 `sound.ft` 的端点，而 `sound.ft` **不在** `sound.workshop` 的 requires
+    闭包里（真实清单：`sound.ft.requires = [core.voices, sound.workshop]`，依赖方向
+    是反的）⇒ 「工坊开着、微调关着」完全可达 ⇒ 那个 tab 点一下就是 404。
+    """
+    got = _hosted_fixture(
+        ao,
+        route_plugin="sound.workshop",
+        gated="sound.ft",
+        # 真实清单（m2_server/plugins/*/plugin.json）
+        requires={
+            "sound.workshop": ["core.media", "core.voices"],
+            "sound.ft": ["core.voices", "sound.workshop"],
+        },
+    )
+    assert len(got) == 1, f"宿主开着、被托管插件关着的缺口没报出来（假绿）：{got}"
+    assert got[0]["gated"] == "sound.ft"
+    assert got[0]["entry"] == "pages/W/index.tsx"
+
+
+def test_host_required_plugin_is_not_flagged(ao):
+    """宿主 `requires` 的插件会被 `enabled_ids()` 复活 ⇒ 不可能出现「宿主开着、它关着」，别误报。"""
+    got = _hosted_fixture(
+        ao,
+        route_plugin="sound.ft",
+        gated="sound.workshop",
+        requires={
+            "sound.ft": ["core.voices", "sound.workshop"],
+            "sound.workshop": ["core.media", "core.voices"],
+        },
+    )
+    assert got == [], f"requires 闭包内的插件被误报成缺口（假红）：{got}"
+
+
+def test_host_says_so_itself_is_accepted(ao):
+    """链上（入口页）点过插件 id = 做了门控 —— 与 core 路由同一套判据，不能两套。"""
+    got = _hosted_fixture(
+        ao,
+        route_plugin="sound.workshop",
+        gated="sound.ft",
+        requires={"sound.workshop": ["core.media", "core.voices"]},
+        mentions={"sound.ft"},
+    )
+    assert got == [], f"入口页已经点了 id 却报缺口（假红）：{got}"
+
+
+# ---------------------------------------- ④.6 裸 fetch 的归属（第二个盲区）
+
+def test_raw_fetch_endpoints_are_attributed(ao):
+    """★ 绕开 `client.ts` 的裸 `fetch` 也要能定位到插件。
+
+    `pages/Effects/useEffects.ts` 直接 `fetch(BASE + "/effects/catalog")`，而
+    `client.ts` 里**没有任何 effects 函数**（grep 为空）—— 只认 client.ts 出口的口径下，
+    `sound.effects` 对审计**完全不可见**，于是「关掉效果器后离线页那个 tab 照旧渲染」
+    没有任何机器能发现。这是 2026-09-23 补的第二条归属链。
+    """
+    src = "pages/Effects/useEffects.ts"
+    # ⚠️ 前提判断必须基于**源码文本**，不能基于扫描器输出（`src not in raw` 那种）。
+    # 后者一旦扫描器坏了就变成 skip = **静默假绿** —— 正是这条用例要防的东西。
+    # 实测：把 `_RAW_REQUESTS` 清空后，基于输出的写法只会 SKIPPED，门禁毫无反应。
+    text = (WEB_SRC / src).read_text(encoding="utf-8")
+    if "/effects/" not in text or "fetch(" not in text:
+        pytest.skip("useEffects 不再裸 fetch /effects/*（写法或文件名变了）")
+
+    module2plugin, _is_core, _ids = ao.load_plugins()
+    raw = ao.load_raw_endpoints(ao.load_routes(), module2plugin)
+    assert src in raw, f"裸 fetch 这一条归属链断了：{src} 一个端点都没抽到（扫描器退化？）"
+    assert "sound.effects" in raw[src], f"裸 fetch 没归属到 sound.effects：{raw[src]}"
+    assert any("effects" in k for k in raw[src]["sound.effects"])
+
+
+def test_raw_fetch_skips_non_endpoint_paths(ao):
+    """静态资源 / 媒体 URL 不是端点：解析不出来要**静默跳过**，不进「未定位」白名单机制。
+
+    裸 `fetch` 里混着 `${base}/index.json`、`mediaUrl(...)`、blob 地址。
+    把它们报成「未定位」会让白名单膨胀到失效 —— 这个取舍是刻意的（见函数说明）。
+    """
+    module2plugin, _is_core, _ids = ao.load_plugins()
+    raw = ao.load_raw_endpoints(ao.load_routes(), module2plugin)
+    for rel, mapping in raw.items():
+        assert "api/client.ts" != rel, "client.ts 已由 load_client_funcs 覆盖，不该双重计数"
+        for plug, keys in mapping.items():
+            assert plug in module2plugin.values(), f"{rel} 归属到一个不存在的插件 {plug}"
+            for k in keys:
+                assert k.startswith("fetch /"), f"{rel} 的裸 fetch 标签形状变了：{k}"
 
 
 # ------------------------------------------------------------ ⑤ 落到真仓库

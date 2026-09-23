@@ -41,6 +41,7 @@ manifest 是给这四处准备的**唯一真相源**。本步先把源头建起�
 from __future__ import annotations
 
 import json
+import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -362,19 +363,35 @@ def disabled_ids() -> set[str]:
 PRESETS: dict[str, list[str] | None] = {
     # 轻量：只要一个能变声的，硬盘紧张
     "light": ["sound.offline-vc"],
-    # 标准（默认）：绝大多数人
-    "standard": ["sound.workshop", "sound.tts", "sound.rvc-live", "sound.offline-vc", "sound.audition"],
+    # ★ 标准（默认）= **变声本体**（2026-09-23 用户拍板）。
+    #
+    # 就是「选音色 → 变 → 听」这个最小闭环：
+    #   core.voices（选音色）+ sound.offline-vc / sound.rvc-live（变：文件·麦克风 / 实时）
+    #   + sound.audition（听：A/B 试听）。`core.*` 与 `requires` 闭包由 `expand()` 补上。
+    #
+    # 其余 9 项（训练 `sound.workshop`、微调 `sound.ft`、发掘 `sound.mine`、
+    # 输字变声 `sound.tts`、有声书、效果器、桌宠、皮肤、微信）**默认关闭**，
+    # 由用户在设置页按需开启 —— 这就是「一切皆插件」真正落地的那一步。
+    #
+    # 值得做的理由**不是**省安装包体积（实测只有 ~0.1%，见 §8.2），而是**首次体验路径**：
+    # 新用户第一屏该看到"能变声"，而不是 19 项能力的配置表（同 §8.1 引的 DSH 教训）。
+    "standard": ["sound.offline-vc", "sound.rvc-live", "sound.audition"],
     # 全能：全开
     "full": None,
     # 仅核心：连离线变声都不要（跑测试 / CI 用）
     "core": [],
 }
 
+#: `standard` 的成员 = 变声本体的**唯一定义**。`test_plugin_switch.py` 钉住它，
+#: 因为这是产品决定，改动必须有意为之（同 `test_core_plugins_are_declared_core` 的道理）。
+BODY_IDS: tuple[str, ...] = ("sound.offline-vc", "sound.rvc-live", "sound.audition")
+
 DEFAULT_PRESET = "standard"
 
 PRESET_LABELS: dict[str, str] = {
     "light": "轻量",
-    "standard": "标准",
+    # 「本体」写进标签：设置页那一排按钮是用户唯一能看见"标准到底含什么"的地方
+    "standard": "标准（变身本体）",
     "full": "全能",
     "core": "仅核心",
 }
@@ -497,6 +514,41 @@ def apply_preset(name: str) -> dict:
     off = {p.id for p in load_all() if p.id not in keep}
     write_disabled(off)
     return {"preset": name, "disabled": sorted(off), "enabled": sorted(enabled_ids(off))}
+
+
+#: 首次运行播种的开关。`0` = 不播种（测试用，同 `VM_WARMUP` / `VM_WECHAT_RESTART`）。
+#: 它由**本模块**检查（而不是 `server.py` 的调用点），这样没有哪条调用路径能忘了带。
+SEED_ENV = "VM_PLUGIN_SEED"
+
+
+def ensure_state_file() -> set[str] | None:
+    """首次运行时，把 `DEFAULT_PRESET` 落成一份**显式**状态；已存在则不动。
+
+    返回写进去的 `disabled` 集合；没有写（已存在 / 被 `VM_PLUGIN_SEED=0` 关掉）时返回 `None`。
+
+    为什么需要这一步 —— `disabled_ids()` 在文件缺失时返回空集，也就是「一个都没关」
+    （= 19 项**全开**，而且 `_current_preset()` 会把它算成 `full`）。那是**刻意**的设计，
+    被 `test_missing_or_broken_state_file_means_nothing_disabled` 钉住了，理由写在它的
+    注释里：黑名单模型下**新插件默认是开的**。所以要让「本体」成为新用户的起点，
+    只能写一份状态进去，不能改读取语义。
+
+    为什么不去改读取语义（「文件缺失 ⇒ 用 `DEFAULT_PRESET`」）—— 那会同时弄坏两件事：
+      ① 语法坏掉的配置会从「全开」（fail-open，用户自己再关）变成「只剩本体」
+         （fail-closed，用户会找不到功能，而且不知道是自己配置坏了）；
+      ② 「读一次配置」会变成**有副作用**的操作。
+    宁可多一次显式的初始化写入，也不要让每次读都带上方 ① 的风险。
+
+    ⚠️ **本函数必须在 `mount_plan()` 之前调用**：`mount_plan()` 是读着
+    `disabled_ids()` 算出来的，晚一步就是「种了一份状态、但这次启动按旧的算」。
+    唯一的调用点在 `server.py::_mount_all()` 的开头。
+    """
+    if os.environ.get(SEED_ENV, "").strip() == "0":
+        return None
+    if STATE_FILE.exists():
+        return None
+    off = {p.id for p in load_all() if p.id not in preset_ids(DEFAULT_PRESET)}
+    write_disabled(off)
+    return off
 
 
 # 挂载期**刻意跳过**的 (模块, 用途)。`state_of()` 靠它区分

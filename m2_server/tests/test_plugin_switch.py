@@ -161,6 +161,177 @@ def test_apply_preset_records_only_what_the_user_turned_off():
     assert "sound.offline-vc" in rep["enabled"]
 
 
+# ---------------------------------------------------------------- 2.5 「本体」与首次运行
+#
+# 2026-09-23 用户拍板：一"本体"只留**变声**，其余 9 项默认关闭、按需开启。
+# 这两条用例把那个产品决定钉成**字面量** —— 改 `PRESETS["standard"]` 就必须来改这里，
+# 而且得回答"本体为什么多了/少了一项"。
+
+
+def test_default_preset_is_the_voice_morph_body():
+    """「标准」= 变声本体：**选音色 → 变 → 听** 的最小闭环。
+
+    为什么本体里没有 `sound.tts`（输字变声）—— 本体是**声音→声音**的变身，
+    文字→语音是另一条生成路线；它同时是边际依赖最大的那个（`qwen-tts` + 4.9G 模型），
+    正是"按需下载"最该覆盖的。训练 / 微调 / 发掘 / 效果器同理。
+    """
+    standard = plugin_manifest.preset_ids("standard")
+    body = set(plugin_manifest.BODY_IDS)
+    assert standard == plugin_manifest.expand(body), "standard 不再是 BODY_IDS 的闭包"
+    assert standard - {p.id for p in plugin_manifest.load_all() if p.is_core} == body
+    # 被排除的 9 项逐个点名 —— 漏掉一个就是"本体"惄悄变胖
+    for pid in (
+        "sound.workshop",
+        "sound.ft",
+        "sound.mine",
+        "sound.tts",
+        "sound.audiobook",
+        "sound.effects",
+        "pet.companion",
+        "pet.market",
+        "hook.wechat",
+    ):
+        assert pid not in standard, f"{pid} 不该在变声本体里"
+    # 本体必须真的能"变"和"听"：三个入口页都得在（少一个就是"本体不完整"）
+    routes = {r["path"] for p in plugin_manifest.load_all() if p.id in standard for r in p.routes}
+    assert {"/offlinevc", "/live", "/audition"} <= routes, sorted(routes)
+
+
+def test_first_run_seeds_the_default_preset_once(monkeypatch):
+    """首次运行写一份**显式**状态，之后永不覆盖用户的选择。
+
+    缺文件时 `disabled_ids()` 是空集（全开），所以"本体"若不落盘就只是**纸上**的
+    默认值 —— 新用户装完照样看到 19 项全开，而 `_current_preset()` 还会把它报成 `full`。
+    """
+    monkeypatch.delenv(plugin_manifest.SEED_ENV, raising=False)
+    assert not plugin_manifest.STATE_FILE.exists(), "夹具给的必须是空状态"
+
+    seeded = plugin_manifest.ensure_state_file()
+    assert seeded == _ids() - plugin_manifest.preset_ids("standard")
+    assert plugin_manifest.disabled_ids() == seeded, "写进去的和读出来的是同一份"
+    assert plugin_manifest.enabled_ids() == plugin_manifest.preset_ids("standard")
+
+    # 用户改过之后，再播种必须是 no-op —— 否则重启一次就把用户的选择抹了
+    plugin_manifest.write_disabled({"sound.tts"})
+    assert plugin_manifest.ensure_state_file() is None
+    assert plugin_manifest.disabled_ids() == {"sound.tts"}
+
+
+def test_seeding_is_off_by_default_in_tests():
+    """测试环境不播种（`m2_server/conftest.py` 的 `VM_PLUGIN_SEED=0`）。
+
+    否则 `import server` 在**收集阶段**就会按默认套餐写掉状态文件，
+    `server._ROUTER_ORDER` 会只剩本体的 router，而期望"19 项全挂"的那批用例集体变红 ——
+    且红的直接原因看起来与插件开关毫无关系。这条用例守住那个开关。
+    """
+    assert os.environ.get(plugin_manifest.SEED_ENV) == "0"
+    assert plugin_manifest.ensure_state_file() is None
+    assert not plugin_manifest.STATE_FILE.exists()
+
+
+#: 探针：在**子进程**里把 `import server` 跑一遍（挂载只在这一刻发生）。
+#: 上面的单测只能证明"文件被写了"，证明不了"**这次启动真的按它挂了**" ——
+#: 而后者需要一个从零开始的 `mount_plan()`，同进程里拿不到（`import server` 只跑一次）。
+#:
+#: 复用同一个 `VM_SEED_PROBE_OUT` 跑两次就是「重装 → 用 → 重启」的最小复现：
+#:   · `fresh`    —— 新机器，无配置文件；
+#:   · `existing` —— 开机前用户已把 `sound.audiobook` 关掉（直接写盘，不经过播种）。
+#:     选它是因为它是**叶子**（`dependents_of` 为空），关掉会真的少挂 router，
+#:     断言才能看出"用户的选择被尊重了"。换 `sound.tts` 就不行 —— 它会被
+#:     `sound.audiobook` 复活，看起来就像关不掉（那是另一条不变量，见上面的单测）。
+_SEED_PROBE = """
+import json
+import os
+import pathlib
+import sys
+
+os.environ["VM_OUTPUTS_DIR"] = os.environ["VM_SEED_PROBE_OUT"]
+os.environ["VM_WARMUP"] = "0"
+os.environ.pop("VM_PLUGIN_SEED", None)
+
+if sys.argv[1] == "existing":
+    (pathlib.Path(os.environ["VM_SEED_PROBE_OUT"]) / "plugins.json").write_text(
+        json.dumps({"disabled": ["sound.audiobook"]}), encoding="utf-8")
+
+import plugin_manifest as pm  # noqa: E402
+import server  # noqa: E402
+
+print("RESULT " + json.dumps({
+    "file": pm.STATE_FILE.exists(),
+    "disabled": sorted(pm.disabled_ids()),
+    "routers": sorted(server._ROUTER_ORDER),
+    "preset": pm._current_preset(pm.disabled_ids(), pm.load_all()),
+}))
+"""
+
+
+def _run_seed_probe(out_dir: Path, mode: str) -> dict:
+    proc = subprocess.run(
+        [sys.executable, "-c", _SEED_PROBE, mode],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "VM_SEED_PROBE_OUT": str(out_dir), "PYTHONIOENCODING": "utf-8"},
+    )
+    assert proc.returncode == 0, f"探针（{mode}）就失败了：\n{proc.stdout}\n{proc.stderr}"
+    line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")), None)
+    assert line, f"探针没打出结果：\n{proc.stdout}\n{proc.stderr}"
+    return json.loads(line.removeprefix("RESULT "))
+
+
+def test_first_run_really_mounts_only_the_body(tmp_path):
+    """★ 端到端：**新机器装完启动一次**，挂载的就是本体 —— 不是纸上默认值。
+
+    这条同时守住一个顺序不变量：`ensure_state_file()` 必须在 `mount_plan()` **之前**调用
+    （`server.py::_mount_all()` 开头）。写反了就是"种了一份状态、但这次启动仍按旧的算"，
+    而表面上文件也写了、下次启动也对 —— 只有真跑一次才能发现。
+
+    顺带钉住 `_current_preset()`：以前缺文件时它把全开报成 `full`，
+    所以新用户在设置页看到的是「全能」而不是「标准」。
+    """
+    body = plugin_manifest.preset_ids("standard")
+    expected = sorted(
+        m
+        for p in plugin_manifest.load_all()
+        if p.id in body
+        for m in p.routers
+    )
+    assert expected, "本体一个 router 都没有？"
+    assert len(expected) < len(
+        [m for p in plugin_manifest.load_all() for m in p.routers]
+    ), "本体等于全量，这条用例就没有区分力了"
+
+    got = _run_seed_probe(tmp_path, "fresh")
+    assert got["file"] is True, "首次运行没有落盘"
+    assert got["routers"] == expected, (
+        f"挂载集与本体不符。多了 {sorted(set(got['routers']) - set(expected))}，"
+        f"少了 {sorted(set(expected) - set(got['routers']))}"
+    )
+    assert got["preset"] == "standard"
+    assert got["disabled"] == sorted(_ids() - body)
+
+
+def test_restart_after_user_choice_is_not_reseeded(tmp_path):
+    """★ 端到端：同一个 OUTPUTS_DIR 再启动一次 —— 播种必须让路。
+
+    这是播种最危险的失效形态：把"初始化默认值"写成"每次开机都重置"，
+    用户关掉的能力会在重启后全部弹回来（而且看起来就像开关坏了）。
+    """
+    first = _run_seed_probe(tmp_path, "fresh")
+    assert first["file"] is True
+
+    again = _run_seed_probe(tmp_path, "existing")
+    assert again["disabled"] == ["sound.audiobook"], "播种覆写了用户的选择"
+    all_routers = sorted(m for p in plugin_manifest.load_all() for m in p.routers)
+    dropped = set(plugin_manifest.by_id()["sound.audiobook"].routers)
+    assert dropped, "sound.audiobook 没有 router，这条用例就白测了"
+    assert again["routers"] == [m for m in all_routers if m not in dropped], (
+        "用户只关了有声书，挂载集却变了 —— 播种是不是把本体又按了回去？"
+    )
+    assert again["preset"] == "custom"
+
+
 # ---------------------------------------------------------------- 3. 关闭守卫
 
 
@@ -495,7 +666,10 @@ _PROBE = textwrap.dedent(
         "mounted": len(server._ROUTER_ORDER),
         "broken": [r.module for r in server.plugin_loader.broken()],
     }
-    for path in ("/api/rvc/live/status", "/api/cascade/status", "/api/health"):
+    # `/api/rvc/dataset` 是 `rvc_dataset_api` 的端点 —— 它 2026-09-23 从 `sound.ft`
+    # 划到 `sound.rvc-live`（服务的是 Live 页驱动的 RVC 训练流程，跟 `/ft/*` 的
+    # 「用录音继续训练 TTS 音色」是两件事）。探它 = 把新归属钉在 HTTP 层。
+    for path in ("/api/rvc/live/status", "/api/cascade/status", "/api/rvc/dataset", "/api/health"):
         r = c.get(path)
         result[path] = [r.status_code, r.headers.get("content-type", "").split(";")[0]]
     print("RESULT " + json.dumps(result))
@@ -538,13 +712,18 @@ def test_a_disabled_capability_endpoint_is_gone_at_the_http_level(tmp_path):
     off = _boot_and_probe(tmp_path / "off", "sound.rvc-live")
 
     assert on["broken"] == [] and off["broken"] == []
-    # A 侧：干净启动时这两个模块真在挂载计划里（否则 B 侧的"消失了"是废话）
-    assert {"rvc_live", "cascade"} <= set(on["modules"])
-    assert not {"rvc_live", "cascade"} & set(off["modules"]), "关了却还在挂载计划里"
-    assert off["mounted"] == on["mounted"] - 2
+    # A 侧：干净启动时这些模块真在挂载计划里（否则 B 侧的"消失了"是废话）
+    # ⚠️ **从清单推导**，不写死模块名/个数 —— 给一个插件加一个 router 是常规操作，
+    # 写死会让这条与「关了端点就没」无关的用例变红（2026-09-23 就因为多了一个
+    # `rvc_dataset_api` 假红过一次）。
+    owned = set(plugin_manifest.by_id()["sound.rvc-live"].routers)
+    assert owned, "sound.rvc-live 一个 router 都没有？"
+    assert owned <= set(on["modules"])
+    assert not owned & set(off["modules"]), "关了却还在挂载计划里"
+    assert off["mounted"] == on["mounted"] - len(owned)
 
     assert on["/api/rvc/live/status"] == [200, "application/json"]
-    for path in ("/api/rvc/live/status", "/api/cascade/status"):
+    for path in ("/api/rvc/live/status", "/api/cascade/status", "/api/rvc/dataset"):
         assert off[path] == [404, "application/json"], (
             f"{path} 关掉后应当是 404 + JSON，实际 {off[path]} —— "
             "如果是 200 text/html，就是被 SPA 兜底吞了（前端只会看到 `Unexpected token '<'`）"
