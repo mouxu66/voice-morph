@@ -111,7 +111,16 @@
   ```
   ⚠️ **别用 `md5sum` 比对**：Git Bash 的 `md5sum` 遇到含反斜杠的 Windows 路径会在哈希前加 `\` 前缀，一侧相对一侧绝对时**全假红**（68 个 .py 全报不一致），两侧都用绝对路径时**全假绿**（更危险，会把混装放过去）——见 `docs/犯错指南.md` §2.28。要手工比就用 `cmp -s A B`。
   需要重打包的只有 `web/electron/*.cjs` 这类**主进程**文件 —— 别把两者混为一谈（`docs/犯错指南.md` 速查表第 25/31 条）。
+  ⚠️ **但 asar 里那份 pet 副本也得跟**（2026-09-23 实测澄清）：`web/package.json` 的 `extraResources`
+  **不含** `web/electron/pet`，所以**全新安装的机器**上磁盘副本根本不存在 → `PET_DIR` 回退到 asar 内置那份。
+  只拷磁盘副本 = 「本机对、发给别人/重装退回旧版」，而且 `tools/audit_asar_freshness.cjs` 把
+  `web/electron/**` 下的 `.cjs` **和 `.html`** 都算比对范围，pre-commit 会直接报 `陈旧 N 个：pet/xxx.html ★`。
+  两处都更到、再 `python tools/verify_backend_sync.py` 复核（pet 在它 10 个文件的比对范围内）。
 - Electron 主进程源码在 `web/electron/*.cjs`（模块化），现役 app.asar 由 `npm run electron:build`（electron-builder）从 web/ 构建；**`.asar_tmp/` + `repack_asar.cjs`/`extract_asar.cjs`/`probe_asar.cjs`/`tools/verify_asar_repack.cjs` 是 2026-09-03 模块化重构之前的过时流程，已于 2026-09-13 全部删除**（它们会拿 46KB 旧单体主进程覆盖现役装配层）。`web/electron` 里剩余的 `smoke-loadpath.cjs` 是现役的加载自检。
 - 常见误判（2026-09-14 实测澄清）：
   - "重启就生效" —— **只对 `m2_server`/`web` 成立**（外加 `web/electron/pet/pet.html` 这类渲染侧磁盘文件，但需手动拷进安装版，见上一条）。主进程改动不重打包就永远不生效。
   - 判断某份构建到底含不含某改动，**不要猜，直接验指纹**：`grep -c "<新符号>" <安装目录>/resources/app.asar`（asar 内文件内容为原文，可直接 grep）。本次即靠 `shouldShowPet` 计数 0 vs 8 区分出「安装版 0.2.2 未含改动」与「打包版 0.2.3 已含改动」。同理可查包内 `resources/backend/m2_server/*.py` 与 `web_dist/assets/*.js`。
+  - "定向重打 asar 必须先完全退出应用" —— **半对**（2026-09-23 实测）：Electron 对 asar 是**共享读**，
+    应用运行时 `open(asar,'r+b')` 仍成功、`cp` 替换不报错（上面那条"asar 被占用时替换会失败"只在
+    文件被独占、或替换瞬间正被读取时才成立）。但**改动要生效仍必须完全重启应用** ——
+    `web/electron/pet/*.html` 这类窗口是懒创建 + `hide()/showInactive()` 复用，从不重载页面。
