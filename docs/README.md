@@ -18,6 +18,7 @@
 | `release-sop.md` | 发版 SOP：更新源、签名、回滚、`scripts/release.ps1` |
 | `AUDIO_TROUBLESHOOTING.md` | 音频设备、VB-CABLE、内录排障（插件清单把它当"设备问题"的 UI 跳转目标） |
 | `CASCADE_STREAM_SPEC.md` | 级联变声（录音 → ASR → TTS → RVC）链路规格 |
+| `特效声板设计.md` | 特效声板（实时插入爆炸等音效进虚拟声卡）：架构/CC0 素材来源/分期 |
 | `微信语音-长文分段发送方案.md` | 微信单条 60s 硬上限的对策：分包发送方案 + 预算护栏（末尾附 2026-08-31 可行性调研原文） |
 | `ROADMAP.md` / `TTS_CUDA_GRAPH_PLAN.md` | 规划 |
 | `评审流程.md` | 代码评审：审查标准 + 流程 + 作者自审清单 + PR 模板（2026-09-23 由 4 份合并） |
