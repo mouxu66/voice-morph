@@ -22,7 +22,6 @@ import { describe, expect, it } from "vitest"
 import type { PluginCatalog, PluginEntry, PluginRoute } from "@/types"
 import {
   buildRoutes,
-  closedNavCapabilities,
   knownIcons,
   navItems,
   pageKey,
@@ -262,23 +261,6 @@ describe("可见性与排序", () => {
     // 反面：正常的项不许被误标，否则整条导航全是红点，等于没有标记
     expect(navItems(asCatalog(), "start").every((n) => !n.broken)).toBe(true)
     expect(navItems(asCatalog(), "more").every((n) => !n.broken)).toBe(true)
-  })
-
-  it("★ closedNavCapabilities 只算「本来有导航项」的被关能力", () => {
-    const catalog = asCatalog({
-      "sound.tts": { state: "disabled" as const, enabled: false }, // 有 /tts 导航项 → 要计入
-      "sound.audiobook": { state: "disabled" as const, enabled: false }, // 没有导航项 → 不计入
-      "core.system": { state: "disabled" as const, enabled: false }, // core 恒可见 → 不计入
-    })
-    const ids = closedNavCapabilities(catalog).map((p) => p.id)
-    expect(ids).toContain("sound.tts")
-    // 关掉一个没有独立页面的能力不会让任何导航项消失，计进底栏那个数字只会
-    // 让用户点进去发现「什么也没变」
-    expect(ids).not.toContain("sound.audiobook")
-    expect(ids).not.toContain("core.system")
-
-    // 「被依赖而保留」（enabled=true）不算被关 —— 它还在导航里，不该出现在回头路入口
-    expect(closedNavCapabilities(asCatalog({ "sound.tts": { state: "disabled" as const, enabled: true } }))).toHaveLength(0)
   })
 
   it("旧路由重定向全部来自清单", () => {

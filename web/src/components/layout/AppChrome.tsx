@@ -4,7 +4,8 @@ import { Link, useLocation } from "react-router-dom"
 import { rvcLiveReset } from "@/api/client"
 import { StudioNav } from "@/components/voice-studio/StudioNav"
 import { SettingsPanel } from "@/components/layout/SettingsPanel"
-import { closedNavCapabilities, usePluginCatalog } from "@/lib/pluginRoutes"
+import { usePluginCatalog } from "@/lib/pluginRoutes"
+import type { PluginCatalog } from "@/types"
 import { cn } from "@/lib/utils"
 import { useAppStore } from "@/store/useAppStore"
 import { getStoredTheme, setStoredTheme, type ThemeMode } from "@/theme"
@@ -18,6 +19,38 @@ const pageTitles: Record<string, string> = {
   "/tts": "输字变声",
   "/offlinevc": "工具箱",
   "/pet-market": "桌宠皮肤",
+}
+
+/**
+ * 侧栏底部「能力」入口右侧那行计数。
+ *
+ * ★ 口径与「能力管理」面板头**完全一致**（两边都取 `catalog.counts`）。
+ * 底栏说"3 项已关闭"、点进去面板头说"5 项已关闭"，用户第一反应是自己看错了 ——
+ * 这是典型的派生数据双流水线，本仓已有专门教训（同 `docs/插件化设计.md` §五
+ * 「唯一真相源」的取舍：展示层只读一个来源，不自己重算）。
+ *
+ * 优先级：**未加载（红）> 已关闭（中性）> 正常（报总数）**。
+ * 只有"未加载"配得上颜色 —— 已关闭是用户自己关的，只是陈述，不该天天报警；
+ * 而"少了块功能但不知道为什么"才是需要被看见的那一态。
+ */
+export function capabilityEntryCounts(counts: PluginCatalog["counts"]): {
+  tone: "danger" | "muted"
+  label: string
+} {
+  if (counts.broken) return { tone: "danger", label: `${counts.broken} 项未加载` }
+  if (counts.disabled) return { tone: "muted", label: `${counts.disabled} 项已关闭` }
+  return { tone: "muted", label: `${counts.total} 项` }
+}
+
+/** 鼠标悬停时把话说全 —— 常驻入口只有一行，放不下的解释放这里。 */
+function capabilityEntryTitle(counts: PluginCatalog["counts"]): string {
+  if (counts.broken) {
+    return `${counts.broken} 项能力没加载起来（缺依赖或启动失败）—— 点开看具体原因`
+  }
+  if (counts.disabled) {
+    return `${counts.disabled} 项能力已关闭（你自己关的），关掉的不加载、不占显存 —— 点开管理`
+  }
+  return `共 ${counts.total} 项能力 · 按套餐或逐项开关`
 }
 
 // 服务状态：在线 / 启动中（启动后 45s 内从未连上，视为正在加载模型）/ 离线
@@ -84,14 +117,22 @@ export function AppChrome({
   const online = serviceState === "online"
 
   /**
-   * 用户自己关掉、因而不在导航里的能力数。
+   * 侧栏底部「能力」入口的计数。
    *
-   * 主动关掉的不该继续占导航位（他自己关的，记得），但也**不能就这么算了** ——
-   * 「我怎么把它找回来」必须有个回头路。被动坏掉的（缺依赖）不走这里，
-   * 它们留在导航里哑掉，见 `StudioNav`。
+   * ★ 这个入口**常驻**，不再只在"有东西被关掉"时出现。
+   *
+   * 插件化改造（`docs/插件化设计.md` 步 1–7）落的全是**骨架**：后端按清单挂路由、
+   * 前端路由与侧栏由 `/api/plugins` 驱动、桌宠认能力清单。可这些用户一样都看不见 ——
+   * 原来唯一常驻的入口藏在「设置 → 能力」，而底部这条又只在 `closedNavCount > 0`
+   * 时渲染。结果就是：**19 项能力的开关对一个从没关过东西的用户完全隐身**，
+   * 界面上找不到任何"这个应用是由能力拼起来的"的痕迹。
+   *
+   * 所以改成常驻 + 带上计数：入口本身就成了那句话。（2026-09-23 用户反馈
+   * "没感受到一切皆插件的思想" —— 不是没打包，是感知面没做。）
    */
-  const closedNavCount =
-    catalogState.status === "ready" ? closedNavCapabilities(catalogState.catalog).length : 0
+  const capCounts = catalogState.status === "ready" ? catalogState.catalog.counts : null
+  const capEntry = capCounts ? capabilityEntryCounts(capCounts) : null
+  const capTitle = capCounts ? capabilityEntryTitle(capCounts) : "正在读取能力清单…"
 
   const openCapabilities = useCallback(() => {
     setDrawerOpen(false)
@@ -138,19 +179,28 @@ export function AppChrome({
       </div>
 
       <div className="border-t border-border px-3 py-3">
-        {/* 「被关掉的能力去哪了」的回头路。只在真有东西被关掉时出现 ——
-            常驻一个「0 项能力已关闭」只是噪声。 */}
-        {closedNavCount ? (
-          <button
-            type="button"
-            onClick={openCapabilities}
-            title="这些能力是你自己关掉的，在「能力管理」里能找回来"
-            className="mb-1 flex w-full items-center gap-2 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground transition hover:bg-muted/70 hover:text-foreground"
-          >
-            <Layers className="h-3.5 w-3.5 shrink-0" />
-            {closedNavCount} 项能力已关闭 · 管理能力
-          </button>
-        ) : null}
+        {/* 「能力」常驻入口 —— 见上面 `capCounts` 那段注释：
+            插件化的感知面全靠这一屏，它不能只在"有东西被关掉"时才出现。
+            计数口径与面板头一致；只有"未加载"配得上颜色。 */}
+        <button
+          type="button"
+          onClick={openCapabilities}
+          title={capTitle}
+          className={cn(
+            "mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs transition",
+            capEntry?.tone === "danger"
+              ? "bg-red-500/10 text-red-600 hover:bg-red-500/15 dark:text-red-400"
+              : "bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground",
+          )}
+        >
+          <Layers className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">能力</span>
+          {capEntry ? (
+            <span className="ml-auto shrink-0 font-mono text-[11px] tabular-nums opacity-80">
+              {capEntry.label}
+            </span>
+          ) : null}
+        </button>
         <button
           type="button"
           onClick={() => void handleRestoreAudio()}

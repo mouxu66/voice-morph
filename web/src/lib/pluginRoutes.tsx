@@ -225,16 +225,6 @@ export function navItems(catalog: PluginCatalog, group: "start" | "more"): NavIt
     }))
 }
 
-/**
- * 用户自己关掉、因而**从导航里消失**的能力。
- *
- * 只算「本来有导航项」的：关掉一个没有独立页面的能力（如桌宠皮肤）不会让任何
- * 导航项消失，把它计进底栏那个数字只会让用户点进去发现"什么也没变"。
- */
-export function closedNavCapabilities(catalog: PluginCatalog): PluginEntry[] {
-  return catalog.plugins.filter((p) => !isVisible(p) && p.routes.some((r) => r.nav))
-}
-
 // ---------------------------------------------------------------- catalog 单例
 
 export type CatalogState =
