@@ -542,6 +542,186 @@ def test_batch_marks_manual_fallback_as_whole_batch(tmp_path, monkeypatch):
     assert res["outcome"] == "manual_fallback"
 
 
+# ---------------- 历史里的批次信息（桌宠看门狗靠它判断"整批发完了"） ----------------
+#
+# 由来（2026-09-23）：桌宠 pet.html 的 watchSendOutcome 是"主进程没回传结果"时的
+# 兜底收尾 —— 它只能读 /api/wechat/history。分段发送下"出现了一行新记录"不再等于
+# "整批发完了"：第 1 条落地时后面还在录，照旧收尾就会提前打绿勾，
+# 用户看到"已完成"还可能去动键鼠，正好打断录制。
+# 所以批次信息必须**落库**，让看门狗能数够条数才收尾。
+
+
+def test_history_row_carries_total_chunks_for_batches(tmp_path, monkeypatch):
+    """★ 多段批次：每条历史都要带上 total_chunks=N（看门狗据此判"凑齐了没有"）。"""
+    monkeypatch.setattr(wv, "_prepare_env", lambda pre_apply=None, steps=None: {})
+    monkeypatch.setattr(wv, "_safe_restore", lambda: (True, ""))
+    monkeypatch.setattr(wv, "_await_uia_active", lambda: False)
+    monkeypatch.setattr(wv, "_await_overlay_gone", lambda gap_s=0.0, timeout=None: True)
+    monkeypatch.setattr(wv, "_wav_duration", lambda p: 5.0)
+
+    real_append = wv._append_history
+
+    def fake_append(wav, duration, outcome="ok", warning="", total_chunks=1):
+        # 只观察参数，仍走真实实现（要真的落盘，下面才好回读）
+        observed.append(total_chunks)
+        return real_append(wav, duration, outcome, warning, total_chunks)
+
+    observed: list[int] = []
+    monkeypatch.setattr(wv, "_append_history", fake_append)
+
+    def fake_seg(wav, duration, index=None, total=None, **kw):
+        # 真 _record_and_send 会落历史；这里模拟它把 total 带下去
+        wv._append_history(wav, duration, "ok", "", total or 1)
+        return {"ok": True, "outcome": "ok", "wav": wav.name, "duration_s": duration, "steps": []}
+
+    monkeypatch.setattr(wv, "_record_and_send", fake_seg)
+    wavs = []
+    for i in range(3):
+        p = tmp_path / f"c{i}.wav"
+        p.write_bytes(b"RIFF")
+        wavs.append(p)
+
+    res = wv._send_batch(wavs)
+    assert observed == [3, 3, 3], "每条历史都必须带上同一批的总数（3）"
+    assert res["total_chunks"] == 3 and res["sent_chunks"] == 3
+
+    # 回读落盘的历史：桌宠就是这么读的
+    import json
+
+    hist = json.loads(wv.HISTORY_FILE.read_text("utf-8"))
+    assert len(hist) == 3
+    assert [r.get("total_chunks") for r in hist] == [3, 3, 3]
+
+
+def test_history_row_omits_total_chunks_when_single(tmp_path, monkeypatch):
+    """单条不写这个字段：省得每行都多一个恒为 1 的噪声字段。
+
+    也钉住"读侧必须容缺"—— 历史里还有大量旧记录（分段之前落库的），
+    前端读不到这个字段时必须退化成单条行为，而不是当成 0/null 崩掉。
+    """
+    p = tmp_path / "one.wav"
+    p.write_bytes(b"RIFF")
+    assert wv._append_history(p, 5.0, "ok", "") is True
+    import json
+
+    rec = json.loads(wv.HISTORY_FILE.read_text("utf-8"))[-1]
+    assert "total_chunks" not in rec
+
+
+def test_history_default_total_chunks_keeps_backward_compat(tmp_path, monkeypatch):
+    """`total_chunks` 必须有默认值 —— 老调用点（单条路径）不改也得能过。"""
+    import inspect
+
+    sig = inspect.signature(wv._append_history)
+    assert sig.parameters["total_chunks"].default == 1
+
+
+# ---------------- 前端契约（桌宠渲染侧 / 主进程） ----------------
+#
+# 这三个文件改不了"逻辑"，但它们承载着分段发送的**用户可见语义**，
+# 而改 *.cjs 要重打 asar、pet.html 是热替换 —— 三者版本会漂。
+# 用源码级断言钉住关键形状，比"下次再读一遍"可靠。
+
+_ELECTRON_DIR = Path(__file__).resolve().parents[2] / "web" / "electron"
+
+
+def _electron_fn_body(relpath: str, anchor: str) -> str:
+    """取 `web/electron/<relpath>` 里从 `anchor` 开始到下一个顶格 `}` 的片段。
+
+    ⚠️ 断言必须落在**这一段**里，不能只查整个文件 —— 变异测试证明过一次：
+    只查"文件里出现过 total_chunks"会被函数顶部读取 `data.total_chunks`
+    那一行**假绿**（字段名出现两次，删掉转发那一处照样能匹配到）。
+    """
+    src = (_ELECTRON_DIR / relpath).read_text(encoding="utf-8")
+    body = src[src.index(anchor) :]
+    end = body.find("\n}\n")
+    return body if end < 0 else body[: end + 3]
+
+
+def test_pet_actions_forwards_chunk_fields():
+    """★ 主进程必须把 total_chunks/sent_chunks/failed_index/remaining_wavs 透传给面板。
+
+    不透传的后果不是报错，而是**静默降级**：面板只好按单条口径报
+    "已发到微信 ✓"，而实际只发出了 3 条里的第 1 条。
+    """
+    body = _electron_fn_body("pet-actions.cjs", "function doSendTextToWechat")
+    # 只看**转发给面板的成功载荷**：该函数里 `send("pet:send-result"` 出现两次
+    # （失败路径在前、成功路径在后），必须取**最后**一次，否则断言的是失败载荷
+    # （它本来就不带批次字段）→ 恒定红。这个坑是变异测试直接暴露出来的。
+    assert 'send("pet:send-result"' in body, "没找到回传面板的调用"
+    payload = body[body.rindex('send("pet:send-result"') :]
+    payload = payload[: payload.index("});")]
+    for field in ("total_chunks", "sent_chunks", "failed_index", "remaining_wavs"):
+        assert field in payload, (
+            f"pet-actions.cjs 回传面板的载荷里没有 {field} —— 面板无从判断批次状态"
+            "（会出现'只发出 1 条却报整批成功'）"
+        )
+
+
+def test_pet_actions_timeout_covers_batches():
+    """★ 超时必须够长：长文 N 条要录 N 轮。
+
+    固定 180s 对 3 条以上会**假超时** —— 主进程放弃等待但后端仍在录，
+    用户看到"失败"却在微信里收到语音，还可能再点一次 → 两批语音。
+    """
+    import re
+
+    body = _electron_fn_body("pet-actions.cjs", "function doSendTextToWechat")
+    timeouts = [int(m) for m in re.findall(r"\},\s*(\d+)\);", body)]
+    assert timeouts, "没找到 backendPost 的超时参数"
+    assert max(timeouts) >= 600000, f"发送超时 {max(timeouts)}ms 对长文不够（应 ≥600s）"
+
+
+def test_pet_panel_watchdog_waits_for_whole_batch():
+    """★ 看门狗不能"一看到新记录就收尾"（第 1 条落地时后面还在录）。
+
+    必须存在一个"计数"概念（count）与"稳定/凑齐"判据，
+    否则长文会在第 1 条就显示"已发到微信 ✓"，并且诱导用户去动键鼠打断录制。
+    """
+    src = (_ELECTRON_DIR / "pet" / "pet.html").read_text(encoding="utf-8")
+    body = src[src.index("async function watchSendOutcome") :]
+    body = body[: body.index("\nasync function countHistorySince")]
+    assert "countHistorySince" in body, "看门狗没有数条数 —— 无法区分'发到第几条'与'整批完了'"
+    assert "stableRounds" in body, "看门狗没有'稳定'判据，可能出现'刚出现就收尾'或'永远不收尾'"
+    assert "total_chunks" in body, "看门狗没用后端给的段数（最准的'整批结束'判据）"
+    # 收尾必须发生在"凑齐/稳定"之后，不能因为"出现了新记录"就 return
+    assert "stableRounds >= 2" in body or "cnt >= wantTotal" in body, (
+        "看门狗缺少'整批结束'的判据 —— 会在第 1 条落地时就收尾"
+    )
+
+
+def test_pet_panel_settle_reports_chunk_counts():
+    """★ 结算必须按**条数**口径说话，不能拿单条的时长/告警代替整批。
+
+    两条具体错误：① 用一条的 duration_s 说"已发出（12.3s）"（整段其实 40s）；
+    ② 把第 1 条的静音告警说成整批"可能没声音"（后两条其实是好的）。
+    """
+    src = (_ELECTRON_DIR / "pet" / "pet.html").read_text(encoding="utf-8")
+    body = src[src.index("async function settleSendResult") :]
+    body = body[: body.index("\n}\n") + 3]
+    assert "total_chunks" in body, "结算没看条数 —— 会按单条口径报整批"
+    assert "sent_chunks" in body, "结算没看已发条数 —— 部分失败时会含糊成'失败了'"
+    assert "条语音" in body, "结算没有'条数'口径的文案"
+
+
+def test_send_text_returns_batch_fields(tmp_path, monkeypatch):
+    """入口契约：多段时 send_text 的响应必须带 total_chunks/sent_chunks/wavs。"""
+    monkeypatch.setattr(wv, "_send_preflight", lambda: "")
+    monkeypatch.setattr(wv, "_run_audio", lambda a: {"ok": True})
+    monkeypatch.setattr(wv, "_split_for_budget", lambda *a, **k: ([Path("a.wav"), Path("b.wav")], []))
+    monkeypatch.setattr(
+        wv, "_send_batch", lambda wavs, pre_apply=None: {
+            "ok": True, "outcome": "ok", "total_chunks": 2, "sent_chunks": 2,
+            "failed_index": None, "wavs": [w.name for w in wavs], "duration_s": 30.0, "steps": [],
+        }
+    )
+    monkeypatch.setattr(wv, "_send_lock", __import__("threading").Lock())
+    res = wv.send_text(wv.SendTextReq(text="你好", voice_id="kangaroo"))
+    assert res["total_chunks"] == 2
+    assert res["sent_chunks"] == 2
+    assert res["wavs"] == ["a.wav", "b.wav"]
+
+
 # ---------------- 变异证据（把"这些用例真的会红"钉在代码里） ----------------
 
 
@@ -589,6 +769,53 @@ def test_mutation_evidence_guards_are_wired():
     assert "_record_and_send(" in ds, (
         "_do_send 必须走 _record_and_send 这个共同内核，不得自己另写一份录制逻辑"
         "（否则批次修好了、单条还漏着）。"
+    )
+
+
+def test_mutation_evidence_frontend_guards_are_wired():
+    """★ 前端五处护栏的变异证据（2026-09-23 实测：5 个变异全被抓到）。
+
+    这仓的传统是"守护测试必须做变异测试"（docs/犯错指南.md §8.19）——
+    而**变异测试最容易骗人的地方就是"以为被抓到了"**：第一次跑变异 #1（删掉
+    pet-actions 里的 `total_chunks: total,`）用例**照样绿**，因为断言只查
+    "文件里出现过这个字段"，而函数顶部读 `data.total_chunks` 那行就满足了它。
+    修完（改成只看回传载荷那一段）才真的会红。
+
+    所以这里把**每个变异的注入点与预期红**写成注释留档，并断言"判据的形状"仍在：
+    任何人把这些判据改成"更宽松的字符串搜索"，本用例应该让他停下来读一读。
+    """
+    import inspect
+
+    # ① 回传载荷必须真的带批次字段（变异：删掉 `total_chunks: total,` → 红）
+    body = _electron_fn_body("pet-actions.cjs", "function doSendTextToWechat")
+    payload = body[body.rindex('send("pet:send-result"') :]
+    payload = payload[: payload.index("});")]
+    assert "total_chunks: total" in payload, (
+        "回传载荷的 total_chunks 被删了 —— 面板会'只发出 1 条却报整批成功'"
+    )
+
+    # ② 超时必须 ≥600s（变异：改回 180000 → 红，报"发送超时 180000ms 对长文不够"）
+    import re
+
+    timeouts = [int(m) for m in re.findall(r"\},\s*(\d+)\);", body)]
+    assert max(timeouts) >= 600000
+
+    # ③ 看门狗必须有"整批结束"判据（变异：把 if 条件换成 `if (true)` → 红）
+    wh = _electron_fn_body("pet/pet.html", "async function watchSendOutcome")
+    assert "wantTotal && cnt >= wantTotal" in wh, "看门狗丢了'凑齐段数'判据"
+    assert "!wantTotal && stableRounds >= 2" in wh, "看门狗丢了'连续不增长'兜底判据"
+
+    # ④ 结算必须读条数（变异：把 `Number(r.total_chunks) || 1` 写成常量 1 → 红）
+    st = _electron_fn_body("pet/pet.html", "async function settleSendResult")
+    assert "Number(r.total_chunks) || 1" in st, "结算把条数写死了 —— 会按单条口径报整批"
+    assert "r.sent_chunks != null" in st, "结算不再区分'已发几条'"
+
+    # ⑤ 后端历史必须落 total_chunks（变异：把 `if total_chunks > 1:` 短路 → 红，
+    #    报 `[None, None, None] == [3, 3, 3]`）
+    ah = inspect.getsource(wv._append_history)
+    assert 'rec["total_chunks"] = total_chunks' in ah, (
+        "历史丢了 total_chunks —— 桌宠看门狗只能看到'又出现一行'，"
+        "无法区分'发到第 1 条'与'整批发完'，会在第 1 条落地时就打绿勾"
     )
 
 

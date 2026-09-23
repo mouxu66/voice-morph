@@ -2441,7 +2441,7 @@ def _record_and_send(
                 }.get(via, "语音已发送")
             )
             # 发送已成功：先落历史（后台写回校验/还原结果都依赖它）
-            _append_history(wav, duration, "ok", warning=bind_warning)
+            _append_history(wav, duration, "ok", warning=bind_warning, total_chunks=total or 1)
             hist_appended = True
             # UIA 校验只是安全网，放后台线程不阻塞返回（省 ~0.5-3s）
             if uia_active:
@@ -2477,7 +2477,11 @@ def _record_and_send(
                 "restored": None,
                 "warning": bind_warning,
                 "_history": (
-                    True if hist_appended else _append_history(wav, duration, "ok", warning=bind_warning)
+                    True
+                    if hist_appended
+                    else _append_history(
+                        wav, duration, "ok", warning=bind_warning, total_chunks=total or 1
+                    )
                 ),
             }
 
@@ -2492,7 +2496,9 @@ def _record_and_send(
             "steps": steps,
             "restored": restored,
             "restore_error": restore_err,
-            "_history": _append_history(wav, duration, "cancelled", warning=bind_warning),
+            "_history": _append_history(
+                wav, duration, "cancelled", warning=bind_warning, total_chunks=total or 1
+            ),
         }
     except Exception as exc:
         # 失败也要：⓪掐掉后台播放（否则会一直往 CABLE 灌声音）
@@ -2793,13 +2799,24 @@ HISTORY_FILE = cfg.OUTPUTS_DIR / "wechat_send_history.json"
 HISTORY_MAX = 20
 
 
-def _append_history(wav: Path, duration_s: float, outcome: str = "ok", warning: str = "") -> bool:
+def _append_history(
+    wav: Path,
+    duration_s: float,
+    outcome: str = "ok",
+    warning: str = "",
+    total_chunks: int = 1,
+) -> bool:
     """把一次发送记进历史（最多 HISTORY_MAX 条，覆盖写）。outcome: ok/manual_fallback/failed。
 
     warning：录音环境告警（典型是 RESTART=0 下微信绑的不是 CABLE → 可能录成静音）。
     2026-09-18 加入：此前该告警只出现在 API 响应的 steps/summary 里，不落库，于是
     17:35 那条静音语音事后在发送历史里查不到任何线索 —— 前端把它当成了"残留旧文案"。
     现在它随记录一起持久化，`GET /history` 与桌宠「最近发送」都能看到。
+
+    total_chunks（2026-09-23 分段发送）：这一批总共几条、本条是第几条。
+    **必须落库**，否则桌宠的兜底看门狗只知道"又出现了一行历史"，
+    分不清"整批发完了"和"才发到第 1 条" —— 会在第 1 条落地时就打绿勾收尾，
+    而此时后面的还在录。落库后看门狗能直接数够 `total_chunks` 条就收尾。
     """
     try:
         hist = []
@@ -2813,6 +2830,10 @@ def _append_history(wav: Path, duration_s: float, outcome: str = "ok", warning: 
         }
         if warning:
             rec["warning"] = warning
+        if total_chunks > 1:
+            # 单条不进库这个字段：省得每行都多一个恒为 1 的噪声字段，
+            # 也让"长文分段"在历史里一眼可辨（前端据此显示"3 条"）
+            rec["total_chunks"] = total_chunks
         hist.append(rec)
         HISTORY_FILE.write_text(json.dumps(hist[-HISTORY_MAX:], ensure_ascii=False), "utf-8")
         return True
