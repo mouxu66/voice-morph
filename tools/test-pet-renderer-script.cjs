@@ -54,6 +54,11 @@
  *         被切掉（实测 guide 切 6px / think 16px / offline 34px）。让位规则靠
  *         #root.compact 生效，而它必须与气泡显隐严格同步；散着写 bubble.style.display
  *         漏掉一处，那一处就会带着多余的 #recent 去抢高度。所以：写入口唯一 + 运行期验证。
+ *  13. 【2026-09-23 长文分段发送】结果播报必须按「批次」口径，看门狗要「凑齐才收尾」
+ *      —— 单条的 warning / duration_s 不能说成整批结论（第 1 条静音、后两条正常时，
+ *         旧写法会说成「已发出（3 条）但可能没声音」）；中途落败要说清已发出几条、
+ *         第几条挂的；「出现新记录」≠「整批发完」—— 早收尾会在第 1 条落地时就打绿勾，
+ *         而绿勾又会让用户去动键鼠，正好打断还在进行的录制。
  */
 "use strict";
 const assert = require("node:assert");
@@ -283,7 +288,7 @@ global.fetch = async (url, opts) => {
 // （实测 `globalThis.setState === undefined`，别指望直接拿），所以在同一个 eval 作用域里
 // 显式挂一份。`engine` / `runningEngine` 是 let，只能用 getter 闭包读（对象字面量存不住活绑定）。
 // 追加在末尾不影响上面按行号做的错误定位。
-const EXPORT_HOOK = "\n;globalThis.__petFns = { setState, setEngine, playGuide, endGuide, setBubbleVisible,"
+const EXPORT_HOOK = "\n;globalThis.__petFns = { setState, setEngine, playGuide, endGuide, setBubbleVisible, settleSendResult,"
   + " getEngine: function () { return engine; },"
   + " getRunningEngine: function () { return runningEngine; } };\n";
 let thrown = null;
@@ -684,6 +689,82 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       });
       assert.strictEqual(r.status, 0,
         "离线模式断言失败：\n" + String(r.stdout || "") + String(r.stderr || ""));
+    });
+  }
+
+  // ---------- 回归点 13：长文分段发送（2026-09-23）下的结果播报口径 ----------
+  // 后端会把长文切成 N 条依次发，「一次发送」因此变成「一批发送」。这里钉住三件
+  // 会直接在界面上骗到用户的事：
+  //   ① 单条属性（warning / duration_s）不能说成整批结论；
+  //   ② 中途落败要说清「已发出几条 / 第几条挂的 / 剩的能不能重发」；
+  //   ③ 看门狗不能「一看到新记录就收尾」—— 那会在第 1 条落地时就打绿勾，
+  //      而此时后面的还在录；绿勾还会诱导用户去动键鼠，正好打断录制。
+
+  check("EXPORT_HOOK 导出了 settleSendResult（否则分段口径无法在无 GUI 下验证）", () => {
+    assert.strictEqual(typeof petFns.settleSendResult, "function",
+      "内联脚本里找不到 settleSendResult() —— 被改名/删除了？测试会静默空转");
+  });
+
+  check("看门狗改成「凑齐才收尾」，且保留「连续不增长」兜底", () => {
+    const idx = codeStripped.indexOf("async function watchSendOutcome");
+    assert.ok(idx > -1, "找不到 watchSendOutcome()");
+    const body = cssBlockBody(codeStripped, codeStripped.indexOf("{", idx));
+    // ⚠️ 这里必须断言**判据本身**，不能只断言 "total_chunks 这个串出现过"：
+    // watchSendOutcome 回传给 settleSendResult 的载荷里也有 `total_chunks: ...`，
+    // 于是「把收尾判据里的总数读法删掉」这种回退，用 includes 检查照样绿
+    // —— 变异测试实测过一次，所以才收紧到读取端与比较式。
+    assert.ok(/last\.total_chunks/.test(body),
+      "watchSendOutcome 没有从历史记录里读 total_chunks —— 收尾判据失去了「一共该有几条」，" +
+      "会退化成第 1 条落地就打绿勾（此时后面的还在录）");
+    assert.ok(/stableRounds\s*>=/.test(body),
+      "「连续几轮不增长」的兜底判据没有真正参与比较（旧版后端不回传 total_chunks 时全靠它）");
+    assert.ok(/countHistorySince\(/.test(body),
+      "watchSendOutcome 没按「本批已发出几条」计数 —— 「出现新记录」≠「整批发完」");
+    assert.strictEqual((body.match(/settleSendResult\(/g) || []).length, 1,
+      "watchSendOutcome 里出现了多个 settleSendResult 出口 —— 收尾路径必须唯一，" +
+      "否则总有一条会漏判分段是否结束");
+  });
+
+  if (typeof petFns.settleSendResult === "function") {
+    // 单条：口径不能被分段逻辑带偏，旧的「已发出 3.2s」必须原样保留
+    await petFns.settleSendResult({ ok: true, duration_s: 3.2, warning: "微信绑在物理麦上" });
+    check("单条：仍按秒口径播报（分段逻辑不得污染单条路径）", () => {
+      assert.strictEqual(els.statusText.textContent,
+        "已发出 3.2s，但可能有静音：微信绑在物理麦上");
+      assert.strictEqual(els.status.className, "show warn");
+    });
+
+    // 3 条全成：口径必须换成条数 —— 继续写「(12.3s)」会让人以为整段只有 12 秒
+    await petFns.settleSendResult({ ok: true, total_chunks: 3, sent_chunks: 3 });
+    check("整批成功：改成条数口径，不再拿单条时长冒充整段", () => {
+      assert.strictEqual(els.statusText.textContent, "已发到微信 ✓（3 条语音）",
+        "duration_s 只是批次里其中一条，不能当整段时长播报");
+      assert.strictEqual(els.status.className, "show ok");
+    });
+
+    // ★ warning 是单条属性：批次里第 1 条告警、后两条正常时不能说成整批有问题
+    await petFns.settleSendResult({ ok: true, total_chunks: 3, sent_chunks: 3, warning: "静音" });
+    check("单条告警不否定整批：只说可能有静音，不说这批发砸了", () => {
+      assert.strictEqual(els.statusText.textContent, "已发出 3 条语音，但可能有静音：静音");
+      assert.strictEqual(els.status.className, "show warn");
+    });
+
+    // 中途落败：必须说清发出去几条、第几条挂的、剩下的可重发
+    await petFns.settleSendResult({
+      ok: true, outcome: "partial", total_chunks: 3, sent_chunks: 1,
+      failed_index: 1, remaining_wavs: ["b.wav", "c.wav"],
+    });
+    check("中途落败：报「已发出 1/3 条」+ 第几条挂的 + 剩的可重发", () => {
+      assert.strictEqual(els.statusText.textContent, "已发出 1/3 条（第 2 条失败），剩的可重发",
+        "含糊成「结果：partial」的话，用户不知道前 1 条其实已经发出去了");
+      assert.strictEqual(els.status.className, "show warn");
+    });
+
+    // 失败路径不能被分段字段带偏（坏消息要说得直接）
+    await petFns.settleSendResult({ ok: false, error: "微信没开" });
+    check("失败：仍走 err 色调与直白文案", () => {
+      assert.strictEqual(els.statusText.textContent, "发送失败：微信没开");
+      assert.strictEqual(els.status.className, "show err");
     });
   }
 

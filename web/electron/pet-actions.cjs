@@ -275,9 +275,11 @@ function doSendTextToWechat(text, voiceId) {
   });
   // 全自动：TTS → RVC 换声 → 自动点微信语音按钮录制并发送，全程不需要人按 Alt。
   // （旧的 /api/tts + play_to_cable 是半自动，还要用户自己按住 Alt 录，已改掉）
+  // 文案说明"可能不止一条"：长文会被后端切成分段依次发（2026-09-23），
+  // 提前讲清楚，用户就不会把"怎么来了 3 条语音"当成重复发送的 bug。
   showAltHint({
     stage: "prep",
-    sub: "合成 + 换声中，约 1~2 分钟… 完成后自动发到微信，<b>别动键鼠</b>",
+    sub: "合成 + 换声中，约 1~2 分钟… 长文会自动分成几条依次发出，<b>全程别动键鼠</b>",
     remainS: null, progress: -1,
   });
   // `rvc_voice` 留空是**刻意的**：由后端按 `voice_id → RVC 实验名` 的约定自己推
@@ -286,6 +288,14 @@ function doSendTextToWechat(text, voiceId) {
   // 把约定复制到渲染侧只会多一个会漂的副本。面板选的音色经 `voice_id` 传下去即可。
   // ⚠️ 别把这里「补成」一个具体音色名 —— 那会让所有用户都被锁到一个音色上，
   //    而且看起来像修 bug，实际是退化成单音色（2026-09-21 复核确认现状无误）。
+  //
+  // ⚠️ 超时必须放宽（2026-09-23 分段发送）：长文会被切成 N 条依次录制。
+  //    代价是**两条轴都在涨** —— 逐句合成是 N 次 TTS 调用（不再是 1 次），
+  //    发送是 N 轮"切卡/录音/等浮层消失"（每轮 ≈ 音频时长 + 45s 余量）。
+  //    固定 180s（旧值）只够 1 条；3 条以上会**假超时**：主进程放弃等待，但后端仍在录，
+  //    用户看到"失败了"却在微信里收到语音，还可能去点第二次 → 两批语音、更乱。
+  //    这里给 600s（10 分钟）—— 比任何现实长文都宽，作用只是"别挂到天荒地老"，
+  //    真正的进度反馈靠 alt-hint 横幅与面板状态行，不靠这个上限。
   backendPost("/api/wechat/send_text",
     { text, voice_id: voiceId || "", rvc_voice: "", pitch: 0, index_rate: 0.5 },
     (data, code) => {
@@ -303,26 +313,43 @@ function doSendTextToWechat(text, voiceId) {
       }
       hideAltHint();
       const outcome = data.outcome || "ok";
+      const total = Number(data.total_chunks) || 1;
+      const sent = data.sent_chunks != null ? Number(data.sent_chunks) : (outcome === "ok" ? total : 0);
+      // 落败在中间时，失败句（后端已把 steps 落到失败那一步）比"结果：partial"有用得多
+      const failedIdx = data.failed_index;
       showPetGuide({
         title: outcome === "ok" ? "已发送到微信 ✓" : "发送未成功",
         lines: [
-          `音频 ${data.duration_s || "?"}s（${data.wav || ""}）`,
-          outcome === "ok" ? "去微信看最新那条语音" : `结果：${outcome}`,
+          total > 1
+            ? `长文分成 ${total} 条语音，已发出 ${sent} 条`
+            : `音频 ${data.duration_s || "?"}s（${data.wav || ""}）`,
+          outcome === "ok"
+            ? "去微信看最新那几条语音"
+            : (failedIdx != null
+                ? `第 ${failedIdx + 1}/${total} 条失败，前面 ${sent} 条已发出`
+                : `结果：${outcome}`),
         ].concat((data.steps || []).slice(-3)),
         action: outcome === "ok" ? "play" : "error", motion: "work", duration: 9000,
       });
       if (petWin) {
         // 与 sendWechatWav 同款载荷。warning 是录音环境告警（典型：微信绑的不是
         // CABLE → 录进去可能是静音），透传给面板，好把绿勾改成警示态。
+        // total_chunks / sent_chunks / failed_index / remaining_wavs 透传给面板：
+        // 面板要据此判断"是不是整批都完了"（别在第 1 条落地时就收尾）以及
+        // "能不能继续发剩下的"。
         petWin.webContents.send("pet:send-result", {
           ok: outcome === "ok",
           duration_s: data.duration_s,
           hint: data.hint,
           outcome,
           warning: data.warning || "",
+          total_chunks: total,
+          sent_chunks: sent,
+          failed_index: failedIdx != null ? failedIdx : null,
+          remaining_wavs: data.remaining_wavs || [],
         });
       }
-    }, 180000);   // TTS + RVC + 录音可能两分钟，超时给足
+    }, 600000);   // 见上方注释：长文 N 条，180s 不够；600s 只是防挂死
 }
 
 /** 桌宠快捷面板：实时变声开关（运行中→停止；否则启动，模型用当前实验）。 */

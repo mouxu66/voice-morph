@@ -81,6 +81,48 @@ function main() {
     failures.push(`${FN}() 里没有 getPetWin() —— 拿不到面板窗口就无法回传`);
   }
 
+  // ---- 2026-09-23 长文分段发送：载荷必须带上「本批几条 / 已发几条 / 第几条挂的」----
+  // 面板靠这几个字段判断「整批发完了没」（不能在第 1 条落地时就打绿勾收尾）与
+  // 「剩下的能不能重发」。少一个字段就是静默降级：面板只能含糊说一句「失败了」，
+  // 而用户实际已经在微信里收到前两条 —— 他会以为一条都没发出去。
+  const payloads = [...code.matchAll(
+    /petWin\.webContents\.send\(\s*"pet:send-result"\s*,\s*\{([\s\S]*?)\}\s*\)/g)].map((mm) => mm[1]);
+  if (payloads.length === 0) {
+    failures.push(`${FN}() 里找不到 pet:send-result 的载荷对象 —— 正则失效或调用被改写`);
+  } else {
+    const joined = payloads.join("\n");
+    const missing = ["total_chunks", "sent_chunks", "failed_index", "remaining_wavs"]
+      .filter((f) => !new RegExp("\\b" + f + "\\s*:").test(joined));
+    if (missing.length) {
+      failures.push(
+        `pet:send-result 载荷缺少分段字段：${missing.join(", ")} —— ` +
+        `长文被切成 N 条后，面板既判断不了整批是否结束，也提示不了可重发`);
+    }
+  }
+  if (!/data\.failed_index/.test(code)) {
+    failures.push(`${FN}() 没有转发 data.failed_index —— 中途落败时说不清是第几条挂的`);
+  }
+  if (!code.includes("条失败")) {
+    failures.push(
+      `${FN}() 的失败文案里没有「第 N/M 条失败」口径 —— 只报「结果：partial」的话，` +
+      `用户不知道前面几条其实已经发出去了`);
+  }
+
+  // ---- 超时必须放宽到 600s（分段发送的代价）----
+  // 每条 = N 次 TTS 调用 + N 轮「切卡/录音/等浮层消失」。旧值 180s 只够 1 条，
+  // 3 条以上会**假超时**：主进程放弃等待但后端仍在录 —— 用户看到「失败了」，
+  // 却在微信里收到语音，还可能再点一次 → 两批语音叠在一起，更乱。
+  const tmo = code.match(/,\s*(\d{4,})\s*\)\s*;\s*$/);
+  if (!tmo) {
+    failures.push(
+      `${FN}() 里找不到 backendPost 的超时实参（形如 \`, 600000);\` 收尾）—— ` +
+      `可能被改成变量了，这条断言会静默失效`);
+  } else if (Number(tmo[1]) < 600000) {
+    failures.push(
+      `${FN}() 超时是 ${tmo[1]}ms（<600000）—— 长文拆 N 条依次录制，` +
+      `180s 只够 1 条；假超时会让用户以为失败，随后在微信里收到语音，再去点第二次`);
+  }
+
   // 另一条路径本就该回传，顺手守住（防止有人"统一重构"时把它删了）
   const wavBody = extractFunctionBody(raw, "sendWechatWav");
   if (!wavBody || !stripComments(wavBody).includes("pet:send-result")) {
