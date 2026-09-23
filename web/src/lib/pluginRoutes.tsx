@@ -177,16 +177,40 @@ export interface NavItemSpec {
   icon: LucideIcon | null
   /** 首页是根路径，必须精确匹配（其余沿用 endsWith，见 StudioNav 的 isActive） */
   exact: boolean
+  /**
+   * 这个导航项所在的能力**装了但没起来**（缺依赖 / 加载失败）。
+   *
+   * 与 `isVisible` 合起来看，才是「主动 vs 被动」这一刀的完整表达：
+   * - **主动关掉的**（`enabled === false`）：用户自己做的决定，他记得 → 从导航移出，
+   *   底栏留一个「N 项能力已关闭 · 管理能力」的回头路；
+   * - **被动坏掉的**（`enabled === true` 但 `state === 'broken'`）：用户根本不知道，
+   *   → **留在导航里但哑掉**（降饱和 + 红图标）。
+   *
+   * 以前两者被一视同仁地过滤/渲染，于是「某块功能突然不见了」既没有解释、也没有出口。
+   */
+  broken: boolean
 }
 
 /** 清单 → 某一组的导航项，按清单里的 `nav.order` 升序。 */
 export function navItems(catalog: PluginCatalog, group: "start" | "more"): NavItemSpec[] {
-  const decls: { path: string; label: string; icon?: string; order: number }[] = []
+  const decls: {
+    path: string
+    label: string
+    icon?: string
+    order: number
+    broken: boolean
+  }[] = []
   for (const p of catalog.plugins) {
     if (!isVisible(p)) continue
     for (const r of p.routes) {
       if (r.nav && r.nav.group === group) {
-        decls.push({ path: r.path, label: r.nav.label, icon: r.nav.icon, order: r.nav.order })
+        decls.push({
+          path: r.path,
+          label: r.nav.label,
+          icon: r.nav.icon,
+          order: r.nav.order,
+          broken: p.state === "broken",
+        })
       }
     }
   }
@@ -197,7 +221,18 @@ export function navItems(catalog: PluginCatalog, group: "start" | "more"): NavIt
       label: d.label,
       icon: d.icon ? (knownIcons[d.icon] ?? null) : null,
       exact: d.path === "/home",
+      broken: d.broken,
     }))
+}
+
+/**
+ * 用户自己关掉、因而**从导航里消失**的能力。
+ *
+ * 只算「本来有导航项」的：关掉一个没有独立页面的能力（如桌宠皮肤）不会让任何
+ * 导航项消失，把它计进底栏那个数字只会让用户点进去发现"什么也没变"。
+ */
+export function closedNavCapabilities(catalog: PluginCatalog): PluginEntry[] {
+  return catalog.plugins.filter((p) => !isVisible(p) && p.routes.some((r) => r.nav))
 }
 
 // ---------------------------------------------------------------- catalog 单例

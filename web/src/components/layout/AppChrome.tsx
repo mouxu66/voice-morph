@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react"
-import { Cable, Menu, RotateCcw, Settings2, X } from "lucide-react"
+import { Cable, Layers, Menu, RotateCcw, Settings2, X } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 import { rvcLiveReset } from "@/api/client"
 import { StudioNav } from "@/components/voice-studio/StudioNav"
 import { SettingsPanel } from "@/components/layout/SettingsPanel"
+import { closedNavCapabilities, usePluginCatalog } from "@/lib/pluginRoutes"
 import { cn } from "@/lib/utils"
 import { useAppStore } from "@/store/useAppStore"
 import { getStoredTheme, setStoredTheme, type ThemeMode } from "@/theme"
@@ -73,6 +74,7 @@ export function AppChrome({
   const { pathname } = useLocation()
   const cuda = useAppStore((s) => s.health?.cuda)
   const serviceState = useServiceState()
+  const { state: catalogState } = usePluginCatalog()
   const [theme, setTheme] = useState<ThemeMode>(getStoredTheme())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -80,6 +82,21 @@ export function AppChrome({
   const [restoreMsg, setRestoreMsg] = useState("")
   const pageTitle = pageTitles[pathname] ?? "首页"
   const online = serviceState === "online"
+
+  /**
+   * 用户自己关掉、因而不在导航里的能力数。
+   *
+   * 主动关掉的不该继续占导航位（他自己关的，记得），但也**不能就这么算了** ——
+   * 「我怎么把它找回来」必须有个回头路。被动坏掉的（缺依赖）不走这里，
+   * 它们留在导航里哑掉，见 `StudioNav`。
+   */
+  const closedNavCount =
+    catalogState.status === "ready" ? closedNavCapabilities(catalogState.catalog).length : 0
+
+  const openCapabilities = useCallback(() => {
+    setDrawerOpen(false)
+    onOpenCapabilities()
+  }, [onOpenCapabilities])
 
   // 换页收起窄屏抽屉，避免切页后抽屉还挂在屏幕上
   useEffect(() => {
@@ -121,6 +138,19 @@ export function AppChrome({
       </div>
 
       <div className="border-t border-border px-3 py-3">
+        {/* 「被关掉的能力去哪了」的回头路。只在真有东西被关掉时出现 ——
+            常驻一个「0 项能力已关闭」只是噪声。 */}
+        {closedNavCount ? (
+          <button
+            type="button"
+            onClick={openCapabilities}
+            title="这些能力是你自己关掉的，在「能力管理」里能找回来"
+            className="mb-1 flex w-full items-center gap-2 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground transition hover:bg-muted/70 hover:text-foreground"
+          >
+            <Layers className="h-3.5 w-3.5 shrink-0" />
+            {closedNavCount} 项能力已关闭 · 管理能力
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => void handleRestoreAudio()}

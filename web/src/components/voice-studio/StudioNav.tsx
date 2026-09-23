@@ -182,11 +182,22 @@ function NavLink({
         to={item.path}
         onClick={onNavigate}
         aria-current={active ? "page" : undefined}
+        // 坏掉的能力照样能点进去（页面还在，只是后端没挂路由）——
+        // 点进去看到报错，比根本找不到入口更容易定位问题
+        title={
+          item.broken
+            ? "这个能力装了但没起来（缺依赖或加载失败）—— 到「能力管理」看具体原因"
+            : undefined
+        }
         className={cn(
           "group relative flex items-center gap-2.5 whitespace-nowrap rounded-lg px-3 py-2 text-[13px] transition",
           active
             ? "bg-primary/[0.12] font-medium text-foreground"
-            : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+            : item.broken
+              ? // 坏掉的项**留在原位**、只是哑掉：用户不知道它坏了，最需要看见。
+                // （主动关掉的走的是另一条路 —— 直接从导航移出，见 pluginRoutes.isVisible）
+                "text-muted-foreground/70 hover:bg-muted/60 hover:text-foreground"
+              : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
         )}
       >
         {/* 当前页指示条：比整块高亮更轻，扫视时更容易定位 */}
@@ -198,12 +209,27 @@ function NavLink({
           aria-hidden="true"
         />
         {Icon ? (
-          <Icon className={cn("h-4 w-4 shrink-0", active ? "text-primary" : "text-muted-foreground/80")} />
+          <Icon
+            className={cn(
+              "h-4 w-4 shrink-0",
+              item.broken
+                ? "text-red-600 dark:text-red-400"
+                : active
+                  ? "text-primary"
+                  : "text-muted-foreground/80",
+            )}
+          />
         ) : (
           // 清单里的图标名不在 knownIcons 里（门禁会拦住，这里只保证界面不歪）
           <span className="h-4 w-4 shrink-0" aria-hidden="true" />
         )}
         {item.label}
+        {item.broken ? (
+          <>
+            <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" aria-hidden="true" />
+            <span className="sr-only">（未加载）</span>
+          </>
+        ) : null}
       </Link>
     </li>
   )

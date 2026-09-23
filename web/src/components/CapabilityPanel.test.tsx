@@ -78,6 +78,18 @@ function catalog(entries: Entry[], preset = "standard") {
 const OK_CORE: Entry = { id: "core.system", name: "系统与体检", category: "core", state: "ok" }
 const OK_SOUND: Entry = { id: "sound.tts", name: "输字变声", category: "sound", state: "ok" }
 
+/**
+ * 展开某一行的「详情」。
+ *
+ * 第 7 步起 `pip:` / `requires:` / 探针快照默认折叠 —— 每张卡原本挂着 7 段元信息，
+ * 那是开发者控制台不是设置页。**折叠 ≠ 删除**，所以下面凡是断言这些字段的用例，
+ * 都得先点开。只有 `hasDetail` 为真的行才有这个按钮，所以 index 按渲染顺序数。
+ */
+function openDetail(index = 0) {
+  const buttons = screen.getAllByRole("button", { name: "详情" })
+  fireEvent.click(buttons[index])
+}
+
 describe("CapabilityPanel", () => {
   afterEach(() => {
     vi.clearAllMocks()
@@ -89,13 +101,13 @@ describe("CapabilityPanel", () => {
     expect(getPlugins).not.toHaveBeenCalled()
   })
 
-  it("全 ok：有「被关掉的能力」空态，但不出现任何告警块", async () => {
+  it("全 ok：有「已关闭的能力」空态，但不出现任何告警块", async () => {
     getPlugins.mockResolvedValue(catalog([OK_CORE, OK_SOUND]))
 
     render(<CapabilityPanel open onClose={() => {}} />)
 
-    // 「被关掉的能力」是一个常驻入口 —— 用户要能确认「确实没有东西被关掉」
-    expect(await screen.findByText("被关掉的能力")).toBeInTheDocument()
+    // 「已关闭的能力」是一个常驻入口 —— 用户要能确认「确实没有东西被关掉」
+    expect(await screen.findByText("已关闭的能力（0）")).toBeInTheDocument()
     expect(screen.getByText("没有被关闭的能力。")).toBeInTheDocument()
     // 关键：不能因为存在 disabled 这个概念就冒出未加载告警
     expect(screen.queryByText(/未加载的能力/)).not.toBeInTheDocument()
@@ -147,8 +159,10 @@ describe("CapabilityPanel", () => {
 
     expect(await screen.findByText("未加载的能力（1）")).toBeInTheDocument()
     expect(screen.getByText(/ModuleNotFoundError: peft/)).toBeInTheDocument()
-    // 要装什么也要露出来（pip 包名单独一个 code 节点，别和上面那条错误原文混在一起）
-    expect(screen.getByText("peft")).toBeInTheDocument()
+    // 要装什么也要露出来（pip 包名单独一个 code 节点，别和上面那条错误原文混在一起）——
+    // 但第 7 步起这些字段默认折叠，先展开详情
+    openDetail()
+    expect(await screen.findByText("peft")).toBeInTheDocument()
     expect(screen.getByText(/依赖：core.voices/)).toBeInTheDocument()
     // broken 项不该混进「可用能力」
     expect(screen.getByText("可用能力（1）")).toBeInTheDocument()
@@ -186,6 +200,8 @@ describe("CapabilityPanel", () => {
 
     render(<CapabilityPanel open onClose={() => {}} />)
 
+    await screen.findByText("可用能力（1）")
+    openDetail()
     expect(await screen.findByText(/Qwen3-TTS 权重/)).toBeInTheDocument()
     expect(screen.getByText(/需自备：RVC 整合包/)).toBeInTheDocument()
     // 回归：这里曾把 models 按 string[] 声明 → 直接 join → 界面上是 [object Object]。
@@ -321,6 +337,8 @@ describe("CapabilityPanel · 开关", () => {
 
     render(<CapabilityPanel open onClose={() => {}} />)
 
+    await screen.findByText("可用能力（1）")
+    openDetail()
     // 空值（reason=""）不该摊 —— 否则每行都挂一串 `reason=`，噪声盖过信号
     expect(await screen.findByText(/实时状态：ready=false/)).toBeInTheDocument()
     expect(screen.queryByText(/reason/)).not.toBeInTheDocument()
@@ -337,6 +355,138 @@ describe("CapabilityPanel · 开关", () => {
 
     render(<CapabilityPanel open onClose={() => {}} />)
 
+    await screen.findByText("可用能力（1）")
+    openDetail()
     expect(await screen.findByText(/探针没跑起来：ImportError: comtypes/)).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------- 第 7 步：界面语言
+//
+// 第 6 步把「能开关」做出来了，但那一屏是开发者控制台：每张卡底下挂着 7 段元信息、
+// 16/19 项都挂一个绿徽章。这一步只改「怎么说」：
+//   1. 沉默即正常 —— 可用不挂徽章，只有例外上色（否则噪声盖住真正的例外）；
+//   2. 元信息折叠 —— 一条没丢，只是默认不出现；
+//   3. 代价与收益同级 —— 用户来这一屏就是为了省；
+//   4. 待重启是第四态 —— 点了开关界面没变化，用户只会以为开关坏了。
+
+describe("CapabilityPanel · 状态语言", () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("★ 可用态不挂徽章 —— 沉默即正常", async () => {
+    getPlugins.mockResolvedValue(catalog([OK_CORE, OK_SOUND]))
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    await screen.findByText("可用能力（2）")
+    // 16/19 项都挂一个「可用」绿徽章 = 把真正的例外埋掉，还和 notice 的成功色撞
+    expect(screen.queryByText("可用")).not.toBeInTheDocument()
+    // 全 ok 的清单里，连一个徽章都不该出现
+    expect(screen.queryByText("已关闭")).not.toBeInTheDocument()
+  })
+
+  it("★ 缺依赖：徽章 + 缺口直接写在卡面上，不用去翻日志", async () => {
+    getPlugins.mockResolvedValue(
+      catalog([
+        OK_CORE,
+        {
+          id: "sound.mine",
+          name: "声音克隆",
+          category: "sound",
+          state: "broken",
+          reasons: ["finetune: ModuleNotFoundError: peft"],
+        },
+      ]),
+    )
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    expect(await screen.findByText("未加载")).toBeInTheDocument()
+    // 卡面上就要能读到「缺什么」，完整列表才在详情里
+    expect(screen.getByText(/ModuleNotFoundError: peft/)).toBeInTheDocument()
+  })
+
+  it("★ 元信息默认折叠，点「详情」才出现（折叠 ≠ 删除）", async () => {
+    getPlugins.mockResolvedValue(
+      catalog([OK_CORE, { ...OK_SOUND, extras: { python: ["deepfilter"] }, requires: ["core.audio"] }]),
+    )
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    await screen.findByText("可用能力（2）")
+    expect(screen.queryByText(/pip:/)).not.toBeInTheDocument()
+
+    // OK_CORE 没有 extras/requires/reasons → 没有「详情」入口，所以这里只有一个按钮
+    expect(screen.getAllByRole("button", { name: "详情" })).toHaveLength(1)
+    openDetail()
+    expect(await screen.findByText("deepfilter")).toBeInTheDocument()
+    expect(screen.getByText(/依赖：core.audio/)).toBeInTheDocument()
+  })
+
+  it("★ 代价与收益同级：算出「关掉可省」", async () => {
+    getPlugins.mockResolvedValue(
+      catalog([
+        OK_CORE,
+        {
+          ...OK_SOUND,
+          extras: { models: [{ label: "Qwen3-TTS 权重", env: "VM_TTS_MODELS_DIR", size_hint_mb: 4900 }] },
+        },
+      ]),
+    )
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    // 原实现只写「需要什么」（模型 4.9G），可用户来这一屏的目的恰恰是省
+    expect(await screen.findByText("关掉可省 ≈4.8 GB")).toBeInTheDocument()
+  })
+
+  it("★ 改完立刻进「待重启」—— 不能只在面板中部写一句灰字", async () => {
+    getPlugins.mockResolvedValue(catalog([OK_CORE, OK_SOUND]))
+    setPluginEnabled.mockResolvedValue({
+      id: "sound.tts",
+      enabled: false,
+      blockedBy: [],
+      reason: "",
+      restartRequired: true,
+    })
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    const sw = await screen.findByRole("switch", { name: /关闭 输字变声/ })
+    fireEvent.click(sw)
+
+    // ① 那一行自己立刻有反馈（否则用户以为开关坏了）
+    expect(await screen.findByText("待重启")).toBeInTheDocument()
+    // ② 顶部常驻一条，并给一个可执行出口
+    expect(screen.getByText(/1 项能力有改动待重启/)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /立即重启/ })).toBeInTheDocument()
+  })
+
+  it("★ 守卫给可执行出口：一并关闭依赖者，且顺序不能反", async () => {
+    getPlugins.mockResolvedValue(
+      catalog([OK_CORE, { ...OK_SOUND, blockedBy: ["sound.audiobook", "sound.effects"] }]),
+    )
+    setPluginEnabled.mockResolvedValue({
+      id: "x",
+      enabled: false,
+      blockedBy: [],
+      reason: "",
+      restartRequired: true,
+    })
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+
+    // 以前只有一行灰字「想关它，先关掉这些」—— 把约束推给用户自己执行
+    fireEvent.click(await screen.findByRole("button", { name: /一并关闭这 3 项/ }))
+
+    await waitFor(() => expect(setPluginEnabled).toHaveBeenCalledTimes(3))
+    // 先关依赖者、最后才是它自己；反了后端一定用 409 拦在第一步
+    expect(setPluginEnabled.mock.calls.map((c) => c[0])).toEqual([
+      "sound.audiobook",
+      "sound.effects",
+      "sound.tts",
+    ])
   })
 })
