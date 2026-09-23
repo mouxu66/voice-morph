@@ -18,6 +18,11 @@ import { friendlyError } from "@/lib/errors"
  * 微信语音发送：三档路径共用一个 hook。
  * 全自动（模拟 Alt + 播放）/ 半自动（播放到虚拟声卡，人手按 Alt）/ 手动实时变声。
  *
+ * 发送目标（`targetWav`）默认是"最近一次合成产物"，但**预混结果可以顶替它**：
+ * 声板的预混模式把勾选的音效离线混进一份新音频（`sfxmix_*.wav`），用户点发送时该发的是那份。
+ * 这里记下预混的**源**，源一变（重新合成了一条）就自动失效 —— 否则会出现
+ * "再合成一条新语音、点发送却发出上次混过的旧内容"，而且没有任何报错。
+ *
  * `enabled=false`（hook.wechat 能力被关，tab 已藏）时不轮询 —— 后端端点此时不存在，
  * 轮询只会 404 空转。
  */
@@ -56,6 +61,18 @@ export function useWechatSend(enabled = true) {
     }
   }, [enabled, backendUp])
 
+  // 声板预混的产物（`sound.fx-board` 面板产出）。
+  const [premix, setPremix] = useState<{
+    source: string
+    wav: string
+    inserts: number
+    seconds: number
+  } | null>(null)
+  const sourceWav = lastTts?.wav
+  const premixActive = Boolean(premix && sourceWav && premix.source === sourceWav)
+  const targetWav = premixActive && premix ? premix.wav : sourceWav
+  const clearPremix = useCallback(() => setPremix(null), [])
+
   const refresh = useCallback(async () => {
     try {
       const [last, hist] = await Promise.all([getWechatLastTts(), getWechatHistory()])
@@ -90,8 +107,16 @@ export function useWechatSend(enabled = true) {
     [busy, refresh],
   )
 
-  const sendAuto = useCallback((wav?: string) => run("send", () => wechatSendVoice(wav)), [run])
-  const playToCable = useCallback((wav?: string) => run("play", () => wechatPlayToCable(wav)), [run])
+  // 不传 wav 时用 `targetWav`（预混结果优先）—— 注意**不能**把 undefined 透给后端：
+  // 后端把"没给 wav"理解成"取最近一条 tts_*.wav"，那会绕过预混结果。
+  const sendAuto = useCallback(
+    (wav?: string) => run("send", () => wechatSendVoice(wav ?? targetWav)),
+    [run, targetWav],
+  )
+  const playToCable = useCallback(
+    (wav?: string) => run("play", () => wechatPlayToCable(wav ?? targetWav)),
+    [run, targetWav],
+  )
   const manualSetup = useCallback(() => run("manual", () => wechatManualSend()), [run])
 
   return {
@@ -107,5 +132,10 @@ export function useWechatSend(enabled = true) {
     playToCable,
     manualSetup,
     refresh,
+    premix,
+    premixActive,
+    targetWav,
+    setPremix,
+    clearPremix,
   }
 }

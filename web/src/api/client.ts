@@ -1244,6 +1244,38 @@ export async function soundboardWarm(): Promise<{ ok: boolean; ready: boolean; s
   return jsonFetch("/soundboard/warm", { method: "POST" })
 }
 
+/** 混淆位置：叠加（与人声同时）/ 拼在开头 / 拼在结尾。与后端 `sfx_lib.MODES` 同义。 */
+export type SoundboardMode = "layer" | "prepend" | "append"
+
+export type SoundboardInsert = {
+  sample: string
+  mode: SoundboardMode
+  at_s?: number
+  gain?: number
+}
+
+/**
+ * 预混：把勾选的音效**离线混进**一条合成产物，产出新 wav（`sfxmix_<原名>`）。
+ *
+ * 与 `soundboardPlay`（实时播进声卡）的分工：实时是主场景，**预混是确定性兜底** ——
+ * 点格子会把鼠标焦点从微信挪走，"按住 Alt 的录音会不会被取消"还没真机验过；
+ * 预混不依赖任何交互，把发送目标换成返回的 `wav` 即可。
+ *
+ * 端点属 `sound.fx-board`（不是 `sound.effects`）：关掉效果器时预混仍可用。
+ * 失败是**硬失败**（差一条音效就 4xx，`jsonFetch` 把 detail 抛出来）——
+ * 静默跳过会变成"发出去的语音里少了那一声，而界面一切正常"，那是最难发现的失败。
+ */
+export async function soundboardPremix(
+  wav: string | undefined,
+  inserts: SoundboardInsert[],
+): Promise<{ ok: boolean; wav: string; seconds: number; inserts: number; skipped: string[] }> {
+  return jsonFetch("/soundboard/premix", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wav: wav ?? null, inserts }),
+  })
+}
+
 // ---- 音色市场（双源搜索 / 推荐清单 / 一键安装） ----
 
 export type MarketPlatform = "hf" | "modelscope";

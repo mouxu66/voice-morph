@@ -240,6 +240,26 @@ def fx_limiter(x: np.ndarray, sr: int, p: dict) -> np.ndarray:
     return y.astype(np.float32)
 
 
+def fx_mix(x: np.ndarray, sr: int, p: dict) -> np.ndarray:
+    """插入音效：把声板素材库里的一条短音效叠进/拼到音频上。
+
+    与「特效声板」的 `/premix` 共用 `sfx_lib.mix_into` —— 同一份 DSP，所以两边对
+    「叠加 / 开头 / 结尾」的理解必然一致，不会出现"面板里叫同一个词、行为是两回事"。
+    差别只在于失败语义：链条里单环失败**跳过并记录**（与其余效果一致），
+    而 `/premix` 是一次明确的用户动作，差一条就当场 400。
+    """
+    insert = {
+        "sample": str(p.get("sample") or ""),
+        "mode": str(p.get("mode") or "layer"),
+        "at_s": p.get("at_s", 0.0),
+        "gain": p.get("gain", 0.9),
+    }
+    out, notes = sfx_lib.mix_into(x, sr, [insert])
+    if notes:
+        raise ValueError("；".join(notes))
+    return out
+
+
 # ---------------- 效果目录（前端参数面板渲染依据） ----------------
 
 CATALOG: dict = {
@@ -419,6 +439,53 @@ CATALOG: dict = {
         ],
         "fx": fx_chorus,
     },
+    "mix": {
+        "name": "插入音效",
+        "icon": "mix",
+        "desc": "叠进或拼上一条音效（爆炸、掌声…；素材来自音效声板）",
+        "params": [
+            {
+                # 选项由 `catalog_meta()` 从 `sfx_lib` **现读**注入：素材是动态的
+                # （用户能导入/删除），写死在目录里就会与声板面板看到的不一致。
+                "key": "sample",
+                "label": "音效",
+                "kind": "choice",
+                "options": [],
+                "options_from": "sfx",
+                "default": "boom",
+            },
+            {
+                "key": "mode",
+                "label": "位置",
+                "kind": "choice",
+                "options": [
+                    {"value": "layer", "label": "叠加（与人声同时）"},
+                    {"value": "prepend", "label": "放在开头"},
+                    {"value": "append", "label": "放在结尾"},
+                ],
+                "default": "layer",
+            },
+            {
+                "key": "at_s",
+                "label": "起点(秒)",
+                "kind": "range",
+                "min": 0.0,
+                "max": 30.0,
+                "step": 0.1,
+                "default": 0.0,
+            },
+            {
+                "key": "gain",
+                "label": "音量",
+                "kind": "range",
+                "min": 0.0,
+                "max": 1.5,
+                "step": 0.05,
+                "default": 0.9,
+            },
+        ],
+        "fx": fx_mix,
+    },
     "limiter": {
         "name": "限幅器",
         "icon": "limiter",
@@ -441,15 +508,31 @@ CATALOG: dict = {
 
 # 无参目录（给前端的纯净版，不含函数）
 def catalog_meta() -> list[dict]:
+    """前端参数面板的渲染依据。`choice` 参数的选项在这里注入。
+
+    两点别改：
+      · 参数是**副本**（`dict(p)`）—— `CATALOG` 是模块级单例，就地往里写选项
+        会让下一次调用读到上一次的结果（还会在测试之间互相污染）。
+      · 音效选项**每次现读** `sfx_lib.list_samples()`：用户导入/删除素材后，
+        效果器里的下拉必须跟着变，否则就是一个选不中的死选项。
+    """
     out = []
     for k, v in CATALOG.items():
+        params = []
+        for p in v["params"]:
+            q = dict(p)
+            if q.pop("options_from", None) == "sfx":
+                q["options"] = [
+                    {"value": it["id"], "label": it["name"]} for it in sfx_lib.list_samples()
+                ]
+            params.append(q)
         out.append(
             {
                 "type": k,
                 "name": v["name"],
                 "icon": v["icon"],
                 "desc": v["desc"],
-                "params": v["params"],
+                "params": params,
             }
         )
     return out
@@ -471,13 +554,18 @@ def apply_chain(x: np.ndarray, sr: int, chain: list[dict]) -> tuple[np.ndarray, 
         try:
             x = meta["fx"](x, sr, params)
         except Exception as e:
-            skipped.append(f"{meta['name']} 失败: {type(e).__name__}")
+            # 带上异常文案（截断）：DSP 失败的 `TypeError` 无所谓，但
+            # 「插入音效」的失败是"没有这个音效：xxx"这类**用户能照着改**的信息，
+            # 只报类型名等于把可用信息丢掉（2026-09-24 加 mix 时顺手改）。
+            why = f"{type(e).__name__}: {e}"[:80]
+            skipped.append(f"{meta['name']} 失败: {why}")
     return _norm(x), skipped
 
 
 # ---------------- FastAPI router ----------------
 
 import config as cfg  # noqa: E402
+import sfx_lib  # noqa: E402
 import soundfile as sf  # noqa: E402
 from common import MAX_UPLOAD_BYTES  # noqa: E402
 from fastapi import APIRouter, File, HTTPException, UploadFile  # noqa: E402

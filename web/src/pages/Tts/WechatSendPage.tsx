@@ -37,6 +37,12 @@ export function WechatSendPage(
   const busy = p.busy !== ""
   const ttsReady = Boolean(p.lastTts?.ok && p.lastTts?.wav)
   const sendEta = p.lastTts?.duration_s ? Math.ceil(p.lastTts.duration_s + 3) : 10
+  // 预混生效时，"发送内容"就是那份混好文件（`sfxmix_*.wav`），时长也随之换成它。
+  const sendWav = p.premixActive ? p.premix?.wav : p.lastTts?.wav
+  const sendSeconds = p.premixActive ? p.premix?.seconds : p.lastTts?.duration_s
+  const premixUrl = p.premixActive && p.premix
+    ? mediaUrl(`/api/media/outputs/${p.premix.wav}`)
+    : ""
 
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
@@ -62,12 +68,36 @@ export function WechatSendPage(
             {ttsReady ? (
               <div className="mt-4">
                 <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                  <span className="font-mono text-foreground">{p.lastTts?.wav}</span>
+                  <span className="font-mono text-foreground">{sendWav}</span>
                   <span className="inline-flex items-center gap-1">
-                    <Clock className="h-3.5 w-3.5" />{p.lastTts?.duration_s}s
+                    <Clock className="h-3.5 w-3.5" />{sendSeconds}s
                   </span>
+                  {p.premixActive && (
+                    <>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[11px] text-primary">
+                        <Wand2 className="h-3 w-3" />已混入 {p.premix?.inserts} 条音效
+                      </span>
+                      <button
+                        type="button"
+                        onClick={p.clearPremix}
+                        className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground transition hover:border-primary hover:text-primary"
+                      >
+                        改回原声
+                      </button>
+                    </>
+                  )}
                 </div>
-                <StudioAudioPlayer src={mediaUrl(p.lastTts?.url ?? "")} label="试听发送内容" className="mt-3" />
+                {p.premixActive && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    源：<span className="font-mono">{p.lastTts?.wav}</span> · 音效已经烘进文件，
+                    发送时不再依赖"点格子的时机"。
+                  </p>
+                )}
+                <StudioAudioPlayer
+                  src={p.premixActive ? premixUrl : mediaUrl(p.lastTts?.url ?? "")}
+                  label="试听发送内容"
+                  className="mt-3"
+                />
                 <p className="mt-2 text-xs text-muted-foreground">
                   不满意？切到「单段合成」重新生成一条，这里会自动更新。
                 </p>
@@ -151,7 +181,7 @@ export function WechatSendPage(
                   <button
                     type="button"
                     disabled={!p.backendUp || busy || !ttsReady}
-                    onClick={() => void p.sendAuto(p.lastTts?.wav)}
+                    onClick={() => void p.sendAuto()}
                     className="inline-flex shrink-0 items-center gap-2 rounded-md bg-primary px-4 py-2.5 text-xs font-medium text-primary-foreground shadow-md transition hover:scale-105 disabled:pointer-events-none disabled:opacity-50"
                   >
                     {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
@@ -178,15 +208,28 @@ export function WechatSendPage(
                   <button
                     type="button"
                     disabled={!p.backendUp || busy || !ttsReady}
-                    onClick={() => void p.playToCable(p.lastTts?.wav)}
+                    onClick={() => void p.playToCable()}
                     className="inline-flex shrink-0 items-center gap-2 rounded-md border border-border bg-background px-4 py-2.5 text-xs font-medium text-foreground transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
                   >
                     {playing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Volume2 className="h-4 w-4" />}
                     {playing ? "播放中…快去按 Alt" : "开始播放"}
                   </button>
                 </div>
-                {/* 播放窗口内点格子：音效与 TTS 人声同进一条语音（系统自动混音）。 */}
-                <SoundboardPanel sb={p.soundboard} hint="播放期间点一下，音效会叠进这条语音" />
+                {/* 两种用法：实时（播放窗口内点格子，系统混音）或预混（先把音效烘进文件）。 */}
+                <SoundboardPanel
+                  sb={p.soundboard}
+                  hint="播放期间点一下，音效会叠进这条语音"
+                  allowPremix
+                  wav={p.lastTts?.wav}
+                  onPremixed={(r) =>
+                    p.setPremix({
+                      source: p.lastTts?.wav ?? "",
+                      wav: r.wav,
+                      inserts: r.inserts,
+                      seconds: r.seconds,
+                    })
+                  }
+                />
               </div>
 
               {/* ③ 手动实时 */}

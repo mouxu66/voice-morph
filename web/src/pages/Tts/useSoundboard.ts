@@ -2,19 +2,44 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import {
   soundboardCatalog,
   soundboardPlay,
+  soundboardPremix,
   soundboardStop,
   soundboardWarm,
   type SoundboardItem,
+  type SoundboardMode,
 } from "@/api/client"
 import { useAppStore } from "@/store/useAppStore"
 import { friendlyError } from "@/lib/errors"
 
+/** 预混勾选：一条音效 + 它混进去的位置。 */
+export type PremixPick = { sample: string; mode: SoundboardMode }
+
+/** 位置的中文标签（格子/胶囊上显示；顺序即点击轮换顺序）。 */
+export const PREMIX_MODE_LABEL: Record<SoundboardMode, string> = {
+  layer: "叠加",
+  prepend: "开头",
+  append: "结尾",
+}
+const MODE_CYCLE: SoundboardMode[] = ["layer", "prepend", "append"]
+
+/** 一句话解释每个位置意味着什么（用户不该靠猜"叠加"是叠在哪）。 */
+export const PREMIX_MODE_HINT: Record<SoundboardMode, string> = {
+  layer: "与人声同时响",
+  prepend: "先响一声，再说话",
+  append: "说完之后来一声",
+}
+
 /**
- * 特效声板：点一下格子，把一条短音效**实时**播进虚拟声卡。
+ * 特效声板：两种用法共用一份素材目录与一份播放/混音能力。
  *
- * 为什么它能和"正在播的 TTS / 正在跑的实时变声"同时出声：Windows 音频默认共享模式，
- * 多路程序写同一设备由系统混音器自动混合 —— 微信从 CABLE 采集端录到的就是混好的结果。
- * 所以这个 hook **完全不碰微信发送链路**（`_send_lock` 也不进）：发送期间点格子照样出声。
+ *   · **实时**：点一下格子，把一条短音效立刻播进虚拟声卡。
+ *     为什么能和"正在播的 TTS / 正在跑的实时变声"同时出声：Windows 音频默认共享模式，
+ *     多路程序写同一设备由系统混音器自动混合 —— 微信从 CABLE 采集端录到的就是混好的结果。
+ *     所以实时这条路径**完全不碰微信发送链路**（`_send_lock` 也不进）：发送期间点格子照样出声。
+ *
+ *   · **预混**：把勾选的音效离线混进一条合成产物，产出一个新 wav，发送目标换成它。
+ *     存在的理由是实时那条路有一个尚未真机验证的物理限制 —— 点格子时鼠标焦点会离开微信，
+ *     **按住的录音可能被取消**（设计稿 §五）。预混不依赖任何交互，所以它是那条路走不通时的兜底。
  *
  * `enabled=false`（`sound.fx-board` 被关）时：不打后端、不预热 —— 端点此时根本不存在
  * （routers 随插件卸载），请求只会 404 空转。
@@ -25,6 +50,11 @@ export function useSoundboard(enabled = true) {
   const [playing, setPlaying] = useState("")
   const [errorMessage, setErrorMessage] = useState("")
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // 预混模式的状态
+  const [picks, setPicks] = useState<PremixPick[]>([])
+  const [premixing, setPremixing] = useState(false)
+  const [premixError, setPremixError] = useState("")
 
   const refresh = useCallback(async () => {
     try {
@@ -91,5 +121,75 @@ export function useSoundboard(enabled = true) {
     }
   }, [])
 
-  return { items, playing, errorMessage, play, stop, refresh, ready: enabled && backendUp }
+  // ---------------- 预混 ----------------
+
+  /** 勾上/取消一条音效（预混模式的"点格子"语义与实时模式不同：它不发声）。 */
+  const togglePick = useCallback((id: string) => {
+    setPicks((prev) =>
+      prev.some((p) => p.sample === id)
+        ? prev.filter((p) => p.sample !== id)
+        : [...prev, { sample: id, mode: "layer" as SoundboardMode }],
+    )
+  }, [])
+
+  /** 切换某条的混淆位置：叠加 → 开头 → 结尾 → 叠加（点胶囊即可轮换）。 */
+  const cyclePickMode = useCallback((id: string) => {
+    setPicks((prev) =>
+      prev.map((p) =>
+        p.sample === id
+          ? { ...p, mode: MODE_CYCLE[(MODE_CYCLE.indexOf(p.mode) + 1) % MODE_CYCLE.length] }
+          : p,
+      ),
+    )
+  }, [])
+
+  const clearPicks = useCallback(() => {
+    setPicks([])
+    setPremixError("")
+  }, [])
+
+  /**
+   * 把勾选的音效混进 `wav`（不给就由后端取最近一条合成产物）。
+   * 成功返回 `{wav, seconds, inserts, skipped}`，失败返回 null 并把原因放进 `premixError`。
+   *
+   * 失败是**硬失败**：后端一条音效认不出来就 4xx，前端如实显示。理由是静默跳过
+   * 会变成"发出去的语音少了那一声，而界面一切正常"——那类失败最难被发现。
+   */
+  const premix = useCallback(
+    async (
+      wav?: string,
+    ): Promise<{ wav: string; seconds: number; inserts: number; skipped: string[] } | null> => {
+      if (!enabled || picks.length === 0) return null
+      setPremixing(true)
+      setPremixError("")
+      try {
+        const r = await soundboardPremix(wav, picks)
+        void refresh() // 计数变了，格子上的"用过 N 次"要跟上
+        return r
+      } catch (error) {
+        setPremixError(friendlyError(error, "预混失败"))
+        return null
+      } finally {
+        setPremixing(false)
+      }
+    },
+    [enabled, picks, refresh],
+  )
+
+  return {
+    items,
+    playing,
+    errorMessage,
+    play,
+    stop,
+    refresh,
+    ready: enabled && backendUp,
+    picks,
+    premixing,
+    premixError,
+    togglePick,
+    cyclePickMode,
+    clearPicks,
+    premix,
+  }
 }

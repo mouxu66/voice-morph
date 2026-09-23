@@ -26,6 +26,7 @@ _M2 = Path(__file__).resolve().parents[1]
 if str(_M2) not in sys.path:
     sys.path.insert(0, str(_M2))
 
+import sfx_lib  # noqa: E402
 import soundboard  # noqa: E402
 
 SR = 48000
@@ -78,8 +79,15 @@ class FakeWorker:
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
-    """素材目录、计数文件、worker 全按用例隔离（不许写进真 media/outputs，也不许连真设备）。"""
-    monkeypatch.setattr(soundboard, "IMPORT_DIR", tmp_path / "imported")
+    """素材目录、计数文件、worker 全按用例隔离（不许写进真 media/outputs，也不许连真设备）。
+
+    ⚠️ 目录要打在 `sfx_lib` 上，不是 `soundboard`：素材库的 owner 是 `sfx_lib`
+    （`soundboard` 只是薄封装 + 路由），路由与 worker 都是在调用时**现读**
+    `sfx_lib.IMPORT_DIR`。打在 `soundboard` 上不会报错、也不会被察觉 ——
+    它会静默地让用例写进用户的真实 `media/soundboard/`
+    （`docs/犯错档案-工程.md` §8.36 的同一个形状）。
+    """
+    monkeypatch.setattr(sfx_lib, "IMPORT_DIR", tmp_path / "imported")
     monkeypatch.setattr(soundboard, "STATS_FILE", tmp_path / "stats.json")
     monkeypatch.setattr(soundboard, "_proc", None)
     yield
@@ -125,8 +133,8 @@ def test_catalog_lists_the_six_factory_samples(client):
 
 def test_factory_manifest_matches_sample_files():
     """`samples/manifest.json` 与 wav 一一对应 —— 防「加了音效忘了写名字」这类漂移。"""
-    wavs = {p.stem for p in soundboard.SAMPLES_DIR.glob("*.wav")}
-    meta = soundboard._meta()
+    wavs = {p.stem for p in sfx_lib.SAMPLES_DIR.glob("*.wav")}
+    meta = sfx_lib.meta()
     assert wavs, "出厂素材目录是空的？"
     assert set(meta) == wavs, f"manifest 与 wav 不一致：manifest={sorted(meta)} wav={sorted(wavs)}"
     for sid, m in meta.items():
@@ -144,7 +152,7 @@ def test_play_sends_the_resolved_wav_and_returns_immediately(client, worker):
     assert len(worker.commands) == 1
     cmd = worker.commands[0]
     # 发过去的是**服务端解析出的绝对路径**（前端永远不传路径）+ 默认音量
-    assert Path(cmd["wav"]) == (soundboard.SAMPLES_DIR / "boom.wav").resolve()
+    assert Path(cmd["wav"]) == (sfx_lib.SAMPLES_DIR / "boom.wav").resolve()
     assert cmd["gain"] == 0.9
 
 
@@ -225,7 +233,7 @@ def test_import_accepts_a_short_wav_and_lists_it_as_user_sample(client):
     )
     assert r.status_code == 200, r.text
     sid = r.json()["id"]
-    assert (soundboard.IMPORT_DIR / f"{sid}.wav").is_file()
+    assert (sfx_lib.IMPORT_DIR / f"{sid}.wav").is_file()
     items = {i["id"]: i for i in client.get("/api/soundboard/catalog").json()["items"]}
     assert items[sid]["builtin"] is False and items[sid]["tags"] == ["导入"]
 
@@ -263,8 +271,8 @@ def test_import_strips_directory_components(client):
     )
     assert r.status_code == 200, r.text
     assert r.json()["id"] == "boom2"
-    assert (soundboard.IMPORT_DIR / "boom2.wav").is_file()
-    assert not (soundboard.IMPORT_DIR.parent.parent / "boom2.wav").exists()
+    assert (sfx_lib.IMPORT_DIR / "boom2.wav").is_file()
+    assert not (sfx_lib.IMPORT_DIR.parent.parent / "boom2.wav").exists()
 
 
 def test_delete_removes_imported_but_not_factory(client):
@@ -272,7 +280,7 @@ def test_delete_removes_imported_but_not_factory(client):
         "/api/soundboard/import", files={"file": ("tmp.wav", _wav_bytes(), "audio/wav")}
     ).json()["id"]
     assert client.delete(f"/api/soundboard/{sid}").json() == {"ok": True, "id": sid}
-    assert not (soundboard.IMPORT_DIR / f"{sid}.wav").exists()
+    assert not (sfx_lib.IMPORT_DIR / f"{sid}.wav").exists()
     r = client.delete("/api/soundboard/boom")
     assert r.status_code == 400
     assert "出厂音效不可删除" in r.json()["detail"]
@@ -378,7 +386,7 @@ def _run_board_worker(monkeypatch, tmp_path, commands: list[dict], sd: _FakeSD):
         k: getattr(sd, k) for k in ("query_hostapis", "query_devices", "play", "stop")
     }))
     monkeypatch.setattr(
-        _sys, "argv", ["board_worker.py", "vb-audio virtual cable", str(soundboard.SAMPLES_DIR)]
+        _sys, "argv", ["board_worker.py", "vb-audio virtual cable", str(sfx_lib.SAMPLES_DIR)]
     )
     bw = importlib.import_module("board_worker")
     out = io.StringIO()

@@ -154,3 +154,67 @@ def test_echo_changes_signal():
     )
     assert out.shape[0] == x.shape[0]  # 时长不变（buf 超出部分截断）
     assert not np.allclose(out, x, atol=1e-3)  # 回声确实叠加了
+
+
+# ---------------- 插入音效（mix：与声板 `/premix` 共用 `sfx_lib.mix_into`）----------------
+#
+# 两条路径共用同一份 DSP，**失败语义却相反**，这不是不一致而是刻意的：
+#   · 效果链：尽力而为，单环失败跳过并记录（链是批处理，一环坏了不该让整条任务死）；
+#   · /premix：一次明确的用户动作，差一条音效就当场 400（静默跳过 = 发出的语音里少了
+#     用户按下的那一声，而界面看不出任何异常）。
+
+
+def test_catalog_mix_entry_exposes_the_sfx_library_as_choices():
+    """`sample` 是选择型参数，选项来自素材库（现读，不是写死的常量）。"""
+    mix = next(m for m in effects.catalog_meta() if m["type"] == "mix")
+    sample = next(p for p in mix["params"] if p["key"] == "sample")
+    assert sample["kind"] == "choice"
+    assert {"boom", "applause", "ding"} <= {o["value"] for o in sample["options"]}
+    assert "options_from" not in sample, "内部标记不该泄漏给前端"
+    mode = next(p for p in mix["params"] if p["key"] == "mode")
+    assert {o["value"] for o in mode["options"]} == {"layer", "prepend", "append"}
+
+
+def test_catalog_meta_hands_out_copies_not_the_catalog_itself():
+    """`CATALOG` 是模块级单例：就地往里写选项，下一次调用会拿到上一次的结果。"""
+    assert effects.CATALOG["mix"]["params"][0]["options"] == []
+    effects.catalog_meta()
+    effects.catalog_meta()
+    assert effects.CATALOG["mix"]["params"][0]["options"] == [], "选项被就地写进 CATALOG 了"
+
+
+def test_param_shape_matches_the_control_it_renders():
+    """前端滑杆靠 min/max/step，下拉靠 options —— 缺一项就会渲染出坏控件。"""
+    for m in effects.catalog_meta():
+        for p in m["params"]:
+            if p.get("kind") == "choice":
+                assert p.get("options"), f"{m['type']}.{p['key']} 是选择型却没有选项"
+            else:
+                assert {"min", "max", "step"} <= set(p), f"{m['type']}.{p['key']} 缺 min/max/step"
+
+
+def test_chain_mix_prepend_extends_the_clip():
+    out, skipped = effects.apply_chain(
+        _tone(1.0), SR, [{"type": "mix", "params": {"sample": "boom", "mode": "prepend"}}]
+    )
+    assert skipped == []
+    assert out.shape[0] > _tone(1.0).shape[0], "拼在开头必须变长"
+
+
+def test_chain_mix_layer_keeps_length():
+    x = _tone(1.0)
+    out, skipped = effects.apply_chain(
+        x, SR, [{"type": "mix", "params": {"sample": "ding", "mode": "layer"}}]
+    )
+    assert skipped == []
+    assert out.shape[0] == x.shape[0]
+    assert not np.allclose(out, x, atol=1e-3)
+
+
+def test_chain_mix_unknown_sample_is_skipped_with_a_readable_reason():
+    """失败文案要能照着改（"没有这个音效"），不能只报个异常类型名。"""
+    x = _tone(1.0)
+    out, skipped = effects.apply_chain(x, SR, [{"type": "mix", "params": {"sample": "ghost"}}])
+    assert len(skipped) == 1
+    assert "插入音效" in skipped[0] and "没有这个音效" in skipped[0]
+    assert np.allclose(out, x, atol=1e-6)

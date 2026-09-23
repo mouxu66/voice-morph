@@ -29,6 +29,7 @@ const FX_ICONS: Record<string, typeof Music4> = {
   tremolo: AudioWaveform,
   chorus: Music4,
   limiter: TrendingDown,
+  mix: Wand2,
 }
 
 function FxIcon({ icon }: { icon: string }) {
@@ -52,7 +53,7 @@ function ChainStep({
   total: number
   onMove: (i: number, dir: -1 | 1) => void
   onRemove: (i: number) => void
-  onParam: (i: number, key: string, v: number) => void
+  onParam: (i: number, key: string, v: number | string) => void
 }) {
   if (!meta) return null
   return (
@@ -99,23 +100,42 @@ function ChainStep({
         </div>
       </div>
       <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
-        {meta.params.map((p) => (
-          <div key={p.key}>
-            <div className="flex items-center justify-between">
+        {meta.params.map((p) =>
+          // 选择型参数（如「插入音效」的音效）渲染成下拉：它的值是字符串 id，
+          // 拿滑杆渲染会把 id 拖成数字，用户得到的是坏链。
+          p.kind === "choice" ? (
+            <div key={p.key} className="sm:col-span-2">
               <span className="text-[11px] font-medium text-muted-foreground">{p.label}</span>
-              <span className="font-mono text-[11px] text-primary">{step.params[p.key]}</span>
+              <select
+                value={String(step.params[p.key] ?? p.default ?? "")}
+                onChange={(e) => onParam(index, p.key, e.target.value)}
+                className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-[11px] text-card-foreground"
+              >
+                {(p.options ?? []).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
             </div>
-            <input
-              type="range"
-              min={p.min}
-              max={p.max}
-              step={p.step}
-              value={step.params[p.key]}
-              onChange={(e) => onParam(index, p.key, Number(e.target.value))}
-              className="mt-1 w-full accent-[hsl(var(--primary))]"
-            />
-          </div>
-        ))}
+          ) : (
+            <div key={p.key}>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-medium text-muted-foreground">{p.label}</span>
+                <span className="font-mono text-[11px] text-primary">{step.params[p.key]}</span>
+              </div>
+              <input
+                type="range"
+                min={p.min}
+                max={p.max}
+                step={p.step}
+                value={Number(step.params[p.key] ?? p.default ?? 0)}
+                onChange={(e) => onParam(index, p.key, Number(e.target.value))}
+                className="mt-1 w-full accent-[hsl(var(--primary))]"
+              />
+            </div>
+          ),
+        )}
       </div>
     </div>
   )

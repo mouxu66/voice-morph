@@ -243,3 +243,52 @@ describe("特效声板的 `sound.fx-board` 门控", () => {
     expect(panelSrc).not.toMatch(/disabled=\{[^}]*busy/)
   })
 })
+
+// ---------------------------------------------------------------- 声板预混模式
+
+describe("声板预混模式（发送前把音效烘进音频）", () => {
+  const panelSrc = readRel(path.join("pages", "Tts", "SoundboardPanel.tsx"))
+  const hookSrc = readRel(path.join("pages", "Tts", "useSoundboard.ts"))
+  const sendHookSrc = readRel(path.join("pages", "Tts", "useWechatSend.ts"))
+  const pageSrc = readRel(path.join("pages", "Tts", "WechatSendPage.tsx"))
+  const clientSrc = readRel(path.join("api", "client.ts"))
+
+  it("★ 预混打的是声板自己的端点（`/soundboard/premix`），不绕道效果器", () => {
+    // 绕道 `/effects/apply` 会同时坏两件事：① 关掉 `sound.effects` 后按钮 404；
+    // ② 多一步"把 outputs 里的文件读出来再上传"的搬运。
+    expect(clientSrc).toContain('jsonFetch("/soundboard/premix"')
+    expect(panelSrc).not.toContain("/effects/")
+    expect(hookSrc).not.toContain("/effects/")
+  })
+
+  it("★ 预混不依赖 sound.effects 开着（后端也不许 import effects）", () => {
+    // 与 `m2_server/tests/test_premix.py::test_premix_does_not_need_the_effects_plugin`
+    // 是一对：那边守后端模块依赖，这里守前端不加多余门控。
+    expect(panelSrc).not.toContain("sound.effects")
+    expect(hookSrc).not.toContain("useEffects")
+  })
+
+  it("预混只在 ② 半自动提供（③ 手动档没有合成产物可混）", () => {
+    expect(pageSrc.match(/allowPremix/g)?.length).toBe(1)
+    expect(pageSrc).toContain("wav={p.lastTts?.wav}")
+  })
+
+  it("★ 发送目标是预混产物；不许把 undefined 裸透给后端", () => {
+    // 后端把"没给 wav"理解成「取最近一条 `tts_*.wav`」—— 裸透 undefined 会**绕过**预混结果，
+    // 于是用户看到"已混入音效"的徽标、发出去的却是没混的那条（且完全无报错）。
+    expect(sendHookSrc).toContain("wechatSendVoice(wav ?? targetWav)")
+    expect(sendHookSrc).toContain("wechatPlayToCable(wav ?? targetWav)")
+    expect(pageSrc).toContain("void p.sendAuto()")
+    expect(pageSrc).toContain("void p.playToCable()")
+  })
+
+  it("★ 合成产物一变，预混自动失效（否则会发出上一次混过的旧内容）", () => {
+    expect(sendHookSrc).toContain("premix.source === sourceWav")
+    expect(sendHookSrc).toContain("const targetWav = premixActive && premix ? premix.wav : sourceWav")
+  })
+
+  it("失败的预混要显示出来（用户必须看到「那条音效没混进去」）", () => {
+    expect(hookSrc).toContain("setPremixError(friendlyError(error, \"预混失败\"))")
+    expect(panelSrc).toContain("sb.premixError")
+  })
+})

@@ -9,14 +9,24 @@ import { backendPrefix } from "../../api/client"
  * 与实时链路互不干扰。
  */
 
-// 与后端 effects.py CATALOG 对应的类型
+// 与后端 effects.py CATALOG 对应的类型。
+//
+// 参数分两类（`kind`）：`range` 是滑杆（靠 min/max/step），`choice` 是下拉
+// （靠 options）。缺 `kind` 按 range 处理 —— 老效果不必逐个加字段。
+// 可见「插入音效」的选素材参数：它不是数值，**不能**拿滑杆渲染
+// （值是个字符串 id，拖动滑杆会把 `"boom"` 变成数字，用户得到的是坏链）。
+// 后端的 `catalog_meta()` 会保证：range 必有 min/max/step，choice 必有 options。
+export type FxParamOption = { value: string; label: string }
+
 export type FxParam = {
   key: string
   label: string
-  min: number
-  max: number
-  step: number
-  default: number
+  kind?: "range" | "choice"
+  options?: FxParamOption[]
+  min?: number
+  max?: number
+  step?: number
+  default: number | string
 }
 
 export type FxMeta = {
@@ -29,7 +39,7 @@ export type FxMeta = {
 
 export type FxStep = {
   type: string
-  params: Record<string, number>
+  params: Record<string, number | string>
 }
 
 type Feedback = { tone: "ok" | "error" | "info"; text: string }
@@ -105,7 +115,7 @@ export function useEffects(enabled = true) {
   const addFx = useCallback((meta: FxMeta) => {
     setChain((prev) => {
       if (prev.some((s) => s.type === meta.type)) return prev // 同效果不重复
-      const params: Record<string, number> = {}
+      const params: Record<string, number | string> = {}
       for (const p of meta.params) params[p.key] = p.default
       return [...prev, { type: meta.type, params }]
     })
@@ -128,7 +138,7 @@ export function useEffects(enabled = true) {
     setResultUrl(null)
   }, [])
 
-  const setParam = useCallback((idx: number, key: string, value: number) => {
+  const setParam = useCallback((idx: number, key: string, value: number | string) => {
     setChain((prev) =>
       prev.map((s, i) => (i === idx ? { ...s, params: { ...s.params, [key]: value } } : s)),
     )
