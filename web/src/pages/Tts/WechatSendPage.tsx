@@ -16,6 +16,8 @@ import { PageShell } from "@/components/layout/PageShell"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { mediaUrl } from "@/api/client"
+import { SoundboardPanel } from "@/pages/Tts/SoundboardPanel"
+import type { useSoundboard } from "@/pages/Tts/useSoundboard"
 import type { useWechatSend } from "@/pages/Tts/useWechatSend"
 
 function fmtTs(ts: number): string {
@@ -26,7 +28,9 @@ function fmtTs(ts: number): string {
   }
 }
 
-export function WechatSendPage(p: ReturnType<typeof useWechatSend>) {
+export function WechatSendPage(
+  p: ReturnType<typeof useWechatSend> & { soundboard: ReturnType<typeof useSoundboard> },
+) {
   const sending = p.busy === "send"
   const playing = p.busy === "play"
   const manualing = p.busy === "manual"
@@ -181,6 +185,8 @@ export function WechatSendPage(p: ReturnType<typeof useWechatSend>) {
                     {playing ? "播放中…快去按 Alt" : "开始播放"}
                   </button>
                 </div>
+                {/* 播放窗口内点格子：音效与 TTS 人声同进一条语音（系统自动混音）。 */}
+                <SoundboardPanel sb={p.soundboard} hint="播放期间点一下，音效会叠进这条语音" />
               </div>
 
               {/* ③ 手动实时 */}
@@ -209,6 +215,8 @@ export function WechatSendPage(p: ReturnType<typeof useWechatSend>) {
                     {manualing ? "启动中…" : "启动实时变声"}
                   </button>
                 </div>
+                {/* 按住 Alt 说话时点格子：音效与变声人声一起被录进同一条语音。 */}
+                <SoundboardPanel sb={p.soundboard} hint="按住 Alt 说话时点一下，音效会一起被录进去" />
               </div>
             </div>
 

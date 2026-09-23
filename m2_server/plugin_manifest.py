@@ -374,7 +374,7 @@ PRESETS: dict[str, list[str] | None] = {
     # 由用户在设置页按需开启 —— 这就是「一切皆插件」真正落地的那一步。
     #
     # 值得做的理由**不是**省安装包体积（实测只有 ~0.1%，见 §8.2），而是**首次体验路径**：
-    # 新用户第一屏该看到"能变声"，而不是 19 项能力的配置表（同 §8.1 引的 DSH 教训）。
+    # 新用户第一屏该看到"能变声"，而不是 20 项能力的配置表（同 §8.1 引的 DSH 教训）。
     "standard": ["sound.offline-vc", "sound.rvc-live", "sound.audition"],
     # 全能：全开
     "full": None,
@@ -527,7 +527,7 @@ def ensure_state_file() -> set[str] | None:
     返回写进去的 `disabled` 集合；没有写（已存在 / 被 `VM_PLUGIN_SEED=0` 关掉）时返回 `None`。
 
     为什么需要这一步 —— `disabled_ids()` 在文件缺失时返回空集，也就是「一个都没关」
-    （= 19 项**全开**，而且 `_current_preset()` 会把它算成 `full`）。那是**刻意**的设计，
+    （= 20 项**全开**，而且 `_current_preset()` 会把它算成 `full`）。那是**刻意**的设计，
     被 `test_missing_or_broken_state_file_means_nothing_disabled` 钉住了，理由写在它的
     注释里：黑名单模型下**新插件默认是开的**。所以要让「本体」成为新用户的起点，
     只能写一份状态进去，不能改读取语义。

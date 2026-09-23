@@ -48,7 +48,7 @@ _M2 = Path(__file__).resolve().parents[1]
 #: 路由模块总数。**故意写死**：它是「有没有人顺手删掉一个能力」的独立哨兵 ——
 #: 挂载顺序本身改由清单给出，所以这份字面量只剩计数这一件事。
 #: 数字变了要同步 README 与 `docs/插件化设计.md` 里的说法。
-_ROUTER_COUNT = 26
+_ROUTER_COUNT = 27
 
 
 @pytest.fixture(autouse=True)

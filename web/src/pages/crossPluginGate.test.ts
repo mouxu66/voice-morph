@@ -200,3 +200,46 @@ describe("Tts 页的 RVC 模型卡（打的是 sound.rvc-live 的端点）", () 
     expect(guard).toBeGreaterThan(lastHook)
   })
 })
+
+// ---------------------------------------------------------------- 特效声板
+
+describe("特效声板的 `sound.fx-board` 门控", () => {
+  const panelSrc = readRel(path.join("pages", "Tts", "SoundboardPanel.tsx"))
+  const hookSrc = readRel(path.join("pages", "Tts", "useSoundboard.ts"))
+  const pageSrc = readRel(path.join("pages", "Tts", "WechatSendPage.tsx"))
+
+  it("清单里真有这个插件，且只认领 soundboard 一个 router", () => {
+    expect(readManifest("sound.fx-board").routers).toEqual(["soundboard"])
+  })
+
+  it("★ 面板**自己**门控 —— 宿主页属 hook.wechat，不是 sound.fx-board", () => {
+    // 门控写在组件里而不是调用方：无论谁把面板塞进哪个页面都安全。
+    expect(panelSrc).toContain('pluginVisible(catalog, "sound.fx-board")')
+    expect(panelSrc).toContain("if (!on) return null")
+  })
+
+  it("hook 的 enabled 契约：关掉时既不预热也不拉目录（端点已卸载）", () => {
+    expect(hookSrc).toContain("export function useSoundboard(enabled = true) {")
+    expect(hookSrc).toContain("if (!enabled || !backendUp) return")
+  })
+
+  it("★ 路由层把「宿主开着」与「自己开着」相与后才启用（hook 只调一次）", () => {
+    const routeSrc = readRel(path.join("pages", "Tts", "index.tsx"))
+    expect(routeSrc).toContain('pluginVisible(catalog, "sound.fx-board")')
+    expect(routeSrc).toContain("useSoundboard(wechatOn && fxBoardOn)")
+  })
+
+  it("挂在 ② 半自动 与 ③ 手动 两处（半自动是用户主场景之二）", () => {
+    expect(pageSrc.match(/<SoundboardPanel/g)?.length).toBe(2)
+    // 两处都吃路由层那一个 hook 实例：各调一次就会两回预热 + 两回目录请求
+    expect(pageSrc).toContain("<SoundboardPanel sb={p.soundboard}")
+  })
+
+  it("★ 声板不抢发送锁：不许因 busy 禁用它 —— 那正是要出声的时候", () => {
+    // ② 半自动在播放 TTS 时 `busy === "play"`；后端那边声板刻意不进 `_send_lock`
+    // （见 `m2_server/soundboard.py` 模块头与 `test_soundboard.py` 的不变量用例）。
+    // 前端如果给格子加上 `|| busy`，就等于把「录制中点一下」这个主场景禁掉了，
+    // 而且症状很隐：按钮变灰，用户只会以为坏了。
+    expect(panelSrc).not.toMatch(/disabled=\{[^}]*busy/)
+  })
+})

@@ -180,7 +180,7 @@ def test_mount_plan_is_plugin_order_then_declared_router_order():
 
 def test_manifest_ids_and_order_are_unique():
     plugins = plugin_manifest.load_all()
-    assert len(plugins) == 19, "插件数量变了就要同步更新 README 与设计文档里的数字"
+    assert len(plugins) == 20, "插件数量变了就要同步更新 README 与设计文档里的数字"
     assert [p.order for p in plugins] == sorted(p.order for p in plugins)
     assert all(p.summary and p.name for p in plugins)
 
@@ -260,7 +260,7 @@ def test_all_plugins_are_ok_on_a_healthy_start():
     _load_all()
     cat = plugin_manifest.catalog()
     assert cat["ok"] is True
-    assert cat["counts"] == {"total": 19, "ok": 19, "broken": 0, "disabled": 0}
+    assert cat["counts"] == {"total": 20, "ok": 20, "broken": 0, "disabled": 0}
     assert all(p["state"] == "ok" for p in cat["plugins"])
 
 
@@ -283,7 +283,7 @@ def test_router_never_attempted_counts_as_broken_not_ok():
     而 `server.py` 那边忘了挂（或改了名字）。
     """
     cat = plugin_manifest.catalog()  # 注意：**没有** _load_all()，registry 是空的
-    assert cat["counts"]["broken"] == 19
+    assert cat["counts"]["broken"] == 20
     assert all("未注册" in " ".join(p["reasons"]) for p in cat["plugins"] if p["state"] == "broken")
 
 
@@ -296,7 +296,7 @@ def test_disabled_is_not_broken(monkeypatch):
     _load_all()
     monkeypatch.setattr(plugin_manifest, "disabled_ids", lambda: {"sound.tts", "sound.effects"})
     cat = plugin_manifest.catalog()
-    assert cat["counts"] == {"total": 19, "ok": 17, "broken": 0, "disabled": 2}
+    assert cat["counts"] == {"total": 20, "ok": 18, "broken": 0, "disabled": 2}
     assert cat["ok"] is True, "有插件被关掉不该让整体 ok 变假"
     assert {p["id"] for p in cat["plugins"] if p["state"] == "disabled"} == {"sound.tts", "sound.effects"}
 

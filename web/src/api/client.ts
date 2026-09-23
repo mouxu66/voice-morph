@@ -1207,6 +1207,43 @@ export async function wechatManualSend(): Promise<WechatSendResult> {
   return jsonFetch("/wechat/manual_send", { method: "POST" });
 }
 
+// ---- 特效声板（把短音效实时播进虚拟声卡） ----
+// 声板归属 `sound.fx-board` 插件；调用点必须门控（见 pages/Tts/SoundboardPanel.tsx）。
+
+export type SoundboardItem = {
+  id: string
+  name: string
+  tags: string[]
+  duration_s: number
+  count: number
+  builtin: boolean
+}
+
+export async function soundboardCatalog(): Promise<{ ok: boolean; items: SoundboardItem[] }> {
+  return jsonFetch<{ ok: boolean; items: SoundboardItem[] }>("/soundboard/catalog")
+}
+
+/** 播放一条音效到虚拟声卡。**立即返回**（one-shot 语义：点击即响，不等播完）。 */
+export async function soundboardPlay(
+  id: string,
+  gain?: number,
+): Promise<{ ok: boolean; playing: boolean; id: string; duration_s?: number | null }> {
+  return jsonFetch("/soundboard/play", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, gain: gain ?? null }),
+  })
+}
+
+export async function soundboardStop(): Promise<{ ok: boolean }> {
+  return jsonFetch("/soundboard/stop", { method: "POST" })
+}
+
+/** 预热常驻播放器（冷导入 ~2-3s 只付一次，否则第一次点击听着像"没反应"）。 */
+export async function soundboardWarm(): Promise<{ ok: boolean; ready: boolean; samples: number }> {
+  return jsonFetch("/soundboard/warm", { method: "POST" })
+}
+
 // ---- 音色市场（双源搜索 / 推荐清单 / 一键安装） ----
 
 export type MarketPlatform = "hf" | "modelscope";

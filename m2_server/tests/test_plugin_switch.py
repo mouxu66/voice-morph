@@ -201,7 +201,7 @@ def test_first_run_seeds_the_default_preset_once(monkeypatch):
     """首次运行写一份**显式**状态，之后永不覆盖用户的选择。
 
     缺文件时 `disabled_ids()` 是空集（全开），所以"本体"若不落盘就只是**纸上**的
-    默认值 —— 新用户装完照样看到 19 项全开，而 `_current_preset()` 还会把它报成 `full`。
+    默认值 —— 新用户装完照样看到 20 项全开，而 `_current_preset()` 还会把它报成 `full`。
     """
     monkeypatch.delenv(plugin_manifest.SEED_ENV, raising=False)
     assert not plugin_manifest.STATE_FILE.exists(), "夹具给的必须是空状态"
@@ -221,7 +221,7 @@ def test_seeding_is_off_by_default_in_tests():
     """测试环境不播种（`m2_server/conftest.py` 的 `VM_PLUGIN_SEED=0`）。
 
     否则 `import server` 在**收集阶段**就会按默认套餐写掉状态文件，
-    `server._ROUTER_ORDER` 会只剩本体的 router，而期望"19 项全挂"的那批用例集体变红 ——
+    `server._ROUTER_ORDER` 会只剩本体的 router，而期望"20 项全挂"的那批用例集体变红 ——
     且红的直接原因看起来与插件开关毫无关系。这条用例守住那个开关。
     """
     assert os.environ.get(plugin_manifest.SEED_ENV) == "0"

@@ -27,7 +27,7 @@ os.environ["VM_WECHAT_RESTART"] = "0"
 #
 #   · `tests/test_plugin_switch.py` 等模块在**顶层**就 `import server`，那是 pytest 的
 #     **收集阶段**，比任何夹具都早。于是播种会真的发生，`server._ROUTER_ORDER` 只剩下
-#     本体的 router（其余 9 项被跳过），而期望「19 项全挂」的那批用例会集体变红：
+#     本体的 router（其余 9 项被跳过），而期望「20 项全挂」的那批用例会集体变红：
 #     `test_manifest_covers_exactly_the_registered_routers`（清单 26 个 router 对不上）、
 #     `test_all_plugins_are_ok_on_a_healthy_start`（期望 counts = 19/19/0/0）…
 #   · 更要命的是**那时 `STATE_FILE` 还没被下面的会话级夹具挪走** —— 播种会写在
@@ -36,6 +36,12 @@ os.environ["VM_WECHAT_RESTART"] = "0"
 # 一行环境变量把"取决于收集顺序"变成"一定不发生"。需要验证播种行为的用例
 # `monkeypatch.delenv("VM_PLUGIN_SEED")` + 自己的 `STATE_FILE`，见 `test_plugin_switch.py`。
 os.environ["VM_PLUGIN_SEED"] = "0"
+
+# 测试环境禁止真向声卡播放：`soundboard._spawn_worker()` 会起 RVC venv 里的
+# 常驻播放器把素材写进 CABLE（`VM_SOUNDBOARD=0` 时直接拒播）。测试要跑通"播放成功"
+# 路径时 monkeypatch `soundboard._spawn_worker`，而不是把这个开关打开 ——
+# 免得用例把声音放到用户的虚拟声卡上（那会被正在录音的微信录进去）。
+os.environ.setdefault("VM_SOUNDBOARD", "0")
 
 # ★ 数据目录（outputs/ 与 media/）必须在**任何 m2_server 模块被导入之前**切到临时目录
 # （2026-09-22）。

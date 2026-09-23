@@ -6,6 +6,7 @@ import { useTts } from "@/pages/Tts/useTts"
 import { TtsPage } from "@/pages/Tts/TtsPage"
 import { useAudiobook } from "@/pages/Audiobook/useAudiobook"
 import { AudiobookPage } from "@/pages/Audiobook/AudiobookPage"
+import { useSoundboard } from "@/pages/Tts/useSoundboard"
 import { useWechatSend } from "@/pages/Tts/useWechatSend"
 import { WechatSendPage } from "@/pages/Tts/WechatSendPage"
 
@@ -15,6 +16,9 @@ import { WechatSendPage } from "@/pages/Tts/WechatSendPage"
  *
  * 「有声书」与「微信发送」两个 tab 各自对应可关能力（sound.audiobook / hook.wechat）：
  * 按能力清单隐藏 —— 关掉后后端端点不再挂载，留着 tab 只会一路 404。
+ *
+ * 特效声板（`sound.fx-board`）挂在微信发送页内部（②③ 两处），所以它既要宿主开着，
+ * 也要自己开着：`useSoundboard` 的 enabled = 两者相与（hook 调用点只在路由层这一次）。
  */
 export function TtsRoute() {
   const [params] = useSearchParams()
@@ -22,11 +26,13 @@ export function TtsRoute() {
   const catalog = state.status === "ready" ? state.catalog : null
   const bookOn = pluginVisible(catalog, "sound.audiobook")
   const wechatOn = pluginVisible(catalog, "hook.wechat")
+  const fxBoardOn = pluginVisible(catalog, "sound.fx-board")
 
   // hook 必须无条件调用（React 规则）；enabled=false 时它们内部直接不轮询。
   const tts = useTts()
   const book = useAudiobook(bookOn)
   const wechat = useWechatSend(wechatOn)
+  const soundboard = useSoundboard(wechatOn && fxBoardOn)
   const seeded = useRef(false)
 
   useEffect(() => {
@@ -45,7 +51,13 @@ export function TtsRoute() {
           ? [{ key: "book", label: "有声书（长文本）", content: <AudiobookPage {...book} /> }]
           : []),
         ...(wechatOn
-          ? [{ key: "wechat", label: "微信发送", content: <WechatSendPage {...wechat} /> }]
+          ? [
+              {
+                key: "wechat",
+                label: "微信发送",
+                content: <WechatSendPage {...wechat} soundboard={soundboard} />,
+              },
+            ]
           : []),
       ]}
     />

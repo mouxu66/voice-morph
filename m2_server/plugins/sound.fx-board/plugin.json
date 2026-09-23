@@ -1,0 +1,22 @@
+{
+  "id": "sound.fx-board",
+  "name": "特效声板",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 145,
+  "summary": "聊天/语音消息中一键插入爆炸、掌声等短音效（实时播进虚拟声卡）",
+  "requires": [],
+  "routers": ["soundboard"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [],
+  "extras": {
+    "python": [],
+    "external": [
+      { "kind": "audio-device", "label": "VB-Audio CABLE（虚拟声卡）", "doc": "docs/特效声板设计.md" }
+    ],
+    "models": []
+  },
+  "health": null,
+  "disable": { "note": "关闭后微信发送页的音效格子消失（发送链路本身不受影响）" }
+}
