@@ -244,6 +244,62 @@ describe("特效声板的 `sound.fx-board` 门控", () => {
   })
 })
 
+// ---------------------------------------------------------------- 声板素材（导入 / 音效包）
+
+describe("声板素材管理（单条导入 + 成套音效包）", () => {
+  const panelSrc = readRel(path.join("pages", "Tts", "SoundboardPanel.tsx"))
+  const hookSrc = readRel(path.join("pages", "Tts", "useSoundboard.ts"))
+  const clientSrc = readRel(path.join("api", "client.ts"))
+
+  it("★ 四个动作都打声板自己的端点（不绕道别的可关插件）", () => {
+    for (const call of [
+      'jsonFetch("/soundboard/import"',
+      'jsonFetch("/soundboard/packs"',
+      'jsonFetch("/soundboard/packs/install"',
+      'jsonFetch("/soundboard/packs/download"',
+    ]) {
+      expect(clientSrc).toContain(call)
+    }
+    expect(panelSrc).not.toContain("/effects/")
+    expect(hookSrc).not.toContain("useEffects")
+  })
+
+  it("★ 素材动作彼此互斥（否则目录刷新乱序，界面会停在「少一条」的状态）", () => {
+    // 两个动作同时在飞时，后完成的那次刷新可能先落库 —— 而那是一个"刷新一次就对了"
+    // 的偶发错，最难查。互斥写在 hook 的公共壳里（不在各个按钮上），所以钉它。
+    expect(hookSrc).toContain("if (busy) return null")
+    expect(panelSrc).toContain("const materialLocked =")
+    // 素材锁与格子锁必须是两个名字：格子**绝不能**因 busy 变灰（发送中正是要出声时），
+    // 上一条 describe 里的 `disabled={…busy}` 守卫靠这个区分才能继续有效。
+    expect(panelSrc).toContain("disabled={materialLocked}")
+  })
+
+  it("三个入口都在：导入素材 / 安装音效包 / 音效包市场", () => {
+    expect(panelSrc).toContain("导入素材")
+    expect(panelSrc).toContain("安装音效包")
+    expect(panelSrc).toContain("音效包市场")
+  })
+
+  it("★ 许可与作者必须看得见（包会被装到别人机器上，界面是那边唯一的依据）", () => {
+    expect(panelSrc).toContain("p.license")
+    expect(panelSrc).toContain("未标注许可")
+    expect(panelSrc).toContain("p.author")
+  })
+
+  it("★ 坏包如实列出来（带原因），不是当它不存在", () => {
+    expect(panelSrc).toContain("p.broken")
+  })
+
+  it("★ 「能不能单条删」由后端说：前端不许自己推 builtin/pack", () => {
+    expect(panelSrc).toContain("i.removable")
+  })
+
+  it("★ 货架懒加载：没点开之前不请求（不白碰一次网络）", () => {
+    expect(hookSrc).toContain("if (shelf.loaded) return")
+    expect(hookSrc).toContain("soundboardPacksAvailable")
+  })
+})
+
 // ---------------------------------------------------------------- 声板预混模式
 
 describe("声板预混模式（发送前把音效烘进音频）", () => {

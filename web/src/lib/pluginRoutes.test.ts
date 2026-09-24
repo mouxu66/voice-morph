@@ -112,16 +112,25 @@ describe("清单声明的页面都能被前端解析出来", () => {
     expect(missing, `glob 里没有这些 key（公式或目录名对不上）：\n${missing.join("\n")}`).toEqual([])
   })
 
-  it("每个 routes[].export 在页面模块里都是可调用的具名导出", async () => {
-    const bad: string[] = []
-    for (const { plugin, route } of ALL_ROUTES) {
-      const mod = (await pageModules[pageKey(route.module)]!()) as Record<string, unknown>
-      if (typeof mod[route.export] !== "function") {
-        bad.push(`${plugin}: ${route.module}/index.tsx 里没有可调用的导出 ${route.export}`)
+  // ⚠️ 这条是**串行动态 import 全部 ~20 个页面模块**，实测单独跑 3.0~3.5s
+  // （2026-09-24 量了三次：3379 / 2970 / 3110ms），而 vitest 默认上限是 5000ms ——
+  // 全套件并发跑时就会偶发 `Test timed out in 5000ms`（我这次改动期间红了两次，
+  // 重跑又绿）。**它断言的从来不是“快”**，5s 只是默认值碰巧不够。
+  // 门禁偶尔自己红比没有门禁更糟：人开始把红当噪声，真失败就漏过去了。
+  it(
+    "每个 routes[].export 在页面模块里都是可调用的具名导出",
+    { timeout: 20000 },
+    async () => {
+      const bad: string[] = []
+      for (const { plugin, route } of ALL_ROUTES) {
+        const mod = (await pageModules[pageKey(route.module)]!()) as Record<string, unknown>
+        if (typeof mod[route.export] !== "function") {
+          bad.push(`${plugin}: ${route.module}/index.tsx 里没有可调用的导出 ${route.export}`)
+        }
       }
-    }
-    expect(bad, `页面是具名导出，名字打错 = 白屏且构建期不报错：\n${bad.join("\n")}`).toEqual([])
-  })
+      expect(bad, `页面是具名导出，名字打错 = 白屏且构建期不报错：\n${bad.join("\n")}`).toEqual([])
+    },
+  )
 
   it("清单用到的每个图标都在前端注册表里", () => {
     const used = new Set(

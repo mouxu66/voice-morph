@@ -1217,6 +1217,29 @@ export type SoundboardItem = {
   duration_s: number
   count: number
   builtin: boolean
+  /** 来源音效包 id；空串 = 出厂或单条导入。包内素材的 id 形如 `"<pack>/<stem>"`。 */
+  pack: string
+  /** 能不能**单条**删。包内素材与出厂素材都是 false（前者要整包卸）。 */
+  removable: boolean
+}
+
+/** 已安装/可安装的音效包（成套素材，一次装卸一批）。 */
+export type SoundboardPack = {
+  id: string
+  name: string
+  author?: string
+  license?: string
+  description?: string
+  count: number
+  bytes?: number
+  /** 非空 = 这个包坏了（缺/损 pack.json），界面要如实说出来而不是当它不存在。 */
+  broken?: string
+  /** 货架条目：这个包现在装没装。 */
+  installed?: boolean
+  downloads?: number
+  url?: string
+  sha256?: string
+  size?: number
 }
 
 export async function soundboardCatalog(): Promise<{ ok: boolean; items: SoundboardItem[] }> {
@@ -1274,6 +1297,73 @@ export async function soundboardPremix(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ wav: wav ?? null, inserts }),
   })
+}
+
+/** 装一个本地 zip 音效包（离线路径：别人发你的包、或你自己打的包）。 */
+export async function soundboardPackInstall(
+  file: File,
+  packId?: string,
+  overwrite = false,
+): Promise<{ ok: boolean; id: string; count: number; name: string; license: string }> {
+  const fd = new FormData()
+  fd.append("file", file)
+  if (packId) fd.append("pack_id", packId)
+  if (overwrite) fd.append("overwrite", "true")
+  // 刻意不走 jsonFetch 的 JSON 头：FormData 要浏览器自己带 boundary。
+  return jsonFetch("/soundboard/packs/install", { method: "POST", body: fd })
+}
+
+/** 已安装的音效包 + 它们的素材总数。 */
+export async function soundboardPacks(): Promise<{
+  ok: boolean
+  packs: SoundboardPack[]
+  samples: number
+}> {
+  return jsonFetch("/soundboard/packs")
+}
+
+/** 货架：清单里可下载的包。未配清单时 `items` 为空 + 一句 `note`（不是错误）。 */
+export async function soundboardPacksAvailable(): Promise<{
+  ok: boolean
+  source: string | null
+  items: SoundboardPack[]
+  error: string
+  note: string
+}> {
+  return jsonFetch("/soundboard/packs/available")
+}
+
+/** 从清单地址下载并安装（带 sha256 校验与域名白名单）。 */
+export async function soundboardPackDownload(
+  id: string,
+  overwrite = false,
+): Promise<{ ok: boolean; id: string; count: number; sha256_verified: boolean }> {
+  return jsonFetch("/soundboard/packs/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, overwrite }),
+  })
+}
+
+/** 卸载一个音效包：它的素材与使用计数一起消失。 */
+export async function soundboardPackUninstall(
+  id: string,
+): Promise<{ ok: boolean; id: string; count: number; purged: string[] }> {
+  return jsonFetch(`/soundboard/packs/${encodeURIComponent(id)}`, { method: "DELETE" })
+}
+
+/** 导入一条自己的素材（≤5s、≤2MB，服务端转单声道 PCM16 落盘）。 */
+export async function soundboardImport(
+  file: File,
+): Promise<{ ok: boolean; id: string; duration_s: number }> {
+  const fd = new FormData()
+  fd.append("file", file)
+  return jsonFetch("/soundboard/import", { method: "POST", body: fd })
+}
+
+/** 删除**导入**的素材（出厂与包内素材服务端会拒）。 */
+export async function soundboardDelete(id: string): Promise<{ ok: boolean; id: string }> {
+  return jsonFetch(`/soundboard/${encodeURIComponent(id)}`, { method: "DELETE" })
 }
 
 // ---- 音色市场（双源搜索 / 推荐清单 / 一键安装） ----

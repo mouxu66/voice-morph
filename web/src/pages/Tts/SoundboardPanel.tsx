@@ -1,5 +1,5 @@
-import { useState } from "react"
-import { Check, Loader2, Square, Wand2, X } from "lucide-react"
+import { useRef, useState } from "react"
+import { Check, Download, Loader2, ShoppingBag, Square, Trash2, Upload, Wand2, X } from "lucide-react"
 import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
 import {
   PREMIX_MODE_HINT,
@@ -57,12 +57,24 @@ export function SoundboardPanel({
   const on = pluginVisible(catalog, "sound.fx-board")
   const [mode, setMode] = useState<"live" | "premix">("live")
   const [done, setDone] = useState("")
+  const [shelfOpen, setShelfOpen] = useState(false)
+  const importInput = useRef<HTMLInputElement | null>(null)
+  const packInput = useRef<HTMLInputElement | null>(null)
 
   if (!on) return null
 
   const premixUi = allowPremix && Boolean(wav)
   const inPremix = premixUi && mode === "premix"
   const picked = new Set(sb.picks.map((p) => p.sample))
+  // 「我的素材」：能不能单条删由**后端**说（`removable`），不在这里拿 builtin/pack 推 ——
+  // "谁能删"是会变的产品规则（比如以后允许删包内某一条），多一处推断就多一处会漂。
+  const imported = sb.items.filter((i) => i.removable)
+  // ⚠️ 素材动作（导入/装卸包/删素材）**需要**互斥：它们改的是目录本身，两个同时在飞
+  // 会让刷新乱序，界面停在一个「少一条」的状态上。
+  // 而格子（`play`）**绝不能**因这个锁变灰 —— 发送正在进行时正是要出声的时候。
+  // 两个锁因此必须**分开命名**：`crossPluginGate.test.ts` 用正则守着
+  // 「格子的 disabled 里不许出现 busy」，把两者合回一个表达式会让那条守卫失效。
+  const materialLocked = !sb.ready || Boolean(sb.busy)
 
   const runPremix = async () => {
     const r = await sb.premix(wav)
@@ -204,6 +216,174 @@ export function SoundboardPanel({
           {sb.premixError && <p className="text-[11px] text-destructive">{sb.premixError}</p>}
         </div>
       )}
+
+      {/* 素材管理：单条导入 / 成套音效包。与"点一下响一下"是两件事，所以单列一区。 */}
+      <div className="mt-3 border-t border-border pt-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-medium text-card-foreground">素材</span>
+          <button
+            type="button"
+            disabled={materialLocked}
+            onClick={() => importInput.current?.click()}
+            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
+          >
+            <Upload className="h-3 w-3" />导入素材
+          </button>
+          <button
+            type="button"
+            disabled={materialLocked}
+            onClick={() => packInput.current?.click()}
+            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
+          >
+            <ShoppingBag className="h-3 w-3" />安装音效包
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setShelfOpen((v) => !v)
+              void sb.openShelf()
+            }}
+            title="从清单里下载全套音效（装到本机，可随时卸载）"
+            className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition hover:border-primary hover:text-primary"
+          >
+            <Download className="h-3 w-3" />
+            音效包市场{sb.packs.length ? `（已装 ${sb.packs.length}）` : ""}
+          </button>
+          {sb.busy && (
+            <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />{sb.busy}…
+            </span>
+          )}
+          <span className="text-[11px] text-muted-foreground">
+            共 {sb.items.length} 条（出厂 {sb.items.filter((i) => i.builtin).length}
+            {sb.packSamples ? ` · 音效包 ${sb.packSamples}` : ""}
+            {imported.length ? ` · 我的 ${imported.length}` : ""}）
+          </span>
+          {/* 两个隐式输入：accept 写宽一点（真正认不认由服务端读音频决定），
+              包则只收 .zip —— 它必须是 zip，别的格式连试都不必。 */}
+          <input
+            ref={importInput}
+            type="file"
+            accept="audio/*,.wav,.flac,.ogg,.mp3"
+            multiple
+            hidden
+            onChange={(e) => {
+              const files = e.target.files
+              if (files?.length) void sb.importFiles(files)
+              e.target.value = "" // 清掉才能连续选同一个文件（否则第二次不触发）
+            }}
+          />
+          <input
+            ref={packInput}
+            type="file"
+            accept=".zip,application/zip"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) void sb.installPackZip(f)
+              e.target.value = ""
+            }}
+          />
+        </div>
+
+        {/* 我的素材：可单条删（出厂与包内素材服务端会拒，所以不在这里列出删除） */}
+        {imported.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground">我的：</span>
+            {imported.map((it) => (
+              <span
+                key={it.id}
+                className="inline-flex items-center gap-1 rounded-full border border-border py-0.5 pl-2 pr-1 text-[11px] text-muted-foreground"
+              >
+                {it.name}
+                <button
+                  type="button"
+                  disabled={materialLocked}
+                  onClick={() => void sb.removeSample(it.id)}
+                  title={`删除「${it.name}」`}
+                  aria-label={`删除 ${it.name}`}
+                  className="opacity-70 transition hover:text-destructive hover:opacity-100"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* 已装的包：一条一个胶囊，✕ = 整包卸载（里面的素材会一起消失，标题里说清） */}
+        {sb.packs.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground">音效包：</span>
+            {sb.packs.map((p) => (
+              <span
+                key={p.id}
+                className={`inline-flex items-center gap-1 rounded-full border py-0.5 pl-2 pr-1 text-[11px] ${
+                  p.broken ? "border-destructive/50 text-destructive" : "border-border text-muted-foreground"
+                }`}
+              >
+                {p.name}
+                <span className="opacity-60">
+                  {p.broken ? `已损坏：${p.broken}` : `${p.count} 条${p.license ? ` · ${p.license}` : ""}`}
+                </span>
+                <button
+                  type="button"
+                  disabled={materialLocked}
+                  onClick={() => void sb.uninstallPack(p.id)}
+                  title={`卸载「${p.name}」（共 ${p.count} 条素材，会一起删掉）`}
+                  aria-label={`卸载 ${p.name}`}
+                  className="opacity-70 transition hover:text-destructive hover:opacity-100"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* 货架：懒加载。清单没配 / 取不到都如实说，不假装"市场里没有" */}
+        {shelfOpen && (
+          <div className="mt-2 rounded-md border border-border bg-background/60 p-2">
+            {sb.shelf.note && (
+              <p className="text-[11px] text-muted-foreground">{sb.shelf.note}</p>
+            )}
+            {sb.shelf.error && (
+              <p className="text-[11px] text-destructive">音效包清单不可用：{sb.shelf.error}</p>
+            )}
+            {sb.shelf.items.length === 0 && !sb.shelf.note && !sb.shelf.error && (
+              <p className="text-[11px] text-muted-foreground">清单里还没有可下载的音效包。</p>
+            )}
+            {sb.shelf.items.map((p) => (
+              <div key={p.id} className="flex flex-wrap items-center gap-2 py-1">
+                <span className="text-[11px] font-medium text-card-foreground">{p.name}</span>
+                <span className="text-[11px] text-muted-foreground">
+                  {p.author ? `${p.author} · ` : ""}
+                  {p.license || "未标注许可"}
+                  {p.downloads ? ` · 已下载 ${p.downloads}` : ""}
+                </span>
+                {p.installed ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <Check className="h-3 w-3" />已安装
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={materialLocked}
+                    onClick={() => void sb.downloadPack(p.id)}
+                    className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    下载并安装
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {sb.materialError && (
+          <p className="mt-2 text-[11px] text-destructive">{sb.materialError}</p>
+        )}
+      </div>
 
       {sb.errorMessage && <p className="mt-2 text-[11px] text-destructive">{sb.errorMessage}</p>}
     </div>

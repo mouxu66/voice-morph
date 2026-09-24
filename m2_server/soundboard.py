@@ -29,6 +29,12 @@ CABLE 的渲染端；微信从采集端录到的就是混好的结果（Windows 
 
 素材见 `sfx_lib.py`（目录、读取缓存、混音 DSP 都在那里 —— 效果链里的「插入音效」
 用的是同一份，所以不能复制成本模块的私有常量）。
+
+素材的三种来源（出厂 / 单条导入 / **成套音效包**）
+    出厂随插件走；`/import` 收单条；`/packs/*` 管**成套**的安装与卸载
+    （布局与安全解压都在 `sfx_packs.py`，它也是叶子模块、无路由）。
+    三条来源在格子里是同一件事 —— 用户看到的都是"一条能点的音效"，
+    区别只在 `builtin`/`pack` 两个字段上（决定能不能删、删的是哪一层）。
 """
 
 from __future__ import annotations
@@ -43,8 +49,9 @@ from pathlib import Path
 import config as cfg
 import numpy as np
 import sfx_lib
+import sfx_packs
 import soundfile as sf
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sfx_lib import SfxError
 
@@ -120,9 +127,22 @@ def _bump(sid: str) -> None:
 
 
 def _items() -> list[dict]:
-    """素材目录 + 播放计数（格子面板的渲染依据）。"""
+    """素材目录 + 播放计数（格子面板的渲染依据）。
+
+    附一个 `removable`：**单条**可以删的才为真。包内素材与出厂素材都是 `False` ——
+    前者要删得整包删（`DELETE /packs/{id}`），后者删了得重装才有。
+    前端不该自己拿 `builtin/pack` 推这条规则，因为"谁能删"是会变的产品决定，
+    多一处推断就多一处会漂的地方。
+    """
     stats = _load_stats()
-    return [{**it, "count": stats.get(it["id"], 0)} for it in sfx_lib.list_samples()]
+    return [
+        {
+            **it,
+            "count": stats.get(it["id"], 0),
+            "removable": (not it.get("builtin")) and not it.get("pack"),
+        }
+        for it in sfx_lib.list_samples()
+    ]
 
 
 # --------------------------------------------------------------- 播放 worker
@@ -424,17 +444,120 @@ async def soundboard_import(file: UploadFile = File(...)):
     return {"ok": True, "id": sid, "duration_s": round(dur, 2)}
 
 
+def _purge_stats(ids) -> list[str]:
+    """把若干素材 id 从计数里清掉（返回真清掉的那些）。
+
+    为什么必须清：计数是**按 id 字符串**存的，而 id 会跟着素材消失。
+    不清就会出现两种错觉 —— ① 重装同名包，"用过 7 次"凭空继承；
+    ② 反复装卸之后 `soundboard_stats.json` 里攒一堆永远不会再被读到的键。
+    """
+    with _STATS_LOCK:
+        stats = _load_stats()
+        gone = [sid for sid in ids if stats.pop(sid, None) is not None]
+        if gone:
+            with contextlib.suppress(OSError):
+                STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                STATS_FILE.write_text(
+                    json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+        return gone
+
+
 @router.delete("/{sample_id}")
 def soundboard_delete(sample_id: str):
     """删除**导入**的素材（出厂素材不许删 —— 删了重装才有，这不该由用户承担）。"""
     path, builtin = _resolve_path(sample_id)
     if builtin:
         raise HTTPException(status_code=400, detail="出厂音效不可删除")
+    # ❗包内素材（id 形如 `arcade/coin`）**根本走不到这里**（去 2026-09-24 真机验证：
+    # `DELETE /api/soundboard/arcade/coin` 得到 405，不是这里写的 400）。原因：
+    # 这条路由只有**一段** `{sample_id}`，而含 `/` 的 id 是两段，压根不匹配 ——
+    # 真环境里它落到 SPA 的 GET 兜底上，于是回"方法不允许"。
+    # 一度在这里写了句 `if split_id(...)` 的友好报错，**那是死代码**（只能靠直接
+    # 调函数碰到），已删：留着会让人以为它挡了什么事。
+    #
+    # 那要不要把路由改成 `{sample_id:path}`？**不要** —— 声明顺序是行为：
+    # 那条通配会先吃掉 `DELETE /packs/{pack_id}`，于是"卸载整包"变成"这是包内素材"，
+    # 卸载功能直接死掉（正是 `plugin_manifest.mount_plan` 注释里说的那类遮蔽）。
+    # 真正的防护在别处：界面只给 `removable` 的素材（即导入的）删除入口，
+    # 后端也用 `removable=False` 明确告诉它包内素材不能单条删。
     path.unlink()
-    stats = _load_stats()
-    if stats.pop(sample_id, None) is not None:
-        with contextlib.suppress(OSError):
-            STATS_FILE.write_text(
-                json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+    _purge_stats([sample_id])
     return {"ok": True, "id": sample_id}
+
+
+# --------------------------------------------------------------- 音效包（成套素材）
+
+
+def _pack_http(e: sfx_packs.PackError) -> HTTPException:
+    return HTTPException(status_code=e.status, detail=str(e))
+
+
+@router.get("/packs")
+def soundboard_packs():
+    """已安装的音效包（含坏包，带原因 —— 东西消失了就该能被问出来）。"""
+    packs = sfx_packs.list_packs()
+    return {
+        "ok": True,
+        "packs": packs,
+        "samples": sum(int(p.get("count") or 0) for p in packs if not p.get("broken")),
+    }
+
+
+@router.get("/packs/available")
+def soundboard_packs_available():
+    """货架：清单里可以装的包（未配清单时 `items` 为空 + 一句 `note`，**不是错误**）。
+
+    单独一条端点（而不是并进 `/packs`）：一个问"我装了什么"，一个问"外面有什么"，
+    后者会真的去取网络或读清单文件，不该拖慢前者。
+    """
+    return {"ok": True, **sfx_packs.load_index()}
+
+
+@router.post("/packs/install")
+async def soundboard_pack_install(
+    file: UploadFile = File(...),
+    pack_id: str = Form(""),
+    overwrite: bool = Form(False),
+):
+    """装一个本地 zip 音效包（离线路子：别人发给你的包、或你自己打的包）。
+
+    `pack_id` 留空时按包内的 `pack.json` / zip 目录名推（见 `sfx_packs.install_zip`）。
+    """
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="空文件")
+    # id 回落链：表单显式指定 > zip 里的路径/pack.json > **上传的文件名**。
+    # 最后那一跳是实际最常用的：用户手上就是 `街机音效.zip`，不该逼他再想个 id
+    # （少了它，一个没写 id 又没套目录的包会直接报「给不出合法的 id」）。
+    pid = pack_id or sfx_packs.clean_stem(file.filename or "") or None
+    try:
+        res = sfx_packs.install_zip(raw, pid, overwrite=overwrite)
+    except sfx_packs.PackError as e:
+        raise _pack_http(e) from e
+    return {"ok": True, **res}
+
+
+class PackFetchReq(BaseModel):
+    id: str
+    overwrite: bool = False
+
+
+@router.post("/packs/download")
+def soundboard_pack_download(req: PackFetchReq):
+    """从清单里的地址下载并安装（市场路子，带 sha256 校验与域名白名单）。"""
+    try:
+        res = sfx_packs.install_from_index(req.id, overwrite=req.overwrite)
+    except sfx_packs.PackError as e:
+        raise _pack_http(e) from e
+    return {"ok": True, **res}
+
+
+@router.delete("/packs/{pack_id}")
+def soundboard_pack_uninstall(pack_id: str):
+    """卸载一个音效包：素材与计数一起没了（计数见 `_purge_stats` 的理由）。"""
+    try:
+        res = sfx_packs.uninstall(pack_id)
+    except sfx_packs.PackError as e:
+        raise _pack_http(e) from e
+    return {"ok": True, "purged": _purge_stats(res["ids"]), **res}

@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   soundboardCatalog,
+  soundboardDelete,
+  soundboardImport,
+  soundboardPackDownload,
+  soundboardPackInstall,
+  soundboardPacks,
+  soundboardPacksAvailable,
+  soundboardPackUninstall,
   soundboardPlay,
   soundboardPremix,
   soundboardStop,
   soundboardWarm,
   type SoundboardItem,
   type SoundboardMode,
+  type SoundboardPack,
 } from "@/api/client"
 import { useAppStore } from "@/store/useAppStore"
 import { friendlyError } from "@/lib/errors"
@@ -56,12 +64,36 @@ export function useSoundboard(enabled = true) {
   const [premixing, setPremixing] = useState(false)
   const [premixError, setPremixError] = useState("")
 
+  // 素材管理（导入 / 音效包）的状态
+  const [packs, setPacks] = useState<SoundboardPack[]>([])
+  const [packSamples, setPackSamples] = useState(0)
+  // 货架（可下载的包）：**懒加载** —— 没点开之前不请求，也不会白碰一次网络
+  const [shelf, setShelf] = useState<{
+    loaded: boolean
+    source: string | null
+    items: SoundboardPack[]
+    error: string
+    note: string
+  }>({ loaded: false, source: null, items: [], error: "", note: "" })
+  const [busy, setBusy] = useState("") // 正在进行的素材动作（一个字符串，够用且能显示）
+  const [materialError, setMaterialError] = useState("")
+
   const refresh = useCallback(async () => {
     try {
       const r = await soundboardCatalog()
       setItems(r.items ?? [])
     } catch {
       /* 服务离线时静默，下次操作再试 */
+    }
+  }, [])
+
+  const refreshPacks = useCallback(async () => {
+    try {
+      const r = await soundboardPacks()
+      setPacks(r.packs ?? [])
+      setPackSamples(r.samples ?? 0)
+    } catch {
+      /* 同上：下一次动作会再试 */
     }
   }, [])
 
@@ -76,12 +108,15 @@ export function useSoundboard(enabled = true) {
       } catch {
         /* 设备/venv 缺失时预热失败很正常；真点播放会给出可读报错 */
       }
-      if (alive) await refresh()
+      if (alive) {
+        await refresh()
+        await refreshPacks()
+      }
     })()
     return () => {
       alive = false
     }
-  }, [enabled, backendUp, refresh])
+  }, [enabled, backendUp, refresh, refreshPacks])
 
   useEffect(
     () => () => {
@@ -176,6 +211,107 @@ export function useSoundboard(enabled = true) {
     [enabled, picks, refresh],
   )
 
+  // ---------------- 素材管理（导入单条 / 装包卸包） ----------------
+
+  /**
+   * 所有素材动作的公共壳：同一个 `busy` 互斥 + 成功后把目录与包列表都刷一遍。
+   *
+   * 为什么要互斥：这些动作都会**改素材目录**，而目录是格子面板的渲染依据。
+   * 两个动作同时在飞（比如连点两次导入），后完成的那次刷新可能先落库——
+   * 界面就会停在一个"少一条"的状态上，而且刷新一次就对了（典型的偶发错）。
+   */
+  const withBusy = useCallback(
+    async (label: string, fn: () => Promise<unknown>) => {
+      if (busy) return null
+      setBusy(label)
+      setMaterialError("")
+      try {
+        const res = await fn()
+        await refresh()
+        await refreshPacks()
+        return res
+      } catch (error) {
+        setMaterialError(friendlyError(error, `${label}失败`))
+        return null
+      } finally {
+        setBusy("")
+      }
+    },
+    [busy, refresh, refreshPacks],
+  )
+
+  /** 导入自己的一条素材（可多选）。返回成功导入的条数。 */
+  const importFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const list = Array.from(files)
+      if (!list.length) return 0
+      const res = await withBusy("导入素材", async () => {
+        let ok = 0
+        const failed: string[] = []
+        for (const f of list) {
+          try {
+            await soundboardImport(f)
+            ok += 1
+          } catch (error) {
+            failed.push(`${f.name}：${friendlyError(error, "导入失败")}`)
+          }
+        }
+        // 多选时**逐条汇报**：一条失败不该把整批说成失败，也不该静默跳过 ——
+        // 用户丢了哪一条必须能看见（同"不静默跳过"的一贯判据）。
+        if (failed.length) setMaterialError(failed.join("；"))
+        return ok
+      })
+      return typeof res === "number" ? res : 0
+    },
+    [withBusy],
+  )
+
+  const removeSample = useCallback(
+    async (id: string) => withBusy("删除素材", () => soundboardDelete(id)),
+    [withBusy],
+  )
+
+  const installPackZip = useCallback(
+    async (file: File) => withBusy("安装音效包", () => soundboardPackInstall(file)),
+    [withBusy],
+  )
+
+  const uninstallPack = useCallback(
+    async (id: string) => withBusy("卸载音效包", () => soundboardPackUninstall(id)),
+    [withBusy],
+  )
+
+  const downloadPack = useCallback(
+    async (id: string) => {
+      const res = await withBusy("下载音效包", () => soundboardPackDownload(id))
+      return res as { id: string; sha256_verified: boolean } | null
+    },
+    [withBusy],
+  )
+
+  /** 打开货架（懒加载；重复打开不重复请求）。 */
+  const openShelf = useCallback(async () => {
+    if (shelf.loaded) return
+    try {
+      const r = await soundboardPacksAvailable()
+      setShelf({
+        loaded: true,
+        source: r.source,
+        items: r.items ?? [],
+        error: r.error || "",
+        note: r.note || "",
+      })
+    } catch (error) {
+      setShelf({
+        loaded: true,
+        source: null,
+        items: [],
+        error: friendlyError(error, "拿不到音效包清单"),
+        note: "",
+      })
+    }
+  }, [shelf.loaded])
+
   return {
     items,
     playing,
@@ -191,5 +327,16 @@ export function useSoundboard(enabled = true) {
     cyclePickMode,
     clearPicks,
     premix,
+    packs,
+    packSamples,
+    shelf,
+    busy,
+    materialError,
+    importFiles,
+    removeSample,
+    installPackZip,
+    uninstallPack,
+    downloadPack,
+    openShelf,
   }
 }

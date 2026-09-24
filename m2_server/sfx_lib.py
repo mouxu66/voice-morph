@@ -22,8 +22,10 @@ numpy / soundfile / config，谁都能用，也不把谁拉进进程。
 --------
 · 出厂：`plugins/sound.fx-board/samples/*.wav`（`tools/gen_sfx.py` 程序化合成）
 · 导入：`<media>/soundboard/*.wav`（`/import` 写入；用户自己的素材）
+· 音效包：`<media>/soundboard/packs/<pack_id>/*.wav`（`sfx_packs` 安装；成套分发）
 
-文件名 stem 即素材 id。出厂与导入不许重名（导入时直接拒 —— 比"谁覆盖谁"这种
+id 规则：出厂与导入用**裸 stem**，包内素材用 `"<pack_id>/<stem>"`（命名空间化，
+见 `sfx_packs` 头注释）。出厂与导入不许重名（导入时直接拒 —— 比"谁覆盖谁"这种
 隐式规则好查）。
 """
 
@@ -35,6 +37,7 @@ from pathlib import Path
 
 import config as cfg
 import numpy as np
+import sfx_packs
 import soundfile as sf
 
 #: 出厂素材（随插件走）
@@ -85,14 +88,15 @@ def duration_s(path: Path) -> float:
 
 
 def sanitize_stem(raw: str) -> str:
-    """把上传文件名收成安全的 stem：去目录、拒穿越、限长、只留常规字符。"""
-    stem = Path(raw or "").name  # 去掉任何目录成分（../x.wav → x.wav）
-    stem = Path(stem).stem
-    bad = [c for c in stem if c in '\\/:*?"<>|' or ord(c) < 32]
-    if bad or stem in ("", ".", ".."):
+    """把上传文件名收成安全的 stem：去目录、拒穿越、限长、只留常规字符。
+
+    规则本体在 `sfx_packs.clean_stem`（包安装要用**同一套**判据），这里只负责
+    把「给不出安全名字」翻译成带 SfxError 的错误 —— 两份规则迟早会漂，
+    而漂的那一侧总是漏的那一侧。
+    """
+    stem = sfx_packs.clean_stem(raw)
+    if stem is None:
         raise SfxError(f"文件名不合法：{raw!r}")
-    if len(stem) > 40:
-        raise SfxError("文件名太长（限 40 字符）")
     return stem
 
 
@@ -103,6 +107,17 @@ def resolve_path(sample_id: str) -> tuple[Path, bool]:
     （`....//`、`%2e%2e`、NT 的 `\\\\?\\\\` 前缀…），而 `is_relative_to` 是判据本身。
     """
     sid = str(sample_id or "")
+    split = sfx_packs.split_id(sid)
+    if split is not None:
+        # 包内素材：`<pack_id>/<stem>`。`split_id` 对含 `/` 的 id 只认恰好两段、
+        # 且两段都要先过 clean_stem —— 宽一点就是路径穿越。
+        pid, stem = split
+        if not pid or not stem:
+            raise SfxError(f"非法的音效 id：{sid!r}")
+        p = sfx_packs.resolve_sample(pid, stem)
+        if p is None:
+            raise SfxError(f"没有这个音效：{sid}", status=404)
+        return p, False
     if not sid or sid in (".", "..") or any(c in sid for c in "/\\"):
         raise SfxError(f"非法的音效 id：{sid!r}")
     for d, builtin in ((SAMPLES_DIR, True), (IMPORT_DIR, False)):
@@ -113,10 +128,13 @@ def resolve_path(sample_id: str) -> tuple[Path, bool]:
 
 
 def list_samples() -> list[dict]:
-    """出厂 + 导入的全部素材（id/name/tags/duration_s/builtin）。
+    """出厂 + 导入 + 各音效包的全部素材（id/name/tags/duration_s/builtin/pack）。
 
     不含播放计数 —— 那是声板的运营数据（`outputs/soundboard_stats.json`），
     与"素材库有什么"是两件事，所以留在 `soundboard.py` 里叠加。
+
+    `pack` 字段让界面能"按包分组/标出来源"，也为卸载提示"这 X 条会跟着一起没"
+    提供依据（卸载后**整包**消失，不是逐条删）。
     """
     m = meta()
     out: list[dict] = []
@@ -133,6 +151,29 @@ def list_samples() -> list[dict]:
                     "tags": (info or {}).get("tags") or (["导入"] if not builtin else []),
                     "duration_s": duration_s(f),
                     "builtin": builtin,
+                    "pack": "",
+                }
+            )
+    for pack in sfx_packs.list_packs():
+        if pack.get("broken"):
+            continue  # 坏包不进格子（它仍出现在 /packs 列表里，带原因）
+        pid = pack["id"]
+        pname = str(pack.get("name") or pid)
+        smeta = pack.get("sample_meta") or {}
+        for stem in sfx_packs.sample_stems(pid):
+            f = sfx_packs.resolve_sample(pid, stem)
+            if f is None:  # pragma: no cover —— 刚 glob 出来的文件
+                continue
+            info = smeta.get(stem) if isinstance(smeta.get(stem), dict) else {}
+            out.append(
+                {
+                    "id": f"{pid}/{stem}",
+                    "name": info.get("name") or stem,
+                    # 没写标签就用包名当标签：格子上至少能看出"这条来自哪"
+                    "tags": info.get("tags") or [pname],
+                    "duration_s": duration_s(f),
+                    "builtin": False,
+                    "pack": pid,
                 }
             )
     return out

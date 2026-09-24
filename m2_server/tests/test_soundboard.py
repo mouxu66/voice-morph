@@ -27,6 +27,7 @@ if str(_M2) not in sys.path:
     sys.path.insert(0, str(_M2))
 
 import sfx_lib  # noqa: E402
+import sfx_packs  # noqa: E402
 import soundboard  # noqa: E402
 
 SR = 48000
@@ -88,6 +89,10 @@ def _isolated(tmp_path, monkeypatch):
     （`docs/犯错档案-工程.md` §8.36 的同一个形状）。
     """
     monkeypatch.setattr(sfx_lib, "IMPORT_DIR", tmp_path / "imported")
+    # 音效包目录（`sfx_packs` 才是它的 owner，同 `IMPORT_DIR` 的道理）。
+    # 不打的后果不是"测试失败"，而是用例读到**用户真装的包**：`catalog` 的条目数
+    # 会随用户装过什么而变，断言"出厂 6 条"的用例会毫无线索地红。
+    monkeypatch.setattr(sfx_packs, "PACKS_DIR", tmp_path / "packs")
     monkeypatch.setattr(soundboard, "STATS_FILE", tmp_path / "stats.json")
     monkeypatch.setattr(soundboard, "_proc", None)
     yield
@@ -127,8 +132,13 @@ def test_catalog_lists_the_six_factory_samples(client):
         assert 0.5 <= it["duration_s"] <= 2.0
         assert it["name"] and it["tags"]
         assert it["count"] == 0
-        # 目录枚举**不给文件系统信息**（路径拼接在服务端，前端只拿 id）
-        assert set(it) == {"id", "name", "tags", "duration_s", "count", "builtin"}
+        # 目录枚举**不给文件系统信息**（路径拼接在服务端，前端只拿 id）。
+        # 2026-09-24 加了两个字段：`pack`（来源包 id，界面按包标出来源）/`removable`
+        # （能不能单条删）。两者都不含路径，所以这条守卫的本意（不泄路径）不变 ——
+        # 它锁的是**形状**，加字段要在这里显式确认一次，这正是它该有的摩擦。
+        assert set(it) == {
+            "id", "name", "tags", "duration_s", "count", "builtin", "pack", "removable"
+        }
 
 
 def test_factory_manifest_matches_sample_files():
