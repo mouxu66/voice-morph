@@ -348,3 +348,47 @@ describe("声板预混模式（发送前把音效烘进音频）", () => {
     expect(panelSrc).toContain("sb.premixError")
   })
 })
+
+// ------------------------------------------------ 特效声板的主场景：实时变声页
+
+describe("特效声板挂在实时变声页（主场景：边变声边打音效）", () => {
+  const routeSrc = readRel(path.join("pages", "Live", "index.tsx"))
+  const liveSrc = readRel(path.join("pages", "Live", "LivePage.tsx"))
+  const cascadeSrc = readRel(path.join("pages", "Cascade", "CascadePage.tsx"))
+
+  it("★ 声板按 sound.fx-board 门控；本页属 sound.rvc-live —— **不许**按它门控", () => {
+    // 同 OfflineVc 前两个 tab 的判据：Live 路由由 `sound.rvc-live` 认领，关掉它整页都不存在，
+    // 所以「宿主开着」在这一页恒真 —— 再按它门控只是把还能用的功能从界面上藏起来。
+    expect(routeSrc).toContain('pluginVisible(catalog, "sound.fx-board")')
+    expect(routeSrc).not.toContain('pluginVisible(catalog, "sound.rvc-live")')
+    expect(routeSrc).toContain("useSoundboard(fxBoardOn)")
+  })
+
+  it("hook 只在路由层调一次，两个 tab 共用同一个实例", () => {
+    // 各调一次 = 两回预热 + 两回目录请求，且两块的「正在播」高亮各说各话（Tts 页同一条判据）。
+    expect(routeSrc.match(/useSoundboard\(/g)?.length).toBe(1)
+    expect(routeSrc).toContain("<LivePage {...live} soundboard={soundboard} />")
+    expect(routeSrc).toContain("<CascadePage {...qwen} soundboard={soundboard} />")
+  })
+
+  it("两个 tab 的控制台里各挂一块（RVC 实时与千问变声都是实时链路）", () => {
+    expect(liveSrc.match(/<SoundboardPanel/g)?.length).toBe(1)
+    expect(cascadeSrc.match(/<SoundboardPanel/g)?.length).toBe(1)
+    expect(liveSrc).toContain("sb={p.soundboard}")
+    expect(cascadeSrc).toContain("sb={p.soundboard}")
+  })
+
+  it("★ 实时页只给实时档，不给预混（这里没有「要混的那条合成产物」）", () => {
+    // 预混的输入是一条 `tts_*.wav` 产物；实时链路里根本没有这一步，
+    // 硬挂上去只会渲染出一个按下去必然 4xx 的按钮。
+    expect(liveSrc).not.toContain("allowPremix")
+    expect(cascadeSrc).not.toContain("allowPremix")
+  })
+
+  it("★ Live 页要说明「音效从 CABLE 出去」，否则用户以为点了没反应", () => {
+    // 默认 hint 写的是"与人声一起被微信录走"；实时页的主场景是微信/游戏两可，
+    // 而且开「自我监听」时自己耳机里也听得到（回环进程 tap 的正是 CABLE Output）。
+    // 这句是「为什么我听不到」的唯一出口，所以钉住它。
+    expect(liveSrc).toContain("开「自我监听」")
+  })
+})

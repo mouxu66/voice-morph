@@ -23,6 +23,8 @@ import {
 } from "lucide-react"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import type { useLive } from "@/pages/Live/useLive"
+import type { useSoundboard } from "@/pages/Tts/useSoundboard"
+import { SoundboardPanel } from "@/pages/Tts/SoundboardPanel"
 import { PageShell } from "@/components/layout/PageShell"
 import { AuditionEntry } from "@/components/AuditionEntry"
 import { ErrorPanel } from "@/components/ErrorPanel"
@@ -133,7 +135,9 @@ function ActionButton({
   )
 }
 
-export function LivePage(p: ReturnType<typeof useLive>) {
+export function LivePage(
+  p: ReturnType<typeof useLive> & { soundboard: ReturnType<typeof useSoundboard> },
+) {
   const voiceName = p.current?.display_name ?? null
   // 变声按钮：模型就绪就能开；若正在跑的是别的音色，需先停止才能切
   const liveOnOtherVoice = p.liveOn && p.liveExp && p.liveExp !== p.selectedExp
@@ -452,6 +456,16 @@ export function LivePage(p: ReturnType<typeof useLive>) {
                 模型加载中（约 10~20 秒）… 就绪后对着麦克风说话即可变声。
               </p>
             )}
+
+            {/* 特效声板（`sound.fx-board`）：边变声边打音效 —— 这个插件的主场景。
+                它写进 CABLE Input，与变声后的声音由系统混音器混合，微信/游戏从
+                CABLE Output 取到的就是混好的结果；开「自我监听」时自己耳机里也听得到
+                （回环进程 tap 的正是 CABLE Output）—— hint 必须说清这点，
+                否则用户会以为"点了没声音"。 */}
+            <SoundboardPanel
+              sb={p.soundboard}
+              hint="点一下即出声，和你变声后的声音一起进微信/游戏；开「自我监听」你自己也听得到"
+            />
 
             {/* 自我监听：变声运行中可随时开关，让自己在耳机里听到变声效果 */}
             {p.liveOn && p.liveReady && (

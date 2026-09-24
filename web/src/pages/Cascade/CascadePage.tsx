@@ -15,6 +15,8 @@ import {
 } from "lucide-react"
 import type { ReactNode } from "react"
 import type { useCascade } from "@/pages/Cascade/useCascade"
+import type { useSoundboard } from "@/pages/Tts/useSoundboard"
+import { SoundboardPanel } from "@/pages/Tts/SoundboardPanel"
 import { cn } from "@/lib/utils"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { VoiceSourceBadge } from "@/components/voice-studio/VoiceSourceBadge"
@@ -111,7 +113,9 @@ function latencyTone(s: number | undefined): "good" | "warn" | "bad" | "default"
   return "bad"
 }
 
-export function CascadePage(p: ReturnType<typeof useCascade>) {
+export function CascadePage(
+  p: ReturnType<typeof useCascade> & { soundboard: ReturnType<typeof useSoundboard> },
+) {
   const s = p.status
   const running = p.running
   const stage = running ? (s?.stage ?? "init") : "idle"
@@ -308,6 +312,13 @@ export function CascadePage(p: ReturnType<typeof useCascade>) {
                 {p.starting ? "正在启动…" : warming ? "模型加载中，就绪后自动开始…" : "开始级联变声"}
               </button>
             )}
+
+            {/* 特效声板（`sound.fx-board`）：边变声边打音效 —— 与 RVC 实时 tab 同一个主场景。
+                声板与合成出来的目标音色一起进 CABLE，微信/游戏听到的就是混好的那一路。 */}
+            <SoundboardPanel
+              sb={p.soundboard}
+              hint="点一下即出声，和你说出来的目标音色一起进虚拟声卡（微信/游戏听到的是混好的那一路）"
+            />
 
             {/* 链路图 */}
             <div className="rounded-xl border border-border bg-background/50 px-4 py-4">
