@@ -100,19 +100,20 @@ export function useSoundboard(enabled = true) {
   useEffect(() => {
     if (!enabled || !backendUp) return
     let alive = true
+    // 目录与包列表**绝不串在预热后面**：两者是无关的两件事 ——
+    // `/soundboard/catalog` 是毫秒级只读接口（真机实测 25ms），而预热要拉起常驻播放器、
+    // 走一次**没有超时**的就绪握手（`_spawn_worker` 里 `proc.stdout.readline()`）。
+    // 一旦握手慢或卡住，`await warm` 不返回 → 目录请求永远发不出去 →
+    // 面板长时间停在"共 0 条（出厂 0）"，用户以为"这功能没有"（2026-09-25 真机踩到）。
     void (async () => {
-      // 预热：把常驻播放器与素材读进内存。不预热的话第一次点击要付 ~2-3s 冷导入，
-      // 用户听到的是"点了没反应"。
-      try {
-        await soundboardWarm()
-      } catch {
-        /* 设备/venv 缺失时预热失败很正常；真点播放会给出可读报错 */
-      }
-      if (alive) {
-        await refresh()
-        await refreshPacks()
-      }
+      if (!alive) return
+      await refresh()
+      if (!alive) return
+      await refreshPacks()
     })()
+    // 预热独立在后台跑：它只影响"第一次点击"的延迟（冷导入 ~2-3s），
+    // 失败也很正常（设备/venv 缺失），真点播放时后端会给出可读报错。
+    void soundboardWarm().catch(() => {})
     return () => {
       alive = false
     }

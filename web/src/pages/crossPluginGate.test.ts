@@ -223,6 +223,15 @@ describe("特效声板的 `sound.fx-board` 门控", () => {
     expect(hookSrc).toContain("if (!enabled || !backendUp) return")
   })
 
+  it("★ 拉目录不串在预热之后：预热握手可能长时间不返回，面板不该陪着空等", () => {
+    // `/soundboard/catalog` 是毫秒级只读接口（真机实测 25ms），而预热要拉起常驻播放器、
+    // 走一次**没有超时**的就绪握手（`m2_server/soundboard.py::_spawn_worker` 的 `readline()`）。
+    // 串行 `await soundboardWarm()` 之后再取数时，握手慢/卡住就等于把目录请求永远挂在后面，
+    // 面板停成"共 0 条（出厂 0）"——2026-09-25 真机踩到，用户直接以为这功能不存在。
+    expect(hookSrc).not.toContain("await soundboardWarm()")
+    expect(hookSrc).toContain("void soundboardWarm().catch(() => {})")
+  })
+
   it("★ 路由层把「宿主开着」与「自己开着」相与后才启用（hook 只调一次）", () => {
     const routeSrc = readRel(path.join("pages", "Tts", "index.tsx"))
     expect(routeSrc).toContain('pluginVisible(catalog, "sound.fx-board")')
