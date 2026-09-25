@@ -51,6 +51,7 @@ PIPELINE_STATE = {
     "error": "",
     "file": "",  # 当前正在处理的素材名（失败可诊断用）
     "qc": {},  # 流水线跑完后的切片质检汇总（clip_qc.score_prefixes 产出）
+    "verdict": {},  # 失败可诊断结论（quality_verdict.build_quality_verdict 产出）
 }
 pipeline_cancel = threading.Event()
 pipeline_lock = threading.Lock()

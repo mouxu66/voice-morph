@@ -62,6 +62,25 @@ def _pipeline_error_hint(e: Exception, step: str = "", file_name: str = "") -> s
     return f"{subject} 流水线出错：{e}。建议：按上方信息排查；" f"若为模型下载/网络类错误，请重试。"
 
 
+def _attach_verdict(**kw) -> None:
+    """算出诊断结论并挂到 PIPELINE_STATE["verdict"]（P2-1）。
+
+    ★ 这个函数**永不抛**：诊断器自己崩掉比没有诊断器更糟 —— 用户会以为整个后端挂了，
+    而实际上素材早就处理完了。所以 import/计算/落盘全在同一个 try 里兜底。
+
+    与 `_pipeline_error_hint` 的分工：那个翻译**抛出来的**异常（ffmpeg 挂了），
+    这个解释**不抛异常的**失败（素材是纯伴奏、切片全是 D 级）。
+    """
+    try:
+        import quality_verdict
+
+        # 写进 dict 而不是整体重新赋值：PIPELINE_STATE 是**原地共享**的 dict
+        # （见 runtime 模块注释），整体赋值会断开其他地方持有的引用。
+        PIPELINE_STATE["verdict"] = quality_verdict.build_quality_verdict(**kw)
+    except Exception:  # noqa: BLE001
+        PIPELINE_STATE["verdict"] = {}
+
+
 def pipeline_job(videos: list[Path]):
     """流水线任务体：逐个素材 提轨→去BGM→切片，进度写 PIPELINE_STATE。
 
@@ -99,19 +118,23 @@ def pipeline_job(videos: list[Path]):
         )
         # 切片质检：后台静默跑，失败不影响流水线结果
         prefixes = [clip_prefix(v.stem) for v in videos]
+        # 先给一份「还没质检」的结论：质检线程要几十秒（逐条算 SNR），
+        # 这段时间里界面不该空白 —— 先告诉用户"切出来了但还没判定好坏"
+        _attach_verdict(
+            summary={"total": clips, "ok": 0, "grades": {"A": 0, "B": 0, "C": 0, "D": 0}},
+            status="running" if clips else "done",
+        )
         threading.Thread(target=_qc_after_pipeline, args=(prefixes,), daemon=True).start()
     except Exception as e:
         if type(e).__name__ == "PipelineCancelled":
             update_pipeline(status="cancelled", step="", message="已取消，已完成的片段会保留")
+            _attach_verdict(status="cancelled")
         else:
-            update_pipeline(
-                status="error",
-                step="",
-                message="流水线出错",
-                error=_pipeline_error_hint(
-                    e, PIPELINE_STATE.get("step", ""), PIPELINE_STATE.get("file", "")
-                ),
+            hint = _pipeline_error_hint(
+                e, PIPELINE_STATE.get("step", ""), PIPELINE_STATE.get("file", "")
             )
+            update_pipeline(status="error", step="", message="流水线出错", error=hint)
+            _attach_verdict(status="error", error=hint)
     finally:
         update_pipeline(running=False, file="")
 
@@ -127,23 +150,22 @@ def _qc_after_pipeline(prefixes: list[str]):
 
         summary = clip_qc.score_prefixes(prefixes, CLIPS_DIR)
         update_pipeline(qc=summary)
+        # P2-1：质检结果一出来就把「结论 + 下一步」挂上去，供前端直接渲染。
+        # 这里**不再自己拼 msg 的建议文案** —— 那套 if/elif 与 quality_verdict 重复，
+        # 且两处口径分开演化（比如"可用切片偏少"的阈值）必然打架。
+        # message 只留客观数字，解释全权交给 verdict。
+        _attach_verdict(summary=summary, status="done")
         if summary.get("total"):
             total = summary["total"]
             ok = summary.get("ok", 0)
             grades = summary.get("grades", {}) or {}
-            msg = (
-                f"流水线完成，切片 {total} 条，质检可用（A/B）{ok} 条"
-                f"（A {grades.get('A', 0)} / B {grades.get('B', 0)} / "
-                f"C {grades.get('C', 0)} / D {grades.get('D', 0)}）"
+            update_pipeline(
+                message=(
+                    f"流水线完成，切片 {total} 条，质检可用（A/B）{ok} 条"
+                    f"（A {grades.get('A', 0)} / B {grades.get('B', 0)} / "
+                    f"C {grades.get('C', 0)} / D {grades.get('D', 0)}）"
+                )
             )
-            # P2-1：根据质检分布给引导建议，避免"切出来了却不知道为啥难用"
-            if ok == 0:
-                msg += "；质检无可用切片，D 级多为他人声/伴奏残留——建议换一段人声清晰的素材"
-            elif ok / total < 0.25:
-                msg += "；可用切片偏少——建议换一段目标说话人占多数的素材"
-            elif grades.get("D", 0) and grades["D"] / total > 0.6:
-                msg += "；D 级占比过高（多为他人声/伴奏残留），素材以非目标人声为主"
-            update_pipeline(message=msg)
     except Exception:  # noqa: BLE001
         pass
 

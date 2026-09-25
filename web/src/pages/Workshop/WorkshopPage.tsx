@@ -8,6 +8,7 @@ import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { StudioEmpty } from "@/components/voice-studio/StudioEmpty"
 import { PageShell } from "@/components/layout/PageShell"
 import { ErrorPanel } from "@/components/ErrorPanel"
+import { VerdictCard } from "@/components/VerdictCard"
 
 const SPEAKER_COLORS = ["#22d3ee", "#a78bfa", "#f472b6", "#34d399", "#fbbf24", "#60a5fa"]
 
@@ -89,6 +90,7 @@ export function WorkshopPage(p: ReturnType<typeof useWorkshop>) {
       {p.pipeline.status === "cancelled" && <p className="mt-2 text-xs text-muted-foreground">已取消，可稍后重试。</p>}
     </div>}
 
+    {p.verdict && <VerdictCard v={p.verdict} onDismiss={p.dismissVerdict} />}
     {p.feedback && <div className="mt-4 flex items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5 text-xs text-primary animate-in fade-in slide-in-from-top-2 duration-300"><CircleAlert className="h-3.5 w-3.5" />{p.feedback}</div>}
     {p.errorMessage && <ErrorPanel title="音色工坊操作失败" detail={p.errorMessage} />}
 

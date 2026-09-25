@@ -370,10 +370,23 @@ def score_material(
 def score_prefixes(prefixes, clips_dir, force: bool = False) -> dict:
     """批量打分（流水线跑完后自动调用，不含声纹维度，保持轻量）。
 
-    返回汇总 {materials, total, ok, grades:{A,B,C,D}}。
+    返回汇总 {materials, total, ok, grades:{A,B,C,D}, top_reasons}。
+
+    top_reasons（P2-1 加）：把**不合格切片的判废原因**按科目聚合成
+    {"「信噪比偏低（底噪或伴奏残留）」类的原始文案": 次数}，供 `quality_verdict`
+    判定「这段素材主要坏在哪」。为什么不直接给判定码：本模块只负责**客观测量**，
+    「噪声多还是时长碎」属于解释层，换一套话术不该动这里（职责切分见 quality_verdict
+    模块注释）。空 dict 表示没有 D 级切片 —— 与"没跑过质检"不同，故不省略本键。
     """
     clips_dir = Path(clips_dir)
-    summary = {"materials": 0, "total": 0, "ok": 0, "grades": {"A": 0, "B": 0, "C": 0, "D": 0}}
+    summary = {
+        "materials": 0,
+        "total": 0,
+        "ok": 0,
+        "grades": {"A": 0, "B": 0, "C": 0, "D": 0},
+        "top_reasons": {},
+    }
+    reasons: dict[str, int] = {}
     for pre in prefixes:
         if not pre:
             continue
@@ -388,7 +401,15 @@ def score_prefixes(prefixes, clips_dir, force: bool = False) -> dict:
         summary["total"] += payload.get("count", 0)
         for k, v in (payload.get("grades") or {}).items():
             summary["grades"][k] = summary["grades"].get(k, 0) + v
+        # 只收 D 级的 reasons：A/B 级的 reasons 按约定是空的，C 级是"综合分过低"
+        # 这种无行动价值的兜底文案 —— 混进来会把真正的主导原因稀释掉
+        for it in (payload.get("clips") or {}).values():
+            if it.get("grade") != "D":
+                continue
+            for r in it.get("reasons") or []:
+                reasons[str(r)] = reasons.get(str(r), 0) + 1
     summary["ok"] = summary["grades"]["A"] + summary["grades"]["B"]
+    summary["top_reasons"] = reasons
     return summary
 
 

@@ -14,13 +14,14 @@ import {
   uploadVideo,
   type DiarizeResult,
   type PipelineStatus,
+  type PipelineVerdict,
 } from "@/api/client"
 import { useAppStore } from "@/store/useAppStore"
 import { friendlyError } from "@/lib/errors"
 import type { ClipItem, VideoItem } from "@/types"
 
 const IDLE_PIPELINE: PipelineStatus = {
-  running: false, status: "idle", step: "", message: "", percent: 0, clips: 0, error: "",
+  running: false, status: "idle", step: "", message: "", percent: 0, clips: 0, error: "", verdict: null,
 }
 
 /** 素材切片前缀：新切片用完整素材名（去文件系统非法字符，≤80 字符），旧切片用 stem[:12]。 */
@@ -56,6 +57,10 @@ export function useWorkshop() {
 
   // 流水线（后台运行 + 轮询进度）
   const [pipeline, setPipeline] = useState<PipelineStatus>(IDLE_PIPELINE)
+  // P2-1：跑完后的诊断结论（含「跑完了但结果差」这类不抛异常的失败）。
+  // 单独存一份而不是只读 `pipeline.verdict`：流水线一重启就被 IDLE 覆盖，
+  // 而诊断卡应该留在页面上直到用户下一条命令，否则刚看到结论就消失了。
+  const [verdict, setVerdict] = useState<PipelineVerdict | null>(null)
   const pollRef = useRef<number | null>(null)
 
   // 素材上传
@@ -92,6 +97,7 @@ export function useWorkshop() {
   const startPipeline = async (files?: string[]) => {
     setErrorMessage("")
     setFeedback("")
+    setVerdict(null)
     try {
       await runPipeline(files)
       setPipeline({ ...IDLE_PIPELINE, running: true, status: "running", percent: 1, message: files?.length ? `只处理 ${files.length} 个素材…` : "正在启动流水线…" })
@@ -101,8 +107,13 @@ export function useWorkshop() {
           setPipeline(st)
           if (!st.running && st.status !== "running") {
             stopPolling()
-            if (st.status === "done") setFeedback(st.message)
-            if (st.status === "error") setErrorMessage(st.error || "流水线出错")
+            // P2-1：结论卡统一承载「为什么 + 下一步」。有 verdict 时不再单独弹
+            // errorMessage —— 否则同一件事在页面上出现两遍（诊断卡说"素材有爆音"、
+            // 红色报错框再把原文重复一次），用户要读两遍才知道该怎么办。
+            const v = st.verdict ?? null
+            setVerdict(v)
+            if (st.status === "done" && !v) setFeedback(st.message)
+            if (st.status === "error" && !v) setErrorMessage(st.error || "流水线出错")
             await loadWorkshop()
           }
         } catch (e) {
@@ -123,6 +134,7 @@ export function useWorkshop() {
   const resetPipeline = useCallback(() => {
     stopPolling()
     setPipeline(IDLE_PIPELINE)
+    setVerdict(null)
   }, [stopPolling])
 
   // 素材上传
@@ -336,6 +348,7 @@ export function useWorkshop() {
     backendUp, videos, clips, visibleClips, loading, errorMessage, feedback, qualityFilter, setQualityFilter,
     reviewMode, setReviewMode, selectedClips, selectedItems, selectedDuration, decisions,
     pipeline, startPipeline, stopPipeline, resetPipeline,
+    verdict, dismissVerdict: () => setVerdict(null),
     uploading, uploadProgress, dragging, setDragging, fileInputRef, handleFiles, openRawFolder, exportRvc,
     deleteVideo,
     loadWorkshop, toggleClip, clearSelectedClips, setDecision,

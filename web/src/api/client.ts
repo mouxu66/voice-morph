@@ -194,6 +194,21 @@ export async function deleteRawVideo(name: string, force: boolean): Promise<{ ok
   return jsonFetch(`/raw_videos/${encodeURIComponent(name)}?force=${force}`, { method: "DELETE" });
 }
 
+/** P2-1 失败可诊断结论：由后端 `quality_verdict.build_quality_verdict()` 产出。
+ *  `verdict` 是机器判定码，配色/文案查 `lib/qualityVerdict.ts` 的 VERDICT_META ——
+ *  不要在这里再写一份 label（两份 label 必然对不上）。 */
+export type PipelineVerdict = {
+  verdict: string;
+  title: string;
+  detail: string;
+  actions: string[];
+  ok_ratio: number;
+  total: number;
+  ok: number;
+  grades: { A: number; B: number; C: number; D: number };
+  reason: string;
+};
+
 export type PipelineStatus = {
   running: boolean;
   status: "idle" | "running" | "done" | "cancelled" | "error";
@@ -202,6 +217,8 @@ export type PipelineStatus = {
   percent: number;
   clips: number;
   error: string;
+  /** 可能缺省（旧后端 / 未跑过质检）—— 前端一律当作「没有结论」处理 */
+  verdict?: PipelineVerdict | null;
 };
 
 export async function runPipeline(files?: string[]): Promise<{ ok: boolean; started: boolean }> {
