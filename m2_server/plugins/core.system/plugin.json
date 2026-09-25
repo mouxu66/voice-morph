@@ -14,6 +14,11 @@
       "module": "Home",
       "export": "HomeRoute",
       "nav": { "label": "首页", "icon": "Home", "group": "start", "order": 10 }
+    },
+    {
+      "path": "/tools",
+      "module": "CapabilityIndex",
+      "export": "CapabilityIndexRoute"
     }
   ],
   "legacy_routes": [],

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { Cable, Layers, Menu, RotateCcw, Settings2, X } from "lucide-react"
+import { Boxes, Cable, Layers, Menu, RotateCcw, Settings2, X } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 import { rvcLiveReset } from "@/api/client"
 import { StudioNav } from "@/components/voice-studio/StudioNav"
@@ -185,6 +185,19 @@ export function AppChrome({
         {/* 「能力」常驻入口 —— 见上面 `capCounts` 那段注释：
             插件化的感知面全靠这一屏，它不能只在"有东西被关掉"时才出现。
             计数口径与面板头一致；只有"未加载"配得上颜色。 */}
+        {/* 能力索引入口：给"侧栏没放的那些能力"一条能找到的路。
+            调研结论：10 个能力没有导航入口，只能靠碰巧滑到某个 tab 被发现 ——
+            渐进式披露允许第三层功能不自动露出，但前提是**得有一条路径找得到它们**。
+            刻意不放进主导航：索引页是"我要找某个东西"时才来的地方，
+            常驻侧栏会把刚做完的降噪又还回去。 */}
+        <Link
+          to="/tools"
+          title="这个应用能做的事，一份完整清单"
+          className="mb-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs text-muted-foreground transition hover:bg-muted/60 hover:text-foreground"
+        >
+          <Boxes className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">能做的事</span>
+        </Link>
         <button
           type="button"
           onClick={openCapabilities}
