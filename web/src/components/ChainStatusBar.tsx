@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
 import { ArrowRight, Check, CircleAlert, Loader2, RefreshCw } from "lucide-react"
-import { Link } from "react-router-dom"
 import { getAudioStatus, getHealth, sendChainCheck, ttsChainCheck } from "@/api/client"
 import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
 import { cn } from "@/lib/utils"
@@ -210,11 +209,21 @@ export function ChainStatusBar({ className }: { className?: string }) {
 
       {badCount > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-border pt-3">
-          <Link to="/home" className="inline-flex items-center gap-1 text-[11px] font-medium text-primary transition hover:opacity-80">
-            去做一次完整体检 <ArrowRight className="h-3 w-3" />
-          </Link>
+          {/* ★ 这里此前是 `to="/home"` —— 而这个组件本身**就长在首页上**，
+              点了等于原地跳一下，是条纯死链（用户 2026-09-25 点名）。
+              改成本仓既有的跨组件事件约定（同 SettingsPanel 的 replay-* 系列）：
+              派发事件 → App.tsx 收到后打开发送链路自检弹窗。
+              为什么不直接 import 弹窗：弹窗的开关状态集中在 App.tsx（见那里的注释
+              「弹窗开关集中在这里」），组件自己去开会让状态出现两个源。 */}
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new Event("open-send-chain"))}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-primary transition hover:opacity-80"
+          >
+            去看逐项详情并修复 <ArrowRight className="h-3 w-3" />
+          </button>
           <span className="text-[10px] text-muted-foreground">
-            大部分"送不进去"的问题都能在那里定位
+            大部分"送不进去"的问题都能在那里一键修好
           </span>
         </div>
       )}

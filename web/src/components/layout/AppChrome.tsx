@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
-import { Boxes, Cable, Layers, Menu, RotateCcw, Settings2, X } from "lucide-react"
+import { Boxes, Layers, Menu, Settings2, X } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
-import { rvcLiveReset } from "@/api/client"
 import { StudioNav } from "@/components/voice-studio/StudioNav"
 import { SettingsPanel } from "@/components/layout/SettingsPanel"
 import { usePluginCatalog } from "@/lib/pluginRoutes"
@@ -89,7 +88,6 @@ export function AppChrome({
   onOpenLicenses,
   onOpenUpdate,
   onOpenCapabilities,
-  onOpenChain,
   version,
   canCheckUpdate,
 }: {
@@ -103,7 +101,6 @@ export function AppChrome({
   onOpenLicenses: () => void
   onOpenUpdate: () => void
   onOpenCapabilities: () => void
-  onOpenChain: () => void
   version: string | null
   canCheckUpdate: boolean
 }) {
@@ -114,8 +111,6 @@ export function AppChrome({
   const [theme, setTheme] = useState<ThemeMode>(getStoredTheme())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [restoring, setRestoring] = useState(false)
-  const [restoreMsg, setRestoreMsg] = useState("")
   const pageTitle = pageTitles[pathname] ?? "首页"
   const online = serviceState === "online"
 
@@ -147,27 +142,14 @@ export function AppChrome({
     setDrawerOpen(false)
   }, [pathname])
 
-  const handleRestoreAudio = useCallback(async () => {
-    setRestoring(true)
-    setRestoreMsg("")
-    try {
-      const r = await rvcLiveReset()
-      if (!r.ok) {
-        setRestoreMsg(`恢复失败：${r.error ?? "未知错误"}。可到 Windows 声音设置手动选择默认设备，或重启电脑。`)
-        return
-      }
-      setRestoreMsg("已恢复默认音频设备（已打开的微信/游戏需退出重开才生效）")
-    } catch (error) {
-      setRestoreMsg(`恢复失败：${error instanceof Error ? error.message : String(error)}`)
-    } finally {
-      setRestoring(false)
-      window.setTimeout(() => setRestoreMsg(""), 6000)
-    }
-  }, [])
-
   const sidebarBody = (
     <>
-      <Link to="/home" className="flex items-center gap-2.5 px-5 py-4">
+      {/* 品牌区 —— **刻意不是链接**。
+          它此前是 `<Link to="/home">`，而底下导航第一项也叫「首页」、指向同一个 /home ——
+          同一个目的地两个入口还挨在一起，是纯重复（用户 2026-09-25 点名的那处）。
+          留导航项、把 logo 降级成纯装饰：导航项有高亮态能告诉用户"你现在在哪"，
+          logo 什么都没有，它本来就只是个牌子。 */}
+      <div className="flex items-center gap-2.5 px-5 py-4">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[#1e293b] shadow-md">
           <img src="./icon-192.png" alt="" className="h-8 w-8 object-contain" />
         </span>
@@ -175,7 +157,7 @@ export function AppChrome({
           <span className="block truncate text-sm font-semibold text-foreground">变声工坊</span>
           <span className="block truncate text-[11px] text-muted-foreground">本地音色工作台</span>
         </span>
-      </Link>
+      </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-2">
         <StudioNav variant="sidebar" simpleMode={simpleMode} onNavigate={() => setDrawerOpen(false)} />
@@ -217,17 +199,6 @@ export function AppChrome({
             </span>
           ) : null}
         </button>
-        <button
-          type="button"
-          onClick={() => void handleRestoreAudio()}
-          disabled={restoring}
-          title="变声会把系统默认声卡切到虚拟声卡，这里一键切回你原来的设备"
-          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs text-muted-foreground transition hover:bg-muted/60 hover:text-foreground disabled:opacity-60"
-        >
-          <RotateCcw className={cn("h-3.5 w-3.5 shrink-0", restoring && "animate-spin")} />
-          {restoring ? "正在恢复…" : "一键恢复音频"}
-        </button>
-        {restoreMsg && <p className="mt-1 px-3 text-[11px] leading-4 text-primary">{restoreMsg}</p>}
       </div>
     </>
   )
@@ -274,7 +245,12 @@ export function AppChrome({
             >
               <Menu className="h-4 w-4" />
             </button>
-            <Link to="/home" className="flex shrink-0 items-center gap-2 lg:hidden">
+            {/* 窄屏唯一的主页入口 —— 侧栏在 lg 以下整体 hidden，抽屉关上时
+                没有别的路回首页（顶栏那个 h1 是"你在哪"的指示，不是链接）。
+                所以这个 logo **保留可点**，但去掉旁边的「变声工坊」字样：
+                它紧挨着 h1 页标题，窄屏下"变声工坊 首页"四个字并排是纯噪音，
+                而品牌名在桌面侧栏里已经写全了。（2026-09-25 精简） */}
+            <Link to="/home" aria-label="回首页" className="flex shrink-0 items-center lg:hidden">
               <span className="flex h-7 w-7 items-center justify-center overflow-hidden rounded-md bg-[#1e293b]">
                 <img src="./icon-192.png" alt="" className="h-6 w-6 object-contain" />
               </span>
@@ -305,15 +281,6 @@ export function AppChrome({
               <span className="hidden sm:inline">
                 {online ? `服务在线${cuda ? " · CUDA" : ""}` : serviceState === "starting" ? "服务启动中" : "服务离线"}
               </span>
-            </button>
-            <button
-              type="button"
-              onClick={onOpenChain}
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm transition hover:border-primary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              aria-label="发送链路自检"
-              title="发送链路自检：变声能不能送进微信/QQ/游戏"
-            >
-              <Cable className="h-4 w-4" />
             </button>
             <button
               type="button"

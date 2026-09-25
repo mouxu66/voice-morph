@@ -118,6 +118,23 @@ export default function App() {
     return () => window.removeEventListener("replay-pet-onboarding", onReplay)
   }, [sayPetOnboarding])
 
+  /**
+   * 首页链路状态条 → 打开发送链路自检弹窗。
+   *
+   * 状态条是**摘要**（四格结论），自检弹窗是**详情 + 一键修复**。两者不重复：
+   * 摘要放在首页常驻是为了"挑声音之前先知道通不通"，详情放弹窗是因为带修复动作。
+   * 但状态条上的入口此前写成 `to="/home"` —— 它自己就在首页上，点了原地不动。
+   *
+   * 走事件而不是 prop 透传：HomePage 是插件清单动态渲染的，把 onOpenChain 一路
+   * 透传到 ChainStatusBar 要穿过 3 层；而本仓已有 replay-* 这套事件约定
+   * （见 SettingsPanel），沿用它更省。
+   */
+  useEffect(() => {
+    const onOpen = () => setChainOpen(true)
+    window.addEventListener("open-send-chain", onOpen)
+    return () => window.removeEventListener("open-send-chain", onOpen)
+  }, [])
+
   // ---- 页面路由由能力清单驱动（插件化第 4 步）----
   // 清单里声明了「哪些能力存在、每个能力的页面在哪个模块、导出叫什么名字」，
   // 这里只负责把它变成 <Route>。见 lib/pluginRoutes.tsx 的三条注意事项。
@@ -149,7 +166,6 @@ export default function App() {
           return next
         })}
         onOpenEnv={() => setEnvOpen(true)}
-        onOpenChain={() => setChainOpen(true)}
         onOpenModel={() => setModelOpen(true)}
         onOpenStorage={() => setStorageOpen(true)}
         onOpenLicenses={() => setLicensesOpen(true)}

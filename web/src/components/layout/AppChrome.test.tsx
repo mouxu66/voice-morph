@@ -31,10 +31,6 @@ vi.mock("@/lib/pluginRoutes", () => ({
   usePluginCatalog: () => ({ state: h.catalog, reload: () => {} }),
 }))
 
-vi.mock("@/api/client", () => ({
-  rvcLiveReset: vi.fn(async () => ({ ok: true })),
-}))
-
 // 侧栏导航与设置抽屉都不是被测对象：桩掉它们，断言才能只盯着底栏那一条入口。
 vi.mock("@/components/voice-studio/StudioNav", () => ({
   StudioNav: () => <nav data-testid="studio-nav" />,
@@ -71,7 +67,6 @@ function renderChrome() {
         onOpenLicenses={() => {}}
         onOpenUpdate={() => {}}
         onOpenCapabilities={onOpenCapabilities}
-        onOpenChain={() => {}}
         version="0.2.4"
         canCheckUpdate={false}
       />
@@ -155,6 +150,61 @@ describe("AppChrome · 侧栏「能力」入口", () => {
     expect(capEntries()).toHaveLength(1)
     fireEvent.click(screen.getByRole("button", { name: "打开导航" }))
     expect(capEntries()).toHaveLength(2)
+  })
+})
+
+/**
+ * 去掉的重复入口 —— 2026-09-25 用户点名「首页又有一个，这些肯定不需要」后清理的。
+ *
+ * 这几条测试的意义是**反向的**：它们断言某个东西**不在**。通常不该这么写测试
+ * （"不存在"很容易被当成漏测），但这里成立，因为删掉的是**已经开花的重复**——
+ * 每个都对应界面上一处真实的重复入口，而"删了又被人手滑加回来"是这个仓库
+ * 反复出现过的模式（见 docs/犯错档案-工程.md 的"半新半旧"类教训）。
+ *
+ * 若不写这几条：将来谁想让 logo 重新可点（"别的应用都这样"）会一路绿灯，
+ * 而用户当时明确说过这处多余。
+ */
+describe("AppChrome · 已删除的重复入口不得回归", () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("★ 桌面侧栏品牌区不是链接——导航里的「首页」是唯一入口", () => {
+    h.catalog = { status: "ready", catalog: catalog() }
+    const { container } = renderChrome()
+
+    // 侧栏里唯一该指向 /home 的是 StudioNav（已桩成 nav），品牌区不能是 <a href="/home">。
+    // 用「文本含变声工坊」定位品牌区而非数 <a>：窄屏顶栏那个 logo **是**链接
+    // （见下一条），数总数会把两件事混成一个。
+    const brandText = Array.from(container.querySelectorAll("a")).filter((a) =>
+      (a.textContent ?? "").includes("变声工坊"),
+    )
+    expect(brandText).toHaveLength(0)
+  })
+
+  it("窄屏顶栏 logo 保留可点但不再带「变声工坊」字样——抽屉关上时它是唯一回首页的路", () => {
+    h.catalog = { status: "ready", catalog: catalog() }
+    renderChrome()
+
+    // 去掉字样不等于去掉入口：这是有意保留的，别误删
+    const homeLinks = screen.getAllByRole("link", { name: "回首页" })
+    expect(homeLinks).toHaveLength(1)
+    expect(homeLinks[0]).toHaveAttribute("href", "/home")
+    expect(homeLinks[0].textContent).not.toContain("变声工坊")
+  })
+
+  it("★ 侧栏底部不再有「一键恢复音频」——恢复动作只在自检弹窗里，那里会先说清当前设备", () => {
+    h.catalog = { status: "ready", catalog: catalog() }
+    renderChrome()
+
+    expect(screen.queryByText("一键恢复音频")).not.toBeInTheDocument()
+  })
+
+  it("★ 顶栏不再有「发送链路自检」图标——首页链路状态条是唯一入口", () => {
+    h.catalog = { status: "ready", catalog: catalog() }
+    renderChrome()
+
+    expect(screen.queryByRole("button", { name: "发送链路自检" })).not.toBeInTheDocument()
   })
 })
 

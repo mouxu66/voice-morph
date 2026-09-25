@@ -148,6 +148,23 @@ describe("链路状态条的门控（约定 ④）", () => {
     expect(barSrc).toContain("h.cuda === null")
     expect(barSrc).toContain("未装 torch")
   })
+
+  it("★ 出口不是死链 —— 状态条长在首页上，指向 /home 等于原地跳", () => {
+    // 2026-09-25：此前这里写 `to="/home"`，而本组件就在首页里渲染，
+    // 点了页面纹丝不动 —— 用户点名的那类"重复且没用"。
+    // 现在派发事件，由 App.tsx 打开发送链路自检弹窗（详情 + 一键修复）。
+    //
+    // ⚠️ 断言要连 `<Link` 一起匹配：注释里也提到了 `to="/home"`（就是解释为什么删它），
+    // 只查 `to="/home"` 会被自己的注释绊倒 —— 本仓踩过的"注释带坏门禁"类型。
+    expect(barSrc).not.toMatch(/<Link\b[^>]*to="\/home"/)
+    expect(barSrc).toContain('new Event("open-send-chain")')
+  })
+
+  it("事件有接收方 —— 发出去没人听也是死链", () => {
+    // App.tsx 必须挂监听，否则这条路径依然断
+    expect(appSrc).toContain('"open-send-chain"')
+    expect(appSrc).toContain("setChainOpen(true)")
+  })
 })
 
 describe("进阶折叠区：收起不是删除", () => {
