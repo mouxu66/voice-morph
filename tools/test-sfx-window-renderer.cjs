@@ -267,6 +267,24 @@ async function check(name, fn) {
     assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragMove").length, 1);
   });
 
+  await check("拖动不会「粘住」：blur / mouseleave / 窗口收起都要把拖动结束掉", () => {
+    // 不兜这三个，指针在窗口外松手后 dragging 会永远是 true ——
+    // 之后鼠标一动窗口就跟着跑，用户看不出原因也难以自恢复。
+    for (const ender of ["blur", "mouseleave"]) {
+      sfxCalls.length = 0;
+      el("bar").fire("mousedown", { button: 0, target: el("bar"), preventDefault() {} });
+      sandbox.window.fire(ender);
+      assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragEnd").length, 1, ender + " 应结束拖动");
+      sandbox.window.fire("mousemove");
+      assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragMove").length, 0,
+        ender + " 之后不该还在拖");
+    }
+    sfxCalls.length = 0;
+    el("bar").fire("mousedown", { button: 0, target: el("bar"), preventDefault() {} });
+    doc.fire("visibilitychange");
+    assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragEnd").length, 1, "收起时应结束拖动");
+  });
+
   await check("热键提示来自主进程（不在渲染层硬编码一份可能过期的快捷键）", async () => {
     await flush();
     assert.strictEqual(el("hk").textContent, "Control+Alt+S");

@@ -317,6 +317,11 @@
   // 拖动：整条标题栏都是把手。app-region: drag 在置顶透明窗上不可靠（pet.cjs 踩过），
   // 所以由渲染层报告按下/移动、主进程按光标屏幕坐标挪窗口。
   let dragging = false;
+  function endDrag() {
+    if (!dragging) return;
+    dragging = false;
+    window.sfx.dragEnd();
+  }
   bar.addEventListener("mousedown", (e) => {
     if (e.button !== 0 || e.target === closeBtn) return;
     dragging = true;
@@ -324,15 +329,17 @@
     e.preventDefault();
   });
   window.addEventListener("mousemove", () => { if (dragging) window.sfx.dragMove(); });
-  window.addEventListener("mouseup", () => {
-    if (!dragging) return;
-    dragging = false;
-    window.sfx.dragEnd();
-  });
+  window.addEventListener("mouseup", endDrag);
+  // 兜底：指针在窗口外松手、或窗口被收起时，mouseup 可能根本收不到。
+  // 不兜就会「粘住」—— 之后鼠标一动窗口就跟着跑，而用户看不出原因，
+  // 只能用热键收起再欢出（而「粘住」这件事本身不会自愈）。
+  window.addEventListener("blur", endDrag);
+  window.addEventListener("mouseleave", endDrag);
 
   // 窗口 hide/show 复用（不重载页面）：重新露面时重播入场动画，并重拉一次目录
   // （计数会变，也可能刚装了新的音效包）。
   document.addEventListener("visibilitychange", () => {
+    endDrag();   // 碰巧在拖动时被收起 / 重新露面：绝不能把拖动状态带过去
     if (document.hidden) return;
     card.classList.remove("enter");
     void card.offsetWidth;   // 强制回流，否则同名动画不会重播
