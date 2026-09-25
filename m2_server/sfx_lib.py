@@ -270,7 +270,8 @@ def mix_into(
     `inserts` 每项：`{sample, mode, at_s, gain}`
 
         mode=layer    叠加：`at_s` 秒处**贴上去**，长度不变（与实时声板同语义 ——
-                      Windows 共享模式混音就是这件事）
+                      Windows 共享模式混音就是这件事）。`at_s` 越过人声末尾时限为贴尾，
+                      并在返回的 notes 里说明（不静默改语义；那一声确实响了，只是位置变了）
         mode=prepend  拼在开头（"先炸一声，再说话"）
         mode=append   拼在结尾（"说完来一记掌声"）
 
@@ -317,6 +318,16 @@ def mix_into(
     else:
         out = out.copy()  # 别就地改调用方的数组（叠加会 += ）
     for off, y in layers:
+        # 越界**如实报告**（2026-09-25 加）：夹紧本身是对的（不制造一截静音尾巴），
+        # 但静默夹紧会让"第 30 秒来一炮"在一条 4 秒的人声里**变成**"贴到末尾"，
+        # 而调用方拿到一条完全成功的响应 —— 正是本项目最忌讳的那类"静默改语义"。
+        # 注意：这条是**提示**不是跳过（那一声确实响了，只是位置变了），
+        # 所以它跟着 `notes` 一起回去；前端把两者分开显示。
+        if off > out.size:
+            notes.append(
+                f"指定第 {off / max(1, int(sr)):.1f}s 超出人声长度"
+                f"（{out.size / max(1, int(sr)):.1f}s），已贴到末尾"
+            )
         off = max(0, min(off, out.size))  # 越过末尾就贴尾，不制造一截静音尾巴
         need = off + y.size - out.size
         if need > 0:

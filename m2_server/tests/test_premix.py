@@ -170,12 +170,23 @@ def test_gain_and_offset_are_clamped_instead_of_breaking(blip):
 def test_layer_offset_beyond_the_end_lands_at_the_end_without_a_silent_tail(blip):
     """`at_s` 超出音频长度：贴到末尾，而不是在中间留一段静音（静音会变成微信里的空白）。"""
     voice = _silence(0.2)
-    out, _ = sfx_lib.mix_into(
+    out, notes = sfx_lib.mix_into(
         voice, SR, [{"sample": "blip", "mode": "layer", "at_s": 9.0, "gain": 1.0}]
     )
     n = int(round(len(blip) * SR / 44100))
     assert out.size == voice.size + n  # 只长出音效那一段，没有 9 秒静音
     assert np.abs(out[-n:]).max() > 0.1
+    # 但**不许静默**：用户说的"第 9 秒"实际变成了"贴到末尾" —— 那一声确实响了，
+    # 只是位置变了，所以调用方必须能看出这件事（否则界面上和成功毫无区别）。
+    assert len(notes) == 1 and "9.0s" in notes[0] and "0.2s" in notes[0]
+
+
+def test_layer_offset_inside_the_voice_produces_no_note(blip):
+    """范围内的 `at_s` 不许产生提示 —— 提示一旦变成噪音，真越界时就没人看它了。"""
+    _out, notes = sfx_lib.mix_into(
+        _silence(1.0), SR, [{"sample": "blip", "mode": "layer", "at_s": 0.5, "gain": 1.0}]
+    )
+    assert notes == []
 
 
 def test_result_never_clips_when_layering_loud_sfx_on_a_loud_voice(blip):

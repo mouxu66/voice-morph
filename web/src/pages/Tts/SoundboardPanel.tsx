@@ -1,5 +1,5 @@
 import { useRef, useState } from "react"
-import { Check, Download, Loader2, ShoppingBag, Square, Trash2, Upload, Wand2, X } from "lucide-react"
+import { Check, Download, Loader2, Send, ShoppingBag, Square, Trash2, Upload, Wand2, X } from "lucide-react"
 import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
 import {
   PREMIX_MODE_HINT,
@@ -42,8 +42,10 @@ export function SoundboardPanel({
   sb,
   hint,
   allowPremix = false,
+  sourceSeconds,
   wav,
   onPremixed,
+  onSendPremixed,
 }: {
   // hook 由路由层调一次（`pages/Tts/index.tsx`）往下传 —— 本组件在本页出现两回，
   // 各调一次 hook 就是两回预热/两回目录请求，而且两块的"正在播"高亮会各说各话。
@@ -51,10 +53,22 @@ export function SoundboardPanel({
   hint?: string
   /** 是否提供"预混"模式（③ 手动档没有合成产物，只能实时）。 */
   allowPremix?: boolean
+  /**
+   * 预混源的人声时长（秒）—— 只用来给"第几秒"一个看得到的范围与提醒，
+   * **不**用它去封顶用户的输入（封顶就等于默默改掉他填的数）。
+   */
+  sourceSeconds?: number
   /** 预混的源：要混的那条合成产物（文件名）。 */
   wav?: string
   /** 混好一份新音频时回调（调用方把发送目标换成它）。 */
   onPremixed?: (r: { wav: string; inserts: number; seconds: number }) => void
+  /**
+   * 混好之后**直接自动发送**（可选）。给出它时面板多一个「混好并直接发送」按钮 ——
+   * 那是「文字转语音 → 微信」这条链路的一步到位：预混（离线，确定性）+
+   * `send_voice`（程序点话筒起录、点绿钮发送），全程不用碰微信、不用按 Alt。
+   * 不给出它时（实时页、③ 手动档）只有「混进这条语音」—— 那些地方没有"发送"这一步。
+   */
+  onSendPremixed?: (wav: string) => void
 }) {
   const { state } = usePluginCatalog()
   const catalog = state.status === "ready" ? state.catalog : null
@@ -87,6 +101,22 @@ export function SoundboardPanel({
       onPremixed?.({ wav: r.wav, inserts: r.inserts, seconds: r.seconds })
       // 勾选**不清空**：常要换个位置再混一次（改勾选后重按按钮即可）。
     }
+  }
+
+  /**
+   * 混好并**立刻**用全自动链路发出去（只在 ② 半自动档出现）。
+   *
+   * 为什么不满足于"② 按「混进这条语音」→ ① 按「自动发送到微信」"两步：两步之间那个
+   * 「发送目标已换成 `sfxmix_*`」的中间态在界面上**看不见**，用户很容易在第 ② 步之后
+   * 去别处（重新合成一条）再点 ① —— 发出去的就是没混的那条，且全程无报错。
+   * 这里把 wav **显式**交给发送方（不依赖 `targetWav` 的失效判定），顺序只剩一种。
+   */
+  const runPremixAndSend = async () => {
+    const r = await sb.premix(wav)
+    if (!r) return // 失败原因已在 sb.premixError 里显示，绝不装作发出去了
+    setDone(r.wav)
+    onPremixed?.({ wav: r.wav, inserts: r.inserts, seconds: r.seconds })
+    onSendPremixed?.(r.wav)
   }
 
   return (
@@ -185,6 +215,27 @@ export function SoundboardPanel({
                     {ICONS[p.sample] ?? "🎧"}
                     {PREMIX_MODE_LABEL[p.mode]}
                   </button>
+                  {/* 「第几秒」只属于叠加档：开头/结尾是拼接，位置由 mode 决定。 */}
+                  {p.mode === "layer" && (
+                    <span className="inline-flex items-center gap-0.5">
+                      第
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={p.at_s}
+                        onChange={(e) => sb.setPickAt(p.sample, Number(e.target.value))}
+                        aria-label={`${sb.items.find((i) => i.id === p.sample)?.name ?? p.sample} 插在人声第几秒`}
+                        title={
+                          sourceSeconds
+                            ? `插在人声的第几秒（本条人声 ${sourceSeconds.toFixed(1)}s）`
+                            : "插在人声的第几秒（0 = 一开口就响）"
+                        }
+                        className="w-12 rounded border border-primary/40 bg-background px-1 py-0 text-[11px] text-primary"
+                      />
+                      秒
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={() => sb.togglePick(p.sample)}
@@ -198,9 +249,17 @@ export function SoundboardPanel({
             </div>
           ) : (
             <p className="text-[11px] text-muted-foreground">
-              点上面的格子勾选音效；「叠加」= 与人声同时响，「开头」= 先响一声再说话。
+              点上面的格子勾选音效；「叠加」= 在第 N 秒同时响（0 = 一开口），「开头」= 先响一声再说话。
             </p>
           )}
+          {/* 超出人声长度的提醒：后端会把它贴到末尾（并如实回报），但事先能看见更好。 */}
+          {sourceSeconds !== undefined &&
+            sb.picks.some((p) => p.mode === "layer" && p.at_s > sourceSeconds) && (
+              <p className="text-[11px] text-yellow-600">
+                有音效的秒数超出人声长度（{sourceSeconds.toFixed(1)}s）—— 它会被贴到末尾，
+                而不是在你填的那一秒响。
+              </p>
+            )}
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -211,6 +270,18 @@ export function SoundboardPanel({
               {sb.premixing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
               {sb.premixing ? "混音中…" : "混进这条语音"}
             </button>
+            {onSendPremixed && (
+              <button
+                type="button"
+                disabled={!sb.ready || !sb.picks.length || sb.premixing}
+                onClick={() => void runPremixAndSend()}
+                title="混好后立刻用 ① 全自动发送到微信（程序自己点话筒起录、点发送钮），全程不用碰微信"
+                className="inline-flex items-center gap-1.5 rounded-md border border-primary px-3 py-1.5 text-[11px] font-medium text-primary transition hover:bg-primary/10 disabled:pointer-events-none disabled:opacity-50"
+              >
+                <Send className="h-3.5 w-3.5" />
+                混好并直接发送
+              </button>
+            )}
             {done && (
               <span className="font-mono text-[11px] text-muted-foreground">
                 已混好 {done} · 改过勾选后再点一次即可
@@ -218,6 +289,15 @@ export function SoundboardPanel({
             )}
           </div>
           {sb.premixError && <p className="text-[11px] text-destructive">{sb.premixError}</p>}
+          {/* 后端的回报：读不出来的音效（少了一声）与越界的秒数（位置变了）都在这里 ——
+              两者都属于"界面看不出异常"的失败，所以有就列出来。 */}
+          {sb.premixNotes.length > 0 && (
+            <ul className="space-y-0.5 text-[11px] text-yellow-600">
+              {sb.premixNotes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

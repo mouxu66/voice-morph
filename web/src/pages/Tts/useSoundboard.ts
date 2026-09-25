@@ -19,8 +19,13 @@ import {
 import { useAppStore } from "@/store/useAppStore"
 import { friendlyError } from "@/lib/errors"
 
-/** 预混勾选：一条音效 + 它混进去的位置。 */
-export type PremixPick = { sample: string; mode: SoundboardMode }
+/**
+ * 预混勾选：一条音效 + 它混进去的位置 + （叠加档）**第几秒**。
+ *
+ * `at_s` 只对 `layer` 有意义 —— 开头/结尾是拼接，位置由 `mode` 本身决定；
+ * 后端 `sfx_lib.mix_into` 就是这么解释的（它在 layer 分支里才读 `at_s`）。
+ */
+export type PremixPick = { sample: string; mode: SoundboardMode; at_s: number }
 
 /** 位置的中文标签（格子/胶囊上显示；顺序即点击轮换顺序）。 */
 export const PREMIX_MODE_LABEL: Record<SoundboardMode, string> = {
@@ -32,7 +37,7 @@ const MODE_CYCLE: SoundboardMode[] = ["layer", "prepend", "append"]
 
 /** 一句话解释每个位置意味着什么（用户不该靠猜"叠加"是叠在哪）。 */
 export const PREMIX_MODE_HINT: Record<SoundboardMode, string> = {
-  layer: "与人声同时响",
+  layer: "在指定秒数处同时响（0 = 一开口就响）",
   prepend: "先响一声，再说话",
   append: "说完之后来一声",
 }
@@ -63,6 +68,13 @@ export function useSoundboard(enabled = true) {
   const [picks, setPicks] = useState<PremixPick[]>([])
   const [premixing, setPremixing] = useState(false)
   const [premixError, setPremixError] = useState("")
+  /**
+   * 后端在混音时说的话（`premix` 响应的 `skipped`）：**失败的**（音效读不出来）与
+   * **提示性的**（`at_s` 越界 → 已贴到末尾）都在这里。两类都必须显示 ——
+   * 前者是"少了一声"，后者是"那一声没在你说的那一秒"，都是静默失败里最难发现的那种。
+   * 后端那边的文案已经自带区分（提示带"已贴到末尾"），所以不再拆成两个状态。
+   */
+  const [premixNotes, setPremixNotes] = useState<string[]>([])
 
   // 素材管理（导入 / 音效包）的状态
   const [packs, setPacks] = useState<SoundboardPack[]>([])
@@ -164,8 +176,21 @@ export function useSoundboard(enabled = true) {
     setPicks((prev) =>
       prev.some((p) => p.sample === id)
         ? prev.filter((p) => p.sample !== id)
-        : [...prev, { sample: id, mode: "layer" as SoundboardMode }],
+        : [...prev, { sample: id, mode: "layer" as SoundboardMode, at_s: 0 }],
     )
+  }, [])
+
+  /**
+   * 设定"第几秒"（只对「叠加」有意义）。
+   *
+   * 只夹到 **≥ 0**，**不**按人声长度封顶：面板只有在拿到 `sourceSeconds` 时才真知道
+   * 那有多长，缺省时把上限猜出来就等于默默改掉用户填的数；真越界由后端如实回报
+   * （`premixNotes` 里那句"已贴到末尾"）。面板有转时时会额外给个琥珀色提醒 ——
+   * 看得见的提醒 + 后端如实回报，两层都不靠猜。
+   */
+  const setPickAt = useCallback((id: string, seconds: number) => {
+    const v = Number.isFinite(seconds) ? Math.max(0, seconds) : 0
+    setPicks((prev) => prev.map((p) => (p.sample === id ? { ...p, at_s: v } : p)))
   }, [])
 
   /** 切换某条的混淆位置：叠加 → 开头 → 结尾 → 叠加（点胶囊即可轮换）。 */
@@ -182,6 +207,7 @@ export function useSoundboard(enabled = true) {
   const clearPicks = useCallback(() => {
     setPicks([])
     setPremixError("")
+    setPremixNotes([])
   }, [])
 
   /**
@@ -198,8 +224,20 @@ export function useSoundboard(enabled = true) {
       if (!enabled || picks.length === 0) return null
       setPremixing(true)
       setPremixError("")
+      setPremixNotes([])
       try {
-        const r = await soundboardPremix(wav, picks)
+        const r = await soundboardPremix(
+          wav,
+          picks.map((p) => ({
+            sample: p.sample,
+            mode: p.mode,
+            // 只给 layer 带 at_s：开头/结尾是拼接，位置由 mode 本身决定（后端也只在
+            // layer 分支里读它）。带着没意义的 0 一起发，读日志的人会以为它生效了。
+            at_s: p.mode === "layer" ? p.at_s : 0,
+          })),
+        )
+        // 后端**不会**静默跳过：读不出来的音效、越界的秒数都会出现在这里。
+        setPremixNotes(r.skipped ?? [])
         void refresh() // 计数变了，格子上的"用过 N 次"要跟上
         return r
       } catch (error) {
@@ -324,8 +362,10 @@ export function useSoundboard(enabled = true) {
     picks,
     premixing,
     premixError,
+    premixNotes,
     togglePick,
     cyclePickMode,
+    setPickAt,
     clearPicks,
     premix,
     packs,

@@ -356,6 +356,51 @@ describe("声板预混模式（发送前把音效烘进音频）", () => {
     expect(hookSrc).toContain("setPremixError(friendlyError(error, \"预混失败\"))")
     expect(panelSrc).toContain("sb.premixError")
   })
+
+  it("★ 一步到位：混好即自动发送（不是「② 混一次 → ① 再按一次」）", () => {
+    // 两步之间那个「发送目标已换成 sfxmix_*」是界面上**看不见**的中间态：用户在第 ② 步
+    // 之后去别处（重新合成一条）再点 ① ，发出去的就是没混的那条，且全程无报错。
+    // 所以按钮把 wav **显式**交给发送方，不依赖 `targetWav` 的失效判定。
+    expect(panelSrc).toContain("onSendPremixed")
+    expect(panelSrc).toContain("混好并直接发送")
+    expect(pageSrc).toContain("onSendPremixed={(wav) => void p.sendAuto(wav)}")
+    // 只有 ② 有它：③ 手动档与实时页都没有"要发送的那条产物"这一步。
+    expect(readRel(path.join("pages", "Live", "LivePage.tsx"))).not.toContain("onSendPremixed")
+  })
+})
+
+// ------------------------------------------------ 预混的精确时间点
+
+describe("预混可以指定「第 N 秒」（不是只能开头/叠加/结尾）", () => {
+  const panelSrc = readRel(path.join("pages", "Tts", "SoundboardPanel.tsx"))
+  const hookSrc = readRel(path.join("pages", "Tts", "useSoundboard.ts"))
+  const pageSrc = readRel(path.join("pages", "Tts", "WechatSendPage.tsx"))
+
+  it("★ `at_s` 只跟「叠加」档一起发", () => {
+    // 开头/结尾是拼接，位置由 mode 本身决定；带着没意义的 0 一起发，
+    // 读日志的人会以为它生效了（后端也确实只在 layer 分支里读它）。
+    expect(hookSrc).toContain('at_s: p.mode === "layer" ? p.at_s : 0')
+    expect(hookSrc).toContain("setPickAt")
+  })
+
+  it("★ 秒数输入只在叠加档上出现（其余位置里它是死参数）", () => {
+    expect(panelSrc).toContain('p.mode === "layer" && (')
+    expect(panelSrc).toContain("sb.setPickAt(p.sample, Number(e.target.value))")
+  })
+
+  it("★ 越界不许静默：后端那句回报必须显示出来", () => {
+    // 用户说"第 30 秒"，而人声只有 4 秒 → 后端贴到末尾并在 skipped 里说明。
+    // 面板不显示这个列表 = 用户以为它没生效，或者以为它真在 30 秒处。
+    expect(hookSrc).toContain("setPremixNotes(r.skipped ?? [])")
+    expect(panelSrc).toContain("sb.premixNotes.map")
+  })
+
+  it("★ sourceSeconds 只是看得见的范围，不许拿它封顶用户的输入", () => {
+    expect(pageSrc).toContain("sourceSeconds={p.lastTts?.duration_s}")
+    // 输入框不得带 max（封顶 = 默默改掉他填的数）；越界教训改成看得见的一行提醒。
+    expect(panelSrc).not.toMatch(/max=\{sourceSeconds/)
+    expect(panelSrc).toContain("sourceSeconds !== undefined")
+  })
 })
 
 // ------------------------------------------------ 特效声板的主场景：实时变声页

@@ -221,6 +221,8 @@ export function WechatSendPage(
                   hint="播放期间点一下，音效会叠进这条语音"
                   allowPremix
                   wav={p.lastTts?.wav}
+                  sourceSeconds={p.lastTts?.duration_s}
+                  onSendPremixed={(wav) => void p.sendAuto(wav)}
                   onPremixed={(r) =>
                     p.setPremix({
                       source: p.lastTts?.wav ?? "",
