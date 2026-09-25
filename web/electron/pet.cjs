@@ -305,6 +305,11 @@ function createPetWindow(actions = {}) {
       { label: `录制当前声音 → 挖掘音色（${CAPTURE_SECONDS}秒）`,
         click() { actions.captureMineFromPet && actions.captureMineFromPet(); } },
       { type: "separator" },
+      // 悬浮特效声板窗：非激活置顶窗，按住 Alt 说话时点它不会把前台从微信抢走。
+      // 惰性 require（本模块不反向依赖 sfx-window，避免装配层循环）。
+      { label: "特效声板窗口（说到一半点一声）",
+        click() { try { require("./sfx-window.cjs").showSfxWindow(); } catch {} } },
+      { type: "separator" },
       { label: "常驻显示", type: "radio", checked: petPref.mode === "always",
         click() { petPref.mode = "always"; savePetPref(); } },
       { label: "仅变声时显示", type: "radio", checked: petPref.mode === "cascade",

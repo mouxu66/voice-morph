@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>特效声板</title>
+<style>
+  /* ============ 设计令牌：与 pet.html / 主应用 web/src/styles/index.css 同源 ============
+     桌宠直接读 prefers-color-scheme 对齐主应用「系统」主题（见 pet.html 头注释），
+     声板窗沿用同一条判据 —— 不为它单独发明一套配色。
+     ⚠️ 没有 backdrop-filter：alt-hint 那次实测过，Windows 透明窗拿不到真模糊
+     （糊不到下层窗口），只在部分 GPU 驱动上多一层黑底风险，收益为零。
+     所以这里用「高不透明度台面」而不是「毛玻璃」。 */
+  :root {
+    --c-surface: 22 27 38;
+    --c-surface-2: 28 34 48;
+    --c-surface-3: 36 43 60;
+    --c-border: 38 46 64;
+    --c-border-2: 51 64 90;
+    --c-t-strong: 255 255 255;
+    --c-t-200: 226 232 240;
+    --c-t-300: 203 213 225;
+    --c-t-400: 148 163 184;
+    --c-t-500: 100 116 139;
+    --c-accent: 124 92 240;
+    --c-accent-h: 141 113 245;
+    --c-ok: 52 211 153;
+    --c-err: 248 113 113;
+    --c-shadow: 15 23 42;
+    --glass: 0.97;
+    --hair: rgb(255 255 255 / 0.06);
+    --font-body: Inter, "Segoe UI Variable Text", "Segoe UI",
+                 "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --c-surface: 255 255 255;
+      --c-surface-2: 238 241 246;
+      --c-surface-3: 226 231 240;
+      --c-border: 216 221 231;
+      --c-border-2: 195 203 217;
+      --c-t-strong: 15 23 42;
+      --c-t-200: 31 41 55;
+      --c-t-300: 51 65 85;
+      --c-t-400: 71 85 105;
+      --c-t-500: 100 116 139;
+      --c-accent: 105 76 222;
+      --c-accent-h: 124 92 240;
+      --c-ok: 5 150 105;
+      --c-err: 220 38 38;
+      --c-shadow: 15 23 42;
+      --glass: 0.98;
+      --hair: rgb(255 255 255 / 0.9);
+    }
+  }
+  /* ⚠️ color-scheme 只挂 #card，绝不挂 :root —— 根元素设它会让 Chromium 去画
+     「默认画布底色」，而这是个 transparent 窗，画布必须全透明（否则整窗一块实心矩形）。
+     挂在 #card 上照样能继承给内部控件与滚动条。 */
+  #card { color-scheme: dark; }
+  @media (prefers-color-scheme: light) { #card { color-scheme: light; } }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .01ms !important;
+    }
+  }
+
+  html, body {
+    margin: 0; padding: 0; background: transparent;
+    overflow: hidden; user-select: none; cursor: default;
+    font-family: var(--font-body);
+  }
+  #card {
+    box-sizing: border-box;
+    width: 100vw; height: 100vh;
+    display: flex; flex-direction: column;
+    padding: 7px 8px 8px;
+    border-radius: 14px;
+    border: 1px solid rgb(var(--c-border) / 0.9);
+    background: rgb(var(--c-surface) / var(--glass));
+    box-shadow: 0 12px 34px rgb(var(--c-shadow) / 0.5), inset 0 1px 0 0 var(--hair);
+  }
+  /* 窗口是 hide/show 复用而非重载页面 —— 每次露面都要有入场动画，否则
+     「刚唤出来」和「一直挂在那儿」在观感上分不清。 */
+  #card.enter { animation: card-in .18s cubic-bezier(.22, 1, .36, 1); }
+  @keyframes card-in {
+    from { opacity: 0; transform: translateY(6px) scale(.98); }
+  }
+
+  /* ---------------- 标题栏：整条是拖动把手（拖动由渲染层报告给主进程） ---------------- */
+  #bar {
+    flex: 0 0 auto;
+    display: flex; align-items: center; gap: 6px;
+    height: 20px; margin-bottom: 6px;
+    cursor: grab;
+  }
+  #bar:active { cursor: grabbing; }
+  #title {
+    font-size: 11.5px; font-weight: 600; letter-spacing: .3px;
+    color: rgb(var(--c-t-strong));
+  }
+  #hint {
+    font-size: 10px; color: rgb(var(--c-t-500));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #hint kbd {
+    padding: 0 3px; border-radius: 4px;
+    border: 1px solid rgb(var(--c-border-2) / 0.8);
+    background: rgb(var(--c-surface-2) / 0.9);
+    font: 9.5px/1.5 var(--font-body);
+    color: rgb(var(--c-t-400));
+  }
+  #close {
+    margin-left: auto; flex: 0 0 auto;
+    width: 18px; height: 18px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 6px; cursor: pointer;
+    border: 1px solid rgb(var(--c-border-2) / 0.6);
+    background: rgb(var(--c-surface-2) / 0.8);
+    color: rgb(var(--c-t-400));
+    font: 12px/1 var(--font-body);
+    transition: background .15s, color .15s, border-color .15s;
+  }
+  #close:hover {
+    border-color: rgb(var(--c-err) / 0.5);
+    background: rgb(var(--c-err) / 0.14);
+    color: rgb(var(--c-err));
+  }
+
+  /* ---------------- 格子：2 行，列方向流动，横向滚动 ---------------- */
+  #grid {
+    flex: 1 1 auto; min-height: 0;
+    display: grid;
+    grid-auto-flow: column;
+    grid-template-rows: repeat(2, 1fr);
+    grid-auto-columns: 56px;
+    gap: 5px;
+    overflow-x: auto; overflow-y: hidden;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--c-border-2) / 0.7) transparent;
+  }
+  #grid::-webkit-scrollbar { height: 5px; }
+  #grid::-webkit-scrollbar-track { background: transparent; }
+  #grid::-webkit-scrollbar-thumb { background: rgb(var(--c-border-2) / 0.7); border-radius: 999px; }
+
+  .cell {
+    box-sizing: border-box;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1px; padding: 2px;
+    border-radius: 10px; cursor: pointer;
+    border: 1px solid rgb(var(--c-border-2) / 0.6);
+    background: rgb(var(--c-surface-2) / 0.85);
+    color: rgb(var(--c-t-300));
+    font: 9.5px/1.3 var(--font-body);
+    transition: border-color .14s, background .14s, color .14s, transform .08s;
+  }
+  .cell:hover {
+    border-color: rgb(var(--c-accent) / 0.55);
+    background: rgb(var(--c-surface-3) / 0.95);
+    color: rgb(var(--c-t-strong));
+  }
+  .cell:active { transform: translateY(1px); }
+  .cell .ico { font-size: 17px; line-height: 1; }
+  .cell .nm {
+    max-width: 100%; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis;
+  }
+  /* 正在响：品牌紫高亮（与主界面面板的 active 同观感） */
+  .cell.on {
+    border-color: rgb(var(--c-accent) / 0.85);
+    background: rgb(var(--c-accent) / 0.18);
+    color: rgb(var(--c-accent-h));
+  }
+  /* 播失败：红边留到下一次成功播放 —— 「点了没声」必须看得见（静默失败最不可接受） */
+  .cell.err {
+    border-color: rgb(var(--c-err) / 0.8);
+    background: rgb(var(--c-err) / 0.14);
+    color: rgb(var(--c-err));
+  }
+  #empty { grid-column: 1 / -1; align-self: center; font-size: 10.5px; color: rgb(var(--c-t-500)); }
+
+  /* ---------------- 状态行：只在有话说时占位 ---------------- */
+  #status {
+    display: none;
+    flex: 0 0 auto;
+    margin-top: 5px;
+    font-size: 10px; line-height: 1.4;
+    color: rgb(var(--c-err));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #status.show { display: block; }
+</style>
+</head>
+<body>
+  <div id="card" class="enter">
+    <div id="bar">
+      <span id="title">特效声板</span>
+      <span id="hint">点一下就出声 · 收起后按 <kbd id="hk">Ctrl+Alt+S</kbd></span>
+      <button id="close" type="button" title="收起（热键可再唤出；不影响微信里正在录的那条）">—</button>
+    </div>
+    <div id="grid"></div>
+    <div id="status"></div>
+  </div>
+
+<script>
+"use strict";
+// 悬浮特效声板窗的渲染层。
+// 它做的只有三件事：把目录画成格子、点一下让主进程播一声、把失败**写出来**。
+// 不抢焦点这件事完全不靠它 —— 那是主进程建窗时 focusable:false 给的（见 sfx-window.cjs）。
+(() => {
+  const card = document.getElementById("card");
+  const grid = document.getElementById("grid");
+  const statusEl = document.getElementById("status");
+  const closeBtn = document.getElementById("close");
+  const hkEl = document.getElementById("hk");
+  const bar = document.getElementById("bar");
+
+  let items = [];
+  let activeId = null;
+  let activeTimer = null;
+
+  function setStatus(msg) {
+    statusEl.textContent = msg || "";
+    statusEl.classList.toggle("show", !!msg);
+  }
+
+  function clearActive() {
+    activeId = null;
+    if (activeTimer) { clearTimeout(activeTimer); activeTimer = null; }
+  }
+
+  function mark(id) {
+    for (const el of grid.querySelectorAll(".cell")) {
+      el.classList.toggle("on", el.dataset.id === id);
+    }
+  }
+
+  function render() {
+    // 重画就丢 DOM，正在响的高亮与失败红边随之复位 —— 它们描述的是「上一次点击」，
+    // 而这是一次新的目录快照，保留只会误导。
+    grid.textContent = "";
+    if (!items.length) {
+      const p = document.createElement("div");
+      p.id = "empty";
+      p.textContent = "还没有音效素材（sound.fx-board 自带的 6 条出厂音效应在此列出）";
+      grid.appendChild(p);
+      return;
+    }
+    for (const it of items) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "cell";
+      b.dataset.id = it.id;
+      b.title = it.name + " · " + it.duration_s + "s" + (it.count ? " · 用过 " + it.count + " 次" : "");
+      const ico = document.createElement("span");
+      ico.className = "ico";
+      // 图标由后端随 catalog 下发（manifest 里的 icon）；缺了就退到通用图标，
+      // 绝不在渲染层再维护一份「id → emoji」映射（那正是这次要消灭的第二份规则）。
+      ico.textContent = it.icon || "🎧";
+      const nm = document.createElement("span");
+      nm.className = "nm";
+      nm.textContent = it.name;
+      b.appendChild(ico);
+      b.appendChild(nm);
+      b.addEventListener("click", () => { void tap(it.id); });
+      grid.appendChild(b);
+    }
+    if (activeId) mark(activeId);
+  }
+
+  async function refresh() {
+    const r = await window.sfx.list();
+    if (!r || !r.ok) {
+      setStatus("取不到素材目录：" + ((r && r.error) || "未知原因"));
+      return;
+    }
+    setStatus("");
+    items = r.items || [];
+    render();
+  }
+
+  async function tap(id) {
+    const el = grid.querySelector('.cell[data-id="' + CSS.escape(id) + '"]');
+    // 乐观高亮：先亮起来（one-shot 语义是「点击即响」，等响应会有滞后感）
+    clearActive();
+    activeId = id;
+    mark(id);
+    if (el) el.classList.remove("err");
+    const r = await window.sfx.play(id);
+    if (!r || !r.ok) {
+      // 失败必须看得见：格子上留红边 + 状态行写出原因（503 设备缺失 / 404 素材没了 …）
+      clearActive();
+      mark(null);
+      if (el) el.classList.add("err");
+      setStatus("没响：" + ((r && r.error) || "未知原因"));
+      return;
+    }
+    setStatus("");
+    const holdMs = Math.max(300, Math.round((r.duration_s || 0) * 1000));
+    activeTimer = setTimeout(() => { activeTimer = null; clearActive(); mark(null); }, holdMs);
+  }
+
+  // 主进程推来的目录（首次加载完成 / 每次唤起窗口）
+  window.sfx.onRefresh((payload) => {
+    if (payload && payload.ok === false) {
+      setStatus("取不到素材目录：" + (payload.error || "未知原因"));
+      return;
+    }
+    setStatus("");
+    items = (payload && payload.items) || [];
+    render();
+  });
+
+  closeBtn.addEventListener("click", (e) => { e.stopPropagation(); window.sfx.hide(); });
+
+  // 拖动：整条标题栏都是把手。app-region: drag 在置顶透明窗上不可靠（pet.cjs 踩过），
+  // 所以由渲染层报告按下/移动、主进程按光标屏幕坐标挪窗口。
+  let dragging = false;
+  bar.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || e.target === closeBtn) return;
+    dragging = true;
+    window.sfx.dragStart();
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", () => { if (dragging) window.sfx.dragMove(); });
+  window.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = false;
+    window.sfx.dragEnd();
+  });
+
+  // 窗口 hide/show 复用（不重载页面）：重新露面时重播入场动画，并重拉一次目录
+  // （计数会变，也可能刚装了新的音效包）。
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    card.classList.remove("enter");
+    void card.offsetWidth;   // 强制回流，否则同名动画不会重播
+    card.classList.add("enter");
+    void refresh();
+  });
+
+  void window.sfx.info().then((i) => { if (i && i.hotkey) hkEl.textContent = i.hotkey; });
+  // 首帧先自取一次：主进程的 sfx:refresh 可能在页面脚本跑起来之前就发过了。
+  void refresh();
+})();
+</script>
+</body>
+</html>

@@ -94,6 +94,11 @@ function showAltHint(payload) {
   ensureAltHintWindow();
   if (altHintWin && !altHintWin.isVisible()) altHintWin.showInactive();
   altHintSend(payload);
+  // 阶段转发给悬浮声板窗：**press**（「按住 Alt 说话」）时把它唤出来，
+  // done 后几秒自己收起。不跟 prep —— 那条是全自动发送，界面明说「别动键鼠」，
+  // 摆一个声板窗出来只会诱导用户去点，反而打断发送。
+  // 惰性 require：避免 alt-hint ↔ sfx-window 在装配层的循环依赖。
+  try { require("./sfx-window.cjs").onRecordingStage(payload && payload.stage); } catch {}
 }
 
 function hideAltHint() {

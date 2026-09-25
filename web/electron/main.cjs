@@ -11,6 +11,7 @@ const backend = require("./backend.cjs");
 const pet = require("./pet.cjs");
 const petActions = require("./pet-actions.cjs");
 const altHint = require("./alt-hint.cjs");
+const sfxWindow = require("./sfx-window.cjs");
 const setup = require("./setup-ipc.cjs");
 const { registerUpdateIpc, scheduleStartupUpdateCheck } = require("./update-ipc.cjs");
 
@@ -48,6 +49,8 @@ async function createWindow(root) {
     // window-all-closed 永不触发 → app.quit() 永不执行 → 应用无声无息留在后台
     // （桌宠已销毁、任务栏也没图标，只能靠任务管理器杀）。
     altHint.destroyAltHint();
+    // 悬浮声板窗同理：它平时是 hide 状态，但窗口对象还在 → 同样会钉住 window-all-closed
+    sfxWindow.destroySfxWindow();
     // 兜底：万一还有漏网的窗口（历史上就是这么漏掉的），直接退。
     // 绝不留"看不见关不掉"的后台幽灵进程 —— 用户只能开任务管理器杀，体验极差。
     if (process.platform !== "darwin" && BrowserWindow.getAllWindows().length === 0) {
@@ -117,6 +120,8 @@ app.whenReady().then(async () => {
   const win = await createWindow(root);
   mainWindow = win;
   pet.createPetWindow(petActions);
+  // 悬浮特效声板窗：只注册 IPC 与热键（Ctrl+Alt+S），窗口按需创建、默认不出现
+  sfxWindow.registerSfxIpc();
   backend.registerBackendIpc();
   registerCascadeHotkey();
   registerUpdateIpc();
@@ -197,6 +202,7 @@ app.on("before-quit", () => {
     /* 忽略 */
   }
   altHint.destroyAltHint();       // 兜底：任何退出路径都不留置顶横幅
+  sfxWindow.destroySfxWindow();   // 同理：隐藏的声板窗也会钉住退出
   globalShortcut.unregisterAll(); // 全局热键随应用退出释放
   backend.stopBackend(); // 关闭后端，绝不残留
 });
