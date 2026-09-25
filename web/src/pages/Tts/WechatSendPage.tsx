@@ -222,6 +222,7 @@ export function WechatSendPage(
                   allowPremix
                   wav={p.lastTts?.wav}
                   sourceSeconds={p.lastTts?.duration_s}
+                  src={mediaUrl(p.lastTts?.url ?? "")}
                   onSendPremixed={(wav) => void p.sendAuto(wav)}
                   onPremixed={(r) =>
                     p.setPremix({

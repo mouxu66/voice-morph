@@ -401,6 +401,22 @@ describe("预混可以指定「第 N 秒」（不是只能开头/叠加/结尾�
     expect(panelSrc).not.toMatch(/max=\{sourceSeconds/)
     expect(panelSrc).toContain("sourceSeconds !== undefined")
   })
+
+  it("★ 位置可以在波形上拖出来（填秒数只是精确手段，不是唯一入口）", () => {
+    // 用户知道的是"说到那句的时候来一炮"——那是看在眼里的，不是数出来的。
+    expect(panelSrc).toContain("<PremixTimeline")
+    expect(panelSrc).toContain("onMove={sb.setPickAt}")
+    // 波形画的是**源人声**（`at_s` 就是对着它的时间轴量的），不是混好的产物。
+    expect(pageSrc).toContain('src={mediaUrl(p.lastTts?.url ?? "")}')
+  })
+
+  it("★ 一枚记号都没有时不解码（波形是懒加载的，不白拉整段 wav）", () => {
+    const tl = readRel(path.join("pages", "Tts", "PremixTimeline.tsx"))
+    expect(tl).toContain("const active = markers.length > 0")
+    expect(tl).toContain("if (!active || !src) {")
+    // 取不到波形时写出原因，**不是**一片空白（空白和"加载中"在界面上分不出来）。
+    expect(tl).toContain("波形取不到")
+  })
 })
 
 // ------------------------------------------------ 特效声板的主场景：实时变声页

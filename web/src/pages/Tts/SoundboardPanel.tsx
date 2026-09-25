@@ -6,6 +6,7 @@ import {
   PREMIX_MODE_LABEL,
   type useSoundboard,
 } from "@/pages/Tts/useSoundboard"
+import { PremixTimeline } from "@/pages/Tts/PremixTimeline"
 
 /** 出厂音效的图标（按 id；用户导入的走兜底）。 */
 const ICONS: Record<string, string> = {
@@ -43,6 +44,7 @@ export function SoundboardPanel({
   hint,
   allowPremix = false,
   sourceSeconds,
+  src,
   wav,
   onPremixed,
   onSendPremixed,
@@ -58,6 +60,11 @@ export function SoundboardPanel({
    * **不**用它去封顶用户的输入（封顶就等于默默改掉他填的数）。
    */
   sourceSeconds?: number
+  /**
+   * 预混源的**可播放地址**（`mediaUrl(...)` 拼好的）—— 波形靠它解码。
+   * 缺省时波形位置退化成一行说明，秒数框与拖动以外的能力照旧。
+   */
+  src?: string
   /** 预混的源：要混的那条合成产物（文件名）。 */
   wav?: string
   /** 混好一份新音频时回调（调用方把发送目标换成它）。 */
@@ -199,6 +206,15 @@ export function SoundboardPanel({
       {/* 预混：勾选清单 + 位置轮换 + 执行 */}
       {inPremix && (
         <div className="mt-2.5 space-y-2">
+          {/* 波形：拖一下改位置 —— 用户知道的是"说到那句的时候"，那不是数出来的 */}
+          <PremixTimeline
+            src={src}
+            seconds={sourceSeconds}
+            markers={sb.picks
+              .filter((p) => p.mode === "layer")
+              .map((p) => ({ id: p.sample, label: ICONS[p.sample] ?? "🎧", at_s: p.at_s }))}
+            onMove={sb.setPickAt}
+          />
           {sb.picks.length > 0 ? (
             <div className="flex flex-wrap items-center gap-1.5">
               {sb.picks.map((p) => (
@@ -228,8 +244,8 @@ export function SoundboardPanel({
                         aria-label={`${sb.items.find((i) => i.id === p.sample)?.name ?? p.sample} 插在人声第几秒`}
                         title={
                           sourceSeconds
-                            ? `插在人声的第几秒（本条人声 ${sourceSeconds.toFixed(1)}s）`
-                            : "插在人声的第几秒（0 = 一开口就响）"
+                            ? `插在人声的第几秒（本条人声 ${sourceSeconds.toFixed(1)}s）；也可以直接拖波形上的记号`
+                            : "插在人声的第几秒（0 = 一开口就响）；也可以直接拖波形上的记号"
                         }
                         className="w-12 rounded border border-primary/40 bg-background px-1 py-0 text-[11px] text-primary"
                       />
