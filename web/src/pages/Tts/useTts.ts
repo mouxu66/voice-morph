@@ -48,6 +48,27 @@ export function useTts() {
 
   const toggleAdvanced = useCallback(() => setAdvancedOpen((open) => !open), [])
 
+  /**
+   * 把音效标记插进文字（`[爆炸]`）—— 给「插音效」工具栏用的。
+   *
+   * `offset < 0` 表示"插在末尾"（调用方拿不到光标位置时的兜底；例如工具栏被点了
+   * 但 textarea 还没聚焦过）。插完在片段后补一个空格：中文里 `[爆炸]那个`
+   * 与 `[爆炸] 那个` 解析结果一样，但后者读起来更像人写的，也方便用户接着改。
+   *
+   * ⚠️ **越界要夹住**：`offset` 是渲染层给的，而 `text` 可能已经变了（用户打字与
+   * 点击之间有一帧）。直接 `slice(0, offset)` 在 offset 过大时会把片段插到意外位置。
+   */
+  const insertMark = useCallback((snippet: string, offset = -1) => {
+    setText((current) => {
+      const at = offset < 0 || offset > current.length ? current.length : offset
+      const before = current.slice(0, at)
+      const after = current.slice(at)
+      // 前面已经有空白（或本来就在行首）就不补前导空格，免得留出双空格
+      const lead = before === "" || /\s$/.test(before) ? "" : " "
+      return `${before}${lead}${snippet} ${after}`
+    })
+  }, [])
+
   const generate = useCallback(async () => {
     const trimmed = text.trim()
     if (!backendUp || synthesizing || !trimmed || trimmed.length > TTS_MAX_LENGTH) return
@@ -172,6 +193,7 @@ export function useTts() {
     setTextLanguage,
     advancedOpen,
     toggleAdvanced,
+    insertMark,
     styleRefVoice,
     setStyleRefVoice,
     synthesizing,

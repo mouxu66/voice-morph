@@ -46,7 +46,7 @@ export function TtsRoute() {
   return (
     <MergedPageTabs
       tabs={[
-        { key: "single", label: "单段合成", content: <TtsPage {...tts} /> },
+        { key: "single", label: "单段合成", content: <TtsPage {...tts} soundboard={soundboard} /> },
         ...(bookOn
           ? [{ key: "book", label: "有声书（长文本）", content: <AudiobookPage {...book} /> }]
           : []),
