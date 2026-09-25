@@ -460,6 +460,81 @@ export async function getOfflineVcStatus(): Promise<OfflineVcStatus> {
   return jsonFetch("/offlinevc/status");
 }
 
+// ---- 翻唱（扒歌换声：整首歌 → 分离 → 换音色 → 合回伴奏） ----
+
+export type CoverStatus = {
+  running: boolean;
+  status: "idle" | "running" | "done" | "error";
+  /** 当前工序，仅 running 时有意义。前端用它显示"到哪一步了" */
+  step: "" | "separate" | "convert" | "mix";
+  message: string;
+  percent: number;
+  voice_id: string;
+  url: string;
+  duration_s: number;
+  /** 实际使用的变调（auto_pitch 时与提交值不同，以此为准） */
+  pitch: number;
+  error: string;
+};
+
+export async function runCover(
+  file: File,
+  voiceId: string,
+  pitch: number,
+  indexRate: number,
+  vocalGain = 1,
+  accompGain = 1,
+  /** true = 忽略传入 pitch，由后端按音域差自动算建议变调 */
+  autoPitch = false
+): Promise<{ ok: boolean; voice_id: string }> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("voice_id", voiceId);
+  form.append("pitch", String(pitch));
+  form.append("index_rate", String(indexRate));
+  form.append("vocal_gain", String(vocalGain));
+  form.append("accomp_gain", String(accompGain));
+  form.append("auto_pitch", String(autoPitch));
+  const res = await fetch(BASE + "/cover/run", { method: "POST", body: form });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function getCoverStatus(): Promise<CoverStatus> {
+  return jsonFetch("/cover/status");
+}
+
+/** 只算变调建议（不跑完整链路）：分离人声 → 比中位基频 → 返回半音数 */
+export async function suggestCoverPitch(
+  file: File,
+  voiceId: string
+): Promise<{ ok: boolean; pitch: number }> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("voice_id", voiceId);
+  const res = await fetch(BASE + "/cover/pitch_suggest", { method: "POST", body: form });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
 /** 自动音高建议：分析输入中位基频，对照目标音色参考音高，算建议变调（半音） */
 export type PitchSuggestion = {
   input_f0: number | null;

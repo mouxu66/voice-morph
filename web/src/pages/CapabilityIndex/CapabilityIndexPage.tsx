@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom"
-import { ArrowRight, Boxes, Camera, Hammer, Library, Mic2, Radio, ScanSearch, ShoppingBag, Sparkles, Volume2 } from "lucide-react"
+import { ArrowRight, Boxes, Camera, Hammer, Library, Mic2, Music4, Radio, ScanSearch, ShoppingBag, Sparkles, Volume2 } from "lucide-react"
 import { Card, PageShell } from "@/components/layout/PageShell"
 import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
 
@@ -38,6 +38,7 @@ export function CapabilityIndexRoute() {
     { to: "/tts?tab=wechat", name: "微信发送", desc: "合成好的语音一键发进微信 PC 版", icon: Camera, plugin: "hook.wechat" },
     { to: "/tts?tab=book", name: "有声书", desc: "整本书长文一次性合成，自动分段", icon: Library, plugin: "sound.audiobook" },
     { to: "/offlinevc", name: "离线变声", desc: "把录好的整段音频一次性变成目标音色", icon: Hammer, plugin: "sound.offline-vc" },
+    { to: "/cover", name: "翻唱", desc: "整首歌拆开，只换人声的音色，再和原伴奏合回去", icon: Music4, plugin: "sound.cover" },
     { to: "/workshop", name: "音色工坊", desc: "丢素材进来，自动切片质检，练专属音色", icon: Mic2, plugin: "sound.workshop" },
     { to: "/live?tab=rvc", name: "实时变声", desc: "开麦即变，游戏/会议/语音直接用", icon: Radio, plugin: "sound.rvc-live" },
     { to: "/voices?tab=mine", name: "我的音色", desc: "所有音色档案的管理与导出", icon: Library, plugin: null },

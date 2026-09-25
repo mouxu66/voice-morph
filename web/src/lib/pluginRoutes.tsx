@@ -24,7 +24,7 @@
  *    不能用 `import * as icons from "lucide-react"` —— 那会把一千多个图标全打进包里。
  */
 import { lazy, useCallback, useEffect, useSyncExternalStore, type ComponentType, type LazyExoticComponent } from "react"
-import { AudioLines, Home, Library, Mic2, PawPrint, Radio, Speech, Wrench, type LucideIcon } from "lucide-react"
+import { AudioLines, Home, Library, Mic2, Music4, PawPrint, Radio, Speech, Wrench, type LucideIcon } from "lucide-react"
 import { getPlugins } from "@/api/client"
 import type { PluginCatalog, PluginEntry } from "@/types"
 
@@ -50,6 +50,7 @@ export const knownIcons: Record<string, LucideIcon> = {
   Home,
   Library,
   Mic2,
+  Music4,
   PawPrint,
   Radio,
   Speech,
