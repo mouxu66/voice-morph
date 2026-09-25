@@ -21,6 +21,7 @@ import threading
 import time
 from pathlib import Path
 
+import session_out
 from config import OUTPUTS_DIR, RVC_ROOT
 
 RVC_VENV_PY = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
@@ -202,7 +203,9 @@ def rvc_convert(wav: Path, voice: str, pitch: int = 0, index_rate: float = 0.5) 
         raise RvcError(f"找不到待转换音频: {src}")
 
     pth, index = resolve_model(voice)
-    out = OUTPUTS_DIR / f"{src.stem}_{voice}.wav"
+    # 产物落在**输入所在目录**：输入是会话产物（`outputs/.session/`）时就必须也留在
+    # 会话目录，否则"退出即删"会在第一次换声时漏一个文件在 outputs 根（2026-09-25）。
+    out = session_out.derived_dir(src) / f"{src.stem}_{voice}.wav"
     if USE_WORKER:
         try:
             worker_call(

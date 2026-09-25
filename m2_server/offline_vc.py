@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import config as cfg
+import session_out
 from common import MAX_UPLOAD_BYTES, find_ffmpeg
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -26,8 +27,8 @@ from rvc_common import ensure_infer_pth
 
 LOG = logging.getLogger(__name__)
 
-OUT = cfg.OUTPUTS_DIR
-OUT.mkdir(exist_ok=True)
+# 产物一律落 `outputs/.session/`（退出即删），路径每次现读 —— 不许在这里早绑定
+# `cfg.OUTPUTS_DIR`（§8.36/§8.37 的连环坑，见 session_out 模块注释）。
 INFER_PY = Path(__file__).resolve().parent / "offline_vc_infer.py"
 RVC_VENV_PY = cfg.RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 
@@ -118,7 +119,9 @@ async def offlinevc_run(
         )
 
     stamp = int(time.time() * 1000)
-    raw_path = OUT / f"ovc_src_{stamp}{Path(file.filename or 'a.wav').suffix or '.wav'}"
+    raw_path = session_out.new_path(
+        f"ovc_src_{stamp}", Path(file.filename or "a.wav").suffix or ".wav"
+    )
     if (file.size or 0) > MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=413, detail=f"音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝转换"
@@ -152,9 +155,9 @@ def _ovc_worker(
 ):
     import soundfile as sf
 
-    in_path = OUT / f"ovc_in_{stamp}.wav"
-    relay_path = OUT / f"ovc_relay_{stamp}.wav"
-    out_path = OUT / f"offlinevc_{stamp}.wav"
+    in_path = session_out.new_path(f"ovc_in_{stamp}")
+    relay_path = session_out.new_path(f"ovc_relay_{stamp}")
+    out_path = session_out.new_path(f"offlinevc_{stamp}")
     index = next(iter((cfg.RVC_ROOT / "logs" / voice_id).glob("added_*.index")), None)
     try:
         OFFLINEVC_STATE.update(message="音频预处理中…")
@@ -182,7 +185,7 @@ def _ovc_worker(
             try:
                 from audio_enhance import enhance_file, resolve_atten_lim
 
-                tmp = OUT / f"ovc_enh_{stamp}.wav"
+                tmp = session_out.new_path(f"ovc_enh_{stamp}")
                 enhance_file(in_path, tmp, atten_lim_db=resolve_atten_lim(enhance_level))
                 tmp.replace(in_path)
             except Exception:
@@ -251,7 +254,7 @@ def _ovc_worker(
             OFFLINEVC_STATE.update(message="Seed-VC 情绪/韵律补偿中…（约 1 分钟）")
             from seed_vc import run_conversion
 
-            tmp_dir = OUT / f"ovc_seedvc_{stamp}"
+            tmp_dir = session_out.new_path(f"ovc_seedvc_{stamp}", suffix="")
             produced = run_conversion(out_path, ref, tmp_dir, convert_style=True)
             import shutil
 
@@ -261,28 +264,13 @@ def _ovc_worker(
 
         d, sr = sf.read(str(out_path))
         duration_s = round(len(d) / sr, 1)
-        from history import register as history_register
-
-        history_register(
-            "offlinevc",
-            voice_id,
-            out_path.name,
-            f"/api/media/outputs/{out_path.name}",
-            duration_s,
-            params={
-                "pitch": pitch,
-                "index_rate": index_rate,
-                "denoise": denoise,
-                "post_seedvc": post_seedvc,
-                "enhance_level": enhance_level,
-                "prosody": prosody,
-            },
-        )
+        # 不登记历史：产物只是本会话的试听结果，用户点「保存」时才由
+        # `session_out.save()` 复制进 outputs 根并登记（默认不记，保存才留）。
         OFFLINEVC_STATE.update(
             running=False,
             status="done",
             message="完成",
-            url=f"/api/media/outputs/{out_path.name}",
+            url=f"/api/media/outputs/{session_out.rel_url(out_path.name)}",
             duration_s=duration_s,
             error="",
         )
@@ -314,7 +302,9 @@ async def offlinevc_pitch_suggest(
             status_code=413, detail=f"音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB"
         )
     stamp = int(time.time() * 1000)
-    raw_path = OUT / f"pitch_src_{stamp}{Path(file.filename or 'a.wav').suffix or '.wav'}"
+    raw_path = session_out.new_path(
+        f"pitch_src_{stamp}", Path(file.filename or "a.wav").suffix or ".wav"
+    )
     raw_path.write_bytes(await file.read())
     try:
         from pitch_advice import full_suggestion

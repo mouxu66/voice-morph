@@ -1,17 +1,21 @@
 """TTS 接口：Qwen3-TTS 文字→语音（克隆选中音色）+ 输字变声链路自检。
 
 自 server.py 拆出（行为不变）；app 装配见 server.py。
+
+⚠️ 2026-09-25 起产物**默认不落盘**：合成结果写进会话目录
+（`outputs/.session/tts_*.wav`，见 `session_out.py`），退出即删；用户点「保存」
+才由 `POST /api/session/save` 复制进作品库。所以本模块**不再**调
+`history.register` —— "默认不记、保存才留"是同一条产品决定的两个面。
 """
 
-import time
 from pathlib import Path
 
+import session_out
 from common import selected_voice, voice_ref
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from history import register as history_register
 from pydantic import BaseModel
-from runtime import API_PREFIX, OUT
+from runtime import API_PREFIX
 
 router = APIRouter(prefix=API_PREFIX)
 
@@ -38,9 +42,14 @@ def synth_wav(
     style_ref_text: str = "",
     seg_chars: int = 0,
 ) -> tuple[Path, float, str]:
-    """合成到 outputs/tts_*.wav，返回 (路径, 时长秒, 实际 voice_id)。
+    """合成到**会话目录**（`outputs/.session/tts_*.wav`），返回 (路径, 时长秒, voice_id)。
 
-    供 `/api/tts` 与微信一键发送（`/api/wechat/send_text`）共用，避免两处各写一遍。
+    供 `/api/tts`、微信一键发送（`/api/wechat/send_text`）与试听
+    （`/api/wechat/preview_text`）共用，避免三处各写一遍。
+
+    ⚠️ 调用方拿到的路径在会话目录 —— 想让它长期留存，必须走
+    `POST /api/session/save`（或直接调 `session_out.save`）。
+    播放 URL 要用 `session_out.rel_url(out.name)`，不能自己拼 `outputs/{name}`。
     """
     if not text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
@@ -79,8 +88,8 @@ def synth_wav(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"TTS 失败: {e}")
-    fname = f"tts_{int(time.time() * 1000)}.wav"
-    out = OUT / fname
+    # ★ 会话目录：默认不落盘（见模块注释）
+    out = session_out.new_path("tts")
     out.write_bytes(wav_bytes)
     import soundfile as sf
 
@@ -92,7 +101,11 @@ def synth_wav(
 @router.post("/tts")
 def tts_endpoint(req: TTSRequest):
     """文字→语音：按 voice_id 音色克隆合成（不传 voice_id 则用当前选中音色，都没有则报错）。
-    结果保存为 outputs/tts_*.wav 并返回 URL，便于前端下载与历史持久化。"""
+
+    ⚠️ 结果**默认不落盘**（会话目录 `outputs/.session/`，退出即删），也不登记历史；
+    返回的 `url` 已带上 `.session/` 前缀，可直接播放。要留下就点「保存」→
+    `POST /api/session/save`（那时才复制进作品库）。
+    """
     out, duration_s, voice_id = synth_wav(
         req.text,
         req.voice_id,
@@ -102,15 +115,12 @@ def tts_endpoint(req: TTSRequest):
         req.style_ref_text,
         req.seg_chars,
     )
-    fname = out.name
-    history_register(
-        "tts", voice_id, fname, f"/api/media/outputs/{fname}", duration_s, input_text=req.text
-    )
     return JSONResponse(
         {
             "ok": True,
             "voice_id": voice_id,
-            "url": f"/api/media/outputs/{fname}",
+            "wav": out.name,
+            "url": f"/api/media/outputs/{session_out.rel_url(out.name)}",
             "duration_s": duration_s,
         }
     )
@@ -264,15 +274,20 @@ def build_tts_chain_report(
 
 
 def _probe_out_dir() -> tuple[bool, str]:
-    """探输出目录是否可写（真写一个临时文件再删，比 os.access 可靠）。"""
-    probe = OUT / ".tts_write_probe"
+    """探**会话目录**是否可写（真写一个临时文件再删，比 os.access 可靠）。
+
+    探的就是合成真正要写进去的那个目录（`outputs/.session/`）—— 探 outputs 根而
+    写会话目录，是一条会假绿的判据。
+    """
+    d = session_out.session_dir()
+    probe = d / ".tts_write_probe"
     try:
-        OUT.mkdir(parents=True, exist_ok=True)
+        d.mkdir(parents=True, exist_ok=True)
         probe.write_bytes(b"")
         probe.unlink()
-        return True, f"{OUT}（可写）"
+        return True, f"{d}（可写，退出自动清理）"
     except Exception as e:
-        return False, f"{OUT} 不可写：{e}"
+        return False, f"{d} 不可写：{e}"
 
 
 @router.get("/tts/send_chain")

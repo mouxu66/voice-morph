@@ -16,13 +16,10 @@ import re
 import threading
 import time
 
-import config as cfg
+import session_out
 from common import is_valid_voice_id, selected_voice, voice_ref
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-
-OUT = cfg.OUTPUTS_DIR
-OUT.mkdir(exist_ok=True)
 
 router = APIRouter(prefix="/api")
 
@@ -216,13 +213,13 @@ def _audiobook_worker(jobs, voice_id: str, gap_ms: int, mode: str):
                     language=_detect_lang(text),
                     voice_id=voice_id,
                 )
-                seg_path = OUT / f"audiobook_{stamp}_seg{i + 1:04d}.wav"
+                seg_path = session_out.new_path(f"audiobook_{stamp}_seg{i + 1:04d}")
                 seg_path.write_bytes(wav)
                 import soundfile as sf
 
                 d, sr = sf.read(str(seg_path))
                 dur = round(len(d) / sr, 2)
-                seg_url = f"/api/media/outputs/{seg_path.name}"
+                seg_url = f"/api/media/outputs/{session_out.rel_url(seg_path.name)}"
                 pieces.append(AudioSegment.from_wav(str(seg_path)))
             except Exception:
                 failed += 1
@@ -267,24 +264,20 @@ def _audiobook_worker(jobs, voice_id: str, gap_ms: int, mode: str):
         else:
             final = sum(pieces, AudioSegment.empty())
 
-        fname = f"audiobook_{stamp}.wav"
-        final_path = OUT / fname
+        final_path = session_out.new_path(f"audiobook_{stamp}")
         final.export(str(final_path), format="wav")
         import soundfile as sf
 
         d, sr = sf.read(str(final_path))
         duration_s = round(len(d) / sr, 1)
-        from history import register as history_register
-
-        history_register(
-            "audiobook", voice_id, fname, f"/api/media/outputs/{fname}", duration_s, input_text=""
-        )
+        # 不登记历史：产物只是本会话的试听结果，用户点「保存」时才进作品库
+        # （默认不记，保存才留 —— 见 session_out 模块注释）。
         AUDIOBOOK_STATE.update(
             running=False,
             status="done",
             percent=100,
             current_text="",
-            url=f"/api/media/outputs/{fname}",
+            url=f"/api/media/outputs/{session_out.rel_url(final_path.name)}",
             duration_s=duration_s,
             error="" if not failed else f"{failed} 句合成失败（以静音占位）",
         )

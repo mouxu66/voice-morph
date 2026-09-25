@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 import config as cfg
+import session_out
 from common import MAX_UPLOAD_BYTES, find_ffmpeg, voice_ref
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
@@ -52,9 +53,7 @@ def _cascade_running() -> bool:
         return False
     return bool(_cascade_alive())
 
-OUT = cfg.OUTPUTS_DIR
-OUT.mkdir(exist_ok=True)
-
+# 产物一律落会话目录（退出即删），路径每次现读 —— 不许在这里早绑定 cfg.OUTPUTS_DIR。
 SEEDVC_REPO = cfg.ROOT / "seed_vc_repo"
 SEEDVC_INFER = SEEDVC_REPO / "inference_v2.py"
 SEEDVC_VENV_PY = cfg.ROOT / ".venv" / "Scripts" / "python.exe"
@@ -156,7 +155,9 @@ async def seedvc_run(
         )
 
     stamp = int(time.time() * 1000)
-    raw_path = OUT / f"seedvc_src_{stamp}{Path(file.filename or 'a.wav').suffix or '.wav'}"
+    raw_path = session_out.new_path(
+        f"seedvc_src_{stamp}", Path(file.filename or "a.wav").suffix or ".wav"
+    )
     if (file.size or 0) > MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=413, detail=f"音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝转换"
@@ -291,11 +292,11 @@ def _seedvc_worker(
 ):
     import soundfile as sf
 
-    in_src = OUT / f"seedvc_in_src_{stamp}.wav"
-    in_tgt = OUT / f"seedvc_in_tgt_{stamp}.wav"
-    out_dir = OUT / f"seedvc_tmp_{stamp}"
+    in_src = session_out.new_path(f"seedvc_in_src_{stamp}")
+    in_tgt = session_out.new_path(f"seedvc_in_tgt_{stamp}")
+    out_dir = session_out.new_path(f"seedvc_tmp_{stamp}", suffix="")
     out_dir.mkdir(parents=True, exist_ok=True)
-    final_path = OUT / f"seedvc_{stamp}.wav"
+    final_path = session_out.new_path(f"seedvc_{stamp}")
     try:
         SEEDVC_STATE.update(message="音频预处理中…")
         _preprocess(raw_path, in_src, denoise)
@@ -304,7 +305,9 @@ def _seedvc_worker(
         if ref_path is not None and ref_path.exists():
             tgt_for_vc = ref_path
         else:
-            tgt_raw = OUT / f"seedvc_tgt_{stamp}{Path(target.filename or 'a.wav').suffix or '.wav'}"
+            tgt_raw = session_out.new_path(
+                f"seedvc_tgt_{stamp}", Path(target.filename or "a.wav").suffix or ".wav"
+            )
             tgt_raw.write_bytes(target.file.read())
             _preprocess(tgt_raw, in_tgt, False)
             tgt_for_vc = in_tgt
@@ -328,29 +331,13 @@ def _seedvc_worker(
 
         d, sr = sf.read(str(final_path))
         duration_s = round(len(d) / sr, 1)
-        from history import register as history_register
-
-        history_register(
-            "seedvc",
-            target_label,
-            final_path.name,
-            f"/api/media/outputs/{final_path.name}",
-            duration_s,
-            params={
-                "convert_style": convert_style,
-                "similarity_cfg_rate": similarity_cfg_rate,
-                "top_p": top_p,
-                "temperature": temperature,
-                "diffusion_steps": diffusion_steps,
-                "length_adjust": length_adjust,
-                "denoise": denoise,
-            },
-        )
+        # 不登记历史：产物只是本会话的试听结果，用户点「保存」时才进作品库
+        # （默认不记，保存才留 —— 见 session_out 模块注释）。
         SEEDVC_STATE.update(
             running=False,
             status="done",
             message="完成",
-            url=f"/api/media/outputs/{final_path.name}",
+            url=f"/api/media/outputs/{session_out.rel_url(final_path.name)}",
             duration_s=duration_s,
             error="",
         )

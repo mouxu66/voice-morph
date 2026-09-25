@@ -7,10 +7,11 @@ import json
 import time
 from pathlib import Path
 
+import session_out
 from common import voice_ref
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from runtime import API_PREFIX, OUT, PREVIEW_TEXTS
+from runtime import API_PREFIX, PREVIEW_TEXTS
 
 router = APIRouter(prefix=API_PREFIX)
 
@@ -55,15 +56,14 @@ def ab_run(req: AbRunRequest):
         # 强制 x-vector 声纹模式（ref_text 置空）：A/B 考察的是音色相似度本身，
         # 且长参考 ICL 在 8GB 卡上会跌进 WDDM 共享内存慢路径（20s 参考要 20 分钟+）
         wav = qwen_tts(text, ref_audio=str(ref), ref_text="", voice_id=vid)
-        fname = f"ab_{int(time.time() * 1000)}_{tag}.wav"
-        out = OUT / fname
+        out = session_out.new_path(f"ab_{tag}")
         out.write_bytes(wav)
         emb_gen = np.asarray(_speaker_emb(out))
         emb_ref = np.asarray(_speaker_emb(ref))
         sim = float(np.dot(emb_gen, emb_ref) / (np.linalg.norm(emb_gen) * np.linalg.norm(emb_ref)))
         results[tag] = {
             "voice_id": vid,
-            "url": f"/api/media/outputs/{fname}",
+            "url": f"/api/media/outputs/{session_out.rel_url(out.name)}",
             "similarity": round(sim, 3),
         }
     return {"ok": True, "text": text, **results}

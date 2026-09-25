@@ -250,6 +250,15 @@ if _web_dist is not None:
 
 
 if __name__ == "__main__":
+    # 会话产物（outputs/.session/）的**第一层**退出保障：启动即清空。
+    # Electron 退出走 `taskkill /PID /T /F`（backend.cjs）——强杀，Python 的 atexit
+    # 跑不到，所以上一次的残渣只能靠这一次启动来收。放在最前面：必须在任何插件
+    # 开始产出之前，否则会删掉刚合成出来的东西。
+    # 其余两层见 session_out.py 模块注释（uvicorn 关停 / Electron before-quit）。
+    import session_out
+
+    session_out.purge()
+
     # `when="main"` 的启动副作用：只在真入口跑。放这里而不是模块级是刻意的 ——
     # `import server`（打包探测、测试、工具脚本）不该产生这些副作用。
     # 目前唯一一条是 audio_api 的音频设备残留自动巡检（FRD F4）；导不进来时静默跳过，
@@ -262,4 +271,12 @@ if __name__ == "__main__":
     from backend_autosync import autostart_sync
 
     autostart_sync(ROOT)
-    uvicorn.run(app, host=cfg.SERVER_HOST, port=cfg.SERVER_PORT)
+    # 会话产物的**第二层**退出保障：uvicorn 正常关停（Ctrl+C 或优雅停止）时再清一次。
+    # 放 finally 而不是某处的 shutdown 钩子：`uvicorn.run` 返回即进程即将结束，
+    # 这是唯一能同时覆盖「正常退出」与「run 抛异常」的位置，且不依赖 worker 数量。
+    # 尽力而为 —— 被 `taskkill /F` 强杀时这里根本跑不到，那一段由①（下次启动清）
+    # 和③（Electron before-quit）兜住。
+    try:
+        uvicorn.run(app, host=cfg.SERVER_HOST, port=cfg.SERVER_PORT)
+    finally:
+        session_out.purge()

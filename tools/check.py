@@ -125,6 +125,11 @@ FAST_TESTS = [
     # 少了它们，跑全量就会往用户真实的 outputs/ 与 media/ 里写（见 `docs/犯错档案-工程.md` §8.36/§8.37）。
     # 放进 --fast 才能在提交那一刻拦住，而不是等 pre-push 的全量。
     "m2_server/tests/test_output_isolation.py",
+    # 会话产物「即用即删」（约 0.3s，纯 tmp_path）：钉住三条只有测试守得住的不变量 ——
+    # 产物默认落 outputs/.session/（否则"退出即删"删不到它）、save 幂等
+    # （重复登记会在作品库里留下两条指向同一 wav 的记录，删一条另一条就悬空）、
+    # 对外只给裸名（消费侧显式拒绝含 / 的名字）。见 session_out.py 模块注释。
+    "m2_server/tests/test_session_out.py",
     # 接口契约（约 0.2s，纯 AST 对账）：钉住「客户端发的字段 ⊆ 端点读的字段」。
     # 防的是「死参数」—— 发了、不报错、也不生效（`cascade_stream` 曾给 /tts 发 `fast`，
     # 而那端点根本不读它）。见 `docs/犯错档案-工程.md` §8.38。

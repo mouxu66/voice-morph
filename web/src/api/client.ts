@@ -69,10 +69,52 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ---- 会话产物（「即用即删」）----
+// 合成结果默认落在 outputs/.session/，退出即清空；只有调 saveSession 才会复制进
+// 作品库。删（purge）在退出时由 Electron 主进程与后端启动各自兜底，前端只在用户
+// 主动「清空本次」时调。见后端 session_out.py。
+
+export type SessionSaveResult = {
+  ok: boolean;
+  name: string;
+  url: string;
+  /** 历史记录 id（`<毫秒>_<hex6>` 形式的字符串，见 history.register） */
+  item_id: string;
+  already: boolean;
+};
+
+/**
+ * 把一条会话产物保存进作品库（复制到 outputs 根 + 登记历史）。幂等：
+ * 重复保存同一个 wav 只会得到第一次那条记录，不会产生第二份文件。
+ */
+export async function saveSession(
+  wav: string,
+  opts: { kind?: string; voiceId?: string; inputText?: string } = {}
+): Promise<SessionSaveResult> {
+  return jsonFetch<SessionSaveResult>("/session/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      wav,
+      kind: opts.kind ?? "tts",
+      voice_id: opts.voiceId ?? "",
+      input_text: opts.inputText ?? "",
+    }),
+  });
+}
+
+/** 清空会话目录，返回删掉的文件数。 */
+export async function purgeSession(): Promise<{ ok: boolean; removed: number }> {
+  return jsonFetch<{ ok: boolean; removed: number }>("/session/purge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+}
+
 export async function getHealth(): Promise<HealthInfo> {
   return jsonFetch<HealthInfo>("/health");
 }
-
 /**
  * 后端能力加载清单：哪些路由模块真的挂上了、哪些没挂上及原因。
  *

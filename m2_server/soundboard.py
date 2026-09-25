@@ -48,6 +48,7 @@ from pathlib import Path
 
 import config as cfg
 import numpy as np
+import session_out
 import sfx_lib
 import sfx_packs
 import soundfile as sf
@@ -243,30 +244,33 @@ def _stop_worker() -> None:
 
 
 def _outputs_wav(name: str) -> Path:
-    """把请求里的 wav 名解析成 `outputs/` 下的文件。**只认裸文件名**。
+    """把请求里的 wav 名解析成**会话目录或 outputs 根**下的文件。**只认裸文件名**。
 
     与 `wechat_voice._resolve_wav` 的差别（刻意）：那边放行绝对路径，因为它还要
     处理发送链路内部生成的临时文件；这里只服务"把某条合成产物混一下"这一件事，
     所以直接拒掉任何带目录成分的名字 —— 请求体里的路径不该能指向 outputs 之外。
+
+    两处都查（而不是只查根）的理由：合成产物默认落在 `outputs/.session/`
+    （`session_out`），只查根目录会让"刚合成完就混音"报找不到文件。
     """
-    n = str(name or "").strip()
-    if not n or n in (".", "..") or any(c in n for c in "/\\"):
-        raise HTTPException(status_code=400, detail=f"非法的音频名：{name!r}")
-    root = cfg.OUTPUTS_DIR.resolve()
-    p = (root / n).resolve()
-    if not p.is_relative_to(root) or not p.is_file():
+    p = session_out.find(name)
+    if p is None:
+        n = str(name or "").strip()
+        # 名字本身非法（带路径成分）与"两处都没有"是两回事，报错要分开
+        if not n or n in (".", "..") or any(c in n for c in "/\\"):
+            raise HTTPException(status_code=400, detail=f"非法的音频名：{name!r}")
         raise HTTPException(status_code=404, detail=f"找不到音频：{n}")
     return p
 
 
 def _latest_tts() -> Path:
     """不给 wav 名时的默认目标：最近一次合成产物（与发送链路的默认口径一致）。"""
-    cands = sorted(cfg.OUTPUTS_DIR.glob("tts_*.wav"), key=lambda p: p.stat().st_mtime)
-    if not cands:
+    p = session_out.newest_tts()
+    if p is None:
         raise HTTPException(
-            status_code=404, detail="outputs/ 下没有 TTS 产物，先在网页上合成一条语音"
+            status_code=404, detail="还没有 TTS 产物，先在网页上合成一条语音"
         )
-    return cands[-1]
+    return p
 
 
 def _read_mono(path: Path) -> tuple[np.ndarray, int]:
@@ -387,7 +391,9 @@ def soundboard_premix(req: PremixReq):
 
     mixed, notes = sfx_lib.mix_into(voice, sr, [i.model_dump() for i in inserts])
 
-    out = cfg.OUTPUTS_DIR / f"sfxmix_{src.stem}.wav"
+    # 预混产物也是**会话产物**（退出即删）：它只是"发送时用的那条音频"，不是作品。
+    # 与源同目录 —— 源在会话目录时产物也在会话目录（`derived_dir` 的同一口径）。
+    out = session_out.derived_dir(src) / f"sfxmix_{src.stem}.wav"
     tmp = out.with_name(out.name + ".tmp")
     try:
         # 显式给 `format="WAV"`：临时名以 `.tmp` 结尾（故意不叫 .wav，免得被

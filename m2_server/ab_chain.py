@@ -26,9 +26,9 @@ import time
 from pathlib import Path
 
 import config as cfg
+import session_out
 from common import MAX_UPLOAD_BYTES, find_ffmpeg, voice_ref
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from runtime import OUT
 from rvc_common import ensure_infer_pth
 
 router = APIRouter(prefix="/api")
@@ -214,7 +214,7 @@ def _seedvc_link(voice_id: str, src16k: Path, out_wav: Path) -> None:
     ref, _ = voice_ref(voice_id)
     from seed_vc import run_conversion
 
-    tmp_dir = OUT / f"ab_chain_seedvc_{int(time.time() * 1000)}"
+    tmp_dir = session_out.new_path(f"ab_chain_seedvc_{int(time.time() * 1000)}", suffix="")
     produced = run_conversion(src16k, ref, tmp_dir)
     shutil.move(str(produced), str(out_wav))
     with contextlib.suppress(Exception):
@@ -271,7 +271,9 @@ async def ab_chain(
         ref, _ = voice_ref(voice_id)
 
         stamp = int(time.time() * 1000)
-        raw_path = OUT / f"ab_chain_src_{stamp}{Path(file.filename or 'a.wav').suffix or '.wav'}"
+        raw_path = session_out.new_path(
+            f"ab_chain_src_{stamp}", Path(file.filename or "a.wav").suffix or ".wav"
+        )
         if (file.size or 0) > MAX_UPLOAD_BYTES:
             raise HTTPException(
                 status_code=413, detail=f"音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB"
@@ -283,7 +285,7 @@ async def ab_chain(
             )
         raw_path.write_bytes(raw)
 
-        src16k = OUT / f"ab_chain_in_{stamp}.wav"
+        src16k = session_out.new_path(f"ab_chain_in_{stamp}")
         text = text.strip()
         try:
             _preprocess16k(raw_path, src16k)
@@ -331,14 +333,14 @@ async def ab_chain(
 
 def _run_one(tag: str, func, stamp: int) -> dict:
     """跑单条链路到 out wav；成功返回 done+url，失败返回 failed+error（不抛）。"""
-    out_wav = OUT / f"ab_chain_{tag}_{stamp}.wav"
+    out_wav = session_out.new_path(f"ab_chain_{tag}_{stamp}")
     try:
         func(out_wav)
         if not out_wav.exists():
             raise RuntimeError("链路未产出音频")
         return {
             "status": "done",
-            "url": f"/api/media/outputs/{out_wav.name}",
+            "url": f"/api/media/outputs/{session_out.rel_url(out_wav.name)}",
             "error": "",
             "metrics": None,
             "_wav": out_wav,

@@ -57,6 +57,7 @@ import contextlib
 
 import config as cfg
 import numpy as np
+import session_out
 import soundfile as sf
 import wechat_proc as wproc  # 进程/窗口底层操作（重启微信链路）
 from fastapi import APIRouter, HTTPException
@@ -1744,7 +1745,8 @@ def preview_text(req: PreviewTextReq):
         "tts_voice": vid,
         "borrowed": borrowed,
         "wav": wav.name,
-        "url": f"/api/media/outputs/{wav.name}",
+        # `.session/` 前缀必须带上：这条试听的产物现在是会话产物（见 session_out）
+        "url": f"/api/media/outputs/{session_out.rel_url(wav.name)}",
         "duration_s": duration_s,
         "steps": steps,
     }
@@ -1828,7 +1830,7 @@ def _split_for_budget(
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"第 {i+1} 句合成失败: {e}") from e
-        p = cfg.OUTPUTS_DIR / f"wxseg_{stamp}_{i + 1:04d}.wav"
+        p = session_out.new_path(f"wxseg_{stamp}_{i + 1:04d}")
         p.write_bytes(wav_bytes)
         # 裁首尾静音再量时长：TTS 产物常带 0.5~1s 静音，不裁会让预算算虚（偏大），
         # 也把静音录进微信里（用户听到的是"开头一段空白"）。
@@ -1856,7 +1858,7 @@ def _split_for_budget(
             if j > a:
                 seg += AudioSegment.silent(duration=int(SENT_GAP_S * 1000), frame_rate=24000)
             seg += AudioSegment.from_wav(str(seg_paths[j]))
-        raw = cfg.OUTPUTS_DIR / f"wxchunk_{stamp}_{k + 1:02d}.wav"
+        raw = session_out.new_path(f"wxchunk_{stamp}_{k + 1:02d}")
         seg.export(str(raw), format="wav")
         if rvc_voice:
             from rvc_convert import rvc_convert as _rvc
@@ -2123,19 +2125,18 @@ def play_to_cable(req: PlayToCableReq):
 def _do_play_to_cable(req: PlayToCableReq):
     steps: list[str] = []
     if req.wav:
-        wav = (cfg.OUTPUTS_DIR / req.wav) if not Path(req.wav).is_absolute() else Path(req.wav)
-        if not wav.exists():
+        wav = Path(req.wav) if Path(req.wav).is_absolute() else _find_wav(req.wav)
+        if wav is None or not wav.exists():
             return JSONResponse(
                 status_code=404, content={"ok": False, "error": f"找不到音频 {req.wav}"}
             )
     else:
-        cands = sorted(cfg.OUTPUTS_DIR.glob("tts_*.wav"), key=lambda p: p.stat().st_mtime)
-        if not cands:
+        wav = session_out.newest_tts()
+        if wav is None:
             return JSONResponse(
                 status_code=404,
-                content={"ok": False, "error": "outputs/ 下没有 TTS 产物，先在网页上合成一条语音"},
+                content={"ok": False, "error": "还没有 TTS 产物，先在网页上合成一条语音"},
             )
-        wav = cands[-1]
     trimmed = _trim_edges(wav)
     if trimmed != wav:
         steps.append(f"已裁掉首尾静音: {wav.name} -> {trimmed.name}")
@@ -2303,30 +2304,42 @@ def _prepare_env(pre_apply: _PendingApply | None = None, steps: list[str] | None
     return env
 
 
+def _find_wav(name: str) -> Path | None:
+    """裸名 → wav 路径：**先会话目录、后 outputs 根**（`session_out.find` 的薄封装）。
+
+    为什么不能直接 `cfg.OUTPUTS_DIR / name`：合成产物现在默认落在会话目录
+    （`outputs/.session/`），只有用户点过「保存」的才在 outputs 根。只认根目录会
+    让"刚合成完就发送"报「找不到音频」—— 而那正是最常用的那条路。
+
+    返回 None 表示两处都没有；调用方按自己的语境报 404。
+    """
+    return session_out.find(name)
+
+
 def _resolve_wav(req: SendVoiceReq):
-    """定位要发的 wav：指定名 → outputs 下精确匹配；否则最近的 tts_*.wav。
+    """定位要发的 wav：指定名 → 会话目录/roots 精确匹配；否则最近的 tts_*.wav。
 
     返回 (Path, None) 或 (None, JSONResponse 错误)。从 _do_send 第 1 步抽出。
     """
     if req.wav:
-        wav = (cfg.OUTPUTS_DIR / req.wav) if not Path(req.wav).is_absolute() else Path(req.wav)
-        if not wav.exists():
+        wav = Path(req.wav) if Path(req.wav).is_absolute() else _find_wav(req.wav)
+        if wav is None or not wav.exists():
             return None, JSONResponse(
                 status_code=404,
                 content={"ok": False, "outcome": "failed", "error": f"找不到音频 {req.wav}"},
             )
         return wav, None
-    cands = sorted(cfg.OUTPUTS_DIR.glob("tts_*.wav"), key=lambda p: p.stat().st_mtime)
-    if not cands:
+    wav = session_out.newest_tts()
+    if wav is None:
         return None, JSONResponse(
             status_code=404,
             content={
                 "ok": False,
                 "outcome": "failed",
-                "error": "outputs/ 下没有 TTS 产物，先在网页上合成一条语音",
+                "error": "还没有 TTS 产物，先在网页上合成一条语音",
             },
         )
-    return cands[-1], None
+    return wav, None
 
 
 def _record_and_send(
@@ -2859,13 +2872,13 @@ def send_history():
 @router.get("/send_voice/last")
 def last_send():
     """给桌宠/前端查询最近一次合成产物（发送前预览用）。"""
-    cands = sorted(cfg.OUTPUTS_DIR.glob("tts_*.wav"), key=lambda p: p.stat().st_mtime)
-    if not cands:
+    wav = session_out.newest_tts()
+    if wav is None:
         return {"ok": False, "error": "还没有 TTS 产物"}
-    wav = cands[-1]
     return {
         "ok": True,
         "wav": wav.name,
         "duration_s": round(_wav_duration(wav), 1),
-        "url": f"/api/media/outputs/{wav.name}",
+        # 会话产物在 `.session/` 下 —— 自己拼 `outputs/{name}` 会让预览 404
+        "url": f"/api/media/outputs/{session_out.rel_url(wav.name)}",
     }

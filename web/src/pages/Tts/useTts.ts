@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react"
-import { mediaUrl, sendTts, ttsChainCheck } from "@/api/client"
+import { mediaUrl, purgeSession, saveSession, sendTts, ttsChainCheck } from "@/api/client"
 import type { TtsChainInfo } from "@/types"
 import { useAppStore } from "@/store/useAppStore"
 import { friendlyError } from "@/lib/errors"
-import { loadHistory, prependHistory, STORAGE_KEYS } from "@/lib/history"
 
 export const TTS_MAX_LENGTH = 300
+// 会话内保留多少条试听结果。**不落 localStorage**：产物在 outputs/.session/，
+// 退出即删 —— 存下来的 url 下次打开必然是 404（这就是这里改掉 localStorage 的原因）。
 export const TTS_HISTORY_LIMIT = 5
 // 长文分段 ICL 的段长（字符），>0 启用分段，见 worker VM_TTS_SEG_CHARS
 export const TTS_SEG_CHARS = 60
@@ -14,10 +15,16 @@ export type TtsLanguage = "zh" | "en"
 
 export interface TtsHistoryItem {
   id: string
+  /** 裸文件名（`tts_x.wav`）—— 保存/删除接口都按裸名定位，见后端 session_out.py */
+  wav: string
   text: string
   language: TtsLanguage
   url: string
   createdAt: number
+  /** 是否已存进作品库。保存过之后再点「保存」是幂等的，但仍然要能看出来 */
+  saved: boolean
+  /** 保存进行中/失败提示 */
+  saving?: boolean
 }
 
 const SLOW_HINT_MS = 8000
@@ -32,8 +39,8 @@ export function useTts() {
   const [synthesizing, setSynthesizing] = useState(false)
   const [slowHint, setSlowHint] = useState("")
   const [errorMessage, setErrorMessage] = useState("")
-  const [ttsHistory, setTtsHistory] = useState<TtsHistoryItem[]>(() =>
-    loadHistory<TtsHistoryItem>(STORAGE_KEYS.ttsHistory, TTS_HISTORY_LIMIT))
+  const [saveMessage, setSaveMessage] = useState("")
+  const [ttsHistory, setTtsHistory] = useState<TtsHistoryItem[]>([])
 
   const setTextLanguage = useCallback((value: string) => {
     setTextLanguageState(value === "en" ? "en" : "zh")
@@ -50,20 +57,25 @@ export function useTts() {
     }
     setSynthesizing(true)
     setErrorMessage("")
+    setSaveMessage("")
     setSlowHint("")
     const slowTimer = window.setTimeout(() => setSlowHint("正在合成…首次使用需加载语音模型，可能要等一两分钟"), SLOW_HINT_MS)
     try {
       const result = await sendTts(trimmed, textLanguage, selectedVoiceId,
                                    styleRefVoice || undefined,
                                    styleRefVoice ? TTS_SEG_CHARS : 0)
+      // 后端给的是裸名或 `.session/x.wav`；存裸名，播放地址另算。
+      const wav = result.url.split("/").pop() ?? ""
       const item: TtsHistoryItem = {
         id: `${Date.now()}`,
+        wav,
         text: trimmed,
         language: textLanguage,
         url: mediaUrl(result.url),
         createdAt: Date.now(),
+        saved: false,
       }
-      setTtsHistory((current) => prependHistory(STORAGE_KEYS.ttsHistory, current, item, TTS_HISTORY_LIMIT))
+      setTtsHistory((current) => [item, ...current].slice(0, TTS_HISTORY_LIMIT))
     } catch (error) {
       setErrorMessage(friendlyError(error, "合成失败"))
     } finally {
@@ -72,6 +84,48 @@ export function useTts() {
       setSynthesizing(false)
     }
   }, [text, textLanguage, backendUp, synthesizing, selectedVoiceId, styleRefVoice])
+
+  /** 把某条会话产物存进作品库（复制到 outputs 根 + 登记历史）。幂等。 */
+  const saveItem = useCallback(async (id: string) => {
+    const target = ttsHistory.find((h) => h.id === id)
+    if (!target || target.saved || target.saving) return
+    setSaveMessage("")
+    setTtsHistory((current) => current.map((h) => (h.id === id ? { ...h, saving: true } : h)))
+    try {
+      await saveSession(target.wav, {
+        kind: "tts",
+        voiceId: selectedVoiceId ?? "",
+        inputText: target.text,
+      })
+      setTtsHistory((current) => current.map((h) => (h.id === id ? { ...h, saved: true, saving: false } : h)))
+      setSaveMessage("已保存到作品库")
+    } catch (error) {
+      setTtsHistory((current) => current.map((h) => (h.id === id ? { ...h, saving: false } : h)))
+      setSaveMessage(friendlyError(error, "保存失败"))
+    }
+  }, [ttsHistory, selectedVoiceId])
+
+  /**
+   * 从列表里去掉一条试听记录（**只影响列表，不删文件**）。
+   *
+   * 为什么不删文件：产物在 `.session/` 里，本来就"退出即删"，没有"删它"的必要；
+   * 而一旦保存过，文件已经连同作品库记录一起在 outputs 根 —— 那时该去「作品库」删，
+   * 在这里删会和历史记录脱节（留下指向不存在文件的记录）。
+   */
+  const discardItem = useCallback((id: string) => {
+    setTtsHistory((current) => current.filter((h) => h.id !== id))
+  }, [])
+
+  /** 清空本次会话的全部产物（用户主动「清空本次」，退出时也会自动清）。 */
+  const clearSession = useCallback(async () => {
+    try {
+      await purgeSession()
+    } catch {
+      /* 后端没起也不该拦住界面：本地列表照清 */
+    }
+    setTtsHistory([])
+    setSaveMessage("")
+  }, [])
 
   const textLength = text.length
   const overLimit = textLength > TTS_MAX_LENGTH
@@ -127,6 +181,10 @@ export function useTts() {
     generate,
     ttsHistory,
     latestResult,
+    saveMessage,
+    saveItem,
+    discardItem,
+    clearSession,
     voices,
     selectedVoiceId,
     selectVoice,

@@ -204,6 +204,14 @@ app.on("before-quit", () => {
   altHint.destroyAltHint();       // 兜底：任何退出路径都不留置顶横幅
   sfxWindow.destroySfxWindow();   // 同理：隐藏的声板窗也会钉住退出
   globalShortcut.unregisterAll(); // 全局热键随应用退出释放
+  // 会话产物（outputs/.session/）「退出即删」的第三层：必须在 stopBackend **之前**
+  // 发 —— 它是同步阻塞的最多 1.5s 请求，后端一被强杀就发不出去了。
+  // 失败不阻塞退出：另外两层（启动清空 / uvicorn 关停）各自兜底。
+  try {
+    backend.purgeSessionSync();
+  } catch {
+    /* 忽略 */
+  }
   backend.stopBackend(); // 关闭后端，绝不残留
 });
 

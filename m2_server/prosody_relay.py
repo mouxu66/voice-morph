@@ -18,7 +18,8 @@ from pathlib import Path
 
 import config as cfg
 import qwen3_tts
-from runtime import OUT, VOICEBANK
+import session_out
+from runtime import VOICEBANK
 
 # 兜底参考音：音色没有自己的参考音频（市场下载的多数如此）时用它，
 # 保证中转链路永远出声，而不是静默失败。
@@ -91,7 +92,11 @@ def relay(
     if not wav_bytes:
         raise RuntimeError("TTS 返回空音频")
 
-    out = Path(out_path) if out_path else OUT / f"relay_{Path(input_path).stem}.wav"
+    out = (
+        Path(out_path)
+        if out_path
+        else session_out.new_path(f"relay_{Path(input_path).stem}")
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     data, sr = sf.read(io.BytesIO(wav_bytes))
     sf.write(str(out), data, sr)

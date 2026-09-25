@@ -560,6 +560,51 @@ async function startBackend(root) {
   return { attempted: true, python, reason: spawnError, reusedExternal: false };
 }
 
+/**
+ * **同步**打一次 `POST /api/session/purge`（会话产物「退出即删」的第三层保障）。
+ *
+ * 为什么必须是同步：`before-quit` 里紧接着就要 `stopBackend()`，而它是
+ * `taskkill /PID /T /F` **强杀** —— 异步请求根本来不及发出去后端就没了。
+ * 所以这里用 `Atomics.wait` 把主进程阻塞住等响应（Node 里唯一不引入依赖的
+ * 同步 HTTP 手法）：最多等 `timeoutMs`，超时/失败一律静默返回。
+ *
+ * 这是"尽力而为"的一层，**不阻塞退出**是硬要求：
+ * ① 后端启动时会再清一次（`server.py` main 入口），② uvicorn 正常关停也会清。
+ * 三层里任何一层生效，用户下次打开看到的都是干净的会话目录。
+ *
+ * @returns {boolean} 真拿到 200 响应才返回 true；其余情况（未起/超时/报错）false。
+ */
+function purgeSessionSync(timeoutMs = 1500) {
+  const payload = "{}";
+  let done = false;
+  let ok = false;
+  const shared = new Int32Array(new SharedArrayBuffer(4));
+  try {
+    const req = http.request(
+      {
+        host: "127.0.0.1", port: BACKEND_PORT, path: "/api/session/purge", method: "POST",
+        timeout: timeoutMs,
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
+      },
+      (res) => {
+        res.resume(); // 必须把响应体读完，否则 socket 不释放
+        ok = res.statusCode === 200;
+        done = true;
+        Atomics.store(shared, 0, 1);
+        Atomics.notify(shared, 0);
+      },
+    );
+    req.on("error", () => { done = true; Atomics.store(shared, 0, 1); Atomics.notify(shared, 0); });
+    req.on("timeout", () => { try { req.destroy(); } catch {} });
+    req.write(payload);
+    req.end();
+    if (!done) Atomics.wait(shared, 0, 0, timeoutMs);
+  } catch {
+    return false;
+  }
+  return ok;
+}
+
 // 关闭时必须把后端也关掉：优先用记录的 pid 整树结束；再兜底 kill 当前 proc
 function stopBackend() {
   if (backendProc) {
@@ -741,6 +786,7 @@ module.exports = {
   portInUse,
   startBackend,
   stopBackend,
+  purgeSessionSync,
   restartBackend,
   registerBackendIpc,
   reportBackendTrouble,

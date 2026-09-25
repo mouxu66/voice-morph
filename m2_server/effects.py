@@ -564,7 +564,7 @@ def apply_chain(x: np.ndarray, sr: int, chain: list[dict]) -> tuple[np.ndarray, 
 
 # ---------------- FastAPI router ----------------
 
-import config as cfg  # noqa: E402
+import session_out  # noqa: E402
 import sfx_lib  # noqa: E402
 import soundfile as sf  # noqa: E402
 from common import MAX_UPLOAD_BYTES  # noqa: E402
@@ -616,21 +616,10 @@ async def effects_apply(file: UploadFile = File(...), chain: str = "[]"):
 
     out, skipped = await _run_chain_threadpool(data, sr, steps)
 
-    cfg.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    # 会话产物：默认不落盘（退出即删），要留下就点「保存」→ POST /api/session/save
     stem = Path(file.filename or "audio").stem
-    out_path = cfg.OUTPUTS_DIR / f"fx_{stem}.wav"
+    out_path = session_out.new_path(f"fx_{stem}")
     sf.write(str(out_path), out, sr, subtype="PCM_16")
-
-    from history import register as history_register
-
-    history_register(
-        "fx",
-        "",
-        out_path.name,
-        f"/api/media/outputs/{out_path.name}",
-        len(out) / sr,
-        params={"chain": steps},
-    )
 
     headers = {"X-Fx-Skipped": "; ".join(skipped) or "0"}
     return FileResponse(str(out_path), media_type="audio/wav", headers=headers)

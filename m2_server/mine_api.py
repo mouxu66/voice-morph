@@ -6,14 +6,13 @@ app 装配见 server.py。
 
 import json
 import threading
-import time
 
+import session_out
 from common import is_valid_voice_id
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from history import register as history_register
 from pydantic import BaseModel
-from runtime import API_PREFIX, CLIPS_DIR, MINE_STATE, OUT, PREVIEW_TEXTS, VOICEBANK
+from runtime import API_PREFIX, CLIPS_DIR, MINE_STATE, PREVIEW_TEXTS, VOICEBANK
 
 router = APIRouter(prefix=API_PREFIX)
 
@@ -98,21 +97,20 @@ def mine_preview(req: MinePreviewRequest):
         wav_bytes = qwen_tts(text, ref_audio=str(p), ref_text=ref_text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"试听合成失败: {e}")
-    fname = f"mine_{int(time.time() * 1000)}.wav"
-    out = OUT / fname
+    out = session_out.new_path("mine")
     out.write_bytes(wav_bytes)
     import soundfile as sf
 
     d, sr = sf.read(str(out))
     duration_s = round(len(d) / sr, 1)
-    history_register("mine", "", fname, f"/api/media/outputs/{fname}", duration_s, input_text=text)
+    # 不登记历史：试听本来就是当场听的（默认不记，保存才留，见 session_out）
     return JSONResponse(
         {
             "ok": True,
             "clip": req.clip,
             "text": text,
             "ref_text": ref_text,
-            "url": f"/api/media/outputs/{fname}",
+            "url": f"/api/media/outputs/{session_out.rel_url(out.name)}",
             "duration_s": duration_s,
         }
     )
