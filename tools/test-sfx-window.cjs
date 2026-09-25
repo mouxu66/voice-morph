@@ -25,6 +25,7 @@ const path = require("node:path");
 
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-sfxw-userdata-"));
 const WORK_AREA = { x: 0, y: 0, width: 1920, height: 1040 };
+let cursorPoint = { x: 0, y: 0 };   // 可改的“光标位置”（拖动相关用例要控它）
 
 // ---------- 假 BrowserWindow：记录构造参数与每一次方法调用 ----------
 const windows = [];
@@ -39,6 +40,8 @@ function FakeBrowserWindow(opts) {
     },
     loadFile: (f) => rec.calls.push(["loadFile", f]),
     setAlwaysOnTop: (...a) => rec.calls.push(["setAlwaysOnTop", ...a]),
+    // 抬到同层最上面（必须高于桌宠，否则鼠标事件会被桌宠接走 → 拖拽“粘住”）
+    moveTop: () => rec.calls.push(["moveTop"]),
     // alt-hint 建窗时会调它（纯装饰窗才点击穿透）；声板窗**不会**调它 ——
     // 穿透就点不到了，那是这套设计里另一个关键不变量。
     setIgnoreMouseEvents: (v) => rec.calls.push(["setIgnoreMouseEvents", v]),
@@ -73,7 +76,7 @@ const electronEntry = installElectronStub({
   },
   screen: {
     getPrimaryDisplay: () => ({ workArea: WORK_AREA }),
-    getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+    getCursorScreenPoint: () => cursorPoint,
   },
   globalShortcut: {
     register: (acc) => { hotkeys.push(acc); return true; },
@@ -167,6 +170,35 @@ check("clampToWorkArea：换了显示器后旧坐标会被收回屏内（不许�
   assert.strictEqual(q.y, 0);
 });
 
+check("clampDragTarget：拖动目标要收进工作区（不可激活窗拖出屏就找不回来了）", () => {
+  const size = sfx.WINDOW_SIZE;
+  // 正常范围内：原样
+  assert.deepStrictEqual(sfx.clampDragTarget(300, 200, size, WORK_AREA), { x: 300, y: 200 });
+  // 右下越界：右侧/下侧至少留 64px 在屏内
+  assert.deepStrictEqual(sfx.clampDragTarget(99999, 99999, size, WORK_AREA),
+    { x: WORK_AREA.width - 64, y: WORK_AREA.height - 64 });
+  // 上/左不许出屏（标题栏在窗口顶部 —— 把手一旦跑出屏就拖不回来了）
+  assert.deepStrictEqual(sfx.clampDragTarget(-5000, -5000, size, WORK_AREA), { x: 0, y: 0 });
+  assert.deepStrictEqual(sfx.clampDragTarget(-1, -1, size, WORK_AREA), { x: 0, y: 0 });
+});
+
+check("拖动时真的夹住了：光标跑到天边，窗口也只会停在屏内", () => {
+  sfx.destroySfxWindow();
+  windows.length = 0;
+  cursorPoint = { x: 500, y: 500 };
+  sfx.showSfxWindow();
+  const w = windows[0];
+  listeners["sfx:drag-start"]();
+  cursorPoint = { x: 99999, y: 99999 };
+  listeners["sfx:drag-move"]();
+  const b = w.win.getBounds();
+  assert.deepStrictEqual([b.x, b.y], [WORK_AREA.width - 64, WORK_AREA.height - 64]);
+  cursorPoint = { x: -9000, y: -9000 };
+  listeners["sfx:drag-move"]();
+  const b2 = w.win.getBounds();
+  assert.deepStrictEqual([b2.x, b2.y], [WORK_AREA.x, WORK_AREA.y]);
+});
+
 check("playPayload：只带 id，绝不把文件路径交给渲染层", () => {
   const p = sfx.playPayload("boom");
   assert.deepStrictEqual(Object.keys(p), ["id"]);
@@ -176,6 +208,7 @@ check("playPayload：只带 id，绝不把文件路径交给渲染层", () => {
 
 // ---------------------------------------------------------------- 显隐不变量
 check("showSfxWindow 用 showInactive 而非 show（且只建一个窗口）", () => {
+  sfx.destroySfxWindow();   // 前面几条用例可能已经建过窗（窗是复用的，不销毁就不会新建）
   windows.length = 0;
   sfx.showSfxWindow();
   assert.strictEqual(windows.length, 1);
@@ -187,6 +220,9 @@ check("showSfxWindow 用 showInactive 而非 show（且只建一个窗口）", (
   const names = w.calls.map((c) => c[0]);
   assert.ok(names.includes("showInactive"), "应调 showInactive");
   assert.ok(!names.includes("show"), "不许调 show（会抢前台）");
+  // 两个窗都是 alwaysOnTop("screen-saver")，同层先后由最后一次抬升决定；
+  // 不抬到桌宠之上，落在重叠区的鼠标（含 mouseup）会被桌宠接走 → 拖拽“粘住”。
+  assert.ok(names.includes("moveTop"), "唤出时应 moveTop 抬到同层最上面");
   assert.strictEqual(w.win.isFocused(), false);
 
   sfx.showSfxWindow();   // 再次唤起：复用同一个窗口，不重建

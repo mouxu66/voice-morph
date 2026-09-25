@@ -70,6 +70,20 @@ function mkEl(tag) {
     addEventListener(type, fn) { (el._listeners[type] = el._listeners[type] || []).push(fn); },
     removeEventListener() {},
     appendChild(child) { el.children.push(child); child.parent = el; return child; },
+    /** 最小 closest：支持 `.class` / `#id` / 标签名（处理器只用到这三种）。 */
+    closest(sel) {
+      let cur = el;
+      while (cur) {
+        const ok = sel.startsWith(".")
+          ? cur._cls.has(sel.slice(1))
+          : sel.startsWith("#")
+            ? cur.id === sel.slice(1)
+            : cur.tagName === sel.toUpperCase();
+        if (ok) return cur;
+        cur = cur.parent;
+      }
+      return null;
+    },
     fire(type, ev) { for (const fn of el._listeners[type] || []) fn(ev || { target: el, preventDefault() {}, stopPropagation() {} }); },
     all() {
       const out = [];
@@ -254,33 +268,60 @@ async function check(name, fn) {
     assert.deepStrictEqual(sfxCalls.filter((c) => c[0] === "hide").length, 1);
   });
 
-  await check("标题栏拖动：按下 → 移动 → 松开三段都要报给主进程", () => {
+  await check("拖动：按下 → 移动 → 松开三段都要报给主进程，且卡片任意位置都能拖", () => {
     sfxCalls.length = 0;
-    el("bar").fire("mousedown", { button: 0, target: el("bar"), preventDefault() {} });
+    // 抓的地方是**卡片本体**（不是那条 20px 标题栏）：原先只有标题栏是把手，
+    // 按在内边距/圆角上事件会穿透到下面的窗口（实测能穿透到桌宠）。
+    el("card").fire("mousedown", { button: 0, target: el("card"), preventDefault() {} });
     assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragStart").length, 1, "按下应报 dragStart");
-    sandbox.window.fire("mousemove");
+    sandbox.window.fire("mousemove", { buttons: 1 });
     assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragMove").length, 1, "移动应报 dragMove");
     sandbox.window.fire("mouseup");
     assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragEnd").length, 1, "松开应报 dragEnd");
     // 松手后再移动不该继续拖（否则窗口会跟着光标跑）
-    sandbox.window.fire("mousemove");
+    sandbox.window.fire("mousemove", { buttons: 0 });
     assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragMove").length, 1);
   });
 
-  await check("拖动不会「粘住」：blur / mouseleave / 窗口收起都要把拖动结束掉", () => {
-    // 不兜这三个，指针在窗口外松手后 dragging 会永远是 true ——
-    // 之后鼠标一动窗口就跟着跑，用户看不出原因也难以自恢复。
-    for (const ender of ["blur", "mouseleave"]) {
+  await check("点格子/按钮不会误触发拖拽", () => {
+    refreshCb({ ok: true, items: [{ id: "boom", name: "爆炸", icon: "💥", duration_s: 1.4, count: 0 }] });
+    el("close").tagName = "BUTTON";   // 栅里 getElementById 建的都是 div；真 HTML 里 #close 是 <button>
+    for (const target of [cells()[0], el("close"), el("grid")]) {
       sfxCalls.length = 0;
-      el("bar").fire("mousedown", { button: 0, target: el("bar"), preventDefault() {} });
+      el("card").fire("mousedown", { button: 0, target, preventDefault() {} });
+      assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragStart").length, 0,
+        "按在 " + (target.dataset.id || target.id) + " 上不该开始拖动");
+    }
+  });
+
+  await check("左键已经不按时的 mousemove 要立刻结束拖动（mouseup 丢了会“粘住”）", () => {
+    // 实测场景：松手那一刻鼠标在桌宠窗口上方，而桌宠那时是“可点”的 →
+    // mouseup 被桌宠接走，本窗永远不知道拖完了 → 之后鼠标一动窗口就跟着跑。
+    sfxCalls.length = 0;
+    el("card").fire("mousedown", { button: 0, target: el("card"), preventDefault() {} });
+    sandbox.window.fire("mousemove", { buttons: 1 });
+    assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragMove").length, 1);
+    sfxCalls.length = 0;
+    sandbox.window.fire("mousemove", { buttons: 0 });   // 鼠标已经松开了
+    assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragEnd").length, 1, "应结束拖动");
+    assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragMove").length, 0,
+      "关键时刻：松手那一帧**不要**先挪窗（否则窗口会瞬移一次）");
+    sandbox.window.fire("mousemove", { buttons: 0 });
+    assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragMove").length, 0);
+  });
+
+  await check("拖动不会「粘住」：blur / 窗口收起也要把拖动结束掉", () => {
+    for (const ender of ["blur"]) {
+      sfxCalls.length = 0;
+      el("card").fire("mousedown", { button: 0, target: el("card"), preventDefault() {} });
       sandbox.window.fire(ender);
       assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragEnd").length, 1, ender + " 应结束拖动");
-      sandbox.window.fire("mousemove");
+      sandbox.window.fire("mousemove", { buttons: 1 });
       assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragMove").length, 0,
         ender + " 之后不该还在拖");
     }
     sfxCalls.length = 0;
-    el("bar").fire("mousedown", { button: 0, target: el("bar"), preventDefault() {} });
+    el("card").fire("mousedown", { button: 0, target: el("card"), preventDefault() {} });
     doc.fire("visibilitychange");
     assert.strictEqual(sfxCalls.filter((c) => c[0] === "dragEnd").length, 1, "收起时应结束拖动");
   });

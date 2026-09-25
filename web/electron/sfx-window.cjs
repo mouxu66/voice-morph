@@ -83,6 +83,24 @@ function clampToWorkArea(pos, size, workArea) {
 }
 
 /**
+ * 把拖动目标点收进工作区：**至少留 `keep` 像素在屏内**，且上/左边界不许跑出屏。
+ *
+ * 为什么上/左单独算：标题栏在窗口顶部 —— 若窗口被推到“只剩底部在屏内”，
+ * 把手就跑到屏幕外面了，而这是个**不可激活、也可能被“藏”起来**的小窗，
+ * 用户只能靠热键收起再欢出（欢出仍在屏外那个位置）。
+ */
+function clampDragTarget(x, y, size, workArea, keep = 64) {
+  const minX = workArea.x;
+  const maxX = workArea.x + workArea.width - keep;
+  const minY = workArea.y;
+  const maxY = workArea.y + workArea.height - keep;
+  return {
+    x: Math.round(Math.min(Math.max(x, minX), Math.max(minX, maxX))),
+    y: Math.round(Math.min(Math.max(y, minY), Math.max(minY, maxY))),
+  };
+}
+
+/**
  * 热键是否安全（不含**单 Alt**）。
  *
  * 判据：出现 Alt 就必须同时出现另一个修饰键。微信按住说话认的是「Alt 单独按住」，
@@ -168,6 +186,12 @@ function showSfxWindow() {
   cancelAutoHide();
   if (!sfxWin || sfxWin.isDestroyed()) return;
   if (!sfxWin.isVisible()) sfxWin.showInactive();
+  // ★ 必须在桌宠**之上**：两个窗都是 alwaysOnTop("screen-saver")，同层的先后由
+  // 最后一次“抬升”决定。而桌宠不是我们建的、它会在悬停时把自己从“点击穿透”
+  // 切成“可点”—— 那时落在重叠区的鼠标（含 mouseup）会被它接走，
+  // 后果是声板窗的拖拽“粘住”（鼠标一动窗就跟着跑）。
+  // moveTop 只改 z 序、不激活窗，不会把前台从微信抢走。
+  sfxWin.moveTop();
   // 计数会变（也可能刚装了音效包）→ 每次唤起都重拉一次目录
   void pushCatalog();
   // 首次唤起时预热常驻播放器：否则第一声要付 2~3s 冷导入，听感上像「点了没反应」
@@ -285,7 +309,11 @@ function registerSfxIpc() {
   ipcMain.on("sfx:drag-move", () => {
     if (!dragOrigin || !sfxWin || sfxWin.isDestroyed()) return;
     const cur = screen.getCursorScreenPoint();
-    sfxWin.setPosition(cur.x - dragOrigin.dx, cur.y - dragOrigin.dy);
+    const { workArea } = screen.getPrimaryDisplay();
+    // 收进工作区：这是**不可激活窗**，一旦被拖到屏外，用户既看不到、也没常规手段拖回来
+    // （热键唤出还是那个坐标）。实测拖快一次就能把它停在屏外 76%。
+    const p = clampDragTarget(cur.x - dragOrigin.dx, cur.y - dragOrigin.dy, WINDOW_SIZE, workArea);
+    sfxWin.setPosition(p.x, p.y);
   });
   ipcMain.on("sfx:drag-end", () => {
     if (dragOrigin && sfxWin && !sfxWin.isDestroyed()) {
@@ -315,6 +343,7 @@ module.exports = {
   registerSfxIpc,
   // 纯函数与常量（单测用；也供文档引用）
   clampToWorkArea,
+  clampDragTarget,
   isSafeHotkey,
   playPayload,
   SFX_HOTKEY,
