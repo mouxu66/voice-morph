@@ -9,6 +9,14 @@ import {
 import { PremixTimeline } from "@/pages/Tts/PremixTimeline"
 
 /** 出厂音效的图标（按 id；用户导入的走兜底）。 */
+/**
+ * 出厂素材的兜底图标（**兼容旧后端**：图标现在由 manifest 下发，见 `sfx_lib._icon`）。
+ *
+ * 为什么不删：前端与后端在本仓是**两条独立的同步链路**（前端 `npm run ship`、
+ * 后端 `sync_backend.ps1`），完全可能碰到「新前端 + 旧后端」—— 那时 `icon` 是 undefined，
+ * 没有这张表格子就会全是 🎧。它是兜底，不是第二份产品规则：真正改图标要改 manifest，
+ * 这样另一处渲染层（悬浮声板窗）不用再抄一份映射。
+ */
 const ICONS: Record<string, string> = {
   boom: "💥",
   applause: "👏",
@@ -196,7 +204,7 @@ export function SoundboardPanel({
                   <Check className="h-3 w-3" />
                 </span>
               )}
-              <span className="text-lg leading-none">{ICONS[it.id] ?? "🎧"}</span>
+              <span className="text-lg leading-none">{it.icon || ICONS[it.id] || "🎧"}</span>
               <span className="max-w-full truncate">{it.name}</span>
             </button>
           )

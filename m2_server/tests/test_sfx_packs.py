@@ -263,6 +263,23 @@ def test_uninstall_removes_pack():
     assert e.value.status == 404
 
 
+def test_pack_sample_icon_flows_into_catalog():
+    """包内素材的 icon 也要随 catalog 下发（与出厂素材同一条元数据通路）。
+
+    没有它，包里的素材在格子上永远是 🎧 —— 而「自己录的包」正是最需要图标的那批。
+    """
+    sfx_packs.install_zip(
+        _zip({
+            "pack.json": _pack_json(samples={"coin": {"name": "金币", "tags": ["游戏"], "icon": "🪙"}}),
+            "coin.wav": _wav_bytes(0.2, 880),
+        }),
+        "arcade",
+    )
+    items = {it["id"]: it for it in sfx_lib.list_samples()}
+    assert items["arcade/coin"]["icon"] == "🪙"
+    assert items["arcade/coin"]["name"] == "金币"
+
+
 def test_pack_sample_id_does_not_shadow_builtin():
     """裸 id 仍只属于出厂/导入 —— 命名空间化就是为了这条。"""
     sid = next(iter(p.stem for p in sfx_lib.SAMPLES_DIR.glob("*.wav")))

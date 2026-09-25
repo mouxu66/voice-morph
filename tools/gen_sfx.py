@@ -156,14 +156,19 @@ def fx_weird(rng) -> np.ndarray:
     return _norm(x)
 
 
-#: 文件名 → (显示名, 合成函数, 标签)。文件名即素材 id（catalog 直接用它）。
+#: 文件名 → (显示名, 合成函数, 标签, 格子图标)。文件名即素材 id（catalog 直接用它）。
+#:
+#: 图标为什么要进 manifest：格子有两处渲染（主界面面板 + 悬浮声板窗），
+#: 而“id → emoji”本来只活在前端 TSX 的常量表里。那再拓一处就是第二份会漂的
+#: 产品规则（导入素材还只能一律落到 🎧）。图标与 name/tags 同属“素材元数据”，
+#: 归后端随 catalog 一起下发（`sfx_lib._icon` 会限长，最长 4 个字符）。
 ITEMS = {
-    "boom": ("爆炸", fx_boom, ["综艺", "提示"]),
-    "applause": ("掌声", fx_applause, ["综艺"]),
-    "alarm": ("警报", fx_alarm, ["综艺", "提示"]),
-    "riser": ("升调", fx_riser, ["转场"]),
-    "ding": ("叮", fx_ding, ["提示"]),
-    "weird": ("鬼畜", fx_weird, ["搞笑"]),
+    "boom": ("爆炸", fx_boom, ["综艺", "提示"], "💥"),
+    "applause": ("掌声", fx_applause, ["综艺"], "👏"),
+    "alarm": ("警报", fx_alarm, ["综艺", "提示"], "⚠️"),
+    "riser": ("升调", fx_riser, ["转场"], "🎵"),
+    "ding": ("叮", fx_ding, ["提示"], "🔔"),
+    "weird": ("鬼畜", fx_weird, ["搞笑"], "👻"),
 }
 
 
@@ -180,17 +185,17 @@ def main() -> int:
 
     total = 0
     manifest: dict[str, dict] = {}
-    for i, (name, (label, fn, tags)) in enumerate(ITEMS.items()):
+    for i, (name, (label, fn, tags, icon)) in enumerate(ITEMS.items()):
         # 固定种子：同一条音效每次生成逐字节一致（重跑不改 git 里的字节）
         data = fn(np.random.default_rng(20260923 + i))
         path = out / f"{name}.wav"
         sf.write(str(path), data, SR, subtype="PCM_16")
-        manifest[name] = {"name": label, "tags": tags}
+        manifest[name] = {"name": label, "tags": tags, "icon": icon}
         size = path.stat().st_size
         total += size
         print(f"  {label:<4} {path.name:<12} {len(data)/SR:.2f}s  {size/1024:6.1f}KB")
 
-    # 显示名/标签也落成 JSON：后端只认这份清单，避免"名字写在两处然后漂了"。
+    # 显示名/标签/图标也落成 JSON：后端只认这份清单，避免"名字写在两处然后漂了"。
     # （`soundboard.py` 的 catalog 读它；`test_soundboard.py` 会断言它与 wav 一一对应。）
     (out / "manifest.json").write_text(
         __import__("json").dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

@@ -4,37 +4,43 @@
     "tags": [
       "综艺",
       "提示"
-    ]
+    ],
+    "icon": "💥"
   },
   "applause": {
     "name": "掌声",
     "tags": [
       "综艺"
-    ]
+    ],
+    "icon": "👏"
   },
   "alarm": {
     "name": "警报",
     "tags": [
       "综艺",
       "提示"
-    ]
+    ],
+    "icon": "⚠️"
   },
   "riser": {
     "name": "升调",
     "tags": [
       "转场"
-    ]
+    ],
+    "icon": "🎵"
   },
   "ding": {
     "name": "叮",
     "tags": [
       "提示"
-    ]
+    ],
+    "icon": "🔔"
   },
   "weird": {
     "name": "鬼畜",
     "tags": [
       "搞笑"
-    ]
+    ],
+    "icon": "👻"
   }
 }

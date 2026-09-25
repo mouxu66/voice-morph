@@ -1214,6 +1214,8 @@ export type SoundboardItem = {
   id: string
   name: string
   tags: string[]
+  /** 格子图标（emoji），来自 manifest；后端老一点时可能是空串 → 渲染层退到通用图标。 */
+  icon: string
   duration_s: number
   count: number
   builtin: boolean

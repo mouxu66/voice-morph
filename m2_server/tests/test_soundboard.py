@@ -137,7 +137,7 @@ def test_catalog_lists_the_six_factory_samples(client):
         # （能不能单条删）。两者都不含路径，所以这条守卫的本意（不泄路径）不变 ——
         # 它锁的是**形状**，加字段要在这里显式确认一次，这正是它该有的摩擦。
         assert set(it) == {
-            "id", "name", "tags", "duration_s", "count", "builtin", "pack", "removable"
+            "id", "name", "tags", "icon", "duration_s", "count", "builtin", "pack", "removable"
         }
 
 
@@ -150,6 +150,27 @@ def test_factory_manifest_matches_sample_files():
     for sid, m in meta.items():
         assert m["name"], f"{sid} 没有显示名"
         assert isinstance(m["tags"], list)
+        # 图标也归 manifest（格子有两处渲染：主界面面板 + 悬浮声板窗；
+        # 映射放在前端就会漂成第二份产品规则，见 sfx_lib._icon 注释）
+        assert sfx_lib._icon(m), f"{sid} 缺 icon"
+
+
+def test_icon_rejects_junk_and_passes_emoji():
+    """图标只收「短字符串」：非法一律回空串，由渲染层退到通用图标（不报错、不裁字）。"""
+    assert sfx_lib._icon({"icon": "💥"}) == "💥"
+    assert sfx_lib._icon({"icon": "  🔔  "}) == "🔔"
+    assert sfx_lib._icon({"icon": "一段很长的说明文字"}) == ""
+    assert sfx_lib._icon({"icon": ""}) == ""
+    assert sfx_lib._icon({"icon": 123}) == ""
+    assert sfx_lib._icon(None) == ""
+
+
+def test_catalog_carries_icon(client):
+    """catalog 真的把 icon 送出去了（不是只在 list_samples 里有）。"""
+    items = {it["id"]: it for it in client.get("/api/soundboard/catalog").json()["items"]}
+    assert items["boom"]["icon"] == "💥"
+    # 导入的素材没有 manifest → 空串（渲染层会退到 🎧）
+    assert items["boom"]["icon"] != ""
 
 
 # --------------------------------------------------------------- play / stop

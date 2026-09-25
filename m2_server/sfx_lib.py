@@ -49,6 +49,9 @@ IMPORT_DIR = cfg.MEDIA_DIR / "soundboard"
 MODES = ("layer", "prepend", "append")
 #: 单次预混允许的插入条数（防手滑把 200 条塞进来）
 MAX_INSERTS = 16
+
+#: 格子图标（emoji）的长度上限：防有人在 manifest 里塞一段文字把格子撑爆
+MAX_ICON_LEN = 4
 #: 预混的音频上限（秒）：TTS 产物实际都在 1 分钟内，超了就是路径给错了
 MAX_SECONDS = 300.0
 
@@ -85,6 +88,21 @@ def duration_s(path: Path) -> float:
         return round(float(sf.info(str(path)).duration), 2)
     except Exception:
         return 0.0
+
+
+def _icon(info: dict | None) -> str:
+    """取素材的格子图标（emoji）；缺失或非法一律回空串，由渲染层退到通用图标。
+
+    为什么要放进 catalog（2026-09-25）：图标原先是 `SoundboardPanel.tsx` 里一张
+    「id→emoji」的常量表 —— 而**悬浮声板窗**（另一个渲染层）也要画格子，
+    再抄一份就是第二处会漂的产品规则（导入素材还只能一律落到 🎧）。
+    manifest 本来就在存 `name`/`tags`，图标是同一类元数据，归后端更合适。
+    """
+    v = (info or {}).get("icon")
+    if not isinstance(v, str):
+        return ""
+    v = v.strip()
+    return v if 0 < len(v) <= MAX_ICON_LEN else ""
 
 
 def sanitize_stem(raw: str) -> str:
@@ -128,7 +146,7 @@ def resolve_path(sample_id: str) -> tuple[Path, bool]:
 
 
 def list_samples() -> list[dict]:
-    """出厂 + 导入 + 各音效包的全部素材（id/name/tags/duration_s/builtin/pack）。
+    """出厂 + 导入 + 各音效包的全部素材（id/name/tags/icon/duration_s/builtin/pack）。
 
     不含播放计数 —— 那是声板的运营数据（`outputs/soundboard_stats.json`），
     与"素材库有什么"是两件事，所以留在 `soundboard.py` 里叠加。
@@ -149,6 +167,7 @@ def list_samples() -> list[dict]:
                     "id": sid,
                     "name": (info or {}).get("name") or sid,
                     "tags": (info or {}).get("tags") or (["导入"] if not builtin else []),
+                    "icon": _icon(info),
                     "duration_s": duration_s(f),
                     "builtin": builtin,
                     "pack": "",
@@ -171,6 +190,7 @@ def list_samples() -> list[dict]:
                     "name": info.get("name") or stem,
                     # 没写标签就用包名当标签：格子上至少能看出"这条来自哪"
                     "tags": info.get("tags") or [pname],
+                    "icon": _icon(info),
                     "duration_s": duration_s(f),
                     "builtin": False,
                     "pack": pid,
