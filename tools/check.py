@@ -134,6 +134,13 @@ FAST_TESTS = [
     # 防的是「死参数」—— 发了、不报错、也不生效（`cascade_stream` 曾给 /tts 发 `fast`，
     # 而那端点根本不读它）。见 `docs/犯错档案-工程.md` §8.38。
     "m2_server/tests/test_tts_payload_contract.py",
+    # 音效标记 `[爆炸]`（约 0.3s，纯静态 + 假素材库）：
+    # 文字里的音效标记是**用户唯一能用的入口**，它的三条口径全靠测试守 ——
+    # 未知名字要报错（不能静默丢掉，用户会以为插上了）、标记不许被念出来、
+    # 音效时长必须并进分段预算（否则带音效的那条会超 54s 被微信静默截断）。
+    # 放进 --fast：这三条退化后**都不报错**，只表现为"用户听到的东西不对"。
+    "m2_server/tests/test_sfx_mark.py",
+    "m2_server/tests/test_wechat_chunking.py",
 ]
 
 

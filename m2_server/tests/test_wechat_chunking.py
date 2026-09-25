@@ -853,3 +853,375 @@ def test_do_send_single_path_shares_batch_kernel(tmp_path, monkeypatch):
     assert seen["duration"] == 5.0
     # 单条路径自己还原（后台线程 / 异常路径都依赖它），不是批次语义
     assert seen["reuse_restore"] is False
+
+
+# ---------------- 音效标记 `[爆炸]` 混进分段链路（2026-09-25） ----------------
+#
+# 用户原话：「我就是想用这个程序自动按的时候如何在我说话的步骤能插一个爆炸声，
+# 然后我继续说话呢」→ 方案定的是「文字里标记，程序合成时就拌进去」。
+#
+# 为什么不是悬浮窗那套：**音频在播放前就整段合成完了**（`_split_for_budget` 先跑完，
+# `_record_and_send` 才把整段 wav 一次性灌进 CABLE），不存在"程序正在说话"这个
+# 中间态，也就没有可插入的时间窗口。见 `sfx_mark.py` 模块注释。
+#
+# 这一节守护的是**另外两条口径**（第三条在 test_sfx_mark.py 里）：
+#   · 标记在合成前被剔掉（不许被念出来）；
+#   · 音效时长**并进预算**（不许因为加了音效而破 54s → 静默截断）。
+
+
+#: 假素材库：id → (名字, 秒数)。用假库是为了不依赖本机真实音效素材，
+#: 也让"音效到底多长"可控 —— 预算用例必须能精确摆布这个数字。
+_FAKE_SFX = {
+    "boom": ("爆炸", 1.8),
+    "applause": ("掌声", 2.4),
+}
+
+
+@pytest.fixture
+def sfx_files(tmp_path_factory):
+    """造两个**真实可读**的音效 wav（`AudioSegment.from_wav` 要真文件）。
+
+    放在 `tmp_path_factory` 的目录里，跑完自动清掉 —— **不许**往
+    `m2_server/tests/` 里写临时产物（那会让仓库里出现跑测试才有的垃圾文件，
+    而且 CI 上并行跑会互相覆盖）。
+    """
+    from pydub import AudioSegment
+
+    d = tmp_path_factory.mktemp("sfx_wavs")
+    out: dict[str, Path] = {}
+    for sid, (_name, seconds) in _FAKE_SFX.items():
+        p = d / f"{sid}.wav"
+        AudioSegment.silent(duration=int(seconds * 1000), frame_rate=24000).export(str(p), format="WAV")
+        out[sid] = p
+    return out
+
+
+@pytest.fixture
+def fake_sfx(monkeypatch, sfx_files, tmp_path):
+    """把 `sfx_lib` 的两个函数打掉（`_sfx_clip` 走的就是它们）。"""
+    import sfx_lib
+
+    def _list_samples():
+        return [
+            {"id": sid, "name": name, "tags": [], "icon": "", "duration_s": sec}
+            for sid, (name, sec) in _FAKE_SFX.items()
+        ]
+
+    def _resolve_path(sample_id: str):
+        sid = str(sample_id or "")
+        if sid not in _FAKE_SFX:
+            raise sfx_lib.SfxError(f"没有这个音效：{sid}", status=404)
+        return sfx_files[sid], True
+
+    monkeypatch.setattr(sfx_lib, "list_samples", _list_samples)
+    monkeypatch.setattr(sfx_lib, "resolve_path", _resolve_path)
+    return _FAKE_SFX
+
+
+def _fake_synth(seconds_per_char: float = 0.1, log: list | None = None, out_dir: Path | None = None):
+    """造一个合成器：**时长由字数决定**，这样用例能精确算出预算。
+
+    返回的 wav 是真文件（`_trim_edges` / `AudioSegment.from_wav` 都要求真文件）。
+    写入位置优先用 `out_dir`（用例给的临时目录），否则落 `cfg.OUTPUTS_DIR`
+    —— 那个在 `isolate_split` 里已经指到 `tmp_path`，所以同样不污染仓库。
+    """
+    from pydub import AudioSegment
+
+    target_dir = out_dir if out_dir is not None else cfg.OUTPUTS_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    counter = [0]
+
+    def synth(sentence: str, tts_voice: str) -> bytes:
+        if log is not None:
+            log.append(sentence)
+        counter[0] += 1
+        ms = max(50, int(len(sentence) * seconds_per_char * 1000))
+        seg = AudioSegment.silent(duration=ms, frame_rate=24000)
+        p = target_dir / f"_synth_{counter[0]:04d}.wav"
+        seg.export(str(p), format="WAV")
+        return p.read_bytes()
+
+    return synth
+
+
+@pytest.fixture(autouse=True)
+def isolate_split(tmp_path, monkeypatch):
+    """`_split_for_budget` 的隔离：输出目录 + 参考音探测。
+
+    `_voice_ref_for` 必须打掉 —— 真实现会去查真实音色的参考音文件，单测里没有。
+    `session_out` 每次现读 `cfg.OUTPUTS_DIR`（模块注释里明确禁止早绑定），
+    所以只打 `cfg.OUTPUTS_DIR` 就够，不用（也不该）去打 `session_out` 的内部名。
+    """
+    import config as cfg
+
+    monkeypatch.setattr(cfg, "OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(wv, "_voice_ref_for", lambda v: (None, "x"))
+    yield tmp_path
+
+
+def test_mark_is_stripped_before_synthesis(tmp_path, fake_sfx):
+    """★ 口径 2：`[爆炸]` 三个字**不许被念出来**。
+
+    合成器收到的是纯文本 —— 这是"标记不进 TTS"的机器化表达。
+    变异：把 `_split_for_budget` 里 `spoken = "".join(t for t, _ in segs)` 改回用原文，
+    本用例必须变红（合成器日志里会出现 `[爆炸]`）。
+    """
+    seen: list[str] = []
+    steps: list[str] = []
+    outs, _ = wv._split_for_budget(
+        "我今天去那个 [爆炸] 那个地方。", "v", "v", "", 0, 0.0, steps, synth=_fake_synth(log=seen)
+    )
+    assert outs, "至少要产出一条"
+    for s in seen:
+        assert "[爆炸]" not in s, f"标记被送去合成了：{s!r}"
+        assert "爆炸" not in s, f"标记的名字被念出来了：{s!r}"
+    assert any("插入音效：1 处" in s for s in steps), f"steps 没报音效：{steps}"
+
+
+def test_sfx_audio_is_actually_in_the_output(tmp_path, fake_sfx):
+    """★ 端到端：音效真的被拼进了产物（不是只在 steps 里说了一句）。
+
+    判据用**时长**：产物应比"纯人声 + 一个句内 gap"长约 音效时长 + SFX_GAP_S。
+    这比"听一下"可控 —— 而"steps 说插了但音频里没有"正是最该防的那种 bug。
+    """
+    text = "第一句话在这里。第二句话也在这里。"
+    plain_steps: list[str] = []
+    plain, _ = wv._split_for_budget(
+        text, "v", "v", "", 0, 0.0, plain_steps, synth=_fake_synth(seconds_per_char=0.05)
+    )
+    plain_s = wv._wav_duration(plain[0])
+
+    marked_steps: list[str] = []
+    marked, _ = wv._split_for_budget(
+        "第一句话在这里。第二句话 [爆炸] 也在这里。",
+        "v",
+        "v",
+        "",
+        0,
+        0.0,
+        marked_steps,
+        synth=_fake_synth(seconds_per_char=0.05),
+    )
+    marked_s = wv._wav_duration(marked[0])
+    # 原文多了 [爆炸] 只加长"文字"（被剔掉，不加长人声），所以差值 ≈ 音效 + gap
+    expect = _FAKE_SFX["boom"][1] + wv.SFX_GAP_S
+    assert marked_s - plain_s == pytest.approx(expect, abs=0.35), (
+        f"产物没有变长 {expect}s（{plain_s}s → {marked_s}s）—— 音效没被拼进去"
+    )
+
+
+def test_mark_only_sentence_still_inserts_sfx(tmp_path, fake_sfx):
+    """整句就是一个标记（`[掌声]`）→ 没有文字可念，但**音效照插**。
+
+    这是"我想在两句之间来一段掌声"的写法。不能因为"这句没字"就把它丢掉 ——
+    丢了等于用户写了但没生效，正是最坏的结果。
+    """
+    steps: list[str] = []
+    outs, _ = wv._split_for_budget(
+        "前面说一句。[掌声] 后面再说一句。",
+        "v",
+        "v",
+        "",
+        0,
+        0.0,
+        steps,
+        synth=_fake_synth(),
+    )
+    assert len(outs) == 1
+    assert wv._wav_duration(outs[0]) > 1.0, "音效（2.4s 的掌声）没被拼进去"
+    assert any("插入音效：1 处" in s for s in steps)
+
+
+def test_unknown_sfx_raises_400_before_synth(tmp_path, fake_sfx, monkeypatch):
+    """★ 口径 1：未知名字要**报错**，而且要在**合成之前**就报。
+
+    为什么必须在合成前：TTS+RVC 要 1~2 分钟。为了一句"没有这个音效：爆炸声"
+    让用户白等两分钟、再在最后一步失败，是没道理的。
+    """
+    from fastapi import HTTPException
+
+    called: list[str] = []
+    steps: list[str] = []
+    with pytest.raises(HTTPException) as ei:
+        wv._split_for_budget(
+            "你好 [爆炸声] 啊。",
+            "v",
+            "v",
+            "",
+            0,
+            0.0,
+            steps,
+            synth=_fake_synth(log=called),
+        )
+    assert ei.value.status_code == 400
+    assert "爆炸声" in ei.value.detail
+    assert "可用" in ei.value.detail, "报错要给出可用音效，否则用户不知道该写什么"
+    assert called == [], "未知音效必须在合成前报错，不能白跑 TTS"
+
+
+def test_unknown_sfx_lists_available_names(tmp_path, fake_sfx):
+    """报错文案里要**列出可用的名字**（按显示名，就是用户该照着写的那些）。"""
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as ei:
+        wv._split_for_budget("啊 [没有这个] 呀", "v", "v", "", 0, 0.0, [], synth=_fake_synth())
+    assert "爆炸" in ei.value.detail
+    assert "掌声" in ei.value.detail
+
+
+def test_sfx_duration_counts_toward_budget(tmp_path, fake_sfx):
+    """★★ 口径 3（最关键的一条）：音效时长必须**并进预算**，否则会静默截断。
+
+    构造成"差一点就满"的两句：不加音效时两句能装进同一段，
+    加一声 2.4s 的掌声之后就**装不下**了 —— 必须分成两段。
+
+    变异：把 `d += sd + SFX_GAP_S` 整行删掉，本用例必须变红
+    （两段会合回一段，然后实发时长超 54s → 微信在第 60s 截断，后半句静默丢失）。
+    """
+    # 每字 0.1s：60 字 = 6.0s。用 4 句各 ~13s（130 字）凑到 52s 左右
+    long_sent = "字" * 128 + "。"  # 128*0.1 = 12.8s
+    text = long_sent * 4  # 4 句 → 51.2s + 3*0.3 gap = 52.1s ≤ 54 → 一段装得下
+
+    plain_steps: list[str] = []
+    plain, _ = wv._split_for_budget(
+        text, "v", "v", "", 0, 0.0, plain_steps, synth=_fake_synth(seconds_per_char=0.1)
+    )
+    assert len(plain) == 1, f"前置条件不成立：不加音效时应是一段（{plain_steps}）"
+
+    # 现在给**每一句**后面都插一声 2.4s 的掌声 → 每句 12.8+0.15+2.4 = 15.35s
+    # 两句 = 30.7 + gap 0.3 = 31.0s ≤ 54；三句 = 46.35 + 0.6 = 46.95 ≤ 54；
+    # 四句 = 62.0 + 0.9 = 62.9 > 54 → 必须分两段（3 句 + 1 句）
+    marked_steps: list[str] = []
+    marked, _ = wv._split_for_budget(
+        (long_sent[:-1] + " [掌声]。") * 4,
+        "v",
+        "v",
+        "",
+        0,
+        0.0,
+        marked_steps,
+        synth=_fake_synth(seconds_per_char=0.1),
+    )
+    assert len(marked) == 2, f"音效时长没算进预算：本该分 2 段（{marked_steps}）"
+    # 每段的实发时长仍必须守 60s 上限（这是整条链路存在的理由）
+    for p in marked:
+        assert _fit_60(wv._wav_duration(p)) <= wv.MAX_MSG_S
+    assert any("插入音效：4 处" in s for s in marked_steps)
+
+
+def test_sfx_alone_does_not_bust_budget(tmp_path, fake_sfx):
+    """★ 不变量：**很多**音效堆在一处时也不许破预算。
+
+    这是上一条的极限版 —— "音效算进预算"如果只在"1 处"时对，那它就是巧合而不是判据。
+    这里 25 秒人声 + 一声掌声，合计 25 + gap 0.15 + 2.4 = 27.55s，仍 ≤54 → 一段。
+
+    ⚠️ 注意 `audiobook.split_sentences` 会在 80 字处二次切分，所以"很多音效堆在一句里"
+    这个场景要先想清楚它在断句之后长什么样（本用例实测：3×80 字 + 12 字）。
+    """
+    # 80+80+80+12 = 252 字（断句后）→ 人声 25.2s
+    base = "字" * 246 + " [掌声]。"
+    steps: list[str] = []
+    outs, _ = wv._split_for_budget(
+        base, "v", "v", "", 0, 0.0, steps, synth=_fake_synth(seconds_per_char=0.1)
+    )
+    assert len(outs) == 1, f"本该是一段：{steps}"
+    assert [s for s in steps if s.startswith("断句")] == ["断句：4 句（复用 audiobook.split_sentences）"], (
+        f"断句结果变了，本用例的长度推算要跟着改：{steps}"
+    )
+    d = wv._wav_duration(outs[0])
+    assert _fit_60(d) <= wv.MAX_MSG_S, f"实发 {_fit_60(d):.2f}s 超过 60s —— 会被截断"
+    # 人声 25.2s + 3 个句内 gap(0.3) + SFX_GAP 0.15 + 掌声 2.4 = 28.65s（实测 28.25s）
+    assert d == pytest.approx(25.2 + 3 * wv.SENT_GAP_S + wv.SFX_GAP_S + _FAKE_SFX["applause"][1], abs=0.6)
+
+
+def test_many_sfx_marks_still_obey_budget(tmp_path, fake_sfx):
+    """★ 多个音效（跨句）时，每一段的实发时长仍必须 ≤60s。
+
+    上面那条是"一句里好几声"，这条是"每句一声"——两者是不同的装箱路径
+    （前者只影响一个 `durs[i]`，后者影响多个）。变异：把 `d += sd + SFX_GAP_S`
+    删掉，本用例会变红（少算了 4×(2.4+0.15)=10.2s，会多塞一句进第 1 段）。
+    """
+    # 每句 128 字 = 12.8s；4 句都带 [掌声] → 每句 15.35s
+    long_sent = "字" * 127 + " [掌声]。"
+    steps: list[str] = []
+    outs, _ = wv._split_for_budget(
+        long_sent * 4, "v", "v", "", 0, 0.0, steps, synth=_fake_synth(seconds_per_char=0.1)
+    )
+    for p in outs:
+        assert _fit_60(wv._wav_duration(p)) <= wv.MAX_MSG_S
+    # 3 句 = 46.05 + 2 gap 0.6 = 46.65 ≤ 54 → 一段；4 句 = 61.4 + 0.9 > 54 → 必须两段
+    assert len(outs) == 2, f"本该分 2 段：{steps}"
+    assert any("插入音效：4 处" in s for s in steps), f"steps 没报足 4 处：{steps}"
+
+
+def test_sfx_gap_is_included_and_reported(tmp_path, fake_sfx):
+    """人声与音效之间的静音（SFX_GAP_S）也要算进预算 —— 它是真实存在的声音。"""
+    assert wv.SFX_GAP_S > 0, "不垫静音的话音效会咬住最后一个字的尾音"
+    assert wv.SFX_GAP_S < 0.4, "垫太长会在微信里显得空了一拍"
+    steps: list[str] = []
+    outs, _ = wv._split_for_budget(
+        "一句话 [爆炸] 说完了。", "v", "v", "", 0, 0.0, steps, synth=_fake_synth(seconds_per_char=0.05)
+    )
+    # 人声 ≈ 6 字 × 0.05 = 0.3s + gap 0.15 + 音效 1.8 = 2.25s
+    assert wv._wav_duration(outs[0]) == pytest.approx(
+        6 * 0.05 + wv.SFX_GAP_S + _FAKE_SFX["boom"][1], abs=0.3
+    )
+
+
+def test_sfx_missing_file_raises_readable_error(tmp_path, fake_sfx, monkeypatch):
+    """素材 id 对、但文件读不到 → 报 400 可读错误，不是"第 N 句合成失败"。
+
+    `_sfx_clip` 把 `SfxError` 翻成 `HTTPException`，就是为了让用户看到
+    "没有这个音效"而不是"合成失败"（后者会把人往 TTS 那边带偏）。
+    """
+    import sfx_lib
+
+    from fastapi import HTTPException
+
+    def _broken(sample_id):
+        raise sfx_lib.SfxError("素材读取失败：boom.wav（坏文件）")
+
+    monkeypatch.setattr(sfx_lib, "resolve_path", _broken)
+    with pytest.raises(HTTPException) as ei:
+        wv._split_for_budget("啊 [爆炸] 呀", "v", "v", "", 0, 0.0, [], synth=_fake_synth())
+    assert ei.value.status_code == 400
+    assert "素材读取失败" in ei.value.detail
+
+
+def test_no_mark_path_unchanged(tmp_path, fake_sfx):
+    """★ 回归：不带标记的文字走的是**原来那条路**，没有任何多余产物。
+
+    这是防"加功能把老路带坏了"的护栏 —— 分段数、steps 文案都不该变。
+    """
+    steps: list[str] = []
+    outs, _ = wv._split_for_budget(
+        "第一句。第二句。", "v", "v", "", 0, 0.0, steps, synth=_fake_synth()
+    )
+    assert len(outs) == 1
+    assert not any("插入音效" in s for s in steps), f"没标记却报了音效：{steps}"
+    # steps 仍只有"断句 + 第 k 条"这几条（不多不少）
+    assert steps[0].startswith("断句：2 句")
+    assert len(steps) == 2, f"无标记路径的 steps 变了：{steps}"
+
+
+def test_sfx_mark_module_is_wired_into_split():
+    """★ 变异证据：把标记解析接进分段链路的**三处**必须都在。
+
+    这三处各自对应一条会静默失败的口径，少任何一处都不会报错、只会行为不对：
+      ① 解析（`sfx_mark.parse`）—— 没有它，`[爆炸]` 会被逐字念出来；
+      ② 未知报错（`sfx_mark.available`）—— 没有它，错写会静默不生效；
+      ③ 时长并进预算（`d += sd + SFX_GAP_S`）—— 没有它，带音效的段会超预算被截断。
+    """
+    import inspect
+
+    src = inspect.getsource(wv._split_for_budget)
+    assert "sfx_mark.parse(" in src, "① 标记没被解析 —— [爆炸] 会被念出来"
+    assert "sfx_mark.available(" in src, "② 未知音效没有报错文案 —— 错写会静默不生效"
+    assert "d += sd + SFX_GAP_S" in src, (
+        "③ 音效时长没并进预算 —— 带音效的那条会超 54s，被微信静默截断（后半句丢失）"
+    )
+    # 音效必须在**拼接阶段**真的被加进去（不是只改了预算数字）
+    assert "AudioSegment.from_wav(str(sp))" in src, "音效没被拼进产物（只算了时长）"
+    assert "AudioSegment.silent(\n                    duration=int(SFX_GAP_S * 1000)" in src, (
+        "人声与音效之间没垫静音 —— 音效会咬住最后一个字的尾音"
+    )

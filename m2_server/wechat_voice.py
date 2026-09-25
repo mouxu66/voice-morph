@@ -129,6 +129,10 @@ MIN_CHUNK_S = float(os.environ.get("VM_WECHAT_MIN_CHUNK_S", "2.5"))
 BATCH_GAP_S = float(os.environ.get("VM_WECHAT_BATCH_GAP_S", "0.8"))
 # 段内句子之间拼接的静音（pack_chunks 的 gap_s 默认值从这里来，单位秒）
 SENT_GAP_S = float(os.environ.get("VM_WECHAT_SENT_GAP_S", "0.3"))
+# 人声与音效之间垫的静音（`[爆炸]` 插进来时）。0.15s 是"能听出是两件事、又不觉得断"：
+# 不垫的话音效会**咬住**最后一个字的尾音（TTS 尾巴常带一点共鸣），听着像混在一起；
+# 垫太长（>0.4s）在微信里会显得中间空了一拍。它也算进预算（见 _split_for_budget）。
+SFX_GAP_S = float(os.environ.get("VM_WECHAT_SFX_GAP_S", "0.15"))
 
 # ---- 录音前的微信重启（2026-09-11 引入，2026-09-17 起默认关闭）----
 # 微信绑定采集设备是在**进程启动时**，改默认麦克风对它不热生效 → 必须重启它才会
@@ -1776,6 +1780,17 @@ def _synth_sentence(sentence: str, tts_voice: str) -> bytes:
     )
 
 
+def _sfx_clip(sid: str) -> tuple[Path, float]:
+    """音效 id → (wav 路径, 秒数)。读不到就抛可读的错误（不让它变成"第 N 句合成失败"）。"""
+    import sfx_lib
+
+    try:
+        p, _builtin = sfx_lib.resolve_path(sid)
+    except sfx_lib.SfxError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return p, sfx_lib.duration_s(p)
+
+
 def _split_for_budget(
     text: str,
     tts_voice: str,
@@ -1805,15 +1820,53 @@ def _split_for_budget(
     `synth` 是单句合成器（`(句子, tts_voice) -> wav 字节`），默认 `_synth_sentence`。
     它是个**显式接缝**：单测里没有 TTS 模型，必须能替换掉；而在生产路径上
     用默认值，调用方不必知道。
+
+    ---- 音效标记（2026-09-25）----
+    文字里的 `[爆炸]` 会在**这一句之后**插一声（见 `sfx_mark.py`）。两个要点：
+      · 标记在合成前就被剔掉，**不会被念出来**；
+      · 音效时长**并进 `durs[i]`**，所以装箱时它就被算进预算 —— 否则加了音效的
+        那条语音会超出 54s 预算，而超预算的后果是**静默截断**（这套预算存在的
+        全部意义就是消灭它）。
     """
     from audiobook import split_sentences
     from pydub import AudioSegment
+
+    import sfx_mark
 
     synth = synth or _synth_sentence
     sents = split_sentences(text)
     if not sents:
         raise HTTPException(status_code=400, detail="text 里没有可合成的句子")
     steps.append(f"断句：{len(sents)} 句（复用 audiobook.split_sentences）")
+
+    # 先把每句里的音效标记解析掉：得到"要念的文字" + "这句之后接哪个音效"。
+    # 必须在合成**之前**做 —— 合成器只认纯文本，标记混在里面会被逐字念出来。
+    speak_texts: list[str] = []
+    sfx_after: list[str | None] = []
+    unknown: list[str] = []
+    for s in sents:
+        if not sfx_mark.has_mark(s):
+            speak_texts.append(s)
+            sfx_after.append(None)
+            continue
+        segs, unk, _prob = sfx_mark.parse(s)
+        # 一段句子里可能有多个标记，但一句话只能接一个音效（插两下的语义没定义）——
+        # 取**最后一个**（"说到这句末尾"的直觉），其余在 steps 里说明。
+        sid = next((x[1] for x in reversed(segs) if x[1]), None)
+        unknown.extend(unk)
+        # 标记已从文本里剔除；末尾补一个空格，避免"那个 那个地方"这种粘连
+        spoken = "".join(t for t, _ in segs).strip()
+        speak_texts.append(spoken)
+        sfx_after.append(sid)
+
+    if unknown:
+        # 未知名字必须报错，不能静默丢弃：用户写了 [爆炸声] 却没插进去、
+        # 还照样发送成功，是最坏的结果（他以为插上了）。
+        avail = "、".join(sfx_mark.available()[:12])
+        raise HTTPException(
+            status_code=400,
+            detail=f"没有这个音效：{'、'.join(unknown)}。可用：{avail}",
+        )
 
     # 逐句合成 + 记实测时长。参考音取 voice_ref(tts_voice) —— 与 audiobook 同款 x-vector 路线。
     # 先在这里探一次参考音：探不到就直接 400（"这个音色没参考音"是用户可自己修的错误），
@@ -1822,21 +1875,38 @@ def _split_for_budget(
     stamp = int(time.time() * 1000)
     seg_paths: list[Path] = []
     durs: list[float] = []
-    for i, s in enumerate(sents):
-        try:
-            wav_bytes = synth(s, tts_voice)
-        except HTTPException:
-            # 音色/参考音这类"用户能自己修"的错误原样上抛（400/404），别包成 500
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"第 {i+1} 句合成失败: {e}") from e
-        p = session_out.new_path(f"wxseg_{stamp}_{i + 1:04d}")
-        p.write_bytes(wav_bytes)
-        # 裁首尾静音再量时长：TTS 产物常带 0.5~1s 静音，不裁会让预算算虚（偏大），
-        # 也把静音录进微信里（用户听到的是"开头一段空白"）。
-        p = _trim_edges(p)
+    n_sfx = 0
+    for i, s in enumerate(speak_texts):
+        if not s.strip():
+            # 整句都被标记吃掉了（`[掌声]` 单独成句）：没有要念的文字。
+            # 不能丢 —— 它就是"这里插一声"，所以给一段静音占位，音效照插。
+            p = session_out.new_path(f"wxseg_{stamp}_{i + 1:04d}")
+            AudioSegment.silent(duration=10, frame_rate=24000).export(str(p), format="wav")
+        else:
+            try:
+                wav_bytes = synth(s, tts_voice)
+            except HTTPException:
+                # 音色/参考音这类"用户能自己修"的错误原样上抛（400/404），别包成 500
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"第 {i+1} 句合成失败: {e}") from e
+            p = session_out.new_path(f"wxseg_{stamp}_{i + 1:04d}")
+            p.write_bytes(wav_bytes)
+            # 裁首尾静音再量时长：TTS 产物常带 0.5~1s 静音，不裁会让预算算虚（偏大），
+            # 也把静音录进微信里（用户听到的是"开头一段空白"）。
+            p = _trim_edges(p)
         seg_paths.append(p)
-        durs.append(_wav_duration(p))
+        d = _wav_duration(p)
+        if sfx_after[i]:
+            # ★ 音效时长并进这一句 —— 装箱时它就被算进预算。不并进来，
+            #   带音效的那条会超 54s 而被**静默截断**（用户丢了后半句还不知道）。
+            _sp, sd = _sfx_clip(sfx_after[i])
+            d += sd + SFX_GAP_S
+            n_sfx += 1
+        durs.append(d)
+
+    if n_sfx:
+        steps.append(f"插入音效：{n_sfx} 处（已计入分段预算）")
 
     plan = pack_chunks(durs)
     if not _chunk_plan_ok(durs, plan):
@@ -1858,6 +1928,15 @@ def _split_for_budget(
             if j > a:
                 seg += AudioSegment.silent(duration=int(SENT_GAP_S * 1000), frame_rate=24000)
             seg += AudioSegment.from_wav(str(seg_paths[j]))
+            if sfx_after[j]:
+                # 音效接在这一句之后（同一段内）。点它在拼接阶段发生，
+                # 而不是"播放时插"—— 播放是整段一次性灌进 CABLE 的，
+                # 没有可以插入的时间窗口（见 sfx_mark.py 模块注释）。
+                sp, _sd = _sfx_clip(sfx_after[j])
+                seg += AudioSegment.silent(
+                    duration=int(SFX_GAP_S * 1000), frame_rate=24000
+                )
+                seg += AudioSegment.from_wav(str(sp))
         raw = session_out.new_path(f"wxchunk_{stamp}_{k + 1:02d}")
         seg.export(str(raw), format="wav")
         if rvc_voice:
