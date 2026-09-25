@@ -17,6 +17,8 @@ import { appVersion, getSetupStatus, hasSetup, hasUpdate as canCheckUpdate, onUp
 import { useAppStore } from "@/store/useAppStore"
 import { getStoredSimpleMode, setStoredSimpleMode } from "@/theme"
 import { FirstLaunchGuide } from "@/components/FirstLaunchGuide"
+import { UseCasePicker } from "@/components/UseCasePicker"
+import { hasBeenAsked } from "@/lib/useProfile"
 
 /** 桌宠换装首启引导载荷：首次启动由桌宠开口介绍"可以换样子"，设置里也可手动重播 */
 function onboardingGuide(): PetGuidePayload {
@@ -35,6 +37,14 @@ export default function App() {
   const location = useLocation()
   const [petGuideEnabled, setPetGuideEnabled] = useState(true)
   const [simpleMode, setSimpleMode] = useState(getStoredSimpleMode())
+
+  /**
+   * 用途问答是否已经有结果。
+   *
+   * 初值直接读存储：**老用户（早就选过）不该看到引导迟到一帧才弹**。
+   * 首次启动时为 false → 先弹用途问答，选完置 true → 才轮到意图引导。
+   */
+  const [useCaseAnswered, setUseCaseAnswered] = useState(() => hasBeenAsked())
 
   // 弹窗开关集中在这里：外壳只负责触发，具体面板由 App 统一挂载
   const [envOpen, setEnvOpen] = useState(false)
@@ -210,8 +220,13 @@ export default function App() {
 
       {/* 页面内导览桌宠：随路由切换介绍当前页 */}
       <PetGuide page={location.pathname} enabled={petGuideEnabled} />
-      {/* 首次启动引导：只弹一次，选择三条入口之一或先逛逛；设置里可重播 */}
-      <FirstLaunchGuide />
+      {/* 首次启动的**两个问答**，串行弹、绝不重叠：
+          ① UseCasePicker —— 问「你用它干嘛」（场景维度，落盘、影响首屏裁剪）
+          ② FirstLaunchGuide —— 问「你想先干什么」（意图维度，选完就跳页）
+          顺序不能反：先定场景，首页才知道该把哪条路推到前面；
+          而 ① 关掉后 ② 才挂载，所以不会出现两个模态框叠在一起。 */}
+      <FirstLaunchGuide ready={useCaseAnswered} />
+      <UseCasePicker onPicked={() => setUseCaseAnswered(true)} />
       {/* 全局错误通知：任何未捕获异常 / 用户操作失败都会在此弹窗（见 lib/notify.tsx） */}
       <ToastViewport />
     </div>

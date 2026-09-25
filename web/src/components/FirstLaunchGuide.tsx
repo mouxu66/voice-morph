@@ -33,10 +33,20 @@ const ENTRANCES = [
  * 首次启动引导：只在第一次打开时弹一次（localStorage 标记），
  * 三张入口卡对应首页三条主路，点任意一条直接进对应页面。
  * 设置 →「重播新手引导」通过 replay-first-launch 事件再次打开。
+ *
+ * `ready` 门（2026-09-25 加）
+ * -------------------------
+ * 首次启动会**先**弹「用途问答」（`UseCasePicker`），它没结束前本组件不该出现 ——
+ * 两个模态框叠在一起是最糟的第一印象。所以 `ready=false` 时本组件整体不挂载，
+ * 连"该不该弹"的判断都不做（避免它先算出 open=true、挂载瞬间闪一下）。
+ *
+ * 重播（`replay-first-launch` 事件）**不受 ready 约束**：用户主动点的，
+ * 说明他知道自己在要什么，不必再等用途问答。
  */
-export function FirstLaunchGuide() {
+export function FirstLaunchGuide({ ready = true }: { ready?: boolean }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
+  const [replayed, setReplayed] = useState(false)
 
   const close = () => {
     setOpen(false)
@@ -57,7 +67,10 @@ export function FirstLaunchGuide() {
     } catch {
       /* 隐私模式读不了，跳过引导 */
     }
-    const onReplay = () => setOpen(true)
+    const onReplay = () => {
+      setReplayed(true)
+      setOpen(true)
+    }
     window.addEventListener("replay-first-launch", onReplay)
     return () => window.removeEventListener("replay-first-launch", onReplay)
   }, [])
@@ -73,6 +86,9 @@ export function FirstLaunchGuide() {
   }, [open])
 
   if (!open) return null
+  // ready 门：首次启动时用途问答还没结束（且用户不是主动重播的），整体不渲染。
+  // 放在 `open` 判断之后，这样重播路径不会因为 ready=false 被吃掉。
+  if (!ready && !replayed) return null
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 p-4 backdrop-blur-xl"

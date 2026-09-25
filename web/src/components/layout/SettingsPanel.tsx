@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react"
-import { Check, Compass, Download, Eye, EyeOff, FolderOpen, HardDrive, Layers, LayoutGrid, Moon, Monitor, Palette, Scale, Sparkles, Sun, X } from "lucide-react"
+import { Check, Compass, Download, Eye, EyeOff, FolderOpen, HardDrive, Layers, LayoutGrid, Monitor, Moon, Palette, RotateCcw, Scale, Sparkles, Sun, Target, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { getPlugins } from "@/api/client"
+import { notify } from "@/lib/notify"
+import { clearUseCase, getUseCase, profileOf } from "@/lib/useProfile"
 import type { PluginCatalog } from "@/types"
 import type { ThemeMode } from "@/theme"
 import { BuildWatchControl } from "@/components/BuildWatchControl"
@@ -61,6 +63,9 @@ export function SettingsPanel({
   }, [open])
 
   if (!open) return null
+
+  // 当前用途的显示名。每次打开抽屉重算一次就够（面板本身就是"来看一眼"的场景）。
+  const useName = profileOf(getUseCase())?.name ?? null
 
   const replay = (event: string) => {
     window.dispatchEvent(new CustomEvent(event))
@@ -133,6 +138,27 @@ export function SettingsPanel({
               on={simpleMode}
               onClick={onToggleSimple}
             />
+          </Group>
+
+          {/* 我的用途：渐进式披露的"出口"。
+              调研里明确写了 —— 没有这个出口，猜错的人就被困在一个不合适的主页上。
+              所以既要能**重选**，也要能**清空回到不裁剪**。 */}
+          <Group title="我的用途" hint="首页按它决定先给你看哪条路；随时可改，不影响你能用到的功能。">
+            <Row
+              icon={<Target className="h-4 w-4" />}
+              label={`当前：${useName ?? "还没定（首页不裁剪）"}`}
+              onClick={() => replay("replay-use-picker")}
+            />
+            {useName && (
+              <Row
+                icon={<RotateCcw className="h-4 w-4" />}
+                label="清空用途，回到不裁剪"
+                onClick={() => {
+                  clearUseCase()
+                  notify.info("已清空用途，下次打开首页不再裁剪")
+                }}
+              />
+            )}
           </Group>
 
           <Group title="桌宠" hint="页面边角那个会说话的小人偶。">

@@ -1,11 +1,14 @@
-import { ArrowRight, AudioLines, Check, CircleAlert, Headphones, HelpCircle, Loader2, MapPin, Mic2, Minus, Plus, Radio, RefreshCw, ShieldCheck, Sparkles, Speech, Star, Users, Volume2, Wrench } from "lucide-react"
+import { ArrowRight, AudioLines, Check, CircleAlert, Headphones, HelpCircle, Loader2, MapPin, Mic2, Minus, Radio, RefreshCw, ShieldCheck, Sparkles, Speech, Star, Users, Volume2, Wrench } from "lucide-react"
 import { useCallback, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { mediaUrl, type MarketItem } from "@/api/client"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { EffectLadderCard } from "@/components/EffectLadderCard"
+import { AdvancedSection } from "@/components/AdvancedSection"
+import { ChainStatusBar } from "@/components/ChainStatusBar"
 import { Card, PageShell, Section } from "@/components/layout/PageShell"
 import { cn } from "@/lib/utils"
+import { getUseCase, profileOf } from "@/lib/useProfile"
 import { useAppStore } from "@/store/useAppStore"
 import { useHomeDemo } from "@/pages/Home/useHomeDemo"
 
@@ -249,9 +252,18 @@ const GLOSSARY = [
 
 export function HomePage() {
   const voices = useAppStore((s) => s.voices)
-  const [glossaryOpen, setGlossaryOpen] = useState(false)
   const demo = useHomeDemo()
   const navigate = useNavigate()
+
+  /**
+   * 用途档案（渐进式披露的入口）。`null` = 没定过 / 选了"我还没想好" → 不裁剪。
+   *
+   * 只在挂载时读一次：这是一个"长期偏好"，本次会话内不该因为别处写了
+   * localStorage 就在渲染中途跳变（用户正在读的页面忽然重排是最糟的体验）。
+   * 用户改用途后走设置面板 → 提示重启或刷新，与 simpleMode 的处理一致。
+   */
+  const [profile] = useState(() => profileOf(getUseCase()))
+
   const featured = demo.items?.slice(0, 6) ?? []
   // 收藏/对比：帮挑音色的小工具，状态只在首页内
   const [favOnly, setFavOnly] = useState(false)
@@ -309,18 +321,30 @@ export function HomePage() {
               <h1 className="max-w-3xl font-display text-3xl font-bold tracking-tight text-foreground sm:text-4xl lg:text-5xl">
                 让任何声音，<span className="text-gradient">替你说</span>
               </h1>
+              {/* 副标题按「用途」换说法：定过用途的人看到的应该是"这件事怎么做"，
+                  而不是一段通用介绍。没定过（含选了"我还没想好"）就回到通用文案。 */}
               <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-                先挑一个现成音色，点一下就能听。听中意了，装上开麦就能直接替你说——不找素材、不训练，先玩起来。玩顺了，再往下滑，把它练成你的专属嗓子。
+                {profile?.lead ??
+                  "先挑一个现成音色，点一下就能听。听中意了，装上开麦就能直接替你说——不找素材、不训练，先玩起来。玩顺了，再往下滑，把它练成你的专属嗓子。"}
               </p>
               <div className="mt-6 flex flex-wrap items-center gap-3">
                 <a href="#play" className="btn-primary">
                   <Headphones className="h-4 w-4" />
-                  先听一个
+                  {profile ? "去挑音色" : "先听一个"}
                 </a>
-                <Link to="/workshop" className="btn-ghost">
-                  <Mic2 className="h-4 w-4" />
-                  我想做自己的
-                </Link>
+                {/* 主次按钮按用途对调：定过用途的人，"他来的那条路"才是主按钮。
+                    这是渐进式披露最实在的一步 —— 不是藏东西，是改默认排序。 */}
+                {profile ? (
+                  <Link to={profile.aim ?? "/home"} className="btn-ghost">
+                    <Radio className="h-4 w-4" />
+                    直接去{profile.name}
+                  </Link>
+                ) : (
+                  <Link to="/workshop" className="btn-ghost">
+                    <Mic2 className="h-4 w-4" />
+                    我想做自己的
+                  </Link>
+                )}
               </div>
             </div>
             <WaveBars />
@@ -329,6 +353,11 @@ export function HomePage() {
       </section>
 
       <PageShell className="pt-10">
+        {/* 链路状态条 —— 放在"挑声音"之前。
+            行业次序是「先接通、再选声音」（Voicemod 官方三步法），我们链路更长更该如此。
+            用户挑完一个好听的声音却发现送不进目标应用，那种挫败比"界面丑"严重得多。 */}
+        <ChainStatusBar className="mb-8" />
+
         <div className="space-y-14">
         {/* 立刻能玩：首屏第一件事 = 预置音色即点即听 */}
         <Section
@@ -591,43 +620,63 @@ export function HomePage() {
           </Card>
         </Section>
 
-        {/* 效果阶梯：为什么要继续采集 / 训练 */}
-        <Section
-          eyebrow="为什么继续"
-          title="为什么还要继续攒素材？"
-          desc="这条阶梯就是答案：同样一段字，素材越足，越像是「那个人」亲口说的。"
+        {/* 效果阶梯 + 术语表：都收进「进阶」区。
+            理由：这两块的读者是"已经在路上的人"，不是"刚进来的人"。
+            调研里行业共识是「新用户看 3 个选项，不是 40 个」，而首页此前有 6 个等重区块。
+            注意这里是**收起不是删除** —— 摘要行永远可见，用户知道里面有什么。 */}
+        <AdvancedSection
+          summary="进阶：素材够不够？那几个术语什么意思？"
+          hint="为什么还要继续攒素材、训练/伴奏分离/质检 A–D 都是啥"
         >
-          <EffectLadderCard currentLevel={currentLevel} collectedSeconds={totalSeconds} modelReady={modelReady} />
-        </Section>
-
-        {/* 术语科普：进阶名词大白话（默认收起，需要时再展开） */}
-        <Section
-          eyebrow="术语表"
-          title="听不懂的词，点开看白话"
-          actions={
-            <button
-              type="button"
-              onClick={() => setGlossaryOpen((o) => !o)}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground transition hover:border-primary hover:text-primary"
-            >
-              {glossaryOpen ? <Minus className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
-              {glossaryOpen ? "收起" : "展开"}
-            </button>
-          }
-        >
-          {glossaryOpen && (
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              {GLOSSARY.map(({ term, plain }) => (
-                <div key={term} className="rounded-2xl border border-border bg-card/85 p-4 shadow-md">
-                  <p className="flex items-center gap-2 text-sm font-medium text-card-foreground">
-                    <HelpCircle className="h-4 w-4 text-primary" />{term}
-                  </p>
-                  <p className="mt-2 text-xs leading-5 text-muted-foreground">{plain}</p>
-                </div>
-              ))}
+          <div className="space-y-8">
+            <div>
+              <h3 className="text-sm font-semibold text-foreground">为什么还要继续攒素材？</h3>
+              <p className="mt-1 mb-3 text-xs text-muted-foreground">
+                这条阶梯就是答案：同样一段字，素材越足，越像是「那个人」亲口说的。
+              </p>
+              <EffectLadderCard currentLevel={currentLevel} collectedSeconds={totalSeconds} modelReady={modelReady} />
             </div>
-          )}
-        </Section>
+
+            <div>
+              <h3 className="text-sm font-semibold text-foreground">听不懂的词，点开看白话</h3>
+              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                {GLOSSARY.map(({ term, plain }) => (
+                  <div key={term} className="rounded-2xl border border-border bg-card/85 p-4 shadow-md">
+                    <p className="flex items-center gap-2 text-sm font-medium text-card-foreground">
+                      <HelpCircle className="h-4 w-4 text-primary" />{term}
+                    </p>
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">{plain}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </AdvancedSection>
+
+        {/* 行业第一诉求条：自然度 / 延迟 / 免费无套路。
+            调研里这三项是各家测评提到频次最高的诉求，也是我们真有底气的地方。
+            ⚠️ 只写真事实，不写目标值：
+              · "8GB 显存可跑" 是实测（docs/ROADMAP.md:144）
+              · "全程本地不上传" 是架构事实（无云端调用）
+              · 自然度有本地评分模型（models/natscore）——**不给具体数字**，
+                因为实时链路延迟的"<200ms"至今是**目标而非真机实测**
+                （docs/ROADMAP.md:269 明列为待验收项）。宣传里出现未验证数字，
+                就是调研里点名批评的那种"不美化参数"。 */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          {[
+            { t: "音色自然", d: "RVC 音色转换 + 本地自然度评分，不是简单升降调那种一听就穿帮的效果。" },
+            { t: "不吃配置", d: "8GB 显存笔记本就能跑；模型装好即离线可用，不依赖显卡型号。" },
+            { t: "全程本地", d: "声音不出这台机器，没有云端上传、没有时长限制、没有广告。" },
+          ].map(({ t, d }) => (
+            <div key={t} className="rounded-2xl border border-border bg-card/85 p-4 shadow-sm">
+              <p className="flex items-center gap-1.5 text-xs font-semibold text-card-foreground">
+                <Check className="h-3.5 w-3.5 text-primary" />
+                {t}
+              </p>
+              <p className="mt-1.5 text-[11px] leading-5 text-muted-foreground">{d}</p>
+            </div>
+          ))}
+        </div>
 
         {/* 底线：全程本地 + 版权红线 */}
         <Card as="section" className="flex flex-col gap-3 p-5 text-xs leading-5 text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
