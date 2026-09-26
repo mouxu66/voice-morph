@@ -1,8 +1,13 @@
 """扒歌换声（翻唱）：整首歌 → 分离人声/伴奏 → 换音色 → 合回伴奏 → 导出成品。
 
 接口：
-    POST /api/cover/run     multipart 上传歌曲 + 音色/变调，提交后台任务
+    POST /api/cover/fetch   粘一条音频直链 → 下到会话目录（只下载，可先试听）
+    POST /api/cover/run     multipart 上传歌曲（或给下好的 src_name）+ 音色/变调，提交后台任务
     GET  /api/cover/status  轮询进度与结果
+
+歌曲来源两条路（都在会话目录，都"跑完即删"）：
+    · 上传文件 —— 老路径，行为不变；
+    · 粘直链（`url_fetch`）—— 下下来先试听（`/cover/fetch`），确认是这首歌再跑。
 
 为什么是"三步现成件拼起来"而不是新模型：
     demucs 分离（`htdemucs --two-stems` 出 vocals + no_vocals）、RVC 换声
@@ -26,6 +31,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import math
@@ -37,8 +43,10 @@ from pathlib import Path
 
 import config as cfg
 import session_out
+import url_fetch
 from common import MAX_UPLOAD_BYTES, find_ffmpeg
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 from rvc_common import ensure_infer_pth
 
 LOG = logging.getLogger(__name__)
@@ -254,9 +262,82 @@ def _median_f0(path: Path, np, librosa) -> float | None:
     return float(np.median(f0))
 
 
+class CoverFetchReq(BaseModel):
+    """粘直链请求体（只有 url —— 音色/变调那些参数都在 `/cover/run` 上）。"""
+
+    url: str
+
+
+def _duration_of(path: Path) -> float:
+    """读时长（只解析文件头）。读不出来给 0 —— 试听那一行少个数字而已。"""
+    try:
+        import soundfile as sf
+
+        return round(float(sf.info(str(path)).duration), 1)
+    except Exception:  # noqa: BLE001 —— 时长只是展示，读不到不该影响下载结果
+        return 0.0
+
+
+@router.post("/cover/fetch")
+async def cover_fetch(req: CoverFetchReq):
+    """把一条音频直链下到会话目录，返回可立即试听的地址（**不跑链路**）。
+
+    为什么分成两步、而不是"粘了就直接跑完"：翻唱要几分钟，而"下错歌"是最常见的
+    失误（版本不对 / 下到的是别人的翻唱 / 纯伴奏）。先花几秒试听，比等三分钟划算。
+
+    护栏全在 `url_fetch` 里（拒内网、逐跳校验重定向、限大小、拒网页），这里只负责
+    把阻塞的下载丢进线程池，别卡住事件循环。
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        info = await loop.run_in_executor(None, url_fetch.fetch_to_session, req.url)
+    except url_fetch.FetchError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "ok": True,
+        "name": info["name"],
+        "url": info["url"],
+        "bytes": info["bytes"],
+        "duration_s": _duration_of(Path(info["path"])),
+    }
+
+
+async def _resolve_source(file: UploadFile | None, src_name: str, stamp: int) -> Path:
+    """定"这首歌从哪来"：会话里已下好的（`src_name`）或刚上传的（`file`）。
+
+    两条路都落在**会话目录**：上传的写完就在那，下好的本来就在那 —— 后面
+    `_cover_worker` 的 finally 一律删掉它（跑完即删，与"即用即删"同一口径）。
+
+    刻意在拿状态锁**之前**调用：源不对时不该把 `COVER_STATE` 置成 running，
+    否则前端会一直转圈等一个根本不会开始的任务。
+    """
+    if src_name:
+        found = session_out.find(src_name)
+        if found is None or not session_out.is_session(found):
+            raise HTTPException(
+                status_code=400,
+                detail="这个源文件已经不在会话里了（退出应用会清空），请重新下载或改用选择文件",
+            )
+        return found
+    if file is None:
+        raise HTTPException(status_code=400, detail="请先选择歌曲文件，或粘贴一条音频直链")
+    limit_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+    if (file.size or 0) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"文件过大：>{limit_mb}MB")
+    dst = session_out.new_path(
+        f"cover_src_{stamp}", Path(file.filename or "song.wav").suffix or ".wav"
+    )
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"文件过大：>{limit_mb}MB")
+    dst.write_bytes(raw)
+    return dst
+
+
 @router.post("/cover/run")
 async def cover_run(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    src_name: str = Form(""),
     voice_id: str = Form(""),
     pitch: int = Form(0),
     index_rate: float = Form(0.5),
@@ -273,7 +354,11 @@ async def cover_run(
     auto_gain=True（默认）时忽略传入的 vocal_gain/accomp_gain，改由实测 RMS
     自动配平（见 `auto_vocal_gain`）—— 同理：用户听出"人声太小"时根本不知道
     该补多少倍，量出来直接配比滑块靠谱。旧前端不传这个字段 → 走默认 True。
+
+    歌曲来源二选一：`file`（上传）或 `src_name`（`/cover/fetch` 下好的会话文件名）。
     """
+    stamp = int(time.time() * 1000)
+    raw_path = await _resolve_source(file, src_name, stamp)  # 先定源，再动状态
     with _cover_lock:
         if COVER_STATE["running"]:
             raise HTTPException(status_code=409, detail="已有翻唱任务在跑，请稍候")
@@ -304,24 +389,6 @@ async def cover_run(
             error="",
         )
 
-    stamp = int(time.time() * 1000)
-    raw_path = session_out.new_path(
-        f"cover_src_{stamp}", Path(file.filename or "song.wav").suffix or ".wav"
-    )
-    if (file.size or 0) > MAX_UPLOAD_BYTES:
-        with _cover_lock:
-            COVER_STATE.update(running=False, status="error", error="歌曲文件过大")
-        raise HTTPException(
-            status_code=413, detail=f"文件过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB"
-        )
-    raw = await file.read()
-    if len(raw) > MAX_UPLOAD_BYTES:
-        with _cover_lock:
-            COVER_STATE.update(running=False, status="error", error="歌曲文件过大")
-        raise HTTPException(
-            status_code=413, detail=f"文件过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB"
-        )
-    raw_path.write_bytes(raw)
     threading.Thread(
         target=_cover_worker,
         args=(raw_path, voice_id, pth, pitch, index_rate, vocal_gain, accomp_gain, auto_pitch, auto_gain, stamp),
@@ -431,24 +498,42 @@ def cover_status():
 
 @router.post("/cover/pitch_suggest")
 async def cover_pitch_suggest(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    src_name: str = Form(""),
     voice_id: str = Form(""),
 ):
-    """上传歌曲、只算变调建议（不跑完整链路）。前端选好文件+音色后调它填默认值。
+    """只算变调建议（不跑完整链路）。前端选好歌 + 音色后调它填默认值。
 
     只分离人声再量基频 —— 比不分离准得多（伴奏的贝斯/鼓会污染基频估计）。
     约 20~40 秒，期间前端显示"正在分析音域"。
+
+    `src_name` 是 `/cover/fetch` 下好的会话源：**这份不删** —— 用户分析完还要
+    用它开跑（上传的那份用完即删，与 `/cover/run` 同口径）。
     """
-    if (file.size or 0) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413, detail=f"文件过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB"
-        )
     if not (cfg.MEDIA_DIR / "voicebank" / voice_id / "reference.wav").exists():
         raise HTTPException(status_code=404, detail=f"音色 [{voice_id}] 缺少参考音，无法给建议")
     stamp = int(time.time() * 1000)
-    raw_path = session_out.new_path(f"cps_{stamp}", Path(file.filename or "s.wav").suffix or ".wav")
-    raw_path.write_bytes(await file.read())
-    vocals = None
+    if src_name:
+        found = session_out.find(src_name)
+        if found is None or not session_out.is_session(found):
+            raise HTTPException(
+                status_code=400,
+                detail="这个源文件已经不在会话里了（退出应用会清空），请重新下载或改用选择文件",
+            )
+        raw_path, keep_src = found, True
+    else:
+        if file is None:
+            raise HTTPException(status_code=400, detail="请先选择歌曲文件，或粘贴一条音频直链")
+        if (file.size or 0) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413, detail=f"文件过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB"
+            )
+        raw_path = session_out.new_path(
+            f"cps_{stamp}", Path(file.filename or "s.wav").suffix or ".wav"
+        )
+        raw_path.write_bytes(await file.read())
+        keep_src = False
+    step = None
     try:
         step = session_out.new_path(f"cps_in_{stamp}")
         subprocess.run(
@@ -459,8 +544,10 @@ async def cover_pitch_suggest(
         vocals, _ = separate_song(step, stamp)
         return {"ok": True, "pitch": _pitch_suggest(vocals, voice_id)}
     finally:
-        with contextlib.suppress(Exception):
-            raw_path.unlink(missing_ok=True)
+        for leftover in (None if keep_src else raw_path, step):
+            with contextlib.suppress(Exception):
+                if leftover is not None:
+                    leftover.unlink(missing_ok=True)
         with contextlib.suppress(Exception):
             import shutil
 

@@ -17,6 +17,23 @@ from runtime import API_PREFIX, OUT
 
 router = APIRouter(prefix=API_PREFIX)
 
+#: 按后缀给内容类型。以前一律 `audio/wav` —— 会话里的产物确实都是 wav，所以没暴露；
+#: 但「粘直链」下下来的源是 mp3/m4a/flac（浏览器靠嗅探才放，有些直接拒），
+#: 而试听走的就是这个端点。不认识的后缀保持旧行为（audio/wav），零回归。
+_MEDIA_TYPES = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".m4b": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/opus",
+    ".webm": "audio/webm",
+    ".mp4": "video/mp4",
+    ".mkv": "video/x-matroska",
+}
+
 
 @router.get("/media/{kind}/{name:path}")
 def media(kind: str, name: str):
@@ -29,7 +46,7 @@ def media(kind: str, name: str):
     # 防止 ../ 之类的路径穿越（is_relative_to 精确判断层级归属）
     if not p.is_relative_to(base) or not p.is_file():
         raise HTTPException(404, f"{kind}/{name} 不存在")
-    return FileResponse(str(p), media_type="audio/wav")
+    return FileResponse(str(p), media_type=_MEDIA_TYPES.get(p.suffix.lower(), "audio/wav"))
 
 
 class SaveReq(BaseModel):

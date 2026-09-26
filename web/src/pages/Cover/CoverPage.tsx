@@ -1,5 +1,5 @@
 import { useRef } from "react"
-import { CircleAlert, Loader2, Music4, Sparkles, Upload, Wand2 } from "lucide-react"
+import { CircleAlert, Link2, Loader2, Music4, Sparkles, Upload, Wand2 } from "lucide-react"
 import type { useCover } from "@/pages/Cover/useCover"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { PageShell } from "@/components/layout/PageShell"
@@ -64,6 +64,13 @@ export function CoverPage(p: ReturnType<typeof useCover>) {
                       {(p.file.size / 1024 / 1024).toFixed(1)} MB · 点击更换
                     </p>
                   </>
+                ) : p.srcName ? (
+                  <>
+                    <p className="mt-2 text-sm font-medium text-card-foreground">已用直链下载的音频</p>
+                    <p className="mt-1 font-mono text-xs text-muted-foreground">
+                      {p.srcSummary} · 点击改用本地文件
+                    </p>
+                  </>
                 ) : (
                   <>
                     <p className="mt-2 text-sm text-muted-foreground">
@@ -80,6 +87,61 @@ export function CoverPage(p: ReturnType<typeof useCover>) {
                 className="hidden"
                 onChange={(e) => p.pickFile(e.target.files?.[0] ?? null)}
               />
+
+              {/* 粘直链：想到哪首下哪首，试听完再跑；退出即删，不占地方 */}
+              <div className="mt-4 rounded-xl border border-border bg-background/40 p-3">
+                <p className="text-xs font-medium text-card-foreground">或者：粘一条音频直链</p>
+                <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                  公开的音频直链（.mp3 / .m4a / .flac / .wav 等）能直接下；网页链接不行（会明确告诉你）。
+                  下载的歌只在本次会话里，退出即删 —— 开跑后也会被清掉。
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    type="url"
+                    value={p.srcUrl}
+                    onChange={(e) => p.setSrcUrl(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault()
+                        void p.fetchFromUrl()
+                      }
+                    }}
+                    placeholder="https://…/song.mp3"
+                    disabled={p.running || p.fetching}
+                    className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 font-mono text-xs text-card-foreground placeholder:text-muted-foreground/60 disabled:opacity-50"
+                    aria-label="音频直链"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void p.fetchFromUrl()}
+                    disabled={p.running || p.fetching || !p.srcUrl.trim()}
+                    className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20 disabled:pointer-events-none disabled:opacity-40"
+                  >
+                    {p.fetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link2 className="h-3.5 w-3.5" />}
+                    {p.fetching ? "下载中…" : "下载并试听"}
+                  </button>
+                </div>
+                {p.srcPreview && (
+                  <div className="mt-2 rounded-lg border border-primary/30 bg-primary/5 p-2">
+                    <div className="flex items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
+                      <span className="truncate">已下载：{p.srcSummary || "音频"}</span>
+                      <button
+                        type="button"
+                        onClick={p.clearSource}
+                        className="shrink-0 underline-offset-2 hover:text-foreground hover:underline"
+                      >
+                        丢弃
+                      </button>
+                    </div>
+                    <div className="mt-1.5">
+                      <StudioAudioPlayer src={p.srcPreview} />
+                    </div>
+                    <p className="mt-1.5 px-1 text-[11px] leading-4 text-muted-foreground">
+                      这是原曲（还没换声）。确认没错再点右边「开始翻唱」。
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div>
@@ -154,7 +216,7 @@ export function CoverPage(p: ReturnType<typeof useCover>) {
               <button
                 type="button"
                 onClick={() => void p.analyzePitch()}
-                disabled={!p.file || !p.voiceId || p.running || p.analyzing}
+                disabled={!p.hasSource || !p.voiceId || p.running || p.analyzing}
                 className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs font-medium text-primary transition hover:bg-primary/20 disabled:pointer-events-none disabled:opacity-40"
               >
                 {p.analyzing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
@@ -164,7 +226,7 @@ export function CoverPage(p: ReturnType<typeof useCover>) {
               <button
                 type="button"
                 onClick={() => void p.start()}
-                disabled={!p.file || !p.voiceId || p.running}
+                disabled={!p.hasSource || !p.voiceId || p.running}
                 className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-md transition hover:scale-[1.02] disabled:pointer-events-none disabled:opacity-50"
               >
                 {p.running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}

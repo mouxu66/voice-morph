@@ -477,18 +477,44 @@ export type CoverStatus = {
   error: string;
 };
 
+/** 粘直链下载的结果（`/cover/fetch`）：name 是会话里的裸名，url 可直接试听 */
+export type CoverFetchResult = {
+  ok: boolean;
+  name: string;
+  url: string;
+  bytes: number;
+  duration_s: number;
+};
+
+/**
+ * 把一条音频直链下到会话目录（**只下载，不跑链路**）。
+ *
+ * 分成两步是为了"先试听再跑"：翻唱要几分钟，而下错歌（版本不对 / 纯伴奏）是最常见的失误。
+ * 下好的产物就在会话目录里，退出即删；开跑时用 `src_name` 交给 `/cover/run`。
+ */
+export async function fetchCoverUrl(url: string): Promise<CoverFetchResult> {
+  return jsonFetch<CoverFetchResult>("/cover/fetch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+}
+
 export async function runCover(
-  file: File,
+  file: File | null,
   voiceId: string,
   pitch: number,
   indexRate: number,
   vocalGain = 1,
   accompGain = 1,
   /** true = 忽略传入 pitch，由后端按音域差自动算建议变调 */
-  autoPitch = false
+  autoPitch = false,
+  /** 会话里已下好的源文件名（粘直链那条路）；与 file 二选一 */
+  srcName = ""
 ): Promise<{ ok: boolean; voice_id: string }> {
   const form = new FormData();
-  form.append("file", file);
+  if (file) form.append("file", file);
+  if (srcName) form.append("src_name", srcName);
   form.append("voice_id", voiceId);
   form.append("pitch", String(pitch));
   form.append("index_rate", String(indexRate));
@@ -515,11 +541,14 @@ export async function getCoverStatus(): Promise<CoverStatus> {
 
 /** 只算变调建议（不跑完整链路）：分离人声 → 比中位基频 → 返回半音数 */
 export async function suggestCoverPitch(
-  file: File,
-  voiceId: string
+  file: File | null,
+  voiceId: string,
+  /** 会话里已下好的源文件名（粘直链那条路）；与 file 二选一 */
+  srcName = ""
 ): Promise<{ ok: boolean; pitch: number }> {
   const form = new FormData();
-  form.append("file", file);
+  if (file) form.append("file", file);
+  if (srcName) form.append("src_name", srcName);
   form.append("voice_id", voiceId);
   const res = await fetch(BASE + "/cover/pitch_suggest", { method: "POST", body: form });
   if (!res.ok) {

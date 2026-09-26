@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
+  fetchCoverUrl,
   getCoverStatus,
   listRvcVoices,
   mediaUrl,
@@ -22,11 +23,21 @@ const POLL_MS = 2000
  *      这种 ±12 的大跳，所以界面上必须显眼（滑块 + 自动建议按钮 + 当前值回显）。
  *   3. **进度带工序名**。翻唱要跑 demucs + RVC，几分钟起步；只给百分比用户会以为
  *      卡死了，所以 step 要翻译成"正在分离人声与伴奏"这种能看懂的话。
+ *   4. **两种来源二选一**：本地文件（上传）或粘一条直链（后端下到会话目录）。
+ *      两者都住会话目录、都"跑完即删"，所以往下只需要记一个 `srcName`。
  */
 export function useCover() {
   const [voices, setVoices] = useState<RvcVoice[]>([])
   const [voiceId, setVoiceId] = useState("")
   const [file, setFile] = useState<File | null>(null)
+  /** 会话里已下好的源文件名（粘直链那条路）；与 file 二选一 */
+  const [srcName, setSrcName] = useState("")
+  /** 粘的链接（留着 —— 开跑后源被删掉，想再跑一次只需重新点「下载并试听」） */
+  const [srcUrl, setSrcUrl] = useState("")
+  /** 已下好源的试听地址（后端返回的相对路径）与一句话说明 */
+  const [srcPreview, setSrcPreview] = useState("")
+  const [srcSummary, setSrcSummary] = useState("")
+  const [fetching, setFetching] = useState(false)
   const [pitch, setPitch] = useState(0)
   const [autoPitch, setAutoPitch] = useState(true)
   const [indexRate, setIndexRate] = useState(0.5)
@@ -87,16 +98,60 @@ export function useCover() {
     return () => window.clearTimeout(t)
   }, [feedback])
 
-  /** 上传歌曲文件（只暂存，不跑） */
+  /** 上传歌曲文件（只暂存，不跑）。选了文件就放弃直链那份 —— 来源永远只有一个 */
   const pickFile = useCallback((f: File | null) => {
     setErrorMessage("")
     setFile(f)
+    if (f) {
+      setSrcName("")
+      setSrcPreview("")
+      setSrcSummary("")
+    }
+  }, [])
+
+  /** 粘直链 → 下到会话目录 → 可试听（**不跑链路**）。下错歌只花几秒，不是三分钟。 */
+  const fetchFromUrl = useCallback(async () => {
+    const url = srcUrl.trim()
+    if (!url) {
+      setErrorMessage("请先粘贴一条音频直链")
+      return
+    }
+    setErrorMessage("")
+    setFeedback("")
+    setFetching(true)
+    try {
+      const r = await fetchCoverUrl(url)
+      setSrcName(r.name)
+      setSrcPreview(mediaUrl(r.url))
+      setSrcSummary(
+        `${(r.bytes / 1024 / 1024).toFixed(1)} MB` +
+          (r.duration_s
+            ? ` · ${Math.floor(r.duration_s / 60)}:${String(Math.round(r.duration_s % 60)).padStart(2, "0")}`
+            : "")
+      )
+      setFile(null)
+      setFeedback("已下好，可以先试听 —— 确认是这首歌再点「开始翻唱」")
+    } catch (e) {
+      setSrcName("")
+      setSrcPreview("")
+      setSrcSummary("")
+      setErrorMessage(friendlyError(e, "下载失败"))
+    } finally {
+      setFetching(false)
+    }
+  }, [srcUrl])
+
+  /** 丢掉直链那份（改用文件，或换一首） */
+  const clearSource = useCallback(() => {
+    setSrcName("")
+    setSrcPreview("")
+    setSrcSummary("")
   }, [])
 
   /** 自动建议变调：上传一次、只算不跑。约 20~40 秒（要分离人声）。 */
   const analyzePitch = useCallback(async () => {
-    if (!file) {
-      setErrorMessage("请先选择歌曲文件")
+    if (!file && !srcName) {
+      setErrorMessage("请先选择歌曲文件，或粘贴一条音频直链")
       return
     }
     if (!voiceId) {
@@ -106,7 +161,7 @@ export function useCover() {
     setErrorMessage("")
     setAnalyzing(true)
     try {
-      const r = await suggestCoverPitch(file, voiceId)
+      const r = await suggestCoverPitch(file, voiceId, srcName)
       setPitch(r.pitch)
       setAutoPitch(false) // 建议值已经填进滑块，交给用户微调
       setFeedback(
@@ -119,11 +174,11 @@ export function useCover() {
     } finally {
       setAnalyzing(false)
     }
-  }, [file, voiceId])
+  }, [file, voiceId, srcName])
 
   const start = useCallback(async () => {
-    if (!file) {
-      setErrorMessage("请先选择歌曲文件")
+    if (!file && !srcName) {
+      setErrorMessage("请先选择歌曲文件，或粘贴一条音频直链")
       return
     }
     if (!voiceId) {
@@ -134,7 +189,10 @@ export function useCover() {
     setFeedback("")
     setSubmitting(true)
     try {
-      await runCover(file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch)
+      await runCover(file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, srcName)
+      // 源已经被这条任务用掉了（后端跑完就删，即用即删）。这里同步清掉试听，
+      // 免得用户对着一个已经不在的文件再点一次「开始翻唱」而拿到 400。
+      clearSource()
       setStatus({
         running: true,
         status: "running",
@@ -153,7 +211,7 @@ export function useCover() {
     } finally {
       setSubmitting(false)
     }
-  }, [file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, startPoll])
+  }, [file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, srcName, clearSource, startPoll])
 
   const running = Boolean(status?.running) || submitting
   const resultUrl = status?.url ? mediaUrl(status.url) : ""
@@ -161,9 +219,12 @@ export function useCover() {
   return {
     voices, voiceId, setVoiceId,
     file, pickFile,
+    srcName, srcUrl, setSrcUrl, srcPreview, srcSummary, fetching, fetchFromUrl, clearSource,
     pitch, setPitch, autoPitch, setAutoPitch,
     indexRate, setIndexRate, vocalGain, setVocalGain, accompGain, setAccompGain,
     submitting, analyzing, errorMessage, feedback, status, running, resultUrl,
     analyzePitch, start,
+    /** 有来源（本地文件或已下好的直链）才允许开跑/分析音域 */
+    hasSource: Boolean(file || srcName),
   }
 }
