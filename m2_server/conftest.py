@@ -260,19 +260,39 @@ def _offline_market_license(monkeypatch):
 
 #: 仓库外**绝不允许被测试写到**的路径：测试只该动 tmp_path，
 #: 真实运行环境（RVC venv / 用户配置）不在其中。
-_OFF_LIMITS = (
+#: 可用 `VM_OFFLIMITS_EXTRA` 追加（`;` 分隔）—— 守卫自己的测试靠它指向受控目录，
+#: 这样测"拦没拦住"时不会真去碰真机文件。
+OFF_LIMITS: list[Path] = [
     Path("D:/RVC"),
     Path(os.path.expanduser("~/.workbuddy")),
-)
+]
+
+
+def _offlimits_roots() -> list[Path]:
+    """禁区根目录（含 `VM_OFFLIMITS_EXTRA` 追加项），每次现读、不缓存。"""
+    roots = list(OFF_LIMITS)
+    for chunk in (os.environ.get("VM_OFFLIMITS_EXTRA") or "").split(";"):
+        chunk = chunk.strip()
+        if chunk:
+            roots.append(Path(chunk))
+    return roots
 
 
 def _offlimits_hit(path) -> Path | None:
-    """路径落在禁区里就返回解析后的绝对路径，否则 None。"""
+    """路径落在禁区里就返回解析后的绝对路径，否则 None。
+
+    只拦**写**不拦读：测试读真实环境（探版本、看权重在不在）是正当的。
+
+    `VM_OFFLIMITS_BYPASS=1` 时整体旁路 —— 只给"守卫自己的测试准备犯规现场"用
+    （受控目录按定义就在禁区里，不旁路就建不出目标）。
+    """
+    if os.environ.get("VM_OFFLIMITS_BYPASS") == "1":
+        return None
     try:
         target = Path(os.fspath(path)).resolve()
     except (TypeError, ValueError, OSError):
         return None
-    for root in _OFF_LIMITS:
+    for root in _offlimits_roots():
         try:
             root_r = root.resolve()
         except OSError:
@@ -287,21 +307,21 @@ def _guard_offlimits_writes() -> None:
 
     2026-09-26 事故：`test_cover_fetch.py::_run_env` 里两行顺序写反 ——
     先 `Path(cover.cfg.RVC_ROOT)` 取了真机 `D:\\RVC`、再 monkeypatch 成 tmp_path，
-    于是 `venv.write_bytes(b"")` 把**真解释器**截成 0 字节，整个 RVC 变声链路瘫掉
-    （退出码 -1073741515）。且事后只补 `python.exe` 还不够 —— venv 的 Scripts 下
-    那 4 个运行库 DLL（`python3.dll` / `python312.dll` / `vcruntime140*.dll`）
-    也一并缺失，必须一起补回（见 docs 犯错档案）。
+    于是 `venv.write_bytes(b"")` 把**真解释器**截成 0 字节，RVC 链路整条瘫掉
+    （退出码 -1073741515，`0xC0000135`）。这类错误**不会以断言失败暴露** ——
+    形态是"测试全绿 + 机器坏掉"，所以必须在测试期拦一道。
 
-    为什么拦在 `os` / `builtins` 层而不是 `pathlib.Path`：
-    `Path.write_bytes` / `write_text` **不走 `os.open`**（3.11 实测走 C 实现的
-    `_io.open`；3.13 换了实现但同样绕开）——2026-09-26 实测三遍：补 `Path` 类方法
-    完全无效、补 `os.open` 也拦不住它，真解释器照样被清空。
+    拦哪几层（2026-09-26 逐层实测，结论与直觉相反，务必照抄）：
+      · `io.open`  ← **关键层**。`Path.write_bytes` / `write_text` / `Path.open`
+        最终都走它。当年元凶正是 `Path.write_bytes`，只有补这里才拦得住。
+      · `builtins.open` ← 脚本式 `open(...)` 走它（**注意它不经过 `io.open`**，
+        两层互不覆盖，必须都补）。
+      · `os.open` ← 第三方库绕过前面两层的底层 fd 操作。
+      · `os.remove` / `os.unlink` / `os.mkdir` / `os.rmdir` ← 删除与建目录。
 
-    ⚠️ 所以这道守卫**有一个已知缺口**：`Path.write_bytes(b"")` / `write_text("")`
-    能绕过它。当年的元凶恰好就是这两条。**不能靠这道守卫兜住这类错误** ——
-    真正的防线是写法本身：在 `monkeypatch.setattr(cfg, "RVC_ROOT", tmp_path)`
-    **之后**才拼路径，绝不先取再替换（见 `tests/test_cover_fetch.py::_run_env`
-    里的那段注释）。守卫只用来挡第三方库和脚本式的 `open(...)` / `os.remove(...)`。
+    曾经的错误结论（已作废，别再照做）：以为"`Path.write_bytes` 绕过 `os.open`、
+    所以无法拦截"。真相是它绕过 `os.open` 但要过 `io.open` ——
+    当时只补了 `os.open` 和 `builtins.open`，恰好唯一没补那个必经之路。
 
     为什么用环境变量开关而不是 `monkeypatch`：本模块在 `import` 期就要生效，
     且 fixture teardown 在失败场景下顺序不可靠；一个进程级标志最简单。
@@ -311,6 +331,7 @@ def _guard_offlimits_writes() -> None:
     os.environ["_VM_OFFLIMITS_GUARD"] = "on"
 
     import builtins
+    import io as _io
 
     def _refuse(target: Path, action: str) -> None:
         raise AssertionError(
@@ -320,50 +341,70 @@ def _guard_offlimits_writes() -> None:
             "参见 2026-09-26 RVC venv 被清空事故。"
         )
 
-    # ---- os.open：pathlib 的 C 实现对它也会经过 ----
+    def _is_write_mode(mode) -> bool:
+        return any(c in str(mode) for c in "wax+")
+
+    # ---- ① io.open：Path.write_bytes / write_text / Path.open 的必经之路 ----
+    _io_open = _io.open
+
+    def guarded_io_open(file, mode="r", *args, **kwargs):
+        if _is_write_mode(mode):
+            hit = _offlimits_hit(file)
+            if hit is not None:
+                _refuse(hit, "写入")
+        return _io_open(file, mode, *args, **kwargs)
+
+    _io.open = guarded_io_open
+
+    # ---- ② builtins.open：脚本式 open(...)。它**不**经过 io.open，单独补 ----
+    _builtin_open = builtins.open
+
+    def guarded_builtin_open(file, mode="r", *args, **kwargs):
+        if _is_write_mode(mode):
+            hit = _offlimits_hit(file)
+            if hit is not None:
+                _refuse(hit, "写入")
+        return _builtin_open(file, mode, *args, **kwargs)
+
+    builtins.open = guarded_builtin_open
+
+    # ---- ③ os.open：第三方库的底层 fd 操作 ----
     _os_open = os.open
 
-    def guarded_open(path, flags, *args, **kwargs):
-        # 只拦有写意图的 flag：O_RDONLY 放行（读真实环境是允许的）
-        write_intent = flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)
-        if write_intent:
+    def guarded_os_open(path, flags, *args, **kwargs):
+        if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
             hit = _offlimits_hit(path)
             if hit is not None:
                 _refuse(hit, "写入")
         return _os_open(path, flags, *args, **kwargs)
 
-    os.open = guarded_open
+    os.open = guarded_os_open
 
-    # ---- builtins.open：纯 Python 代码与第三方库常走这里 ----
-    _open = builtins.open
-
-    def guarded_builtin_open(file, mode="r", *args, **kwargs):
-        if any(c in str(mode) for c in "wax+"):
-            hit = _offlimits_hit(file)
-            if hit is not None:
-                _refuse(hit, "写入")
-        return _open(file, mode, *args, **kwargs)
-
-    builtins.open = guarded_builtin_open
-
-    # ---- 删除/建目录 ----
-    _remove, _mkdir, _unlink = os.remove, os.mkdir, os.unlink
+    # ---- ④ 删除 / 建目录 ----
+    _os_remove, _os_mkdir, _os_rmdir = os.remove, os.mkdir, os.rmdir
 
     def guarded_remove(path, *a, **k):
         hit = _offlimits_hit(path)
         if hit is not None:
             _refuse(hit, "删除")
-        return _remove(path, *a, **k)
+        return _os_remove(path, *a, **k)
 
     def guarded_mkdir(path, *a, **k):
         hit = _offlimits_hit(path)
         if hit is not None:
             _refuse(hit, "创建目录于")
-        return _mkdir(path, *a, **k)
+        return _os_mkdir(path, *a, **k)
+
+    def guarded_rmdir(path, *a, **k):
+        hit = _offlimits_hit(path)
+        if hit is not None:
+            _refuse(hit, "删除目录")
+        return _os_rmdir(path, *a, **k)
 
     os.remove = guarded_remove
     os.unlink = guarded_remove
     os.mkdir = guarded_mkdir
+    os.rmdir = guarded_rmdir
 
 
 _guard_offlimits_writes()
