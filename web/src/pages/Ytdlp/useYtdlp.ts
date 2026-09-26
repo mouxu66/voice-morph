@@ -30,10 +30,14 @@ export function useYtdlp() {
   const [fetchedName, setFetchedName] = useState("")
   const [fetchedSite, setFetchedSite] = useState("")
 
-  // 探活只做一次：`/ytdlp/status` 是纯本地调用（不联网），但 yt-dlp 版本在
-  // 会话期间不会变，每次输入都查一遍没有意义。
+  // 探活：`/ytdlp/status` 是纯本地调用（不联网），只在进页面时查一次。
+  // 但**必须能手动重查** —— 用户的真实路径是"看到没装 → 去装 → 回来"，
+  // 装完不重启后端也想立刻看到变化。`probeNonce` 就是那个重查开关。
+  const [probeNonce, setProbeNonce] = useState(0)
+
   useEffect(() => {
     let alive = true
+    setProbing(true)
     void (async () => {
       try {
         const s = await ytdlpStatus()
@@ -50,7 +54,10 @@ export function useYtdlp() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [probeNonce])
+
+  /** 重查 yt-dlp 是否就位（装完之后不用重启） */
+  const reprobe = useCallback(() => setProbeNonce((n) => n + 1), [])
 
   const fetchFromUrl = useCallback(async () => {
     const want = url.trim()
@@ -97,6 +104,7 @@ export function useYtdlp() {
   return {
     status,
     probing,
+    reprobe,
     url,
     setUrl,
     fetching,
