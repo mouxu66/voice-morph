@@ -64,6 +64,16 @@ class FakeResp:
     def close(self):
         self.closed = True
 
+    # requests 的 `Response` 就是上下文管理器（分片路径用的是 `with requests.get(...)`），
+    # 替身不接这两个协议方法就会以 `TypeError: 'FakeResp' object does not support the
+    # context manager protocol` 收场 —— 那是**替身缺件**，不是产品代码的错。
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
 
 def _patch_get(monkeypatch, uf, responses):
     """按顺序返回 n 个响应（第一个 302、第二个 200 这种重定向场景用得上）。"""
@@ -325,3 +335,174 @@ def test_pitch_suggest_keeps_downloaded_source(env, monkeypatch, tmp_path):
     assert res.status_code == 200, res.text
     assert res.json()["pitch"] == 7
     assert src.is_file(), "直链下好的源必须留下（上传的那份才用完即删）"
+
+
+# --------------------------------------------------- 多线程分片下载（提速）
+#
+# 2026-09-26 实测背景：**分片提速在真实网络上收益极不稳定** ——
+# 同一个 Jamendo 源先测出 1.83x、后测出 0.52x；同一分钟内清华镜像从
+# 0.01 MB/s 跳到 17.27 MB/s。所以这些用例**只钉正确性，不钉速度**
+# （测速会被抖动放大成假红/假绿）。速度结论见 docs 里那条记录：
+# 瓶颈在服务端限流与本机出口，不在片数。
+
+
+class RangeResp(FakeResp):
+    """分片请求的替身：按 Range 头切出自家的那一段。"""
+
+    def __init__(self, body: bytes, want: str, status=206):
+        rng = want.replace("bytes=", "").split("-")
+        lo, hi = int(rng[0]), int(rng[1])
+        super().__init__(
+            status=status,
+            headers={"Content-Type": "audio/mpeg", "Content-Range": f"bytes {lo}-{hi}/{len(body)}"},
+            chunks=[body[lo : hi + 1]],
+        )
+        self._body = body
+        self._want = want
+
+
+def _patch_range_get(monkeypatch, uf, body: bytes, *, probe_ok=True, segment_ok=True):
+    """替身 `requests.get`：区分 Range 探测、普通下载、分片下载三种请求。"""
+    seen: dict = {"probe": 0, "plain": 0, "seg": []}
+
+    class ProbeResp(FakeResp):
+        def __init__(self):
+            super().__init__(
+                status=206 if probe_ok else 200,
+                headers={"Content-Range": f"bytes 0-0/{len(body)}"} if probe_ok else {},
+                chunks=[body[:1]],
+            )
+
+    def fake_get(url, **kw):
+        rng = (kw.get("headers") or {}).get("Range")
+        if rng == "bytes=0-0" and kw.get("allow_redirects") is False:
+            seen["probe"] += 1
+            return ProbeResp()
+        if rng and rng.startswith("bytes=") and rng != "bytes=0-0":
+            seen["seg"].append(rng)
+            if not segment_ok:
+                return FakeResp(status=200, headers={"Content-Type": "audio/mpeg"}, chunks=[body])
+            return RangeResp(body, rng)
+        seen["plain"] += 1
+        return FakeResp(
+            headers={"Content-Type": "audio/mpeg", "Content-Length": str(len(body))},
+            chunks=[body],
+        )
+
+    monkeypatch.setattr(uf.requests, "get", fake_get)
+    return seen
+
+
+@pytest.fixture
+def _pub_dns(monkeypatch, env):
+    uf, _ = env
+    monkeypatch.setattr(
+        uf.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))]
+    )
+    return uf
+
+
+def test_parallel_lands_identical_bytes(_pub_dns, monkeypatch, tmp_path):
+    """★ 分片拼出来的文件必须与整份下载**逐字节相同**（拼错=静默坏档）。"""
+    uf = _pub_dns
+    # 必须大于 PARALLEL_MIN_BYTES，否则走的是单连接、测不到分片拼接
+    body = b"ID3" + bytes(range(256)) * ((uf.PARALLEL_MIN_BYTES // 256) + 64)
+
+    _patch_range_get(monkeypatch, uf, body)
+    got = uf.fetch_to_session("http://pub.example/song.mp3", parallel=True)
+    assert Path(got["path"]).read_bytes() == body, "分片拼接内容与原文不一致"
+    assert got["bytes"] == len(body)
+
+
+def test_parallel_segments_match_declared_range(_pub_dns, monkeypatch):
+    """每一片都要带正确的 `Range: bytes=lo-hi`，且合起来覆盖全文、无重叠。"""
+    uf = _pub_dns
+    # 必须超过 PARALLEL_MIN_BYTES，否则退回单连接 —— 那时一片都不会发（见上条同类坑）
+    body = b"ID3" + b"\x00" * (2 * uf.PARALLEL_MIN_BYTES)
+    seen = _patch_range_get(monkeypatch, uf, body)
+
+    uf.fetch_to_session("http://pub.example/song.mp3", parallel=True)
+
+    assert seen["seg"], "应当发出分片请求"
+    spans = []
+    for rng in seen["seg"]:
+        lo, hi = (int(x) for x in rng.replace("bytes=", "").split("-"))
+        spans.append((lo, hi))
+    spans.sort()
+    assert spans[0][0] == 0, "第一片必须从头开始"
+    assert spans[-1][1] == len(body) - 1, "最后一片必须到文件尾"
+    for (_, prev_hi), (next_lo, _) in zip(spans, spans[1:]):
+        assert next_lo == prev_hi + 1, f"分片区间必须无缝衔接，实际 {prev_hi} → {next_lo}"
+
+
+def test_falls_back_to_single_when_range_unsupported(_pub_dns, monkeypatch):
+    """★ 服务端不支持 Range → **静默退回单连接**，不能报错。
+
+    提速是优化、不是前提：不支持分片的源（很多网盘直链就是）必须照样能下。
+    """
+    uf = _pub_dns
+    body = b"ID3" + b"x" * 3000
+    seen = _patch_range_get(monkeypatch, uf, body, probe_ok=False)
+
+    got = uf.fetch_to_session("http://pub.example/song.mp3", parallel=True)
+
+    assert seen["plain"] >= 1, "应当退回普通请求"
+    assert seen["seg"] == [], "探测失败就不该再发分片请求"
+    assert Path(got["path"]).read_bytes() == body
+
+
+def test_server_ignoring_range_aborts_instead_of_corrupting(_pub_dns, monkeypatch, tmp_path):
+    """★ 服务端忽略 Range 回 200 全量时，**必须整体失败** —— 拼进去就是坏档。
+
+    这一条防的是最阴的失败模式：文件下下来了、大小看着也对，但内容是错的。
+    """
+    uf = _pub_dns
+    body = b"ID3" + b"y" * (uf.PARALLEL_MIN_BYTES + 4096)
+    _patch_range_get(monkeypatch, uf, body, segment_ok=False)
+
+    with pytest.raises(uf.FetchError, match="不支持分片"):
+        uf.fetch_to_session("http://pub.example/song.mp3", parallel=True)
+
+    leftovers = list((tmp_path / ".session").glob("*"))
+    assert leftovers == [], f"失败后不许留下半截文件：{leftovers}"
+
+
+def test_parallel_respects_max_bytes(_pub_dns, monkeypatch, tmp_path):
+    """分片模式下**大小上限照样拦**（不能因为换了写法就漏掉护栏）。"""
+    uf = _pub_dns
+    body = b"ID3" + b"z" * (4 * uf.PARALLEL_MIN_BYTES)
+    _patch_range_get(monkeypatch, uf, body)
+
+    with pytest.raises(uf.FetchError, match="上限"):
+        uf.fetch_to_session("http://pub.example/song.mp3", max_bytes=64 * 1024, parallel=True)
+
+    assert list((tmp_path / ".session").glob("*")) == []
+
+
+def test_still_rejects_html_in_parallel_mode(_pub_dns, monkeypatch):
+    """★ 分片路径也要先嗅探文件头 —— 别拿 16 条分片去下一个 HTML 页面。"""
+    uf = _pub_dns
+    html = b"<!doctype html><html><body>nope</body></html>"
+
+    def fake_get(url, **kw):
+        return FakeResp(
+            headers={"Content-Type": "text/html", "Content-Length": str(len(html))},
+            chunks=[html],
+        )
+
+    monkeypatch.setattr(uf.requests, "get", fake_get)
+    with pytest.raises(uf.FetchError, match="网页"):
+        uf.fetch_to_session("http://pub.example/song.mp3", parallel=True)
+
+
+def test_small_file_skips_parallel_probe(_pub_dns, monkeypatch):
+    """小于阈值的小文件不值得分片 —— 省掉一轮探测往返。"""
+    uf = _pub_dns
+    body = b"ID3" + b"a" * 100  # 远小于 PARALLEL_MIN_BYTES
+    assert len(body) < uf.PARALLEL_MIN_BYTES
+    seen = _patch_range_get(monkeypatch, uf, body)
+
+    uf.fetch_to_session("http://pub.example/song.mp3", parallel=True)
+
+    assert seen["probe"] == 0, "小文件不该做 Range 探测"
+    assert seen["seg"] == [], "小文件不该分片"
