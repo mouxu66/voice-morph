@@ -180,7 +180,7 @@ def test_mount_plan_is_plugin_order_then_declared_router_order():
 
 def test_manifest_ids_and_order_are_unique():
     plugins = plugin_manifest.load_all()
-    assert len(plugins) == 21, "插件数量变了就要同步更新 README 与设计文档里的数字"
+    assert len(plugins) == 22, "插件数量变了就要同步更新 README 与设计文档里的数字"
     assert [p.order for p in plugins] == sorted(p.order for p in plugins)
     assert all(p.summary and p.name for p in plugins)
 
@@ -260,7 +260,7 @@ def test_all_plugins_are_ok_on_a_healthy_start():
     _load_all()
     cat = plugin_manifest.catalog()
     assert cat["ok"] is True
-    assert cat["counts"] == {"total": 21, "ok": 21, "broken": 0, "disabled": 0}
+    assert cat["counts"] == {"total": 22, "ok": 22, "broken": 0, "disabled": 0}
     assert all(p["state"] == "ok" for p in cat["plugins"])
 
 
@@ -283,7 +283,7 @@ def test_router_never_attempted_counts_as_broken_not_ok():
     而 `server.py` 那边忘了挂（或改了名字）。
     """
     cat = plugin_manifest.catalog()  # 注意：**没有** _load_all()，registry 是空的
-    assert cat["counts"]["broken"] == 21
+    assert cat["counts"]["broken"] == 22
     assert all("未注册" in " ".join(p["reasons"]) for p in cat["plugins"] if p["state"] == "broken")
 
 
@@ -296,7 +296,7 @@ def test_disabled_is_not_broken(monkeypatch):
     _load_all()
     monkeypatch.setattr(plugin_manifest, "disabled_ids", lambda: {"sound.tts", "sound.effects"})
     cat = plugin_manifest.catalog()
-    assert cat["counts"] == {"total": 21, "ok": 19, "broken": 0, "disabled": 2}
+    assert cat["counts"] == {"total": 22, "ok": 20, "broken": 0, "disabled": 2}
     assert cat["ok"] is True, "有插件被关掉不该让整体 ok 变假"
     assert {p["id"] for p in cat["plugins"] if p["state"] == "disabled"} == {"sound.tts", "sound.effects"}
 
@@ -424,6 +424,7 @@ _FROZEN_ROUTES: tuple[tuple[str, str, str], ...] = (
     ("/live", "Live", "LiveRoute"),
     ("/tts", "Tts", "TtsRoute"),
     ("/cover", "Cover", "CoverRoute"),  # 翻唱（3a32d43）：整首歌只换人声再合回伴奏
+    ("/ytdlp", "Ytdlp", "YtdlpRoute"),  # 在线扒歌：外部 yt-dlp 桥（可关）
     ("/workshop", "Workshop", "WorkshopRoute"),
 )
 
@@ -449,6 +450,7 @@ _FROZEN_NAV: tuple[tuple[str, str, str, str, int], ...] = (
     ("/live", "实时变声", "Radio", "vc", 10),
     ("/tts", "输字变声", "Speech", "vc", 20),
     ("/cover", "翻唱", "Music4", "vc", 30),
+    ("/ytdlp", "在线扒歌", "CloudDownload", "vc", 35),
     ("/offlinevc", "离线变声", "Wrench", "vc", 40),
     ("/voices", "我的音色", "Library", "voices", 10),
     ("/audition", "试音间", "AudioLines", "voices", 20),

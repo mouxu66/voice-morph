@@ -1,0 +1,36 @@
+{
+  "id": "sound.ytdlp",
+  "name": "在线扒歌（yt-dlp）",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 138,
+  "summary": "粘一条网易云/QQ音乐/B站等站点链接，交给外部的 yt-dlp 取回音频（工具需自备）",
+  "requires": ["core.media"],
+  "routers": ["ytdlp_api"],
+  "hooks": [],
+  "routes": [
+    {
+      "path": "/ytdlp",
+      "module": "Ytdlp",
+      "export": "YtdlpRoute",
+      "nav": { "label": "在线扒歌", "icon": "CloudDownload", "group": "vc", "order": 35 }
+    }
+  ],
+  "legacy_routes": [],
+  "extras": {
+    "python": [],
+    "external": [
+      {
+        "kind": "app",
+        "env": "VM_YTDLP",
+        "label": "yt-dlp 可执行文件（外部工具，本项目不内置也不代管）",
+        "size_hint_mb": 30
+      }
+    ],
+    "models": []
+  },
+  "health": null,
+  "disable": {
+    "note": "关闭后「在线扒歌」页消失。这是**可选的外部工具桥**，不影响「翻唱」里已有的上传与粘直链两条路。"
+  }
+}

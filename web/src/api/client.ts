@@ -2123,3 +2123,53 @@ export async function auditionTask(): Promise<AuditionTask> {
 export async function auditionCancel(): Promise<{ ok: boolean; cancelled: boolean; message?: string }> {
   return jsonFetch("/audition/cancel", { method: "POST" });
 }
+
+// ---------------------------------------------------------------- 在线扒歌（yt-dlp）
+
+/** yt-dlp 这个**外部工具**的可用状态（`/ytdlp/status`，只读、不发网络）。 */
+export type YtdlpStatus = {
+  /** 找没找到可执行文件。false 时 `hint` 是"怎么装"的人话。 */
+  available: boolean;
+  path: string;
+  version: string;
+  /** 放行的站点（本插件**只**支持这些，不是 yt-dlp 的全量清单） */
+  sites: { name: string; example: string }[];
+  hint: string;
+};
+
+/** 扒一首歌的结果（`/ytdlp/fetch`）：name 是会话里的裸名，url 可直接试听 */
+export type YtdlpFetchResult = {
+  ok: boolean;
+  name: string;
+  url: string;
+  bytes: number;
+  /** 命中的站点显示名（如"网易云音乐"），用来在 UI 上确认解析对了 */
+  site: string;
+  duration_s: number;
+};
+
+/**
+ * 查 yt-dlp 状态。**不发网络请求**，页面挂载时可直接调。
+ *
+ * 端点属 `sound.ytdlp`（可关插件）：关掉后 `/ytdlp/*` 不再挂载，
+ * 调用方应先 `pluginVisible(catalog, "sound.ytdlp")` 门控，别裸调。
+ */
+export async function ytdlpStatus(): Promise<YtdlpStatus> {
+  return jsonFetch<YtdlpStatus>("/ytdlp/status");
+}
+
+/**
+ * 粘一条平台分享链接 → 交给外部 yt-dlp 把音频拉到会话目录（**只下载，不跑链路**）。
+ *
+ * 拉回来的产物就在会话目录里，退出即删；可以直接用它的 `name` 作为
+ * `/cover/run` 的 `src_name` 去跑翻唱，不必先下到本地中转。
+ *
+ * 失败（站点不在白名单 / 没装 yt-dlp / 歌曲要登录）都返回 400 且 `detail` 是人话。
+ */
+export async function fetchYtdlp(url: string): Promise<YtdlpFetchResult> {
+  return jsonFetch<YtdlpFetchResult>("/ytdlp/fetch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+}
