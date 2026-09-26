@@ -40,7 +40,7 @@ const ROOT = path.join(__dirname, "..");
 const PET_DIR = path.join(ROOT, "web", "electron", "pet");
 const OUT_DIR = path.join(ROOT, "outputs", "pet-preview");
 const SCENES = ["ok-dark", "ok-light", "offline-dark", "live-dark", "qwen-dark", "qwenidle-dark",
-                "think-dark", "guide-dark", "busy-dark"];
+                "think-dark", "guide-dark", "busy-dark", "fx-dark", "fxpick-dark"];
 
 /** 找 Playwright 缓存里的 chromium-headless-shell。找不到返回 null（调用方负责报错/跳过）。 */
 function findChrome() {
@@ -89,7 +89,20 @@ function preScript(state) {
       { wav: "w2.wav", ts: Math.floor(Date.now() / 1000) - 420,   duration_s: 5.1 },
       { wav: "w3.wav", ts: Math.floor(Date.now() / 1000) - 90000, duration_s: 2.4 }
     ] },
-    "/api/health": { ok: true }
+    "/api/health": { ok: true },
+    // 音效声板（fx/fxpick 场景用）：9 个样本正好铺满 3 列 × 3 行网格，
+    // 让 max-height 的内滚边界也被量到。
+    "/api/soundboard/catalog": { items: [
+      { id: "s1", name: "鼓掌",     icon: "👏", duration_s: 1.8, count: 3 },
+      { id: "s2", name: "欢呼",     icon: "🎉", duration_s: 2.4, count: 2 },
+      { id: "s3", name: "称号老搭", icon: "😂", duration_s: 3.1, count: 5 },
+      { id: "s4", name: "惊讶",     icon: "😮", duration_s: 0.9, count: 1 },
+      { id: "s5", name: "哀嚎",     icon: "😭", duration_s: 2.2, count: 4 },
+      { id: "s6", name: "铃铛",     icon: "🔔", duration_s: 1.1, count: 2 },
+      { id: "s7", name: "警报",     icon: "🚨", duration_s: 4.5, count: 1 },
+      { id: "s8", name: "完结撒花", icon: "🌸", duration_s: 3.8, count: 6 },
+      { id: "s9", name: "木鱼",     icon: "🪵", duration_s: 0.6, count: 9 }
+    ] }
   };
   window.fetch = async (url, opts) => {
     const u = String(url);
@@ -144,6 +157,18 @@ window.addEventListener("load", function () {
                          setBusy(sendBtn, true); }
   if (SCEN === "think") { setState("think", "「你好呀」");
                           setStatus("听懂啦，正在合成…", ""); }
+  // 音效页：实时播放模式（点格子立即出声）
+  if (SCEN === "fx") { setTab("fx"); setStatus("点一个音效立即播放（再点一下停）", ""); }
+  // 音效页 + 预混勾选态：这是「音效页最挤」的形态 —— 网格满 + 队列 2 颗 chip，
+  // 布局门禁的 fxpick-dark 钉的就是它（网格/队列 max-height 的边界都在场）。
+  if (SCEN === "fxpick") {
+    setTab("fx");
+    sfxMode = "premix"; refreshFxModeSeg();
+    sfxPicks.push({ id: "s1", name: "鼓掌", icon: "👏", mode: "layer", at_s: 0 },
+                  { id: "s2", name: "欢呼", icon: "🎉", mode: "append", at_s: 0 });
+    renderFxGrid(); renderFxPicks(); refreshFxActions();
+    setStatus("已勾 2 个音效，点「发送」混进最近一条语音", "ok");
+  }
   if (SCEN === "guide") playGuide({ title: "音色工坊",
     lines: ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"],
     action: "build", motion: "pop", duration: 60000 });
@@ -168,6 +193,15 @@ window.addEventListener("load", function () {
   if (SCEN === "qwen") setStatus("千问变声 已开启，识别→合成→换嗓", "ok");
   if (SCEN === "qwenidle") { setEngine("qwen"); setStatus("引擎已切到「千问变声」，再点一下它启动", ""); }
   if (SCEN === "think") { setState("think", "「你好呀」"); setStatus("听懂啦，正在合成…", ""); }
+  if (SCEN === "fx") { setTab("fx"); setStatus("点一个音效立即播放（再点一下停）", ""); }
+  if (SCEN === "fxpick") {
+    setTab("fx");
+    sfxMode = "premix"; refreshFxModeSeg();
+    sfxPicks.push({ id: "s1", name: "鼓掌", icon: "👏", mode: "layer", at_s: 0 },
+                  { id: "s2", name: "欢呼", icon: "🎉", mode: "append", at_s: 0 });
+    renderFxGrid(); renderFxPicks(); refreshFxActions();
+    setStatus("已勾 2 个音效，点「发送」混进最近一条语音", "ok");
+  }
   if (SCEN === "guide") playGuide({ title: "音色工坊",
     lines: ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"],
     action: "build", motion: "pop", duration: 60000 });
@@ -226,8 +260,13 @@ window.addEventListener("load", function () {
       // 改用 Range.getClientRects() 取文字的自然宽度：Range 给的是**布局矩形**，
       // 裁剪只发生在绘制阶段，不影响它；再跟内容盒宽度（clientWidth 去掉左右 padding）比。
       buttons: [["send", sendBtn], ["preview", previewBtn],
-                ["engRvc", engRvcBtn], ["engQwen", engQwenBtn]].map(function (p) {
+                ["engRvc", engRvcBtn], ["engQwen", engQwenBtn],
+                ["tabSpeak", tabSpeakBtn], ["tabFx", tabFxBtn],
+                ["fxModeLive", fxModeLiveBtn], ["fxModePremix", fxModePremixBtn]].map(function (p) {
         var b = p[1];
+        // display:none 的按钮不测：clientWidth=0 而 Range 仍量得出自然宽，必假红
+        // （说话页场景里 fxMode 两颗按钮、fx 场景里 preview 都是不在场的）。
+        if (!b || b.offsetParent === null) return null;
         var cs2 = getComputedStyle(b);
         var padL = parseFloat(cs2.paddingLeft) || 0;
         var padR = parseFloat(cs2.paddingRight) || 0;
@@ -244,7 +283,7 @@ window.addEventListener("load", function () {
         return { id: p[0], w: R(b).w, scrollW: b.scrollWidth, clientW: b.clientWidth,
                  textW: Math.round(natural * 100) / 100, availW: Math.round(avail * 100) / 100,
                  clipped: natural > avail + 1, txt: b.textContent.trim() };
-      }),
+      }).filter(Boolean),
     };
     console.log("MEASURE " + JSON.stringify(M));
   }, 400);

@@ -204,7 +204,7 @@
     overflow-y: auto;
     overscroll-behavior: contain;
     margin-bottom: 6px;
-    padding: 11px;
+    padding: 10px;
     border-radius: 16px;                 /* 对齐应用 .glass-panel 的 rounded-2xl */
     border: 1px solid rgb(var(--c-border) / 0.9);
     background: rgb(var(--c-surface) / var(--glass));
@@ -228,7 +228,7 @@
   }
 
   /* —— 面板头：品牌标 + 标题 + 状态药丸 —— */
-  #phead { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+  #phead { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
   #plogo {
     width: 17px; height: 17px; flex: 0 0 auto;
     display: flex; align-items: center; justify-content: center;
@@ -267,7 +267,7 @@
   }
 
   /* —— 表单域：自绘前置图标（原生 input/select 放不进图标，用绝对定位的兄弟节点） —— */
-  #panel .field { position: relative; display: block; margin-bottom: 6px; }
+  #panel .field { position: relative; display: block; margin-bottom: 4px; }
   #panel .field .lead {
     position: absolute; left: 9px; top: 50%; transform: translateY(-50%);
     width: 13px; height: 13px; color: rgb(var(--c-t-500));
@@ -276,7 +276,7 @@
   #panel .field:focus-within .lead { color: rgb(var(--c-accent-h)); }
   #panel input, #panel select {
     width: 100%; box-sizing: border-box;
-    padding: 7px 10px 7px 28px;
+    padding: 6px 10px 6px 28px;
     border-radius: 11px;
     border: 1px solid rgb(var(--c-border-2) / 0.65);
     outline: none;
@@ -309,7 +309,7 @@
   #panel .row { display: flex; gap: 6px; }
   #panel button {
     display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-    padding: 7px 0; border-radius: 11px;
+    padding: 6px 0; border-radius: 11px;
     border: 1px solid rgb(var(--c-border-2) / 0.7);
     background: rgb(var(--c-surface-2) / 0.8);
     color: rgb(var(--c-t-300));
@@ -362,7 +362,7 @@
     display: none; align-items: flex-start; gap: 6px;
     box-sizing: border-box;
     max-height: 42px; overflow-y: auto; overscroll-behavior: contain;
-    margin-top: 7px; padding-top: 8px;
+    margin-top: 5px; padding-top: 6px;
     border-top: 1px solid rgb(var(--c-border) / 0.85);
     font-size: 10.5px; line-height: 1.5;
     color: rgb(var(--c-t-400)); overflow-wrap: anywhere;
@@ -394,7 +394,7 @@
      padding-right 留给右侧渐隐遮罩：内容没溢出时那 14px 是空的、渐隐看不出；
      溢出了才把被切的那半颗 chip 柔化掉，充当「还有更多」的提示。 */
   #panel #recent {
-    margin-top: 8px; padding-right: 14px;
+    margin-top: 4px; padding-right: 14px;
     display: flex; flex-wrap: nowrap; gap: 5px;
     overflow-x: auto; overflow-y: hidden;
     scrollbar-width: none;
@@ -427,9 +427,9 @@
      跟下面「输入文字 → 合成 → 发微信」那条完全不是一回事（用户反馈过的混淆点）。
      标签用「麦克风」而不是「实时变声」：后者 4 个字要多占 10px，
      而分段按钮的文字宽度是硬预算（实测 204px 下每个按钮只有 ~69px）。 */
-  #engRow { display: flex; align-items: center; gap: 5px; margin-bottom: 5px; }
-  #engLabel { flex: 0 0 auto; font-size: 10px; letter-spacing: .2px; color: rgb(var(--c-t-500)); }
-  #engineSeg {
+  #engRow, #fxModeRow { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
+  #engLabel, #fxModeLabel { flex: 0 0 auto; font-size: 10px; letter-spacing: .2px; color: rgb(var(--c-t-500)); }
+  #engineSeg, #fxModeSeg {
     flex: 1 1 auto; min-width: 0;
     display: flex; gap: 2px; padding: 2px;
     border-radius: 9px;
@@ -437,7 +437,8 @@
     background: rgb(var(--c-surface-2) / 0.55);
   }
   /* 覆盖 #panel button 的通用外观：分段按钮要矮、要平、不要阴影和 translate */
-  #panel #engineSeg button {
+  #panel #engineSeg button,
+  #panel #fxModeSeg button {
     box-sizing: border-box;
     flex: 1 1 0; min-width: 0; height: 18px; padding: 0 3px;
     display: inline-flex; align-items: center; justify-content: center;
@@ -447,12 +448,12 @@
     color: rgb(var(--c-t-400));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  #panel #engineSeg button:hover { background: rgb(var(--c-surface-3) / 0.75); color: rgb(var(--c-t-200)); }
+  #panel #engineSeg button:hover, #panel #fxModeSeg button:hover { background: rgb(var(--c-surface-3) / 0.75); color: rgb(var(--c-t-200)); }
   /* 选中 = 品牌紫底；运行中 = 绿底 + 绿描边（放在 .on 之后，运行时绿盖紫）。
      运行态**不用**额外的小圆点元素：分段按钮宽度实测只剩几 px 余量，
      再插一个 5px 圆点 + 4px gap 会把它挤到省略号（而且 justify-content: center 的
      溢出还会让 scrollWidth 测不准）。整块变色同样一眼可辨，且零布局开销。 */
-  #panel #engineSeg button.on {
+  #panel #engineSeg button.on, #panel #fxModeSeg button.on {
     background: rgb(var(--c-accent) / 0.20);
     color: rgb(var(--c-accent-h));
     box-shadow: inset 0 0 0 1px rgb(var(--c-accent) / 0.34);
@@ -463,6 +464,110 @@
     box-shadow: inset 0 0 0 1px rgb(var(--c-ok) / 0.45);
     animation: pulse 1.6s infinite;
   }
+
+  /* —— 功能页切换（2026-09-26）：说话 / 音效 二选一 ——
+     用户原话：「全部放到桌面人偶那个功能上……不然用户老点我那个应用，要分屏太难搞了」。
+     面板纵向预算是死的（300px 上限，本次压缩前 ok-dark 只剩 2.5px 余量），
+     塞不下两套完整表单，所以做成两个互斥的功能页：
+       speak —— 原有链路：文字 → 合成 → 发微信（+ 麦克风实时变声引擎）
+       fx    —— 音效声板：点格子立即出声（实时）/ 勾选混进语音一起发（预混）
+     动作行（发送/试听）、状态行、最近发送**不**进 pane：它们两个页共用，
+     藏进 pane 会让发送按钮跟着页切换闪没，徒增"按钮去哪了"的困惑。
+     高度 20px（按钮 16 + 分段 padding 4），是给 fx 页腾地的代价 ——
+     与本文件顶部那组全局压缩（field/input/button/status/recent 各收 1~2px）配套。 */
+  #tabRow {
+    display: flex; gap: 2px; padding: 2px; margin-bottom: 3px;
+    border-radius: 9px;
+    border: 1px solid rgb(var(--c-border) / 0.9);
+    background: rgb(var(--c-surface-2) / 0.55);
+  }
+  #panel #tabRow button {
+    box-sizing: border-box;
+    flex: 1 1 0; min-width: 0; height: 16px; padding: 0 3px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 0; border-radius: 7px; background: transparent;
+    box-shadow: none; transform: none;
+    font-size: 10px; font-weight: 600; line-height: 1;
+    color: rgb(var(--c-t-400));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #panel #tabRow button:hover { background: rgb(var(--c-surface-3) / 0.75); color: rgb(var(--c-t-200)); }
+  #panel #tabRow button.on {
+    background: rgb(var(--c-accent) / 0.20);
+    color: rgb(var(--c-accent-h));
+    box-shadow: inset 0 0 0 1px rgb(var(--c-accent) / 0.34);
+  }
+  /* 功能页容器：.on 的那个显示，另一个 display:none（不占布局） */
+  #panel .pane { display: none; }
+  #panel .pane.on { display: block; }
+
+  /* —— 音效声板（fx 页）：3 列格子 + 预混勾选 ——
+     格子两行内容（emoji + 名字），34px 高 × 3 列；max-height 钉死两行
+     （34+4+34=72，整两行不多不少），样本多时内部滚动 —— 与 #panel 同款
+     "超预算就内滚，绝不撑破窗口" 的策略。max-height 是硬预算的一部分：
+     fxpick 场景（网格满 + 勾了 2 个）面板总高必须 ≤ 298px，量测守卫盯着。 */
+  #fxGrid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;
+    max-height: 72px; overflow-y: auto; overscroll-behavior: contain;
+    margin-bottom: 2px;
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--c-border-2) / 0.7) transparent;
+  }
+  #fxGrid:empty { display: none; }
+  #panel .fxc {
+    height: 34px; padding: 0 2px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1px; border-radius: 9px;
+    border: 1px solid rgb(var(--c-border-2) / 0.7);
+    background: rgb(var(--c-surface-2) / 0.8);
+    color: rgb(var(--c-t-300));
+    font: inherit; line-height: 1.1;
+    cursor: pointer; overflow: hidden;
+    transition: background .16s, border-color .16s, color .16s;
+  }
+  #panel .fxc:hover { border-color: rgb(var(--c-border-2)); background: rgb(var(--c-surface-3) / 0.9); color: rgb(var(--c-t-strong)); }
+  #panel .fxc .fe { font-size: 13px; line-height: 1; }
+  #panel .fxc .fn {
+    max-width: 100%; font-size: 9px; color: rgb(var(--c-t-500));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* 播放中 = 品牌紫；已勾选（预混队列里）= 绿描边（主界面声板同款语义）。
+     .on 与 .pick 可同时存在（播放的是已勾选的格子），绿描边盖在紫底外圈。 */
+  #panel .fxc.on {
+    background: rgb(var(--c-accent) / 0.22); border-color: rgb(var(--c-accent) / 0.55);
+    color: rgb(var(--c-accent-h));
+  }
+  #panel .fxc.pick {
+    border-color: rgb(var(--c-ok) / 0.65);
+    box-shadow: inset 0 0 0 1px rgb(var(--c-ok) / 0.35);
+  }
+  #panel .fxc.pick .fn { color: rgb(var(--c-ok)); }
+  #fxEmpty { font-size: 10px; color: rgb(var(--c-t-500)); margin-bottom: 4px; }
+  #fxEmpty:empty { display: none; }
+  /* 预混队列 chips：单行横滚（同 #recent 的理由 —— 高度必须钉死）。
+     chip = 「icon 名 模式字 ×」：点 chip 主体轮换混入位置（叠→头→尾），
+     点 × 移出队列。模式字用一个汉字（叠/头/尾），9px 下也看得清。 */
+  #fxPicks {
+    display: flex; flex-wrap: nowrap; gap: 4px;
+    overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none;
+    margin-bottom: 2px;
+  }
+  #fxPicks::-webkit-scrollbar { display: none; }
+  #fxPicks:empty { display: none; }
+  #panel .fxchip {
+    display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto;
+    padding: 2px 6px; border-radius: 999px;
+    border: 1px solid rgb(var(--c-ok) / 0.5);
+    background: rgb(var(--c-ok) / 0.10);
+    font-size: 10px; color: rgb(var(--c-t-300));
+    cursor: pointer; white-space: nowrap;
+  }
+  #panel .fxchip .fm { font-size: 9px; color: rgb(var(--c-ok)); }
+  #panel .fxchip .fxrm {
+    color: rgb(var(--c-t-500)); font-weight: 600; padding: 0 1px;
+  }
+  #panel .fxchip .fxrm:hover { color: rgb(var(--c-err)); }
 
   /* —— 气泡在屏时的「让位」规则 ——
      气泡与面板共用同一个 480px 高的窗口，可用高是：
@@ -482,8 +587,12 @@
      让位后 guide 场景面板自然高降到 156，余量 60px（够再长 60px 的气泡）。
      JS 侧由 setBubbleVisible() 统一挂/摘 #root 上的 .compact —— 见那里的注释。 */
   #root.compact #panel #recent { display: none; }
-  #root.compact #panel #phead { margin-bottom: 6px; }
-  #root.compact #panel .field { margin-bottom: 5px; }
+  /* 功能页切换器也参与让位：气泡在屏时用户本来就不该操作面板（合成中别动键鼠），
+     待机时（无气泡）才是切页的时机 —— 与 #recent 的让位逻辑同一条线。
+     offline-dark 的量测守卫（220px 可用高）就是靠这条才装得下。 */
+  #root.compact #panel #tabRow { display: none; }
+  #root.compact #panel #phead { margin-bottom: 4px; }
+  #root.compact #panel .field { margin-bottom: 3px; }
 
   /* ---------------- 角色 ---------------- */
   /* 尺寸由 JS 按皮肤 frameW/frameH 注入（--dw/--dh 显示尺寸，含整数倍放大），
@@ -602,6 +711,18 @@
       <span id="pill" class="pill t-idle"><i></i><b id="pillText">待机</b></span>
     </div>
 
+    <!-- 功能页切换（2026-09-26）：把「发微信语音」的全部入口收进桌宠面板，免得用户
+         频繁切回主应用分屏操作。面板纵向预算装不下两套表单 → 说话/音效 两个互斥页，
+         动作行/状态行/最近发送共用（见 CSS #tabRow 段的说明）。
+         sound.fx-board 被关掉时整行由 refreshCapVisibility() 收起（CAP 门控）。 -->
+    <div id="tabRow" role="tablist" aria-label="面板功能页">
+      <button type="button" id="tabSpeak" data-tab="speak"
+              title="输入文字合成发微信 / 麦克风实时变声">说话</button>
+      <button type="button" id="tabFx" data-tab="fx"
+              title="音效声板：点格子立即出声，或勾选混进语音一起发">音效</button>
+    </div>
+
+    <div id="speakPane" class="pane on">
     <!-- 实时变声引擎（麦克风链路）：RVC 实时 / 千问变声 二选一。
          两者互斥（后端互相 409：抢 GPU 且都占 CABLE），所以是「选一个」而不是两个开关。
          2026-09-26 去重（用户反馈"有两个rvc变声"）：原来的第三颗按钮「开 RVC/开 千问」
@@ -652,6 +773,29 @@
              style="width:auto; margin:0 6px 0 2px; vertical-align:middle; accent-color:rgb(var(--c-accent-h))" />
       <span style="font-size:11px; color:rgb(var(--c-t-500)); vertical-align:middle">千问直出</span>
     </label>
+    </div><!-- /#speakPane -->
+
+    <!-- 音效声板（fx 页）：sound.fx-board 插件的快捷入口。
+         「实时播放」= 点格子立即出声（one-shot POST /play，走虚拟声卡）——
+         前提是微信正在录/在放，这正是桌宠场景的主用法；
+         「混进语音」= 点格子勾进预混队列（绿描边），点下方「发送」时后端离线混成
+         一条新 wav 再走正常发送链路（/soundboard/premix → sendWav）。
+         预混的底：面板上刚试听的产物；没有就用后端「最近一条 TTS 产物」（同发送链路口径），
+         两样都没有时后端 404，状态行会引导先去「说话」页合成一条。 -->
+    <div id="fxPane" class="pane">
+      <div id="fxModeRow">
+        <span id="fxModeLabel">模式</span>
+        <div id="fxModeSeg" role="group" aria-label="音效用法：实时播放或混进语音发送">
+          <button type="button" id="fxModeLive" data-mode="live"
+                  title="点格子立即播放（走虚拟声卡，微信那边正在录音就能听见）">实时播放</button>
+          <button type="button" id="fxModePremix" data-mode="premix"
+                  title="点格子先勾选，点下方「发送」时把勾选的音效混进一条语音里一起发出">混进语音</button>
+        </div>
+      </div>
+      <div id="fxEmpty"></div>
+      <div id="fxGrid"></div>
+      <div id="fxPicks"></div>
+    </div><!-- /#fxPane -->
 
     <!-- 底部动作行：合成并发送 + 试听。
          （2026-09-26 去重：第三颗「开 RVC / 开 千问」已并进上面的引擎分段 ——
@@ -725,11 +869,14 @@ const HEALTH_API = "http://127.0.0.1:8000/api/health";
 // ⚠️ 更糟的是 tick() 原本拿「cascade + live 两个接口都拉不到」当**后端离线**的判据：
 // 一旦关掉 sound.rvc-live，这两个接口同时消失 → 桌宠会**永久显示「后端离线」**，
 // 而后端其实好好的。所以桌宠必须认识能力清单，不能假装所有能力都在。
-const CAP_DEPS = { market: "pet.market", live: "sound.rvc-live", wechat: "hook.wechat" };
-const CAP = { market: true, live: true, wechat: true, loaded: false };
+const CAP_DEPS = {
+  market: "pet.market", live: "sound.rvc-live", wechat: "hook.wechat",
+  fx: "sound.fx-board",   // 音效声板（2026-09-26 面板加「音效」页时一并纳入门控）
+};
+const CAP = { market: true, live: true, wechat: true, fx: true, loaded: false };
 
 /**
- * 由 `GET /api/plugins` 的响应算出三处门控。
+ * 由 `GET /api/plugins` 的响应算出各处门控。
  *
  * **取不到清单时一律当作"开着"** —— 后端没起来、或清单接口自己出错，都不该把桌宠
  * 弄成残废：那是把"我猜错了"变成"看起来坏了"。只有**明确写着 enabled=false** 的才关。
@@ -738,7 +885,7 @@ const CAP = { market: true, live: true, wechat: true, loaded: false };
  * `state=disabled / enabled=true`（路由仍然挂着），拿 `state` 判会把还在的能力藏掉。
  */
 function capStateFromCatalog(json) {
-  const all = { market: true, live: true, wechat: true };
+  const all = { market: true, live: true, wechat: true, fx: true };
   const list = json && Array.isArray(json.plugins) ? json.plugins : null;
   if (!list) return all;
   for (const p of list) {
@@ -760,6 +907,7 @@ async function loadCapabilities() {
     CAP.market = s.market;
     CAP.live = s.live;
     CAP.wechat = s.wechat;
+    CAP.fx = s.fx;
     CAP.loaded = true;
   } catch {}
 }
@@ -1232,6 +1380,15 @@ const previewBtn = document.getElementById("preview");
 const statusEl = document.getElementById("status");
 const statusText = document.getElementById("statusText");
 const recentEl = document.getElementById("recent");
+const tabSpeakBtn = document.getElementById("tabSpeak");
+const tabFxBtn = document.getElementById("tabFx");
+const speakPaneEl = document.getElementById("speakPane");
+const fxPaneEl = document.getElementById("fxPane");
+const fxGridEl = document.getElementById("fxGrid");
+const fxPicksEl = document.getElementById("fxPicks");
+const fxEmptyEl = document.getElementById("fxEmpty");
+const fxModeLiveBtn = document.getElementById("fxModeLive");
+const fxModePremixBtn = document.getElementById("fxModePremix");
 const VOICE_KEY = "pet_voice_id";
 let panelTimer = null;
 let panelOpen = false;       // 面板是否可见（Esc 收起、点击穿透判定都要用）
@@ -1474,6 +1631,188 @@ recentEl.addEventListener("click", (e) => {
   if (it && window.pet && window.pet.sendWav) window.pet.sendWav(it.dataset.wav);
 });
 
+// ---------------- 功能页切换 + 音效声板（sound.fx-board）----------------
+/**
+ * 「音效」页直连后端 /api/soundboard/*（与 loadRecent 同款通道，主进程零改动）：
+ *   GET  /catalog  样本清单（图标/名字/时长）
+ *   POST /play     立即播放（one-shot，请求返回时声音已经出发）
+ *   POST /stop     停掉正在播的
+ *   POST /warm     预热合成器（无超时握手 —— 必须 fire-and-forget，别 await 它）
+ *   POST /premix   把勾选的音效**离线**混进一条合成产物，产出新 wav
+ *
+ * 混进语音的底（premix 的 wav 参数）：面板上刚试听的产物；没有就传 null ——
+ * 后端自己取「最近一条 TTS 产物」（与发送链路同口径），两样都没有时 404，
+ * 状态行引导用户先去「说话」页合成一条。产物 sfxmix_*.wav 直接 sendWav 发送。
+ */
+const SFX_BASE = "http://127.0.0.1:8000/api/soundboard";
+const TAB_KEY = "pet_panel_tab";
+const FX_MODE_KEY = "pet_fx_mode";
+const FX_MODES = { live: "实时播放", premix: "混进语音" };
+// chip 上的混入位置标记（一个汉字）：点击 chip 主体按 叠→头→尾 循环
+const PICK_LABEL = { layer: "叠", prepend: "头", append: "尾" };
+
+let activeTab = "speak";      // 当前功能页（localStorage 恢复，见 bootstrap）
+let sfxItems = [];            // 声板样本（/catalog 的 items）
+let sfxMode = "live";         // live=点格子立即出声；premix=点格子勾进预混队列
+let sfxPicks = [];            // 预混队列：{ id, name, icon, mode, at_s }
+let sfxPlayingId = null;      // 正在响的格子（乐观高亮用，超时后自动熄灭）
+let sfxLoadedAt = 0;          // 上次拉 catalog 的时间（60s 节流，别每次悬停都打）
+let sfxWarmDone = false;      // /warm 只发一次
+
+try { if (localStorage.getItem(TAB_KEY) === "fx") activeTab = "fx"; } catch {}
+try { if (localStorage.getItem(FX_MODE_KEY) === "premix") sfxMode = "premix"; } catch {}
+
+/** innerHTML 转义：样本名/图标来自后端与用户导入，不能裸拼。 */
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+/** 切功能页。save=false 用于恢复/门控归位（不重复写 localStorage）。 */
+function setTab(next, save) {
+  activeTab = next === "fx" ? "fx" : "speak";
+  if (save) { try { localStorage.setItem(TAB_KEY, activeTab); } catch {} }
+  if (tabSpeakBtn) tabSpeakBtn.classList.toggle("on", activeTab === "speak");
+  if (tabFxBtn) tabFxBtn.classList.toggle("on", activeTab === "fx");
+  if (speakPaneEl) speakPaneEl.classList.toggle("on", activeTab === "speak");
+  if (fxPaneEl) fxPaneEl.classList.toggle("on", activeTab === "fx");
+  if (activeTab === "fx") void loadSfx(true);   // 进音效页就刷新清单（强制，绕过节流）
+  refreshFxActions();
+}
+
+/** 拉声板清单并渲染。force=false 时 60s 内不重复拉（refreshPanel 每次悬停都跑）。 */
+async function loadSfx(force) {
+  if (!CAP.fx) return;
+  const now = Date.now();
+  if (!force && now - sfxLoadedAt < 60000) return;
+  sfxLoadedAt = now;
+  try {
+    const r = await fetch(SFX_BASE + "/catalog", { cache: "no-store" });
+    if (!r.ok) {
+      if (fxEmptyEl) fxEmptyEl.textContent = r.status === 404
+        ? "声板插件没开：主界面 → 桌面 → 插件里打开「音效声板」"
+        : "声板拉不到（HTTP " + r.status + "）";
+      renderFxGrid();
+      return;
+    }
+    const j = await r.json();
+    sfxItems = (j.items || []).filter((it) => it && it.id);
+    if (fxEmptyEl) {
+      fxEmptyEl.textContent = sfxItems.length
+        ? ""
+        : "声板还是空的：主界面 → 离线变声 → 声板 里导几个音效";
+    }
+    renderFxGrid();
+    // 预热只做一次（无超时握手，必须 fire-and-forget；失败无所谓，首次播放慢一点而已）
+    if (sfxItems.length && !sfxWarmDone) {
+      sfxWarmDone = true;
+      void fetch(SFX_BASE + "/warm", { method: "POST" }).catch(() => {});
+    }
+  } catch {
+    if (fxEmptyEl) fxEmptyEl.textContent = "后端没连上，声板不可用";
+    renderFxGrid();
+  }
+}
+
+function renderFxGrid() {
+  if (!fxGridEl) return;
+  fxGridEl.innerHTML = sfxItems.map((it) => {
+    const playing = sfxPlayingId === it.id ? " on" : "";
+    const picked = sfxPicks.some((p) => p.id === it.id) ? " pick" : "";
+    return `<button type="button" class="fxc${playing}${picked}" data-id="${esc(it.id)}"
+      title="${esc(it.name)}${it.duration_s ? "（" + it.duration_s + "s）" : ""}">
+      <span class="fe">${esc(it.icon || "🎵")}</span><span class="fn">${esc(it.name)}</span>
+    </button>`;
+  }).join("");
+}
+
+function renderFxPicks() {
+  if (!fxPicksEl) return;
+  fxPicksEl.innerHTML = sfxPicks.map((p, i) => {
+    return `<span class="fxchip" data-idx="${i}" title="点一下换混入位置（叠→头→尾），× 移出">
+      ${esc(p.icon || "🎵")} ${esc(p.name)} <span class="fm">${PICK_LABEL[p.mode] || "叠"}</span><span class="fxrm" title="移出">×</span>
+    </span>`;
+  }).join("");
+}
+
+/** 实时播放：乐观高亮 + one-shot /play。再点同一个格子 = 停。 */
+async function sfxPlay(it) {
+  if (sfxPlayingId === it.id) {
+    sfxPlayingId = null;
+    renderFxGrid();
+    void fetch(SFX_BASE + "/stop", { method: "POST" }).catch(() => {});
+    return;
+  }
+  sfxPlayingId = it.id;
+  renderFxGrid();
+  try {
+    const r = await fetch(SFX_BASE + "/play", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: it.id }),
+    });
+    if (!r.ok) setStatus("播放失败：HTTP " + r.status, "err");
+  } catch {
+    setStatus("后端没连上，播放失败", "err");
+  }
+  // 乐观高亮：duration_s 是后端给的实长；下限 300ms 防极短样本闪一下就灭
+  const dur = Math.max(300, (it.duration_s || 0) * 1000);
+  setTimeout(() => {
+    if (sfxPlayingId === it.id) { sfxPlayingId = null; renderFxGrid(); }
+  }, dur);
+}
+
+/** 预混队列：已勾 → 移出；没勾 → 入队（混入位置默认「叠」，可在 chip 上轮换）。 */
+function togglePick(it) {
+  const i = sfxPicks.findIndex((p) => p.id === it.id);
+  if (i >= 0) sfxPicks.splice(i, 1);
+  else sfxPicks.push({ id: it.id, name: it.name, icon: it.icon, mode: "layer", at_s: 0 });
+  renderFxGrid();
+  renderFxPicks();
+  refreshFxActions();
+}
+
+// 事件委托：格子/chip 都是 innerHTML 批量生成的，监听器挂容器上
+if (fxGridEl) fxGridEl.addEventListener("click", (e) => {
+  const cell = e.target.closest(".fxc");
+  if (!cell) return;
+  const it = sfxItems.find((x) => x.id === cell.dataset.id);
+  if (!it) return;
+  if (sfxMode === "premix") togglePick(it);
+  else void sfxPlay(it);
+});
+if (fxPicksEl) fxPicksEl.addEventListener("click", (e) => {
+  const chip = e.target.closest(".fxchip");
+  if (!chip) return;
+  const i = Number(chip.dataset.idx);
+  if (!(i >= 0 && i < sfxPicks.length)) return;
+  if (e.target.closest(".fxrm")) sfxPicks.splice(i, 1);
+  else {
+    const p = sfxPicks[i];
+    p.mode = p.mode === "layer" ? "prepend" : p.mode === "prepend" ? "append" : "layer";
+  }
+  renderFxGrid();
+  renderFxPicks();
+  refreshFxActions();
+});
+[tabSpeakBtn, tabFxBtn].forEach((b) => {
+  if (b) b.addEventListener("click", () => setTab(b.dataset.tab, true));
+});
+function refreshFxModeSeg() {
+  if (fxModeLiveBtn) fxModeLiveBtn.classList.toggle("on", sfxMode === "live");
+  if (fxModePremixBtn) fxModePremixBtn.classList.toggle("on", sfxMode === "premix");
+}
+[fxModeLiveBtn, fxModePremixBtn].forEach((b) => {
+  if (b) b.addEventListener("click", () => {
+    if (!b || !FX_MODES[b.dataset.mode]) return;
+    sfxMode = b.dataset.mode;
+    try { localStorage.setItem(FX_MODE_KEY, sfxMode); } catch {}
+    refreshFxModeSeg();
+    renderFxGrid();
+    refreshFxActions();
+  });
+});
+
 /**
  * 按能力清单收起桌宠上用不到的控件 —— 关掉的能力意味着后端**根本没有那些接口**，
  * 留着就是一按 404 的按钮。
@@ -1495,16 +1834,42 @@ function refreshCapVisibility() {
   hide("recent", !CAP.wechat);    // 「最近发送」（点一条重发）
   hide("preview", !CAP.wechat);   // 「试听」（不发送的 TTS+RVC 试听）
   hide("send", !CAP.wechat);      // 「合成并发送」
+  // 「音效」页整体归 sound.fx-board：入口（tabRow）和页体（fxPane）一起收，
+  // 只藏 tabRow 不藏 fxPane 的话，localStorage 里残留 tab=fx 的用户会看到一个
+  // 没法切走、还打 404 的死页。收掉后强制回「说话」页。
+  hide("tabRow", !CAP.fx);
+  hide("fxPane", !CAP.fx);
+  if (!CAP.fx && activeTab === "fx") setTab("speak", false);
 }
 
-function refreshPanel() { loadVoices(); loadRecent(); refreshSendLabel(); refreshEngineSeg(); refreshCapVisibility(); }
+function refreshPanel() {
+  loadVoices(); loadRecent(); loadSfx(false); refreshSendLabel(); refreshEngineSeg();
+  refreshFxModeSeg(); refreshCapVisibility(); refreshFxActions();
+}
 
 // ---------------- 试听 / 发送 / 结果反馈 ----------------
 // lastPreview / previewAudio 的声明已前移到「快捷面板」段的 DOM 引用处（排除 TDZ 隐患）。
 
-/** 主按钮文案跟着「有没有待发的试听产物」走：只有试听→发送两步走时才叫「发送试听」。 */
+/** 主按钮/试听按钮的显隐与文案跟着功能页走：
+    说话页 —— 试听 + 「合成并发送 / 发送试听」（原有语义）；
+    音效页 —— 试听没有意义（它试听的是文字合成）→ 藏；主按钮 = 发送预混队列，
+              没勾选时无从谈起 → 禁用。 */
 function refreshSendLabel() {
-  if (sendLabel) sendLabel.textContent = lastPreview ? "发送试听" : "合成并发送";
+  if (!sendLabel) return;
+  if (activeTab === "fx") {
+    sendLabel.textContent = sfxPicks.length ? `发送（${sfxPicks.length} 个音效）` : "发送";
+  } else {
+    sendLabel.textContent = lastPreview ? "发送试听" : "合成并发送";
+  }
+}
+
+function refreshFxActions() {
+  const fx = activeTab === "fx";
+  // 试听按钮：fx 页藏（没有文字可合成）；CAP.wechat 关掉时 refreshCapVisibility 已藏，
+  // 这里的条件取并集，避免切页时把 CAP 收起来的按钮又亮回去。
+  if (previewBtn) previewBtn.style.display = (fx || !CAP.wechat) ? "none" : "";
+  if (sendBtn) sendBtn.disabled = fx && !sfxPicks.length ? true : false;
+  refreshSendLabel();
 }
 
 /** 忙态：禁用 + 把图标换成旋转圈（CSS: #panel button.busy）。
@@ -1555,6 +1920,12 @@ async function doSendText() {
     probeErr = "后端没连上：8000 端口没有服务在监听（变声后端未启动或已退出）。打开主界面会自动拉起后端，等就绪后再试";
   }
   if (probeErr) { setStatus(probeErr, "err"); return; }
+  // 音效页：发送 = 把预混队列混进一条语音一起发（见 premixAndSend 注释）
+  if (activeTab === "fx") {
+    if (!sfxPicks.length) return;
+    await premixAndSend();
+    return;
+  }
   // 有试听产物就直接发它（试听→发送两步走），否则一步到位「合成并发送」
   if (lastPreview && window.pet.sendWav) {
     setStatus(`发送中… 自动发到微信，全程别动键鼠`, "ok");
@@ -1574,6 +1945,56 @@ async function doSendText() {
   }
   setBusy(sendBtn, true);
   setTimeout(() => { setBusy(sendBtn, false); refreshPanel(); }, 25000);   // TTS+录音发送可能要十几秒
+}
+
+/**
+ * 音效页的发送：预混队列 → 一条新 wav → 正常发送链路。
+ *
+ * 底的选择（/soundboard/premix 的 wav 参数）：
+ *   · 面板上有刚试听的产物（lastPreview）→ 混进它（用户刚听过，最明确）；
+ *   · 没有就传 null —— 后端自己取「最近一条 TTS 产物」（与发送链路同口径），
+ *     典型场景：刚在说话页发过一条，切到音效页勾上「鼓掌」再点发送 = 给那条语音加个掌声；
+ *   · 两样都没有 → 后端 404「还没有 TTS 产物」，原样透传，状态行引导先合成。
+ * 产物（sfxmix_*.wav）设进 lastPreview 后直接 sendWav，走与「发送试听」完全相同的
+ * 发送/回传/看门狗链路 —— 不新造一条发送路径。
+ */
+async function premixAndSend() {
+  if (!window.pet || !window.pet.sendWav) return;
+  const inserts = sfxPicks.map((p) => (p.mode === "layer"
+    ? { sample: p.id, mode: p.mode, at_s: p.at_s }
+    : { sample: p.id, mode: p.mode }));
+  setStatus("正在混入音效…", "ok");
+  setBusy(sendBtn, true);
+  let j = null;
+  try {
+    const r = await fetch(SFX_BASE + "/premix", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wav: lastPreview ? lastPreview.wav : null, inserts }),
+    });
+    if (r.ok) j = await r.json();
+    else {
+      const d = await r.json().catch(() => ({}));
+      setBusy(sendBtn, false);
+      setStatus("预混失败：" + ((d && d.detail) || "HTTP " + r.status), "err");
+      return;
+    }
+  } catch {
+    setBusy(sendBtn, false);
+    setStatus("预混失败：后端没连上", "err");
+    return;
+  }
+  // skipped = 空音频之类的坏样本被后端跳过。必须说出口 —— 静默跳过会让
+  // 「发出去的语音里少了那一声，而界面一切正常」，那是最难发现的失败。
+  if (j.skipped && j.skipped.length) {
+    setStatus(`混好了，但 ${j.skipped.length} 个音效是空文件被跳过`, "warn");
+  }
+  lastPreview = { wav: j.wav, url: "", duration_s: j.seconds };
+  setStatus("发送中… 自动发到微信，全程别动键鼠", "ok");
+  window.pet.sendWav(j.wav);
+  lastPreview = null;            // 与「发送试听」同口径：待发产物已消费
+  refreshSendLabel();
+  void watchSendOutcome();       // sendWav 路径旧版主进程不回传结果，兜底收尾（同 doSendText）
+  setTimeout(() => { setBusy(sendBtn, false); refreshPanel(); }, 25000);
 }
 previewBtn.addEventListener("click", doPreview);
 voiceSel.addEventListener("change", syncVoiceGates);
@@ -1831,6 +2252,9 @@ setEngine(engine);
 void (async () => {
   await loadCapabilities();
   refreshCapVisibility();
+  // 恢复上次的功能页（localStorage 残留 tab=fx 时上面 CAP 门控已把它归位到 speak）
+  setTab(activeTab, false);
+  refreshFxModeSeg();
   void tick();
   setInterval(tick, 1000);
   // 皮肤轮询：应用新皮肤后 5s 内热切换（无需重启桌宠）。

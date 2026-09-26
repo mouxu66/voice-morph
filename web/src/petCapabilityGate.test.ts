@@ -5,11 +5,12 @@ import { describe, expect, it } from 'vitest'
 /**
  * 桌宠（`web/electron/pet/pet.html`）的能力门控（2026-09-20 补）。
  *
- * 为什么需要：桌宠请求的接口里有 3 个属于**可关能力** —— 关掉之后后端根本不挂载
+ * 为什么需要：桌宠请求的接口里有 4 个属于**可关能力** —— 关掉之后后端根本不挂载
  * 那些 router（实测 `mount_plan()` 的差异）：
  *   - 关 `pet.market`      → `pet_market_api` 不挂载
  *   - 关 `sound.rvc-live`  → `rvc_live` + `cascade` 不挂载
  *   - 关 `hook.wechat`     → `wechat_voice` 不挂载
+ *   - 关 `sound.fx-board`  → `soundboard` 不挂载（2026-09-26 面板加「音效」页时纳入）
  * 而桌宠原本对能力清单一无所知（全文没有一处读 `/api/plugins`）。
  *
  * 其中最严重的一条：**`tick()` 拿「cascade + live 都拉不到」当后端离线的判据** ——
@@ -52,7 +53,7 @@ const { capStateFromCatalog } = loadGate()
 
 /** 造一个 /api/plugins 形状的目录；ids 里列出的能力标记为已关闭。 */
 function catalogWithDisabled(ids: string[]): Catalog {
-  const all = ['core.system', 'core.voices', 'pet.market', 'sound.rvc-live', 'hook.wechat']
+  const all = ['core.system', 'core.voices', 'pet.market', 'sound.rvc-live', 'hook.wechat', 'sound.fx-board']
   return {
     plugins: all.map((id) => ({
       id,
@@ -64,11 +65,12 @@ function catalogWithDisabled(ids: string[]): Catalog {
 }
 
 describe('桌宠的能力门控', () => {
-  it('全启用时三处都开着', () => {
+  it('全启用时四处都开着', () => {
     expect(capStateFromCatalog(catalogWithDisabled([]))).toEqual({
       market: true,
       live: true,
       wechat: true,
+      fx: true,
     })
   })
 
@@ -76,11 +78,12 @@ describe('桌宠的能力门控', () => {
     ['pet.market', 'market'],
     ['sound.rvc-live', 'live'],
     ['hook.wechat', 'wechat'],
+    ['sound.fx-board', 'fx'],
   ])('关掉 %s → 只有 %s 被关', (id, key) => {
     const s = capStateFromCatalog(catalogWithDisabled([id]))
     expect(s[key], `${id} 关了，${key} 应该是 false`).toBe(false)
     // 关一个不该牵连别的 —— 否则「关掉市场」会把桌宠的变声也一起弄没
-    for (const other of ['market', 'live', 'wechat']) {
+    for (const other of ['market', 'live', 'wechat', 'fx']) {
       if (other !== key) expect(s[other]).toBe(true)
     }
   })
@@ -93,6 +96,7 @@ describe('桌宠的能力门控', () => {
         market: true,
         live: true,
         wechat: true,
+        fx: true,
       })
     }
   })
@@ -110,6 +114,7 @@ describe('桌宠的能力门控', () => {
     expect(s.market).toBe(false)
     expect(s.live).toBe(true)
     expect(s.wechat).toBe(true)
+    expect(s.fx).toBe(true)
   })
 })
 
@@ -123,22 +128,26 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
     expect(tickBody).toContain('HEALTH_API')
   })
 
-  it('三处调用点各自有门控', () => {
+  it('四处调用点各自有门控', () => {
     expect(html).toContain('if (!CAP.market) return;') // loadSkin：皮肤接口
     expect(html).toContain('if (!CAP.wechat) return;') // loadRecent：最近发送
+    expect(html).toContain('if (!CAP.fx) return;')     // loadSfx：音效声板
     expect(html).toContain('refreshCapVisibility()')
   })
 
-  it('收起来的控件正好是那四处', () => {
+  it('收起来的控件正好是那六处', () => {
     // 窗口给足以至于加了注释也不会假红：以前是死写 600，而门控函数里现在有一段
     // 解释"为什么试听/发送也要收"的注释，离得稍远就把断言挤出去。
-    // （2026-09-26 面板去重：live 按钮并入引擎分段，「hide("live")」随之删除，5→4 处。）
-    const fn = html.slice(html.indexOf('function refreshCapVisibility()'), html.indexOf('function refreshCapVisibility()') + 1200)
+    // （2026-09-26 面板去重：live 按钮并入引擎分段，「hide("live")」随之删除，5→4 处。
+    //   2026-09-26 音效页：「音效」整体归 sound.fx-board，tabRow + fxPane 两处 hide，4→6 处。）
+    const fn = html.slice(html.indexOf('function refreshCapVisibility()'), html.indexOf('function refreshCapVisibility()') + 1600)
     for (const call of [
       'hide("engRow", !CAP.live)',
       'hide("recent", !CAP.wechat)',
       'hide("preview", !CAP.wechat)',
       'hide("send", !CAP.wechat)',
+      'hide("tabRow", !CAP.fx)',
+      'hide("fxPane", !CAP.fx)',
     ]) {
       expect(fn, `refreshCapVisibility 漏了 ${call}`).toContain(call)
     }
@@ -153,6 +162,26 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
     // 点了也要能自辩（按钮可能因 CSS/缓存没被藏住）
     const body = html.slice(html.indexOf('function doPreview()'), html.indexOf('function doSendText()'))
     expect(body).toContain('if (!CAP.wechat)')
+  })
+
+  it('★ 音效页整体归 sound.fx-board（关了能力就是一页 404）', () => {
+    // loadSfx 打的是 /api/soundboard/*（sound.fx-board 插件的路由）：
+    // 关掉后 catalog/play/premix 全部 404，所以入口和页体必须一起收，
+    // 且残留的 tab=fx 要被归位回「说话」页。
+    expect(html).toContain('id="tabRow"')
+    expect(html).toContain('id="fxPane"')
+    const loadSfxBody = html.slice(html.indexOf('async function loadSfx('), html.indexOf('function renderFxGrid'))
+    expect(loadSfxBody).toContain('if (!CAP.fx) return;')
+    expect(html).toContain('if (!CAP.fx && activeTab === "fx") setTab("speak", false);')
+  })
+
+  it('★ 音效页的发送走 premix → sendWav 既有链路（不新造发送路径）', () => {
+    // premix 产物必须经 window.pet.sendWav 发出（与「发送试听」同一条 IPC 链），
+    // skipped 必须写进状态行 —— 静默跳过 = 发出去的语音里少了一声，界面还一切正常。
+    const body = html.slice(html.indexOf('async function premixAndSend()'), html.indexOf('previewBtn.addEventListener'))
+    expect(body).toContain('SFX_BASE + "/premix"')
+    expect(body).toContain('window.pet.sendWav(j.wav)')
+    expect(body).toContain('j.skipped')
   })
 
   it('★ 清单必须先到位再轮询（否则第一帧就去打被关掉的接口）', () => {

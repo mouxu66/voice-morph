@@ -33,9 +33,10 @@ const preview = require("./pet-panel-preview.cjs");
  *   ok-dark      ：无气泡 → 面板应为完整态（#recent 可见），且不能溢出
  *   guide-dark   ：最大的气泡（82px）→ 最容易溢出，也是这次报障的场景
  *   offline-dark ：修之前切得最多（34px）的场景
+ *   fxpick-dark  ：音效页最挤形态（2026-09-26）—— 网格满 + 预混队列 2 颗 chip
  * 想全量：VM_PET_LAYOUT_ALL=1；想指定：命令行传场景名。
  */
-const DEFAULT_SCENES = ["ok-dark", "guide-dark", "offline-dark"];
+const DEFAULT_SCENES = ["ok-dark", "guide-dark", "offline-dark", "fxpick-dark"];
 const ALL_SCENES = preview.SCENES;
 
 let pass = 0;

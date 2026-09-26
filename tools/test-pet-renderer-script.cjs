@@ -397,7 +397,8 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
 
   check("不对含图标子节点的元素直写 textContent（会把图标整个抹掉）", () => {
     // 这些元素内部现在有 <svg> 图标 / <span class="spin">，赋 textContent 会清空子节点。
-    // 正确做法是写它们内部的纯文本节点（#liveLabel / #sendLabel / #statusText / #pillText）。
+    // 正确做法是写它们内部的纯文本节点（#sendLabel / #statusText / #pillText）。
+    // （#liveLabel 已随 2026-09-26 的面板去重删除：启停并入引擎分段。）
     // 注意 #recent 不在此列：它的子节点本来就是按数据生成的，写 innerHTML 才是正确用法。
     const guarded = ["liveBtn", "sendBtn", "previewBtn", "statusEl", "pillEl"];
     const bad = [];
@@ -565,7 +566,6 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     assert.strictEqual(petFns.getEngine(), "rvc", "默认引擎应为 rvc");
     assert.ok(els.engRvc.classList.contains("on"), "默认应高亮 RVC 分段");
     assert.ok(!els.engQwen.classList.contains("on"), "默认不该高亮千问分段");
-    assert.strictEqual(els.liveLabel.textContent, "开 RVC", "按钮应写出引擎名，而不是光「变声」");
   });
 
   if (!OFFLINE) {
@@ -579,19 +579,19 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       assert.ok(els.engQwen.classList.contains("on"), "千问分段没高亮");
       assert.ok(!els.engRvc.classList.contains("on"), "RVC 分段应取消高亮");
       assert.strictEqual(localStorageStore.get("pet_engine"), "qwen", "没写进 localStorage");
-      assert.strictEqual(els.liveLabel.textContent, "开 千问", "按钮文案没跟着引擎变");
       const posts = fetchCalls.slice(beforePick).filter((c) => c.method === "POST");
       assert.deepStrictEqual(posts, [],
         "没在跑的时候点引擎不该发启停请求（免得点错一下就占 GPU 和 CABLE），实际发了：" +
         JSON.stringify(posts.map((p) => p.url)));
     });
 
-    // 点「开 千问」→ POST /api/cascade/start
+    // 点已选中的引擎分段 = 启停当前引擎（2026-09-26 起「开 RVC」按钮已并入分段，
+    // 那颗按钮与已选中项永远是同一个引擎，用户看着就是两个 RVC）→ POST /api/cascade/start
     const beforeStart = fetchCalls.length;
-    (els.live._on.click || [])[0]();
+    (els.engQwen._on.click || [])[0]();
     await flush();
 
-    check("「变声」按钮 = 启停当前选中的引擎（选中千问 → /api/cascade/start）", () => {
+    check("点已选中的引擎分段 = 启停（选中千问 → /api/cascade/start）", () => {
       const posts = fetchCalls.slice(beforeStart).filter((c) => c.method === "POST").map((c) => c.url);
       assert.strictEqual(posts.length, 1, "应恰好一个 POST，实际 " + JSON.stringify(posts));
       assert.ok(posts[0].includes("/api/cascade/start"),
@@ -603,12 +603,11 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     await tickInterval()();
     await flush();
 
-    check("引擎在跑时：药丸点名 + 分段亮呼吸点 + 按钮变「停 X」+ 气泡标题写出引擎名", () => {
+    check("引擎在跑时：药丸点名 + 分段亮呼吸点 + 气泡标题写出引擎名", () => {
       assert.strictEqual(els.pillText.textContent, "千问变声中",
         "药丸没写出引擎名 —— 这正是用户「不确定用的是哪一种」的根源");
       assert.ok(els.engQwen.classList.contains("running"), "运行中的千问分段没有呼吸点");
       assert.ok(!els.engRvc.classList.contains("running"), "RVC 没在跑却亮了呼吸点");
-      assert.strictEqual(els.liveLabel.textContent, "停 千问", "按钮应变成「停 千问」");
       assert.strictEqual(els.title.textContent, "千问变声",
         "气泡标题没写出引擎名 —— 不悬停面板时，气泡是唯一能看出「用的哪一种」的地方");
     });
@@ -628,7 +627,6 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       assert.ok(els.engRvc.classList.contains("on"), "RVC 应是选中态");
       assert.ok(!els.engRvc.classList.contains("running"), "RVC 没在跑，不该有呼吸点");
       assert.ok(els.engQwen.classList.contains("running"), "千问在跑，应有呼吸点");
-      assert.strictEqual(els.liveLabel.textContent, "开 RVC", "按钮应回到「开 RVC」");
     });
 
     // 回到「选中千问、千问在跑」，再点 RVC 分段 → 必须先停千问再开 RVC（后端对同时开会 409）
