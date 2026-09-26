@@ -256,3 +256,114 @@ def _offline_market_license(monkeypatch):
         )
 
     monkeypatch.setattr(market_license, "_default_get", _no_network)
+
+
+#: 仓库外**绝不允许被测试写到**的路径：测试只该动 tmp_path，
+#: 真实运行环境（RVC venv / 用户配置）不在其中。
+_OFF_LIMITS = (
+    Path("D:/RVC"),
+    Path(os.path.expanduser("~/.workbuddy")),
+)
+
+
+def _offlimits_hit(path) -> Path | None:
+    """路径落在禁区里就返回解析后的绝对路径，否则 None。"""
+    try:
+        target = Path(os.fspath(path)).resolve()
+    except (TypeError, ValueError, OSError):
+        return None
+    for root in _OFF_LIMITS:
+        try:
+            root_r = root.resolve()
+        except OSError:
+            continue
+        if target == root_r or root_r in target.parents:
+            return target
+    return None
+
+
+def _guard_offlimits_writes() -> None:
+    """禁止测试写仓库外的真实环境（RVC venv / 用户配置）。
+
+    2026-09-26 事故：`test_cover_fetch.py::_run_env` 里两行顺序写反 ——
+    先 `Path(cover.cfg.RVC_ROOT)` 取了真机 `D:\\RVC`、再 monkeypatch 成 tmp_path，
+    于是 `venv.write_bytes(b"")` 把**真解释器**截成 0 字节，整个 RVC 变声链路瘫掉
+    （退出码 -1073741515）。且事后只补 `python.exe` 还不够 —— venv 的 Scripts 下
+    那 4 个运行库 DLL（`python3.dll` / `python312.dll` / `vcruntime140*.dll`）
+    也一并缺失，必须一起补回（见 docs 犯错档案）。
+
+    为什么拦在 `os` / `builtins` 层而不是 `pathlib.Path`：
+    `Path.write_bytes` / `write_text` **不走 `os.open`**（3.11 实测走 C 实现的
+    `_io.open`；3.13 换了实现但同样绕开）——2026-09-26 实测三遍：补 `Path` 类方法
+    完全无效、补 `os.open` 也拦不住它，真解释器照样被清空。
+
+    ⚠️ 所以这道守卫**有一个已知缺口**：`Path.write_bytes(b"")` / `write_text("")`
+    能绕过它。当年的元凶恰好就是这两条。**不能靠这道守卫兜住这类错误** ——
+    真正的防线是写法本身：在 `monkeypatch.setattr(cfg, "RVC_ROOT", tmp_path)`
+    **之后**才拼路径，绝不先取再替换（见 `tests/test_cover_fetch.py::_run_env`
+    里的那段注释）。守卫只用来挡第三方库和脚本式的 `open(...)` / `os.remove(...)`。
+
+    为什么用环境变量开关而不是 `monkeypatch`：本模块在 `import` 期就要生效，
+    且 fixture teardown 在失败场景下顺序不可靠；一个进程级标志最简单。
+    """
+    if os.environ.get("_VM_OFFLIMITS_GUARD") == "on":
+        return
+    os.environ["_VM_OFFLIMITS_GUARD"] = "on"
+
+    import builtins
+
+    def _refuse(target: Path, action: str) -> None:
+        raise AssertionError(
+            f"测试试图{action}真实环境: {target}\n"
+            "测试只能写 tmp_path。若代码里先取了路径、后 monkeypatch 根目录，"
+            "把 monkeypatch 挪到取路径之前 —— 否则会打到真机上。"
+            "参见 2026-09-26 RVC venv 被清空事故。"
+        )
+
+    # ---- os.open：pathlib 的 C 实现对它也会经过 ----
+    _os_open = os.open
+
+    def guarded_open(path, flags, *args, **kwargs):
+        # 只拦有写意图的 flag：O_RDONLY 放行（读真实环境是允许的）
+        write_intent = flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)
+        if write_intent:
+            hit = _offlimits_hit(path)
+            if hit is not None:
+                _refuse(hit, "写入")
+        return _os_open(path, flags, *args, **kwargs)
+
+    os.open = guarded_open
+
+    # ---- builtins.open：纯 Python 代码与第三方库常走这里 ----
+    _open = builtins.open
+
+    def guarded_builtin_open(file, mode="r", *args, **kwargs):
+        if any(c in str(mode) for c in "wax+"):
+            hit = _offlimits_hit(file)
+            if hit is not None:
+                _refuse(hit, "写入")
+        return _open(file, mode, *args, **kwargs)
+
+    builtins.open = guarded_builtin_open
+
+    # ---- 删除/建目录 ----
+    _remove, _mkdir, _unlink = os.remove, os.mkdir, os.unlink
+
+    def guarded_remove(path, *a, **k):
+        hit = _offlimits_hit(path)
+        if hit is not None:
+            _refuse(hit, "删除")
+        return _remove(path, *a, **k)
+
+    def guarded_mkdir(path, *a, **k):
+        hit = _offlimits_hit(path)
+        if hit is not None:
+            _refuse(hit, "创建目录于")
+        return _mkdir(path, *a, **k)
+
+    os.remove = guarded_remove
+    os.unlink = guarded_remove
+    os.mkdir = guarded_mkdir
+
+
+_guard_offlimits_writes()
