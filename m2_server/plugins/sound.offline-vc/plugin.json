@@ -13,7 +13,7 @@
       "path": "/offlinevc",
       "module": "OfflineVc",
       "export": "OfflineVcRoute",
-      "nav": { "label": "工具箱", "icon": "Wrench", "group": "start", "order": 60 }
+      "nav": { "label": "离线变声", "icon": "Wrench", "group": "vc", "order": 40 }
     }
   ],
   "legacy_routes": [],

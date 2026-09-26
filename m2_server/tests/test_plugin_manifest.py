@@ -180,7 +180,7 @@ def test_mount_plan_is_plugin_order_then_declared_router_order():
 
 def test_manifest_ids_and_order_are_unique():
     plugins = plugin_manifest.load_all()
-    assert len(plugins) == 20, "插件数量变了就要同步更新 README 与设计文档里的数字"
+    assert len(plugins) == 21, "插件数量变了就要同步更新 README 与设计文档里的数字"
     assert [p.order for p in plugins] == sorted(p.order for p in plugins)
     assert all(p.summary and p.name for p in plugins)
 
@@ -260,7 +260,7 @@ def test_all_plugins_are_ok_on_a_healthy_start():
     _load_all()
     cat = plugin_manifest.catalog()
     assert cat["ok"] is True
-    assert cat["counts"] == {"total": 20, "ok": 20, "broken": 0, "disabled": 0}
+    assert cat["counts"] == {"total": 21, "ok": 21, "broken": 0, "disabled": 0}
     assert all(p["state"] == "ok" for p in cat["plugins"])
 
 
@@ -283,7 +283,7 @@ def test_router_never_attempted_counts_as_broken_not_ok():
     而 `server.py` 那边忘了挂（或改了名字）。
     """
     cat = plugin_manifest.catalog()  # 注意：**没有** _load_all()，registry 是空的
-    assert cat["counts"]["broken"] == 20
+    assert cat["counts"]["broken"] == 21
     assert all("未注册" in " ".join(p["reasons"]) for p in cat["plugins"] if p["state"] == "broken")
 
 
@@ -296,7 +296,7 @@ def test_disabled_is_not_broken(monkeypatch):
     _load_all()
     monkeypatch.setattr(plugin_manifest, "disabled_ids", lambda: {"sound.tts", "sound.effects"})
     cat = plugin_manifest.catalog()
-    assert cat["counts"] == {"total": 20, "ok": 18, "broken": 0, "disabled": 2}
+    assert cat["counts"] == {"total": 21, "ok": 19, "broken": 0, "disabled": 2}
     assert cat["ok"] is True, "有插件被关掉不该让整体 ok 变假"
     assert {p["id"] for p in cat["plugins"] if p["state"] == "disabled"} == {"sound.tts", "sound.effects"}
 
@@ -416,12 +416,14 @@ def test_studio_nav_no_longer_hardcodes_nav_items():
 _FROZEN_ROUTES: tuple[tuple[str, str, str], ...] = (
     # (path, module, export)
     ("/home", "Home", "HomeRoute"),
+    ("/tools", "CapabilityIndex", "CapabilityIndexRoute"),  # 能力索引：刻意无 nav，入口在侧栏底部
     ("/voices", "Voices", "VoicesRoute"),
     ("/pet-market", "PetMarket", "PetMarketRoute"),
     ("/audition", "Audition", "AuditionRoute"),
     ("/offlinevc", "OfflineVc", "OfflineVcRoute"),
     ("/live", "Live", "LiveRoute"),
     ("/tts", "Tts", "TtsRoute"),
+    ("/cover", "Cover", "CoverRoute"),  # 翻唱（3a32d43）：整首歌只换人声再合回伴奏
     ("/workshop", "Workshop", "WorkshopRoute"),
 )
 
@@ -439,15 +441,19 @@ _FROZEN_LEGACY: tuple[tuple[str, str], ...] = (
 
 _FROZEN_NAV: tuple[tuple[str, str, str, str, int], ...] = (
     # (path, label, icon, group, order) —— 已按 group + order 排成用户看到的先后
-    # 「开始」= 选音色 + 用它；「更多功能」= 造音色 + 调它（用户 09-22 拍板）
+    # 四组 IA（2026-09-26 用户拍板）：「开始」= 首页；「变声」= 三条变声链路 + 翻唱；
+    # 「音色」= 找音色 / 试音 / 造音色；「桌面」= 桌宠。
+    # 此前是「开始 7 项平铺 + 更多功能 2 项」，用户反馈"两个 rvc 变声 + 千问 + 特效，
+    # 有点多"—— 分组让每层最多 4 项，扫视成本骤降。
     ("/home", "首页", "Home", "start", 10),
-    ("/voices", "我的音色", "Library", "start", 20),
-    ("/tts", "输字变声", "Speech", "start", 30),
-    ("/live", "实时变声", "Radio", "start", 40),
-    ("/audition", "试音间", "AudioLines", "start", 50),
-    ("/offlinevc", "工具箱", "Wrench", "start", 60),
-    ("/workshop", "训练变声", "Mic2", "more", 10),
-    ("/pet-market", "桌宠皮肤", "PawPrint", "more", 20),
+    ("/live", "实时变声", "Radio", "vc", 10),
+    ("/tts", "输字变声", "Speech", "vc", 20),
+    ("/cover", "翻唱", "Music4", "vc", 30),
+    ("/offlinevc", "离线变声", "Wrench", "vc", 40),
+    ("/voices", "我的音色", "Library", "voices", 10),
+    ("/audition", "试音间", "AudioLines", "voices", 20),
+    ("/workshop", "训练变声", "Mic2", "voices", 30),
+    ("/pet-market", "桌宠皮肤", "PawPrint", "desktop", 10),
 )
 
 
@@ -482,10 +488,13 @@ def test_manifest_nav_is_the_frozen_information_architecture():
         f"导航 IA 变了（对称差）：{sorted(set(got) ^ set(_FROZEN_NAV))}"
     )
     # 独立于快照的不变量：每个真页面都得有导航项，否则页面存在但**侧栏里找不到入口**
-    # （旧路由不需要 nav —— 它们只是重定向，不是页面）
+    # （旧路由不需要 nav —— 它们只是重定向，不是页面）。
+    # 豁免 `/tools`：能力索引页**刻意**无导航项（常驻侧栏会还回刚做完的降噪），
+    # 它的入口是侧栏底部的「能做的事」链接 —— 不在豁免名单里的无 nav 页面仍然算违规。
     pages = {r["path"] for p in plugin_manifest.load_all() for r in p.routes}
     navs = {row[0] for row in _FROZEN_NAV}
-    assert pages == navs, f"有页面没有导航项（用户找不到入口）：{sorted(pages - navs)}"
+    navless_exempt = {"/tools"}
+    assert pages - navs <= navless_exempt, f"有页面没有导航项（用户找不到入口）：{sorted(pages - navs - navless_exempt)}"
 
 
 def test_declared_page_module_and_export_exist():

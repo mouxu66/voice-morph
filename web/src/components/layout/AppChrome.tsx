@@ -16,7 +16,7 @@ const pageTitles: Record<string, string> = {
   "/live": "实时变声",
   "/audition": "试音间",
   "/tts": "输字变声",
-  "/offlinevc": "工具箱",
+  "/offlinevc": "离线变声",
   "/pet-market": "桌宠皮肤",
 }
 

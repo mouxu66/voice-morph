@@ -62,7 +62,10 @@ STATE_DISABLED = "disabled"
 _REQUIRED = ("id", "name", "kind", "category", "order", "summary", "routers")
 _CATEGORIES = ("core", "sound", "pet", "hook")
 _KINDS = ("builtin", "user")
-_NAV_GROUPS = ("start", "more")
+# 侧栏分组（2026-09-26 起四组：用户反馈"两个 rvc 变声 + 千问 + 特效，有点多"——
+# 按心智模型分组而不是平铺：开始 / 变声 / 音色 / 桌面。前端 StudioNav 按
+# NAV_GROUP_LABELS 渲染；组的**显示顺序**也由它定，别只加 id 不改前端。）
+_NAV_GROUPS = ("start", "vc", "voices", "desktop")
 _HOOK_WHEN = ("import", "main")
 _EXTERNAL_KINDS = ("dir", "app", "audio-device")
 

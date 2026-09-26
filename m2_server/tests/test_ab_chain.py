@@ -7,6 +7,7 @@
 import io
 
 import ab_chain as ac
+import config as cfg
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -15,9 +16,9 @@ from fastapi.testclient import TestClient
 @pytest.fixture()
 def client(monkeypatch, tmp_path):
     """isolated /ab/chain: stub 链路 + 打分 + 互斥锁。"""
-    out = tmp_path / "outputs"
-    out.mkdir()
-    monkeypatch.setattr(ac, "OUT", out)
+    # 产物路径走 session_out（读 cfg.OUTPUTS_DIR），而它**每次现读**就是给
+    # monkeypatch 留的缝 —— 别再去找 ab_chain.OUT（2026-09-25 起已不存在）。
+    monkeypatch.setattr(cfg, "OUTPUTS_DIR", tmp_path / "outputs")
 
     ref = tmp_path / "ref.wav"
     ref.write_bytes(b"RIFFref")
@@ -156,7 +157,8 @@ def test_run_one_success_and_failure(client, monkeypatch):
 
     r2 = ac._run_one("rvc", real_ok, 2)
     assert r2["status"] == "done"
-    assert r2["url"].endswith("ab_chain_rvc_2.wav")
+    # session_out 契约：产物落会话目录、文件名 = 前缀_毫秒.wav（rel_url 带 .session/ 前缀）
+    assert ".session/ab_chain_rvc_2_" in r2["url"] and r2["url"].endswith(".wav")
 
 
 def test_nats_scorer_missing_ckpt_raises(client, monkeypatch):

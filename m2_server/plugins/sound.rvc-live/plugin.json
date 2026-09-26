@@ -13,7 +13,7 @@
       "path": "/live",
       "module": "Live",
       "export": "LiveRoute",
-      "nav": { "label": "实时变声", "icon": "Radio", "group": "start", "order": 40 }
+      "nav": { "label": "实时变声", "icon": "Radio", "group": "vc", "order": 10 }
     }
   ],
   "legacy_routes": [{ "path": "/cascade", "redirect": "/live?tab=qwen" }],

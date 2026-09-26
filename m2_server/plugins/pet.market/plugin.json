@@ -13,7 +13,7 @@
       "path": "/pet-market",
       "module": "PetMarket",
       "export": "PetMarketRoute",
-      "nav": { "label": "桌宠皮肤", "icon": "PawPrint", "group": "more", "order": 20 }
+      "nav": { "label": "桌宠皮肤", "icon": "PawPrint", "group": "desktop", "order": 10 }
     }
   ],
   "legacy_routes": [],

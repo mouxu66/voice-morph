@@ -36,7 +36,11 @@ export interface CapabilityInfo {
 export interface PluginNav {
   label: string;
   icon?: string;
-  group: 'start' | 'more';
+  /**
+   * 组 id。合法值由后端 `plugin_manifest._NAV_GROUPS` 校验，显示顺序与中文标签
+   * 由前端 `pluginRoutes.NAV_GROUPS` 定 —— 两边各管一半，加组要两头同步。
+   */
+  group: string;
   order: number;
 }
 

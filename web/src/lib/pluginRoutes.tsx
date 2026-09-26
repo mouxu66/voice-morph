@@ -192,8 +192,23 @@ export interface NavItemSpec {
   broken: boolean
 }
 
+/**
+ * 导航组的**显示顺序与标签**（2026-09-26 起四组：用户反馈"两个 rvc 变声 + 千问 + 特效，
+ * 有点多"—— 按心智模型分组：开始 / 变声 / 音色 / 桌面）。
+ *
+ * 与后端的分工：`plugin_manifest._NAV_GROUPS` 只校验**组 id 合法**；这边定顺序和标签。
+ * 所以加一组要两头同步 —— 下面的跨语言门禁（`pluginRoutes.test.ts`）会把清单里用到的
+ * 组与这张表做双向对账，漏一边就红。
+ */
+export const NAV_GROUPS: readonly { id: string; label: string }[] = [
+  { id: "start", label: "开始" },
+  { id: "vc", label: "变声" },
+  { id: "voices", label: "音色" },
+  { id: "desktop", label: "桌面" },
+]
+
 /** 清单 → 某一组的导航项，按清单里的 `nav.order` 升序。 */
-export function navItems(catalog: PluginCatalog, group: "start" | "more"): NavItemSpec[] {
+export function navItems(catalog: PluginCatalog, group: string): NavItemSpec[] {
   const decls: {
     path: string
     label: string

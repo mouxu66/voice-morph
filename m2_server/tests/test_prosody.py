@@ -30,7 +30,8 @@ def relay_env(tmp_path, monkeypatch):
     vb = tmp_path / "voicebank"
     vb.mkdir()
     monkeypatch.setattr(prosody_relay, "VOICEBANK", vb)
-    monkeypatch.setattr(prosody_relay, "OUT", tmp_path / "outputs")
+    # 中继产物落 session_out（读 cfg.OUTPUTS_DIR，每次现读）—— 打这根缝，别打已删除的 OUT
+    monkeypatch.setattr(cfg, "OUTPUTS_DIR", tmp_path / "outputs")
     return vb, tmp_path
 
 

@@ -13,7 +13,7 @@
       "path": "/tts",
       "module": "Tts",
       "export": "TtsRoute",
-      "nav": { "label": "输字变声", "icon": "Speech", "group": "start", "order": 30 }
+      "nav": { "label": "输字变声", "icon": "Speech", "group": "vc", "order": 20 }
     }
   ],
   "legacy_routes": [{ "path": "/qwen", "redirect": "/live?tab=qwen" }],

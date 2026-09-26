@@ -71,6 +71,9 @@ _FROZEN_EXTRAS: dict[str, list[str]] = {
     # 故必须连 torch 一起声明 —— 否则 demucs 会从 PyPI 拉 **CPU 版** torch，
     # 变成"能跑但不用显卡"（README 警告过的静默失效）。切片质检另需声纹两件套。
     "sound.workshop": ["demucs", "torch", "torchaudio", "modelscope", "hdbscan"],
+    # 翻唱：demucs 分离（htdemucs，同训练那套主 .venv 子进程，torch/torchaudio 随之）；
+    # librosa 供人声裁切/重采样。soundfile 是核心依赖（requirements.txt），不许重复声明。
+    "sound.cover": ["demucs", "torch", "torchaudio", "librosa"],
 }
 
 
@@ -151,6 +154,8 @@ def test_every_declared_extra_is_reachable_from_its_plugin():
         # demucs 由 m1_workshop/pipeline.py 以 `sys.executable -m demucs` 拉起
         # （该模块是 importlib 动态加载，静态图整段看不见），torch 随之进主 .venv。
         "sound.workshop": {"demucs", "torch", "torchaudio"},
+        # 翻唱的 demucs 分离同上：cover_api 以 `sys.executable -m demucs` 子进程拉起。
+        "sound.cover": {"demucs", "torch", "torchaudio"},
         # cascade_stream.py 是**子进程脚本**（由 cascade.py 以 RVC venv 拉起），
         # 主进程静态图看不到它 —— 故它用的流式降噪包要在这里说明。
         "sound.rvc-live": {"deepfilter_stream"},

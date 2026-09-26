@@ -22,6 +22,7 @@ import pytest  # noqa: E402
 pytest.importorskip("fastapi")
 
 import tts_api as mod  # noqa: E402
+import config as cfg  # noqa: E402
 
 
 def by_key(report, key):
@@ -127,9 +128,11 @@ def test_endpoint_probes_and_passes_through(monkeypatch):
     assert by_key(r, "voice_ref")["ok"] is False
 
 
-def test_probe_out_dir_reports_status():
+def test_probe_out_dir_reports_status(tmp_path, monkeypatch):
     """_probe_out_dir 返回 (bool, 说明) 二元组，且真写探针后不留垃圾文件。"""
+    # 探针写的是会话目录（cfg.OUTPUTS_DIR/.session，每次现读）—— 打到 tmp 免得碰真实 outputs
+    monkeypatch.setattr(cfg, "OUTPUTS_DIR", tmp_path)
     ok, detail = mod._probe_out_dir()
     assert isinstance(ok, bool) and isinstance(detail, str)
     if ok:
-        assert not (mod.OUT / ".tts_write_probe").exists()
+        assert not (tmp_path / ".session" / ".tts_write_probe").exists()

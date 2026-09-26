@@ -13,7 +13,7 @@
       "path": "/voices",
       "module": "Voices",
       "export": "VoicesRoute",
-      "nav": { "label": "我的音色", "icon": "Library", "group": "start", "order": 20 }
+      "nav": { "label": "我的音色", "icon": "Library", "group": "voices", "order": 10 }
     }
   ],
   "legacy_routes": [],

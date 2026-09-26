@@ -301,7 +301,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
 
 > 这三行只是摘要。**机器可读的那份在 `m2_server/plugins/<id>/plugin.json`**：
 > 每个能力声明自己占哪些 router、需要哪些「重可选依赖」（另外几个 GB 的 Python 包与模型）、
-> 对应的前端页面与侧边栏项、以及缺了会怎样。当前共 19 个能力（7 个核心 + 12 个可选），
+> 对应的前端页面与侧边栏项、以及缺了会怎样。当前共 21 个能力（7 个核心 + 14 个可选），
 > 可用 `GET /api/plugins` 看实时状态（`ok` / `broken` / `disabled` 三态 + 开关结果 `enabled`）。
 > 改这里的表格前先看 `docs/插件化设计.md` —— 那份清单才是真相源，这张表是给人快速扫的。
 >

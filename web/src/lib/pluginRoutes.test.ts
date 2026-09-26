@@ -23,6 +23,7 @@ import type { PluginCatalog, PluginEntry, PluginRoute } from "@/types"
 import {
   buildRoutes,
   knownIcons,
+  NAV_GROUPS,
   navItems,
   pageKey,
   pageModules,
@@ -219,33 +220,41 @@ describe("可见性与排序", () => {
     expect(pluginVisible(legacy, "hook.wechat")).toBe(true) // 旧后端缺 enabled：可见
   })
 
+  it("清单里用到的每个 nav.group 都在前端组表里（双向对账）", () => {
+    // 组 id 后端校验、顺序/标签前端定（pluginRoutes.NAV_GROUPS）—— 两头各管一半，
+    // 漏同步的后果是**静默的**：新组的导航项界面上直接消失。所以这里双向钉死。
+    const used = [...new Set(ALL_ROUTES.map(({ route }) => route.nav?.group).filter(Boolean))].sort()
+    expect(used).toEqual([...NAV_GROUPS.map((g) => g.id)].sort())
+  })
+
   it("导航按清单 nav.order 升序，分组不串", () => {
     resetPageCache()
     const catalog = asCatalog()
-    const start = navItems(catalog, "start").map((n) => n.path)
-    const more = navItems(catalog, "more").map((n) => n.path)
     // 期望值从真实清单算，但**顺序**必须与 nav.order 一致 —— 这里钉的是排序真的生效了
-    const expected = (group: "start" | "more") =>
+    const expected = (group: string) =>
       ALL_ROUTES.filter(({ route }) => route.nav?.group === group)
         .sort((a, b) => (a.route.nav!.order ?? 0) - (b.route.nav!.order ?? 0))
         .map(({ route }) => route.path)
-    expect(start).toEqual(expected("start"))
-    expect(more).toEqual(expected("more"))
-    expect(start.length).toBeGreaterThan(0)
-    expect(more.length).toBeGreaterThan(0)
+    for (const g of NAV_GROUPS) {
+      const got = navItems(catalog, g.id).map((n) => n.path)
+      expect(got, `${g.label}（${g.id}）组与清单不一致`).toEqual(expected(g.id))
+      expect(got.length, `${g.label}（${g.id}）组是空的 —— 清单与前端组表对不上`).toBeGreaterThan(0)
+    }
   })
 
   it("每条导航项都能拿到图标组件，且首页是精确匹配", () => {
     resetPageCache()
     const catalog = asCatalog()
-    for (const group of ["start", "more"] as const) {
-      for (const item of navItems(catalog, group)) {
+    for (const g of NAV_GROUPS) {
+      for (const item of navItems(catalog, g.id)) {
         expect(item.icon, `${item.path} 没有解析出图标`).toBeTruthy()
         expect(item.label.length).toBeGreaterThan(0)
       }
     }
     expect(navItems(catalog, "start").find((n) => n.path === "/home")?.exact).toBe(true)
-    expect(navItems(catalog, "more").every((n) => !n.exact)).toBe(true)
+    // exact 只该出现在首页（其余路径靠 endsWith 匹配，见 StudioNav.isActive）
+    const nonStart = NAV_GROUPS.filter((g) => g.id !== "start").flatMap((g) => navItems(catalog, g.id))
+    expect(nonStart.every((n) => !n.exact)).toBe(true)
   })
 
   // ---- 「主动关掉」与「被动坏掉」必须分开处理 -------------------------------
@@ -256,20 +265,21 @@ describe("可见性与排序", () => {
 
   it("★ 主动关掉的从导航消失，被动坏掉的留在导航并被标记", () => {
     resetPageCache()
-    // /tts 在「开始」组，主动关掉 → 移出导航
+    // /tts 在「变声」组，主动关掉 → 移出导航
     const off = asCatalog({ "sound.tts": { state: "disabled" as const, enabled: false } })
-    expect(navItems(off, "start").map((n) => n.path)).not.toContain("/tts")
-    expect(navItems(off, "start").length).toBeGreaterThan(0) // 别把整条导航也清空了
+    expect(navItems(off, "vc").map((n) => n.path)).not.toContain("/tts")
+    expect(navItems(off, "vc").length).toBeGreaterThan(0) // 别把整条导航也清空了
 
     // 缺依赖（enabled 仍是 true，只是后端没挂上）→ 必须留在导航里
     const broken = asCatalog({ "sound.tts": { state: "broken" as const, enabled: true } })
-    const item = navItems(broken, "start").find((n) => n.path === "/tts")
+    const item = navItems(broken, "vc").find((n) => n.path === "/tts")
     expect(item, "坏掉的项被一起过滤掉了 —— 用户会只看到「功能没了」").toBeTruthy()
     expect(item?.broken).toBe(true)
 
     // 反面：正常的项不许被误标，否则整条导航全是红点，等于没有标记
-    expect(navItems(asCatalog(), "start").every((n) => !n.broken)).toBe(true)
-    expect(navItems(asCatalog(), "more").every((n) => !n.broken)).toBe(true)
+    for (const g of NAV_GROUPS) {
+      expect(navItems(asCatalog(), g.id).every((n) => !n.broken), `${g.id} 组有项被误标 broken`).toBe(true)
+    }
   })
 
   it("旧路由重定向全部来自清单", () => {

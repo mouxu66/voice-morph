@@ -129,13 +129,13 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
     expect(html).toContain('refreshCapVisibility()')
   })
 
-  it('收起来的控件正好是那五处', () => {
+  it('收起来的控件正好是那四处', () => {
     // 窗口给足以至于加了注释也不会假红：以前是死写 600，而门控函数里现在有一段
     // 解释"为什么试听/发送也要收"的注释，离得稍远就把断言挤出去。
+    // （2026-09-26 面板去重：live 按钮并入引擎分段，「hide("live")」随之删除，5→4 处。）
     const fn = html.slice(html.indexOf('function refreshCapVisibility()'), html.indexOf('function refreshCapVisibility()') + 1200)
     for (const call of [
       'hide("engRow", !CAP.live)',
-      'hide("live", !CAP.live)',
       'hide("recent", !CAP.wechat)',
       'hide("preview", !CAP.wechat)',
       'hide("send", !CAP.wechat)',

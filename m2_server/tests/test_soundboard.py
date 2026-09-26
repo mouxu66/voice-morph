@@ -349,6 +349,8 @@ def test_soundboard_never_touches_the_send_lock_or_the_wechat_module():
         cwd=str(_M2),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env={**__import__("os").environ, "PYTHONPATH": str(_M2), "PYTHONIOENCODING": "utf-8"},
         timeout=120,
     )

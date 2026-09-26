@@ -13,12 +13,12 @@
       "path": "/cover",
       "module": "Cover",
       "export": "CoverRoute",
-      "nav": { "label": "翻唱", "icon": "Music4", "group": "start", "order": 70 }
+      "nav": { "label": "翻唱", "icon": "Music4", "group": "vc", "order": 30 }
     }
   ],
   "legacy_routes": [],
   "extras": {
-    "python": ["demucs", "torch", "torchaudio", "librosa", "soundfile"],
+    "python": ["demucs", "torch", "torchaudio", "librosa"],
     "external": [
       {
         "kind": "dir",
