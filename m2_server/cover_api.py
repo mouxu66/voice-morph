@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import subprocess
 import sys
 import threading
@@ -132,9 +133,9 @@ def separate_song(src: Path, stamp: int) -> tuple[Path, Path]:
 def mix_back(vocals: Path, accomp: Path, out: Path, gains: tuple[float, float] = (1.0, 1.0)) -> Path:
     """把换好声的人声与伴奏合成一条立体声 wav。
 
-    `gains` = (人声增益, 伴奏增益)，默认都 1.0。用户觉得换出来的人声太小/太大时
-    可以调 —— 但**默认不动**：RVC 输出与 demucs 伴奏的响度关系是自然正确的，
-    擅自归一化反而会让人声盖过伴奏（"KTV 里自己唱太大声"那种听感）。
+    `gains` = (人声增益, 伴奏增益)。默认不动（1.0/1.0）—— 但**翻唱链路实际传进来的
+    是 `auto_vocal_gain` 的实测配平值**（见 `_cover_worker` ⑤），用户显式关掉
+    自动配平时才是这里这个 1.0 默认。
     """
     vg, ag = gains
     cmd = [
@@ -159,6 +160,59 @@ def mix_back(vocals: Path, accomp: Path, out: Path, gains: tuple[float, float] =
         tail = (r.stderr or "").strip().splitlines()[-3:]
         raise RuntimeError("合成失败: " + " | ".join(tail)[-400:])
     return out
+
+
+# ---- 人声/伴奏自动配平（2026-09-26）----
+# 用户两轮真机听感都是"人声太小，听不出音色"（0.5 版、0.85 版同反馈）：
+# RVC 换声输出的电平普遍低于 demucs 分出来的伴奏。与其让用户对着增益滑块
+# 盲猜，不如把两轨的实测 RMS 量出来直接配平 —— 所以做成默认开启。
+
+#: 自动配平目标：人声比伴奏高多少 dB。~2.5dB 是"人声清楚、但不压伴奏"的
+#: 常用起点（KTV 里"跟唱"的听感）；再高就开始盖过鼓点/贝斯了。
+AUTO_VOCAL_LEAD_DB = 2.5
+
+#: 增益夹紧范围。测量会被纯伴奏段/爆音段带偏，夹住防止人声被推飞或压没。
+AUTO_GAIN_LIMITS = (0.5, 3.0)
+
+
+def rms_db(path: Path) -> float | None:
+    """整轨 RMS 电平（dBFS）。读不出 / 全静音返回 None —— 调用方按"不调"处理。
+
+    为什么用 RMS 而不是峰值：听感响度跟 RMS 走；峰值只防削波，不描述"响"。
+    """
+    try:
+        import numpy as np
+        import soundfile as sf
+
+        d, _ = sf.read(str(path))
+        if d.size == 0:
+            return None
+        rms = float(np.sqrt(np.mean(np.asarray(d, dtype="float64") ** 2)))
+        if rms <= 1e-9:
+            return None
+        return 20.0 * math.log10(rms)
+    except Exception:  # noqa: BLE001 —— 量不出电平不该炸掉整条翻唱链路
+        return None
+
+
+def auto_vocal_gain(
+    vocal_db: float | None,
+    accomp_db: float | None,
+    target_lead_db: float = AUTO_VOCAL_LEAD_DB,
+    limits: tuple[float, float] = AUTO_GAIN_LIMITS,
+) -> float:
+    """按实测电平差算人声增益，使人声比伴奏高 `target_lead_db`。
+
+    任一轨测不出（None）→ 返回 1.0：**量不出来时最安全的是不调**，
+    而不是拍一个"大概行"的数。结果夹在 `limits` 内并保留两位小数
+    （ffmpeg 的 volume= 滤镜值太长没有意义，还不好在日志里对账）。
+    """
+    if vocal_db is None or accomp_db is None:
+        return 1.0
+    need_db = target_lead_db - (vocal_db - accomp_db)
+    gain = 10.0 ** (need_db / 20.0)
+    lo, hi = limits
+    return round(min(max(gain, lo), hi), 2)
 
 
 def _pitch_suggest(vocals: Path, voice_id: str) -> int:
@@ -209,11 +263,16 @@ async def cover_run(
     vocal_gain: float = Form(1.0),
     accomp_gain: float = Form(1.0),
     auto_pitch: bool = Form(False),
+    auto_gain: bool = Form(True),
 ):
     """提交翻唱任务。pitch 为半音数（升八度 +12，降八度 -12）。
 
     auto_pitch=True 时忽略传入的 pitch，改由 `_pitch_suggest` 算 —— 用户不知道
     该调多少半音是常态，"让程序建议"比"给个滑块让他猜"合格得多。
+
+    auto_gain=True（默认）时忽略传入的 vocal_gain/accomp_gain，改由实测 RMS
+    自动配平（见 `auto_vocal_gain`）—— 同理：用户听出"人声太小"时根本不知道
+    该补多少倍，量出来直接配比滑块靠谱。旧前端不传这个字段 → 走默认 True。
     """
     with _cover_lock:
         if COVER_STATE["running"]:
@@ -265,7 +324,7 @@ async def cover_run(
     raw_path.write_bytes(raw)
     threading.Thread(
         target=_cover_worker,
-        args=(raw_path, voice_id, pth, pitch, index_rate, vocal_gain, accomp_gain, auto_pitch, stamp),
+        args=(raw_path, voice_id, pth, pitch, index_rate, vocal_gain, accomp_gain, auto_pitch, auto_gain, stamp),
         daemon=True,
     ).start()
     return {"ok": True, "voice_id": voice_id}
@@ -280,6 +339,7 @@ def _cover_worker(
     vocal_gain: float,
     accomp_gain: float,
     auto_pitch: bool,
+    auto_gain: bool,
     stamp: int,
 ):
     import soundfile as sf
@@ -323,18 +383,26 @@ def _cover_worker(
         rvc_out = rvc_convert.rvc_convert(vocals, voice_id, pitch=use_pitch, index_rate=index_rate)
         COVER_STATE.update(step="mix", percent=85.0, message="正在与伴奏合成…")
 
-        # ⑤ 合回伴奏
-        mix_back(rvc_out, accomp, voice_path, gains=(vocal_gain, accomp_gain))
+        # ⑤ 合回伴奏。auto_gain=True（默认）时按实测 RMS 自动配平人声：
+        #    RVC 换声输出电平普遍低于 demucs 伴奏（用户 0.5/0.85 两版都反馈"人声太小"），
+        #    量出来直接配，比让用户盲猜滑块靠谱；量不出电平则原样合成，不乱动。
+        if auto_gain:
+            vg = auto_vocal_gain(rms_db(rvc_out), rms_db(accomp))
+            gains = (vg, 1.0)
+        else:
+            gains = (vocal_gain, accomp_gain)
+        mix_back(rvc_out, accomp, voice_path, gains=gains)
 
         # ⑥ 输出：搬到会话目录下带正式名字的文件，避免成品是个 `cover_时间戳/stem_voice` 这种怪名
         out_path.write_bytes(voice_path.read_bytes())
         d, sr = sf.read(str(out_path))
         duration_s = round(len(d) / sr, 1)
+        gain_note = f"（人声 ×{gains[0]:.2f}）" if gains != (1.0, 1.0) else ""
         COVER_STATE.update(
             running=False,
             status="done",
             step="",
-            message="翻唱完成",
+            message=f"翻唱完成{gain_note}",
             percent=100.0,
             url=f"/api/media/outputs/{session_out.rel_url(out_path.name)}",
             duration_s=duration_s,
