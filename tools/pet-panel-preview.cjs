@@ -138,7 +138,7 @@ window.addEventListener("load", function () {
   // 只切选中、不启动：验证「选中 ≠ 已开启」（分段高亮但没有呼吸点）
   if (SCEN === "qwenidle") {
     setEngine("qwen");
-    setStatus("引擎已切到「千问变声」，点「开 千问」启动", "");
+    setStatus("引擎已切到「千问变声」，再点一下它启动", "");
   }
   if (SCEN === "busy") { setStatus("合成中… 完成后自动发到微信，全程别动键鼠", "ok");
                          setBusy(sendBtn, true); }
@@ -166,7 +166,7 @@ window.addEventListener("load", function () {
   if (SCEN === "ok")   setStatus("已合成 3.2s，试听中…满意就点「发送试听」", "ok");
   if (SCEN === "live") setStatus("RVC 实时 已开启，微信把 CABLE Output 当麦克风", "ok");
   if (SCEN === "qwen") setStatus("千问变声 已开启，识别→合成→换嗓", "ok");
-  if (SCEN === "qwenidle") { setEngine("qwen"); setStatus("引擎已切到「千问变声」，点「开 千问」启动", ""); }
+  if (SCEN === "qwenidle") { setEngine("qwen"); setStatus("引擎已切到「千问变声」，再点一下它启动", ""); }
   if (SCEN === "think") { setState("think", "「你好呀」"); setStatus("听懂啦，正在合成…", ""); }
   if (SCEN === "guide") playGuide({ title: "音色工坊",
     lines: ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"],
@@ -203,7 +203,7 @@ window.addEventListener("load", function () {
               .map(function (b) { return b.dataset.eng; }),
         runningMark: [engRvcBtn, engQwenBtn].filter(function (b) { return b && b.classList.contains("running"); })
               .map(function (b) { return b.dataset.eng; }),
-        liveLabel: liveLabel ? liveLabel.textContent : null,
+        // 2026-09-26「开 RVC」按钮已并入引擎分段（点已选中项 = 启停），liveLabel 不复存在。
       },
       bubbleVisible: getComputedStyle(bubble).display !== "none",
       bubble: bubble.offsetHeight,
@@ -225,7 +225,7 @@ window.addEventListener("load", function () {
       // 恰恰是 ellipsis 生效的前提，所以这个判据对**所有会省略号的按钮**都是瞎的。
       // 改用 Range.getClientRects() 取文字的自然宽度：Range 给的是**布局矩形**，
       // 裁剪只发生在绘制阶段，不影响它；再跟内容盒宽度（clientWidth 去掉左右 padding）比。
-      buttons: [["send", sendBtn], ["preview", previewBtn], ["live", liveBtn],
+      buttons: [["send", sendBtn], ["preview", previewBtn],
                 ["engRvc", engRvcBtn], ["engQwen", engQwenBtn]].map(function (p) {
         var b = p[1];
         var cs2 = getComputedStyle(b);

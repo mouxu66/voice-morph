@@ -341,13 +341,6 @@
     box-shadow: 0 4px 20px rgb(var(--c-accent) / 0.5);
   }
   #panel button:not(.primary) { flex: 1; }
-  /* 变声开启：语义绿（与气泡 s-play 的 ok 色同源） */
-  #panel button.live-on {
-    border-color: rgb(var(--c-ok) / 0.5);
-    background: rgb(var(--c-ok) / 0.14);
-    color: rgb(var(--c-ok));
-  }
-  #panel button.live-on:hover { background: rgb(var(--c-ok) / 0.2); color: rgb(var(--c-ok)); }
   /* 忙态：图标换成旋转圈 —— 「合成中」要有看得见的进行中信号，不能只靠变灰 */
   #panel button .spin { display: none; }
   #panel button.busy { pointer-events: none; }
@@ -611,19 +604,20 @@
 
     <!-- 实时变声引擎（麦克风链路）：RVC 实时 / 千问变声 二选一。
          两者互斥（后端互相 409：抢 GPU 且都占 CABLE），所以是「选一个」而不是两个开关。
-         点另一个 = 自动停掉在跑的那个再开新的；都没在跑时只改选择、不自动启动。
-         行内标签「麦克风」点明这行管的是麦克风实时链路，
-         跟下面「输入文字 → 合成 → 发微信」那条不是一回事。
-         运行态靠整块变绿表达（不是加小圆点）—— 按钮宽度只有几 px 余量，见 CSS 注释。 -->
+         2026-09-26 去重（用户反馈"有两个rvc变声"）：原来的第三颗按钮「开 RVC/开 千问」
+         与分段里已选中的那一项永远是同一个引擎，纯属重复 —— 砍掉。
+         启停合并进分段本身：点**没选中**的 = 切过去；点**已选中**的 = 启动/停止。
+         运行态靠整块变绿表达（.running），选中态是品牌紫（.on）。
+         （改主进程 .cjs 才要重打 asar；本文件是渲染侧，热替换即生效。） -->
     <div id="engRow">
       <span id="engLabel">麦克风</span>
-      <div id="engineSeg" role="group" aria-label="实时变声引擎">
+      <div id="engineSeg" role="group" aria-label="实时变声引擎（点已选中的引擎启动或停止）">
         <button type="button" id="engRvc" data-eng="rvc"
-                title="RVC 实时：逐帧套音色，保留你的说话习惯，适合真人音色 / 低延迟">
+                title="RVC 实时：逐帧套音色，保留你的说话习惯，适合真人音色 / 低延迟。再点一下已选中的引擎 = 启动 / 停止">
           RVC 实时
         </button>
         <button type="button" id="engQwen" data-eng="qwen"
-                title="千问变声：先识别成文字再合成换嗓，适合卡通 / 角色音色，比 RVC 慢一点">
+                title="千问变声：先识别成文字再合成换嗓，适合卡通 / 角色音色，比 RVC 慢一点。再点一下已选中的引擎 = 启动 / 停止">
           千问变声
         </button>
       </div>
@@ -649,16 +643,21 @@
 
     <!-- 音色引擎开关（2026-09-26 A/B：千问直出与"千问+RVC"听感接近，交给用户自己选）。
          勾选 = 纯千问零样本克隆（要求音色自带参考音，市场装的只有 RVC 权重的音色不适用）；
-         不勾 = 默认链路：千问合成后再过 RVC 换声，音色由 RVC 权重决定。 -->
+         不勾 = 默认链路：千问合成后再过 RVC 换声，音色由 RVC 权重决定。
+         文案只写「千问直出」不写「（不过 RVC）」—— 面板上"RVC"字样出现的次数
+         已经太多了（用户 2026-09-26 点名"有点多东西"），完整解释放 title 里。 -->
     <label class="field" for="noRvc"
-           title="勾上：纯千问克隆（快、语气自然）；不勾：合成后再过 RVC 换声（音色更像训练目标）">
+           title="勾上：纯千问克隆（快、语气自然，不过 RVC）；不勾：合成后再过 RVC 换声（音色更像训练目标）">
       <input id="noRvc" type="checkbox"
              style="width:auto; margin:0 6px 0 2px; vertical-align:middle; accent-color:rgb(var(--c-accent-h))" />
-      <span style="font-size:11px; color:rgb(var(--c-t-500)); vertical-align:middle">千问直出（不过 RVC）</span>
+      <span style="font-size:11px; color:rgb(var(--c-t-500)); vertical-align:middle">千问直出</span>
     </label>
 
-    <!-- 音色下拉独占一行：以前它和三个按钮挤在同一 flex 行里，
-         204px 分给 4 个控件后每个只剩 ~41px，「合成并发送」被 nowrap 挤到溢出。 -->
+    <!-- 底部动作行：合成并发送 + 试听。
+         （2026-09-26 去重：第三颗「开 RVC / 开 千问」已并进上面的引擎分段 ——
+          它与分段里已选中的引擎永远是同一个，两处文案都在报"RVC"。）
+         音色下拉独占一行是历史布局决定：204px 分给 4 个控件后每个只剩 ~41px，
+         「合成并发送」被 nowrap 挤到溢出。 -->
     <div class="row">
       <button id="send" class="primary" type="button" title="用选中音色合成，并录成微信语音消息">
         <span class="spin"></span>
@@ -674,10 +673,6 @@
           <polygon points="7 4 20 12 7 20 7 4" />
         </svg>
         <span>试听</span>
-      </button>
-      <button id="live" type="button" title="开关上面选中的实时变声引擎（微信把 CABLE Output 当麦克风）">
-        <span class="spin"></span>
-        <span id="liveLabel">开 RVC</span>
       </button>
     </div>
 
@@ -1190,9 +1185,9 @@ async function tick() {
   statusBusy = Boolean(runningEngine);
   // 空闲计时：任何变声在跑就归零，否则记连续空闲起点（供「打盹」演出用）
   idleSince = statusBusy ? 0 : (idleSince || Date.now());
-  // 引擎分段与「变声」按钮随真实状态走（面板隐藏时改了也不影响）。
-  // ⚠️ 按钮文案只能写 #liveLabel，不能写 liveBtn.textContent —— 按钮里还有
-  //    <span class="spin"> 与图标 <svg>，直接赋 textContent 会把它们整个抹掉。
+  // 引擎分段随真实状态走（面板隐藏时改了也不影响）。
+  // 选中（.on）与运行中（.running，绿底呼吸）分开表达：把「选中」当「已开启」会骗人 ——
+  // 用户完全可能在主界面开了 RVC，而桌宠上选的是千问。
   refreshEngineSeg();
   if (runningEngine === "qwen") {
     render(cascadeData);
@@ -1230,8 +1225,6 @@ const panel = document.getElementById("panel");
 const sayEl = document.getElementById("say");
 const sendBtn = document.getElementById("send");
 const sendLabel = document.getElementById("sendLabel");
-const liveBtn = document.getElementById("live");
-const liveLabel = document.getElementById("liveLabel");
 const engRvcBtn = document.getElementById("engRvc");
 const engQwenBtn = document.getElementById("engQwen");
 const voiceSel = document.getElementById("voiceSel");
@@ -1259,18 +1252,17 @@ let previewAudio = null;
  */
 const ENGINE_KEY = "pet_engine";
 const ENGINES = {
-  rvc:  { label: "RVC 实时", short: "RVC",  start: "/api/rvc/live/start", stop: "/api/rvc/live/stop" },
-  qwen: { label: "千问变声", short: "千问", start: "/api/cascade/start",   stop: "/api/cascade/stop" },
+  rvc:  { label: "RVC 实时", start: "/api/rvc/live/start", stop: "/api/rvc/live/stop" },
+  qwen: { label: "千问变声", start: "/api/cascade/start",   stop: "/api/cascade/stop" },
 };
 const savedEngine = localStorage.getItem(ENGINE_KEY);
 let engine = ENGINES[savedEngine] ? savedEngine : "rvc";   // 选中的引擎（持久化）
 let runningEngine = null;   // 实际在跑的那个（都没跑=null）；由 tick() 每帧按两个状态接口刷新
 let engineBusy = false;     // 启停进行中：防连点造成「停一半又启」的交叉状态
 
-/** 刷新引擎分段的两个状态类，以及「变声」按钮的文案。 */
+/** 刷新引擎分段的状态类（选中 .on / 运行中 .running）。
+ *  2026-09-26 起启停就合在分段本身：没有独立的「开 RVC」按钮了。 */
 function refreshEngineSeg() {
-  // ⚠️ 「选中」（engine）与「运行中」（runningEngine）必须分开表达：
-  // 把「选中」当「已开启」会骗人 —— 用户完全可能在主界面开了 RVC，而桌宠上选的是千问。
   if (engRvcBtn) {
     engRvcBtn.classList.toggle("on", engine === "rvc");
     engRvcBtn.classList.toggle("running", runningEngine === "rvc");
@@ -1279,16 +1271,11 @@ function refreshEngineSeg() {
     engQwenBtn.classList.toggle("on", engine === "qwen");
     engQwenBtn.classList.toggle("running", runningEngine === "qwen");
   }
-  if (!liveLabel || !liveBtn) return;
-  // 按钮文案把引擎名写进去 —— 原来只写「变声」，用户不知道点下去是哪一种。
-  // 同时表达「点下去会发生什么」：正在跑本引擎→「停 X」，否则→「开 X」。
-  const e = ENGINES[engine];
-  const running = runningEngine === engine;
-  liveLabel.textContent = (running ? "停 " : "开 ") + e.short;
-  liveBtn.classList.toggle("live-on", running);
-  liveBtn.title = running
-    ? `${e.label} 运行中，点一下停止`
-    : `启动${e.label}（麦克风实时换声；微信里把录音设备指向 CABLE Output 当麦克风）`;
+}
+
+/** 启停进行中时分段的忙态：两颗按钮一起禁用（引擎互斥，中途谁都不能点）。 */
+function setSegBusy(on) {
+  [engRvcBtn, engQwenBtn].forEach((b) => { if (b) setBusy(b, on); });
 }
 
 function setEngine(next) {
@@ -1328,7 +1315,7 @@ async function toggleLive() {
   if (engineBusy) return;
   const e = ENGINES[engine];
   engineBusy = true;
-  setBusy(liveBtn, true);
+  setSegBusy(true);
   try {
     if (runningEngine === engine) {
       setStatus(`正在停止${e.label}…`, "");
@@ -1348,22 +1335,25 @@ async function toggleLive() {
     }
   } finally {
     engineBusy = false;
-    setBusy(liveBtn, false);
+    setSegBusy(false);
     void tick();       // 立刻回读真实状态，不等下一个 1s 轮询
   }
 }
 
 /**
- * 点分段里的另一个引擎。
- * 有引擎在跑 → 停掉它并开新的（用户已确认「自动停掉再开新的」）；
- * 都没在跑 → 只改选择、不自动启动（免得点错一下就占上 GPU 和 CABLE）。
+ * 点分段里的某个引擎。
+ *   · 点**没选中**的：切过去。有引擎在跑 → 停掉它并开新的（用户已确认「自动停掉再开新的」）；
+ *     都没在跑 → 只改选择、不自动启动（免得点错一下就占上 GPU 和 CABLE）。
+ *   · 点**已选中**的：启动 / 停止（2026-09-26 起这是唯一的启停入口 ——
+ *     原来的「开 RVC」按钮与已选中项永远是同一个引擎，用户看着就是两个 RVC）。
  */
 async function pickEngine(next) {
-  if (next === engine) return;
+  if (!ENGINES[next]) return;
+  if (next === engine) { await toggleLive(); return; }
   const wasRunning = runningEngine;
   setEngine(next);
   if (!wasRunning) {
-    setStatus(`引擎已切到「${ENGINES[next].label}」，点「开 ${ENGINES[next].short}」启动`, "");
+    setStatus(`引擎已切到「${ENGINES[next].label}」，再点一下它启动`, "");
     return;
   }
   await toggleLive();
@@ -1497,8 +1487,7 @@ function refreshCapVisibility() {
     const el = document.getElementById(id);
     if (el) el.style.display = off ? "none" : "";
   };
-  hide("engRow", !CAP.live);      // 「麦克风」+ 引擎二选一分段
-  hide("live", !CAP.live);        // 「开 RVC / 开 千问」按钮
+  hide("engRow", !CAP.live);      // 「麦克风」+ 引擎二选一分段（启停已并入分段，无独立按钮）
   // ⚠️ 「最近发送」「试听」「发送」三个都属于 hook.wechat（后两个打的是
   //    /api/wechat/*）—— 关掉它之后这些接口根本不存在，留着就是一按 404 的按钮。
   //    试听曾经就是这么给市场音色变成死钮的（那次是把按钮禁用，也不是消失），
@@ -1590,8 +1579,8 @@ previewBtn.addEventListener("click", doPreview);
 voiceSel.addEventListener("change", syncVoiceGates);
 sendBtn.addEventListener("click", doSendText);
 sayEl.addEventListener("keydown", (e) => { if (e.key === "Enter") doSendText(); });
-liveBtn.addEventListener("click", () => { void toggleLive(); });
-// 引擎分段：点另一个 = 切过去（有引擎在跑就顺手换掉）。dataset.eng 与 ENGINES 的键一一对应。
+// 引擎分段（唯一启停入口）：点已选中的 = 启动/停止，点另一个 = 切过去。
+// dataset.eng 与 ENGINES 的键一一对应。
 [engRvcBtn, engQwenBtn].forEach((b) => {
   if (b) b.addEventListener("click", () => { void pickEngine(b.dataset.eng); });
 });
