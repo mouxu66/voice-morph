@@ -289,9 +289,9 @@ function createPetWindow(actions = {}) {
 
   // 快捷面板：单击角色发最近合成 / 文字合成后发送 / 实时变声开关（动作由注入对象提供）
   ipcMain.on("pet:send-last", () => actions.sendWechatVoiceFromPet && actions.sendWechatVoiceFromPet());
-  ipcMain.on("pet:send-text", (_e, text, voiceId) => actions.sendWechatTextFromPet && actions.sendWechatTextFromPet(String(text || "").trim(), String(voiceId || "")));
+  ipcMain.on("pet:send-text", (_e, text, voiceId, noRvc) => actions.sendWechatTextFromPet && actions.sendWechatTextFromPet(String(text || "").trim(), String(voiceId || ""), noRvc === true));
   ipcMain.on("pet:send-wav", (_e, wav) => actions.sendWechatWav && actions.sendWechatWav(String(wav || "")));   // 历史记录重发
-  ipcMain.on("pet:preview", (_e, text, voiceId) => actions.previewWechatTextFromPet && actions.previewWechatTextFromPet(String(text || "").trim(), String(voiceId || "")));
+  ipcMain.on("pet:preview", (_e, text, voiceId, noRvc) => actions.previewWechatTextFromPet && actions.previewWechatTextFromPet(String(text || "").trim(), String(voiceId || ""), noRvc === true));
   ipcMain.on("pet:live-toggle", () => actions.toggleLiveFromPet && actions.toggleLiveFromPet());
 
   // 右键菜单：显隐策略 + 页面导览 + 隐藏

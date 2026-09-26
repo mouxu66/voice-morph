@@ -1551,6 +1551,7 @@ class SendTextReq(BaseModel):
     text: str
     voice_id: str = ""  # TTS 参考音色（决定语气/韵律，"怎么说"）
     rvc_voice: str = ""  # RVC 音色（决定"谁在说"）；留空=不换声，音色会明显不像
+    no_rvc: bool = False  # 显式跳过 RVC：纯 TTS 零样本克隆（与"推不出模型"的静默降级区分开）
     pitch: int = 0
     index_rate: float = 0.5
 
@@ -1603,6 +1604,7 @@ class PreviewTextReq(BaseModel):
     text: str
     voice_id: str = ""
     rvc_voice: str = ""
+    no_rvc: bool = False  # 与 SendTextReq.no_rvc 同义：试听也要能听"千问直出"的样子
     pitch: int = 0
     index_rate: float = 0.5  # 与 send_text 同值：试听要预测"发出去是什么样"，不是修辞过的版本
 
@@ -1697,7 +1699,8 @@ def preview_text(req: PreviewTextReq):
 
     steps: list[str] = []
     want = req.voice_id or selected_voice()
-    rvc_voice = req.rvc_voice or resolve_rvc_voice(want) or ""
+    # 与 send_text 同一开关：no_rvc=True 时跳过 RVC，试听 = 纯 TTS 克隆（要求音色自带参考音）
+    rvc_voice = "" if req.no_rvc else (req.rvc_voice or resolve_rvc_voice(want) or "")
     # 与 send_text 用**同一个**借参考音规则 → 试听听到的语气就是发出去的语气
     tts_voice, borrowed = _tts_ref_for(want, rvc_voice)
     try:
@@ -2007,7 +2010,10 @@ def send_text(req: SendTextReq):
         from rvc_convert import resolve_rvc_voice
 
         want = req.voice_id or selected_voice()
-        rvc_voice = req.rvc_voice or resolve_rvc_voice(want) or ""
+        # no_rvc=True = 用户在面板显式选了「千问直出」：跳过 RVC，纯 TTS 零样本克隆。
+        # 这与"推不出模型"的静默降级是两回事 —— steps 里的文案必须分开，别让用户
+        # 主动的选择被当成"音色配置缺失"的告警（2026-09-26 A/B 实测两条听感接近后加的）。
+        rvc_voice = "" if req.no_rvc else (req.rvc_voice or resolve_rvc_voice(want) or "")
         # 市场装的音色只有 logs/<id>/<id>.pth、没有 reference.wav，直接拿它当 TTS 参考音
         # 会被 voice_ref() 拒掉整条请求（以前就是这么 400 的，桌宠下拉因此只能把这类
         # 音色整个滤掉 —— 用户在市场装的音色在面板里根本选不到）。
@@ -2015,7 +2021,9 @@ def send_text(req: SendTextReq):
         steps: list[str] = []
         if borrowed:
             steps.append(f"「{want}」没有参考音，语气借自 {borrowed}（音色由 RVC 决定，不影响像不像）")
-        if not rvc_voice:
+        if req.no_rvc:
+            steps.append("按选择跳过 RVC：纯 TTS 零样本克隆音色")
+        elif not rvc_voice:
             steps.append("⚠ 没找到对应 RVC 音色，未换声（会是普通播音腔）")
 
         # 2026-09-23 分段发送：长文**逐句合成 → 实测时长装箱 → 一次发一批 ≤54s 的 wav**。

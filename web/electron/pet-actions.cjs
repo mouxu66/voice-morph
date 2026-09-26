@@ -98,7 +98,7 @@ function sendWechatWav(wavName, knownDurationS) {
  * 面板绝不能把主按钮切成「发送试听」，否则发出去的是样板句，不是用户打的字。
  * 超时给到 180s：TTS 首次要加载 worker，冷启动可能几十秒。
  */
-function previewWechatTextFromPet(text, voiceId) {
+function previewWechatTextFromPet(text, voiceId, noRvc) {
   const petWin = getPetWin();
   if (!petWin || !text) return;
   showPetGuide({
@@ -107,7 +107,7 @@ function previewWechatTextFromPet(text, voiceId) {
     action: "think", motion: "work", duration: 6000,
   });
   backendPost("/api/wechat/preview_text",
-    { text, text_language: "zh", voice_id: voiceId || "" },
+    { text, text_language: "zh", voice_id: voiceId || "", no_rvc: noRvc === true },
     (data, code) => {
       if (!data.ok || !data.url) {
         const err = (data.detail && String(data.detail))
@@ -249,13 +249,13 @@ function manualWechatFromPet() {
 }
 
 /** 桌宠快捷面板：输入文字 → 先 TTS 合成（指定音色，空则用当前选中）→ 再录进微信。 */
-function sendWechatTextFromPet(text, voiceId) {
+function sendWechatTextFromPet(text, voiceId, noRvc) {
   if (!getPetWin() || !text) return;
   // 发前探活：连不上后端立刻报错，别闷头转圈被误判成「卡死」
   // （历史上桌宠曾写死连 8011、而 8000 才是健康后端，导致请求永远挂起、前端一直转圈）
   http.get(
     { host: "127.0.0.1", port: BACKEND_PORT, path: "/api/health", timeout: 3000 },
-    (res) => { res.resume(); doSendTextToWechat(text, voiceId); },
+    (res) => { res.resume(); doSendTextToWechat(text, voiceId, noRvc); },
   ).on("error", (e) => {
     // 分因：ECONNREFUSED（没服务在听）/ 超时（在但没应答）/ 其它。以前一律「8000 端口未启动？」。
     const code = (e && e.code) || "";
@@ -267,7 +267,7 @@ function sendWechatTextFromPet(text, voiceId) {
 }
 
 /** 探活通过后真正发起「合成并发送」。 */
-function doSendTextToWechat(text, voiceId) {
+function doSendTextToWechat(text, voiceId, noRvc) {
   showPetGuide({
     title: "微信语音",
     lines: [`合成中：「${text.slice(0, 12)}${text.length > 12 ? "…" : ""}」`],
@@ -297,7 +297,7 @@ function doSendTextToWechat(text, voiceId) {
   //    这里给 600s（10 分钟）—— 比任何现实长文都宽，作用只是"别挂到天荒地老"，
   //    真正的进度反馈靠 alt-hint 横幅与面板状态行，不靠这个上限。
   backendPost("/api/wechat/send_text",
-    { text, voice_id: voiceId || "", rvc_voice: "", pitch: 0, index_rate: 0.5 },
+    { text, voice_id: voiceId || "", rvc_voice: "", no_rvc: noRvc === true, pitch: 0, index_rate: 0.5 },
     (data, code) => {
       const err = data.error || data.detail || `HTTP ${code}`;
       const petWin = getPetWin();

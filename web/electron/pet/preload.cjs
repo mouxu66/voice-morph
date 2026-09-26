@@ -19,9 +19,9 @@ contextBridge.exposeInMainWorld("pet", {
   onSendResult: (cb) => ipcRenderer.on("pet:send-result", (_e, r) => cb(r)),
   // 快捷面板：单击角色发最近合成 / 输入文字合成后发送（可指定音色）/ 历史重发 / 实时变声开关
   sendLast: () => ipcRenderer.send("pet:send-last"),
-  sendText: (text, voiceId) => ipcRenderer.send("pet:send-text", String(text || "").slice(0, 500), String(voiceId || "")),
+  sendText: (text, voiceId, noRvc) => ipcRenderer.send("pet:send-text", String(text || "").slice(0, 500), String(voiceId || ""), noRvc === true),
   sendWav: (wav) => ipcRenderer.send("pet:send-wav", String(wav || "")),
-  previewText: (text, voiceId) => ipcRenderer.send("pet:preview", String(text || "").slice(0, 500), String(voiceId || "")),
+  previewText: (text, voiceId, noRvc) => ipcRenderer.send("pet:preview", String(text || "").slice(0, 500), String(voiceId || ""), noRvc === true),
   liveToggle: () => ipcRenderer.send("pet:live-toggle"),
   // 查看后端日志：后端离线时在气泡上点一下，主进程在文件管理器里定位 backend.log
   showBackendLog: () => ipcRenderer.invoke("backend:show-log"),

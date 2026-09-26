@@ -647,6 +647,16 @@
       <select id="voiceSel" title="合成用的音色（默认=主界面当前选中）"></select>
     </div>
 
+    <!-- 音色引擎开关（2026-09-26 A/B：千问直出与"千问+RVC"听感接近，交给用户自己选）。
+         勾选 = 纯千问零样本克隆（要求音色自带参考音，市场装的只有 RVC 权重的音色不适用）；
+         不勾 = 默认链路：千问合成后再过 RVC 换声，音色由 RVC 权重决定。 -->
+    <label class="field" for="noRvc"
+           title="勾上：纯千问克隆（快、语气自然）；不勾：合成后再过 RVC 换声（音色更像训练目标）">
+      <input id="noRvc" type="checkbox"
+             style="width:auto; margin:0 6px 0 2px; vertical-align:middle; accent-color:rgb(var(--c-accent-h))" />
+      <span style="font-size:11px; color:rgb(var(--c-t-500)); vertical-align:middle">千问直出（不过 RVC）</span>
+    </label>
+
     <!-- 音色下拉独占一行：以前它和三个按钮挤在同一 flex 行里，
          204px 分给 4 个控件后每个只剩 ~41px，「合成并发送」被 nowrap 挤到溢出。 -->
     <div class="row">
@@ -1539,7 +1549,7 @@ function doPreview() {
   setStatus("合成中…");
   setBusy(previewBtn, true);
   setTimeout(() => setBusy(previewBtn, false), 60000);
-  window.pet.previewText(text, voiceId);
+  window.pet.previewText(text, voiceId, document.getElementById("noRvc")?.checked === true);
 }
 
 async function doSendText() {
@@ -1568,7 +1578,7 @@ async function doSendText() {
     if (voiceId) localStorage.setItem(VOICE_KEY, voiceId);   // 记住上次选的音色
     setStatus("合成中… 完成后自动发到微信，全程别动键鼠", "ok");
     if (window.pet.sendText) {
-      window.pet.sendText(text, voiceId);
+      window.pet.sendText(text, voiceId, document.getElementById("noRvc")?.checked === true);
       sayEl.value = "";
       void watchSendOutcome();   // 主进程旧版不回传结果时的兜底收尾（见函数注释）
     }

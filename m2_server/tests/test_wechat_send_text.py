@@ -264,6 +264,21 @@ def test_send_text_honors_explicit_rvc_voice(tmp_path, monkeypatch):
     assert calls["rvc"][1] == "katoong_manbo"
 
 
+def test_send_text_no_rvc_skips_conversion(tmp_path, monkeypatch):
+    """no_rvc=True（面板「千问直出」）：不过 RVC 直接发 TTS 产物，且**不报**"没找到"告警。
+
+    2026-09-26 A/B：纯千问克隆与"千问+RVC"听感接近，面板加了开关交给用户选。
+    用户**主动**跳过 RVC ≠ "推不出 RVC 模型"的静默降级 —— 两者 steps 文案必须分开，
+    否则用户自己的选择会被当成音色配置缺失的告警。
+    """
+    calls = _fake_send(tmp_path, monkeypatch)
+    res = wv.send_text(wv.SendTextReq(text="你好", voice_id="kangaroo", no_rvc=True))
+    assert res["ok"] is True
+    assert "rvc" not in calls, "勾了「千问直出」还跑了 RVC —— 开关没接上"
+    assert any("纯 TTS 零样本克隆" in s for s in res["steps"])
+    assert not any("没找到对应 RVC 音色" in s for s in res["steps"]), "主动选择不该被当成告警"
+
+
 def test_send_text_borrows_reference_for_market_voice(tmp_path, monkeypatch):
     """市场音色端到端：语气借自 kangaroo，换声换成的还是用户选的那个。
 
@@ -637,6 +652,16 @@ def test_preview_text_tts_then_rvc(tmp_path, monkeypatch, preview_env):
     assert r["url"].startswith("/api/media/outputs/")
 
 
+def test_preview_text_no_rvc_keeps_tts_result(tmp_path, monkeypatch, preview_env):
+    """试听同样尊重 no_rvc：不过 RVC，TTS 结果直接返回（试听要预测"发出去是什么样"）。"""
+    _add_ref_voice(tmp_path, "kangaroo")
+    r = wv.preview_text(wv.PreviewTextReq(text="你好", voice_id="kangaroo", no_rvc=True))
+    assert r["ok"] is True
+    assert r["source"] == "text"
+    assert "rvc" not in preview_env, "勾了「千问直出」试听还跑了 RVC"
+    assert preview_env["synth"][1] == "kangaroo"  # 自带参考音，不借用
+
+
 def test_preview_text_never_touches_wechat(tmp_path, monkeypatch, preview_env):
     """★ 试听绝不能碰微信与声卡：不发送、不切卡、不占发送锁。
 
@@ -831,7 +856,7 @@ def test_pet_panel_does_not_send_the_sample_sentence():
 def test_pet_panel_passes_selected_voice():
     """面板点「发送」时要把下拉里选的音色传下去（不能传空常量）。"""
     html = (_ELECTRON / "pet" / "pet.html").read_text(encoding="utf-8")
-    assert "window.pet.sendText(text, voiceId)" in html, (
+    assert "window.pet.sendText(text, voiceId," in html, (
         "面板发送时没用上选中的音色 —— 传空/常量就等于单音色"
     )
     assert "const voiceId = voiceSel.value" in html, "voiceId 应取自下拉当前值"
