@@ -350,7 +350,36 @@ def test_audition_score_cli_offline_by_default():
 # ---------------- 环境态势 ----------------
 
 
-def test_env_shape(monkeypatch):
+@pytest.fixture
+def ample_vram(monkeypatch):
+    """把显存探针打成"余量充足"。
+
+    ★ 这不是"为了让测试变绿"，而是这条用例**本来就没有控制它依赖的那个变量**。
+
+    `audition_env()` 的 `batch_ready = not holder and not low_vram`，而 `low_vram`
+    比的是**当前真实空闲显存**与 `MIN_LIVE_FREE_VRAM_MB`（默认 2048MB）。
+    不打桩时，`assert batch_ready is True` 实际上断的是
+    "跑测试那一刻桌面没占显存" —— 在开着壁纸引擎/浏览器的 8GB 卡上，
+    空闲常年只有 ~1.2GB，于是它**必红，且红得没有信息量**：
+
+        2026-09-27 实测 free 1198MB < 阈值 2048MB → low_vram=True → batch_ready=False
+        （当时在一次 ytdlp 改动后跑全量，这条把不相关的改动误报成了回归，
+          排查花了十几分钟 —— 这正是"脆弱测试"的真实代价）
+
+    本文件开头就写了「全部离线完成…**不碰真实 GPU**」，这个 fixture 是把那句话
+    落实到这条用例上。姐妹用例 `test_env_reports_low_vram` 早就是这么打桩的。
+    """
+    import rvc_live
+
+    monkeypatch.setattr(
+        rvc_live,
+        "_gpu_snapshot",
+        lambda: {"gpu_total_mb": 8000, "gpu_used_mb": 1000, "live_proc_vram_mb": 0},
+    )
+    monkeypatch.setattr(rvc_live, "MIN_LIVE_FREE_VRAM_MB", 2048)
+
+
+def test_env_shape(ample_vram):
     env = fa.audition_env()  # 只调一次：每次探测要起 PowerShell 查进程，很贵
     for key in (
         "live_running",
@@ -367,6 +396,7 @@ def test_env_shape(monkeypatch):
         "text_ready",
     ):
         assert key in env, f"env 缺字段 {key}"
+    assert env["gpu_free_mb"] == 7000, "打桩后显存余量就应该是这个数（否则桩没生效）"
     assert env["batch_ready"] is True
 
 
