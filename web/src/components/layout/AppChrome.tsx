@@ -9,15 +9,28 @@ import { cn } from "@/lib/utils"
 import { useAppStore } from "@/store/useAppStore"
 import { getStoredTheme, setStoredTheme, type ThemeMode } from "@/theme"
 
-const pageTitles: Record<string, string> = {
-  "/home": "首页",
-  "/workshop": "训练变声",
-  "/voices": "我的音色",
-  "/live": "实时变声",
-  "/audition": "试音间",
-  "/tts": "输字变声",
-  "/offlinevc": "离线变声",
-  "/pet-market": "桌宠皮肤",
+/**
+ * 顶栏标题 = 当前路由在**能力清单**里的 `nav.label`（单一真相源，不另抄一份）。
+ *
+ * 曾经这里是一张手写的 `pageTitles` 表 —— 于是「翻唱」「在线扒歌」两个新页面上线后，
+ * 顶栏一直显示"首页"（表里没有这两条路径，静默回退到默认值），且没有任何测试守着
+ * （原有测试只渲染 /home）。这正是本仓反复判过的"派生数据双流水线"：路径与标签
+ * 后端 `plugin.json` 已经有了一份，前端再手抄一份就必然漂。
+ *
+ * 从清单派生后无表可漂。已知的两个兜底：
+ *   · `/tools`（能做的事）在清单里**故意没有 nav** —— 它不是导航项，是侧栏底部
+ *     "我要找某个东西"时的索引入口，所以单独留一条覆盖；
+ *   · 清单还没到位 / 路由不在清单里（正常不该发生）→ 退回产品名，**不显示一个
+ *     错的页面名**（"首页"曾经就是那个错名字）。
+ */
+const NAVLESS_TITLES: Record<string, string> = { "/tools": "能做的事" }
+
+function pageTitleOf(pathname: string, catalog: PluginCatalog | null): string {
+  const hit = catalog?.plugins
+    .flatMap((p) => p.routes)
+    .find((r) => r.path === pathname && r.nav)
+  if (hit?.nav) return hit.nav.label
+  return NAVLESS_TITLES[pathname] ?? "变声工坊"
 }
 
 /**
@@ -111,7 +124,6 @@ export function AppChrome({
   const [theme, setTheme] = useState<ThemeMode>(getStoredTheme())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const pageTitle = pageTitles[pathname] ?? "首页"
   const online = serviceState === "online"
 
   /**
@@ -131,6 +143,11 @@ export function AppChrome({
   const capCounts = catalogState.status === "ready" ? catalogState.catalog.counts : null
   const capEntry = capCounts ? capabilityEntryCounts(capCounts) : null
   const capTitle = capCounts ? capabilityEntryTitle(capCounts) : "正在读取能力清单…"
+  // 标题与导航同源：清单里这条路由的 nav.label（见 pageTitleOf 的注释）
+  const pageTitle = pageTitleOf(
+    pathname,
+    catalogState.status === "ready" ? catalogState.catalog : null,
+  )
 
   const openCapabilities = useCallback(() => {
     setDrawerOpen(false)

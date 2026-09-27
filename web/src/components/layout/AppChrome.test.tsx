@@ -53,9 +53,9 @@ function catalog(counts: Partial<PluginCatalog["counts"]> = {}): PluginCatalog {
 
 const onOpenCapabilities = vi.fn()
 
-function renderChrome() {
+function renderChrome(path = "/home") {
   return render(
-    <MemoryRouter initialEntries={["/home"]}>
+    <MemoryRouter initialEntries={[path]}>
       <AppChrome
         petGuideEnabled
         onTogglePetGuide={() => {}}
@@ -205,6 +205,97 @@ describe("AppChrome · 已删除的重复入口不得回归", () => {
     renderChrome()
 
     expect(screen.queryByRole("button", { name: "发送链路自检" })).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * 顶栏标题 —— 2026-09-27 修复：原来是手写的 `pageTitles` 表，「翻唱」「在线扒歌」
+ * 两个新页面上线后顶栏一直显示"首页"（表里没这两条路径，静默回退），且没有测试守着。
+ *
+ * 现在标题从能力清单的 `nav.label` 派生。这几条钉住三件事：
+ *   1. 有 nav 的路由 → 显示清单里的标签（新页面对此的回归保护）；
+ *   2. `/tools` 在清单里**故意没有 nav**（它是侧栏底部的索引入口，不是导航项）
+ *      → 走 NAVLESS_TITLES 覆盖，不能掉进"变声工坊"兜底；
+ *   3. 未知路径 / 清单没到位 → 退回产品名，**绝不再显示一个错的页面名**。
+ */
+describe("AppChrome · 顶栏标题取自能力清单", () => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  /** 只放本块用到的四条路由（含两条没有 nav 的），其余字段喂满类型即可 */
+  function catalogWithRoutes(): PluginCatalog {
+    return {
+      ...catalog(),
+      plugins: [
+        {
+          id: "test.routes",
+          name: "test.routes",
+          kind: "builtin",
+          category: "core",
+          order: 0,
+          summary: "",
+          core: true,
+          state: "ok",
+          enabled: true,
+          blockedBy: [],
+          reasons: [],
+          requires: [],
+          routers: [],
+          routes: [
+            { path: "/home", module: "Home", export: "HomeRoute", nav: { label: "首页", icon: "Home", group: "start", order: 10 } },
+            { path: "/cover", module: "Cover", export: "CoverRoute", nav: { label: "翻唱", icon: "Music4", group: "vc", order: 30 } },
+            { path: "/ytdlp", module: "Ytdlp", export: "YtdlpRoute", nav: { label: "在线扒歌", icon: "CloudDownload", group: "vc", order: 35 } },
+            // /tools 故意不带 nav —— 见 NAVLESS_TITLES 的注释
+            { path: "/tools", module: "CapabilityIndex", export: "CapabilityIndexRoute" },
+          ],
+          legacyRoutes: [],
+          extras: {},
+          health: null,
+          healthProbe: null,
+          disableNote: "",
+        },
+      ],
+    }
+  }
+
+  function title(): string {
+    return screen.getByRole("heading", { level: 1 }).textContent ?? ""
+  }
+
+  it("★ 新页面也显示清单标签：/cover → 翻唱、/ytdlp → 在线扒歌（曾经的\"首页\"回归）", () => {
+    h.catalog = { status: "ready", catalog: catalogWithRoutes() }
+
+    const a = renderChrome("/cover")
+    expect(title()).toBe("翻唱")
+    a.unmount()
+
+    renderChrome("/ytdlp")
+    expect(title()).toBe("在线扒歌")
+  })
+
+  it("有 nav 的老页面不变：/home → 首页", () => {
+    h.catalog = { status: "ready", catalog: catalogWithRoutes() }
+    renderChrome("/home")
+    expect(title()).toBe("首页")
+  })
+
+  it("/tools 在清单里没有 nav —— 走覆盖值\"能做的事\"，不掉进产品名兜底", () => {
+    h.catalog = { status: "ready", catalog: catalogWithRoutes() }
+    renderChrome("/tools")
+    expect(title()).toBe("能做的事")
+  })
+
+  it("清单没有的路径 → 产品名，而不是一个错的页面名", () => {
+    h.catalog = { status: "ready", catalog: catalogWithRoutes() }
+    renderChrome("/no-such-page")
+    expect(title()).toBe("变声工坊")
+  })
+
+  it("清单还没到位时也显示产品名（加载只有一瞬间，不能闪成一个错名字）", () => {
+    h.catalog = { status: "loading" }
+    renderChrome("/cover")
+    expect(title()).toBe("变声工坊")
   })
 })
 
