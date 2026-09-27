@@ -700,6 +700,34 @@ def _tail_line(text: str) -> str:
     return ""
 
 
+_STEM_LOCK = threading.Lock()
+_LAST_STEM_MS = 0
+
+
+def _new_stem() -> str:
+    """给本次取回造一个**唯一**的产物前缀。
+
+    ★ 为什么不能只用 `int(time.time())`（秒级）：`stem` 不只是文件名，它同时是
+    `_probe_audio_ext` 的**过滤键**与 `_cleanup` 的**删除键**。两次取回落在同一秒
+    （同一首歌连点两次、或两个标签页同时扒）就会共用前缀，于是：
+      · 各自 `_probe_audio_ext` 会**看到对方的产物**，多个时取最大的那个 ——
+        用户拿到的是另一条链接的音频，而且它确实是个合法音频，不报错；
+      · 先跑完的那次 `_cleanup` 会把**后跑那次的半截文件**按前缀一起删掉，
+        表现成"另一个窗口莫名其妙失败了"。
+    秒级精度在人工操作下不算小概率（连点两下就在同一秒内），所以必须唯一。
+
+    不用 uuid：它要进文件名，短一点更便于排查。毫秒 + **同毫秒内的进程内序号**
+    就够 —— 同一进程里两次调用不可能拿到同一个值（锁 + 单调递增计数）。
+    """
+    global _LAST_STEM_MS
+    with _STEM_LOCK:
+        ms = int(time.time() * 1000)
+        if ms <= _LAST_STEM_MS:  # 同毫秒（或时钟回拨）：顺延，保证单调
+            ms = _LAST_STEM_MS + 1
+        _LAST_STEM_MS = ms
+    return f"ytdlp_{ms}"
+
+
 def _probe_audio_ext(path: Path, stem: str) -> str | None:
     """在会话目录里找出**本次**产出的音频文件。多个时取最大的（合并产物）。
 
@@ -750,8 +778,7 @@ def fetch(url: str, timeout_s: int | None = None, job: FetchJob | None = None) -
     # 产物路径由 `-P`/`-o` 钉死，不接受 yt-dlp 自己挑地方（"随用随删"的前提）。
     out_dir = session_out.session_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = int(time.time())
-    stem = f"ytdlp_{stamp}"
+    stem = _new_stem()
 
     cmd = [
         str(exe),

@@ -1080,6 +1080,37 @@ def test_leftover_from_a_failed_run_is_cleaned(env, monkeypatch, tmp_path):
     assert list(tmp_path.glob("ytdlp_*")) == []
 
 
+def test_stem_is_unique_even_within_the_same_second(env, monkeypatch):
+    """★★ `stem` 不只在文件名里 —— 它同时是**探针的过滤键**与**收尾的删除键**。
+
+    用秒级时间戳（`int(time.time())`）时，同一秒内的两次取回共用前缀：
+      · 各自的 `_probe_audio_ext` 会看到对方的产物（多个时取最大的）→
+        用户拿到的是**另一条链接**的音频，而它是个合法音频，不报错；
+      · 先跑完的那次 `_cleanup` 会按前缀删掉后跑那次正在写的文件。
+    连点两下就在同一秒内，所以这不是理论风险。
+
+    这里把 `time.time` 钉死成同一个值，模拟"同一秒"的极端现场。
+
+    ⚠️ 这条用例的**主护栏是单调顺延**（`ms <= _LAST_STEM_MS` 就 +1），
+    毫秒精度只是让顺延几乎不触发。所以单把"毫秒"退回秒级、但保留顺延，
+    它**不会红** —— 这是对的（顺延独立成立）。要验这段就整体退回原始实现，
+    见下方 `test_stem_survives_a_clock_going_backwards` 与 commit 说明里的突变记录。
+    """
+    yf, _ = env
+    monkeypatch.setattr(yf.time, "time", lambda: 1_700_000_000.0)  # 秒级完全相同
+    got = {yf._new_stem() for _ in range(50)}
+    assert len(got) == 50, f"同秒内前缀必须唯一，实际只得到 {len(got)} 个不同的"
+
+
+def test_stem_survives_a_clock_going_backwards(env, monkeypatch):
+    """时钟被校回（或 NTP 回拨）时前缀仍要单调，不能撞上刚用过的那个。"""
+    yf, _ = env
+    ticks = iter([2_000_000_000.5, 2_000_000_000.5, 1_999_999_999.0, 1_999_999_999.0])
+    monkeypatch.setattr(yf.time, "time", lambda: next(ticks))
+    got = [yf._new_stem() for _ in range(4)]
+    assert len(set(got)) == 4, f"回拨后撞名：{got}"
+
+
 def test_no_audio_message_lists_the_real_causes(env, monkeypatch, tmp_path):
     """报错要给出"下一步三种可能"，不是一句"拉取失败"。"""
     yf, _ = env
