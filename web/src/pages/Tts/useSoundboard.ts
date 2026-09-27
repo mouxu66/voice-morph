@@ -88,6 +88,17 @@ export function useSoundboard(enabled = true) {
     note: string
   }>({ loaded: false, source: null, items: [], error: "", note: "" })
   const [busy, setBusy] = useState("") // 正在进行的素材动作（一个字符串，够用且能显示）
+  // ★ 互斥的**真身**必须是 ref，不能只看 `busy` state。
+  // `setBusy` 是异步的：同一个事件循环里连点两次，"第二次进入时读到的 busy 还是空串"
+  // → 两个动作同时在飞，而它们都会改素材目录、各自刷新，后落库的那次可能先到
+  // （界面停在"少一条"状态，手动刷一下又对了 —— 典型偶发）。ref 是同步写，当场可见。
+  const busyRef = useRef(false)
+  // ★ 货架的"已拿到"同样用 ref：`openShelf` 是 async，而 `useCallback([shelf.loaded])`
+  // 要等**重渲染**才会换上新闭包 —— `await openShelf(); await openShelf()`（或快速连点）
+  // 时第二次读到的 `shelf.loaded` 仍是 false，于是白碰一次网络。
+  // 一次多花的请求不致命，但它会让"货架为什么加载中"这种排查多一个变量，
+  // 而且和上面 `busyRef` 是同一类错（拿异步 state 当同步锁），统一口径。
+  const shelfLoadedRef = useRef(false)
   const [materialError, setMaterialError] = useState("")
 
   const refresh = useCallback(async () => {
@@ -258,10 +269,14 @@ export function useSoundboard(enabled = true) {
    * 为什么要互斥：这些动作都会**改素材目录**，而目录是格子面板的渲染依据。
    * 两个动作同时在飞（比如连点两次导入），后完成的那次刷新可能先落库——
    * 界面就会停在一个"少一条"的状态上，而且刷新一次就对了（典型的偶发错）。
+   *
+   * ⚠️ 互斥用 `busyRef`（同步）而不是 `busy`（state，异步）—— 见上面 `busyRef` 的注释。
+   * 用 state 判的话，"同一帧连点两次"这个最该被挡住的现场恰好挡不住。
    */
   const withBusy = useCallback(
     async (label: string, fn: () => Promise<unknown>) => {
-      if (busy) return null
+      if (busyRef.current) return null // 同步判定：同帧连点也只能放行一次
+      busyRef.current = true
       setBusy(label)
       setMaterialError("")
       try {
@@ -273,10 +288,11 @@ export function useSoundboard(enabled = true) {
         setMaterialError(friendlyError(error, `${label}失败`))
         return null
       } finally {
+        busyRef.current = false
         setBusy("")
       }
     },
-    [busy, refresh, refreshPacks],
+    [refresh, refreshPacks],
   )
 
   /** 导入自己的一条素材（可多选）。返回成功导入的条数。 */
@@ -328,11 +344,12 @@ export function useSoundboard(enabled = true) {
     [withBusy],
   )
 
-  /** 打开货架（懒加载；重复打开不重复请求）。 */
+  /** 打开货架（懒加载；**成功**后重复打开不重复请求）。 */
   const openShelf = useCallback(async () => {
-    if (shelf.loaded) return
+    if (shelfLoadedRef.current) return
     try {
       const r = await soundboardPacksAvailable()
+      shelfLoadedRef.current = true // 与 setShelf 同一处置位：同步写，连点也挡得住
       setShelf({
         loaded: true,
         source: r.source,
@@ -341,15 +358,20 @@ export function useSoundboard(enabled = true) {
         note: r.note || "",
       })
     } catch (error) {
+      // ★ 失败**不置 `loaded`**：否则本次会话再点开货架只会看到上一次那句错误，
+      // 唯一的出路是重进页面 —— 而这类失败的常见成因（后端刚起来、网络抖一下）
+      // 本来重试就好。`loaded` 的语义是"清单拿到了，别白碰一次网络"，
+      // 不是"试过了"。
+      shelfLoadedRef.current = false
       setShelf({
-        loaded: true,
+        loaded: false,
         source: null,
         items: [],
         error: friendlyError(error, "拿不到音效包清单"),
         note: "",
       })
     }
-  }, [shelf.loaded])
+  }, [])
 
   return {
     items,

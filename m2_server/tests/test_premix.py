@@ -283,6 +283,67 @@ def test_premix_is_idempotent_about_file_names(client, blip, tts_wav):
     assert len(list(cfg.OUTPUTS_DIR.glob("sfxmix_*.wav"))) == 1
     # 不留半截临时文件（原子替换用 .tmp 中转）
     assert not list(cfg.OUTPUTS_DIR.glob("*.tmp"))
+    # ★ 临时名现在带 `.` 前缀（点文件），上面那句 `*.tmp` 匹配不到它 ——
+    # 原来的 glob 模式在本轮改动后**已经罩不住**真正的临时文件了，补一句全扫的。
+    assert not list(cfg.OUTPUTS_DIR.glob("*.tmp")) + list(cfg.OUTPUTS_DIR.glob(".*.tmp"))
+
+
+def test_concurrent_premix_calls_do_not_share_a_temp_file(client, blip, tts_wav, monkeypatch):
+    """★ 并发预混**各写各的临时文件**，不能共用一个固定名。
+
+    现场：同一条 TTS + 同一组音效再混一次是常态（用户在反复试"加多少"），
+    所以两次调用算出来的**目标名完全相同**。若临时名固定成 `目标名 + ".tmp"`，
+    两个请求会往同一个文件里写：A 写一半、B 覆上去、各自 `os.replace` ——
+    落地的成品可能是两者交织的半截 wav（时长/音量都对不上，**且不报错**，
+    界面显示一切正常，用户听到的却是错的）。固定名还让"上一次崩溃留下的 .tmp"
+    与"这一次正在写的 .tmp"无法区分。
+
+    做法：在第一个人为拖住（`sf.write` 里 sleep）期间发起第二次，检查两次写
+    用的**临时路径不同**，且结束后目标文件仍然是一条**完整**的 wav。
+    """
+    import threading
+    import time as _time
+
+    seen: list[str] = []
+    real_write = sf.write
+
+    def slow_write(path, data, sr, **kw):
+        seen.append(Path(path).name)
+        if len(seen) == 1:  # 只让第一次慢，第二个人好挤进去
+            _time.sleep(0.3)
+        return real_write(path, data, sr, **kw)
+
+    monkeypatch.setattr(soundboard.sf, "write", slow_write)
+
+    results: list[object] = []
+
+    def hit():
+        results.append(_premix(client, wav=tts_wav))
+
+    t1 = threading.Thread(target=hit)
+    t1.start()
+    while len(seen) < 1:  # 等第一个人真的开始写
+        _time.sleep(0.01)
+    t2 = threading.Thread(target=hit)
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert len(seen) == 2, f"两次预混应当各写各的，实际写盘 {len(seen)} 次"
+    assert seen[0] != seen[1], (
+        f"两次并发预混共用了同一个临时文件 {seen[0]} —— "
+        "交织写入会产出不报错的坏 wav"
+    )
+    assert all(s.endswith(".tmp") for s in seen), f"临时名必须以 .tmp 结尾：{seen}"
+    # 目标文件必须存在且是**完整**的 wav（能读出来、长度对得上）
+    for r in results:
+        assert r.status_code == 200, r.text
+    out = cfg.OUTPUTS_DIR / "sfxmix_tts_premix_unit.wav"
+    assert out.is_file()
+    got = sf.info(str(out))
+    assert got.frames > 0 and got.samplerate == SR, f"落地成品不完整：{got}"
+    # 临时文件全清（两次各自 os.replace 掉了）
+    assert not list(cfg.OUTPUTS_DIR.glob(".*.tmp")), "临时文件没收干净"
 
 
 def test_premix_counts_as_usage_in_the_catalog(client, blip, tts_wav):

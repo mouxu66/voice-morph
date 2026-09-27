@@ -44,6 +44,7 @@ import json
 import os
 import subprocess
 import threading
+import uuid
 from pathlib import Path
 
 import config as cfg
@@ -394,7 +395,13 @@ def soundboard_premix(req: PremixReq):
     # 预混产物也是**会话产物**（退出即删）：它只是"发送时用的那条音频"，不是作品。
     # 与源同目录 —— 源在会话目录时产物也在会话目录（`derived_dir` 的同一口径）。
     out = session_out.derived_dir(src) / f"sfxmix_{src.stem}.wav"
-    tmp = out.with_name(out.name + ".tmp")
+    # ★ 临时名必须**每次唯一**：源相同 → `out` 相同（同一条 TTS + 同一组音效再混一次
+    # 是常态，用户在反复试"加多少"），若 tmp 固定成 `out.name + ".tmp"`，两次并发的
+    # 预混会**共写同一个文件**：A 写完 B 覆盖，再各自 `os.replace` —— 落地的成品可能
+    # 是两者交织的半截 wav（时长/音量都对不上，且不报错）。固定名还会让"上一次崩溃
+    # 留下的 .tmp"与"这一次正在写的 .tmp"无法区分。
+    # 用 pid+uuid 而不是时间戳：时间戳在同毫秒并发下照样撞，且不如 uuid 直观。
+    tmp = out.with_name(f".{out.stem}.{os.getpid()}_{uuid.uuid4().hex[:8]}.tmp")
     try:
         # 显式给 `format="WAV"`：临时名以 `.tmp` 结尾（故意不叫 .wav，免得被
         # `glob("*.wav")` 扫到半截文件），而 soundfile 靠扩展名推不出格式。
