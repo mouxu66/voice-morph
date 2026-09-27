@@ -89,5 +89,8 @@ async def ytdlp_fetch_endpoint(req: YtdlpFetchReq):
         "url": info["url"],
         "bytes": info["bytes"],
         "site": info["site"],
+        # 规范化之后的地址（用户粘短链时和输入不同）。放出来是为了让"这条链接
+        # 为什么不行"可排查 —— 前端把它展示在结果里，比看后端日志直接得多。
+        "source_url": info.get("source_url", ""),
         "duration_s": _duration_of(Path(info["path"])),
     }

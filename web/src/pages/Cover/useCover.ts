@@ -56,6 +56,15 @@ export function useCover() {
   const [errorMessage, setErrorMessage] = useState("")
   const [feedback, setFeedback] = useState("")
   const [status, setStatus] = useState<CoverStatus | null>(null)
+  /**
+   * 结果区那张「翻唱完成」面板是不是**上一次**的成果。
+   *
+   * 唯一的置真路径：`start()` 提交失败（后端 409/500/断网）—— 此时 status 还是
+   * 上一轮的 done，于是「翻唱失败」错误条与旧成品同屏，用户完全分不清错误说的
+   * 是面板里那首歌还是刚点的这次（2026-09-27 修）。新一轮成功提交时置假。
+   * 轮询跑到新 done 时面板自然被替换，不需要额外复位。
+   */
+  const [resultStale, setResultStale] = useState(false)
   const pollTimer = useRef<number | null>(null)
 
   const stopPoll = useCallback(() => {
@@ -138,7 +147,13 @@ export function useCover() {
             : "")
       )
       setFile(null)
-      setFeedback("已下好，可以先试听 —— 确认是这首歌再点「开始翻唱」")
+      // 主动把来源切成直链时要说出来 —— 静默清掉本地文件会让用户以为
+      // "我刚选的那首怎么没了"（2026-09-27 修，与 clearSource 的可见性对齐）。
+      setFeedback(
+        file
+          ? "已下好，来源已切换为这条直链（原来选的本地文件已放弃）—— 试听确认后再点「开始翻唱」"
+          : "已下好，可以先试听 —— 确认是这首歌再点「开始翻唱」"
+      )
     } catch (e) {
       setSrcName("")
       setSrcPreview("")
@@ -147,7 +162,7 @@ export function useCover() {
     } finally {
       setFetching(false)
     }
-  }, [srcUrl])
+  }, [srcUrl, file])
 
   /** 丢掉直链那份（改用文件，或换一首） */
   const clearSource = useCallback(() => {
@@ -201,6 +216,7 @@ export function useCover() {
       // 源已经被这条任务用掉了（后端跑完就删，即用即删）。这里同步清掉试听，
       // 免得用户对着一个已经不在的文件再点一次「开始翻唱」而拿到 400。
       clearSource()
+      setResultStale(false) // 新一轮已提交：后续 done 面板就是这次的成果
       setStatus({
         running: true,
         status: "running",
@@ -216,6 +232,9 @@ export function useCover() {
       })
       startPoll()
     } catch (e) {
+      // 旧成品还挂在结果区。不标记的话，「翻唱失败」与「翻唱完成」同屏，
+      // 用户分不清错误说的是哪一次（2026-09-27 修）。
+      setResultStale(true)
       setErrorMessage(friendlyError(e, "无法开始翻唱"))
     } finally {
       setSubmitting(false)
@@ -231,7 +250,7 @@ export function useCover() {
     srcName, srcUrl, setSrcUrl, srcPreview, srcSummary, fetching, fetchFromUrl, clearSource,
     pitch, setPitch, autoPitch, setAutoPitch,
     indexRate, setIndexRate, vocalGain, setVocalGain, accompGain, setAccompGain, autoGain, setAutoGain,
-    submitting, analyzing, errorMessage, feedback, status, running, resultUrl,
+    submitting, analyzing, errorMessage, feedback, status, running, resultUrl, resultStale,
     analyzePitch, start,
     /** 有来源（本地文件或已下好的直链）才允许开跑/分析音域 */
     hasSource: Boolean(file || srcName),

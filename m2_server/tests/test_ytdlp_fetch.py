@@ -40,8 +40,21 @@ def env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cfg, "OUTPUTS_DIR", tmp_path)
     monkeypatch.setattr(cfg, "MEDIA_DIR", tmp_path / "media")
+    # 登录态环境变量必须清掉：它们会改变报错文案与命令行构造。
+    # 留在环境里，测试跑的就不再是"匿名用户"的现场了 —— 这种"我这儿是绿的"
+    # 最难查，因为 CI 和本机的环境变量不一样。
+    monkeypatch.delenv("VM_YTDLP_COOKIES", raising=False)
+    monkeypatch.delenv("VM_YTDLP_COOKIES_BROWSER", raising=False)
     import ytdlp_api
     import ytdlp_fetch
+
+    # ★ 默认**禁网**：`normalize` 在本地抠不出 ID 时要去解短链（真发 HTTP）。
+    # 不封住的话，一个忘了断言的用例就会往公网打请求 —— 测试必须能离线跑。
+    # 想测解短链的用例自己再覆盖这个替身（见"分享链接规范化"一节）。
+    def no_net(url):
+        raise OSError("本测试不允许解短链")
+
+    monkeypatch.setattr(ytdlp_fetch, "_resolve_redirect", no_net)
 
     return ytdlp_fetch, ytdlp_api
 
@@ -104,11 +117,14 @@ def test_rejects_ip_based_urls(env):
 
 
 def test_host_match_is_exact_not_prefix(env):
-    """★ 必须**精确匹配**主机名，不能用前缀/后缀包含。
+    """★ 主机名必须**精确**匹配，或按**点号锚定**的域名族匹配，不能用裸前缀/包含。
 
     这是最容易被写错的一条：`"music.163.com" in url` 或 `url.startswith("https://music.163.com")`
     都会把 `music.163.com.evil.example` 放进来（攻击者只需买一个子域）。
-    `_check_supported` 走的是 `hostname` 精确查表，所以这里能过。
+
+    2026-09-27 引入了域名族（`_SUPPORTED_FAMILIES`，为了放行 QQ 音乐的
+    `c6.y.qq.com` 这类分享子域），所以这里补上三组针对性反例 ——
+    族匹配一旦写成 `endswith(domain)` 而漏掉那个点，`noty.qq.com` 就会漏进来。
     """
     yf, _ = env
     for spoof in (
@@ -116,9 +132,34 @@ def test_host_match_is_exact_not_prefix(env):
         "https://notmusic.163.com/song",
         "https://evil.example/?q=music.163.com",
         "https://y.qq.com.evil.example/x",
+        # ↓ 域名族引入后的针对性反例
+        "https://noty.qq.com/x",  # 以 `y.qq.com` 结尾，但**不是**它的子域
+        "https://evilqq.com/x",  # 连主干名都不是
+        "https://music.163.com.attacker.io/song",  # 拿真域名当前缀
+        "https://xymusic.163.com/song",
     ):
         with pytest.raises(yf.YtdlpError, match="暂不支持"):
             yf._check_supported(spoof)
+
+
+def test_platform_share_subdomains_are_allowed(env):
+    """★ 域名族要放行的东西：这些平台的分享链接在自家子域之间跳。
+
+    `c6.y.qq.com` 是 2026-09-27 用户真实踩到的那个 —— 从 QQ 音乐 App 点「分享」
+    拿到的就是它，而当时的精确白名单把它当成了陌生站点，报"暂不支持 c6.y.qq.com"。
+    逐个列举没有出路（QQ 的短链域是 c1~c9），所以改成点号锚定的族。
+    """
+    yf, _ = env
+    cases = {
+        "https://c6.y.qq.com/base/fcgi-bin/u?__=x": "QQ音乐",
+        "https://i2.y.qq.com/n3/other/pages/playsong/index.html": "QQ音乐",
+        "https://y.music.163.com/m/song?id=1": "网易云音乐",
+        "https://m.music.163.com/m/song?id=1": "网易云音乐",
+        "https://m.bilibili.com/video/BV1xx": "哔哩哔哩",
+        "https://www.ximalaya.com/sound/1": "喜马拉雅",
+    }
+    for url, site in cases.items():
+        assert yf._check_supported(url) == site, url
 
 
 @pytest.mark.parametrize(
@@ -258,7 +299,7 @@ def test_stale_file_outside_session_is_rejected(env, monkeypatch, tmp_path):
 
     monkeypatch.setattr(yf.subprocess, "run", fake_run)
     # 会话目录里没有产物 → 报"没拿到音频"（而不是把外部文件当成果端出去）
-    with pytest.raises(yf.YtdlpError, match="没有音频文件"):
+    with pytest.raises(yf.YtdlpError, match="没拿到音频"):
         yf.fetch("https://music.163.com/song?id=1")
 
 
@@ -292,7 +333,7 @@ def test_no_audio_produced_is_an_error(env, monkeypatch, tmp_path):
     """跑成功了但没留下音频（版权限制的常见表现）→ 必须是错误，不能返回空结果。"""
     yf, _ = env
     _fake_tool(monkeypatch, yf, tmp_path, produces=None)
-    with pytest.raises(yf.YtdlpError, match="没有音频文件"):
+    with pytest.raises(yf.YtdlpError, match="没拿到音频"):
         yf.fetch("https://music.163.com/song?id=1")
 
 
@@ -392,3 +433,279 @@ def test_endpoint_returns_preview_url(env, monkeypatch, tmp_path):
     assert got["site"] == "网易云音乐"
     assert got["url"].startswith("/media/session/")
     assert got["bytes"] == 2048
+
+
+# ---------------------------------------------------------------- 分享链接规范化
+#
+# 2026-09-27 用户给的真实链接引出的问题：从 QQ 音乐 App 分享出来的是
+# `c6.y.qq.com/base/fcgi-bin/u?__=xxx`，它 302 三级跳到
+# `y.qq.com/n/ryqq_v2/songDetail/<mid>`，而 yt-dlp 的 qqmusic extractor
+# **只认** `/n/ryqq/songDetail/<mid>`，对另外两种都报 `Unsupported URL`。
+# 所以"粘进去没反应"里有一大类不是版权问题，是地址形式问题。
+
+REAL_QQ_SHORT = "https://c6.y.qq.com/base/fcgi-bin/u?__=yY3vbmLH9kYO"
+#: 实测抓到的落地页（不是编的）：短链 302 之后到的地方
+REAL_QQ_LANDING = (
+    "https://i2.y.qq.com/n3/other/pages/playsong/index.html?ADTAG=cbshare"
+    "&appshare=android_qq&songmid=0023jgxa0Ym5yo&type=0"
+)
+QQ_CANON = "https://y.qq.com/n/ryqq/songDetail/0023jgxa0Ym5yo"
+
+
+def test_qq_share_link_is_rewritten_to_canonical(env, monkeypatch, tmp_path):
+    """★ 用户那条真实链接：短链 → 落地页 → 规范地址。
+
+    `_resolve_redirect` 的替身返回的是**实测抓到的那一跳**，不是编的地址。
+    """
+    yf, _ = env
+    monkeypatch.setattr(yf, "_resolve_redirect", lambda url: REAL_QQ_LANDING)
+    calls = _fake_tool(monkeypatch, yf, tmp_path)
+
+    got = yf.fetch(REAL_QQ_SHORT)
+
+    assert calls[0][-1] == QQ_CANON, "交给 yt-dlp 的必须是它认的规范地址"
+    assert got["site"] == "QQ音乐"
+    assert got["source_url"] == QQ_CANON
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # yt-dlp 认 /n/ryqq/songDetail/，**不认** /n/ryqq_v2/songDetail/（本机实测）
+        "https://y.qq.com/n/ryqq_v2/songDetail/0023jgxa0Ym5yo?ADTAG=h5_play_song",
+        "https://i.y.qq.com/v8/playsong.html?songmid=0023jgxa0Ym5yo",
+        "https://y.qq.com/n/yqq/song/0023jgxa0Ym5yo.html",
+        "https://y.qq.com/#/songDetail/0023jgxa0Ym5yo",
+    ],
+)
+def test_qq_url_forms_are_normalized_without_network(env, url):
+    """★ 本地就能抠出 songmid 的写法一律改写，**且一步网络都不发**。
+
+    为什么"无网络"要在测试里钉住：`env` 把 `_resolve_redirect` 换成了抛异常的替身，
+    所以只要某个实现偷偷走了"解短链"那条分支，这里就会炸 —— 这比断言"请求次数为 0"
+    更直接，也不依赖任何网络替身。
+    """
+    yf, _ = env
+    assert yf.normalize(url) == QQ_CANON
+
+
+def test_netease_hash_route_is_normalized(env):
+    """网易云的分享链接是 hash 路由（`/#/song?id=`），id 在 fragment 上，不在 query。"""
+    yf, _ = env
+    expect = "https://music.163.com/song?id=1978534"
+    assert yf.normalize("https://music.163.com/#/song?id=1978534") == expect
+    assert yf.normalize("https://y.music.163.com/m/song?id=1978534") == expect
+
+
+def test_sites_without_an_id_rule_are_left_alone(env):
+    """没有 ID 提取规则的站点原样放过 —— 规范化是"尽力而为"，不是关卡。
+
+    b23.tv 这种 yt-dlp 自己会跳，硬改写反而可能把本来能用的链接改坏。
+    """
+    yf, _ = env
+    for url in (
+        "https://www.bilibili.com/video/BV1xx411c7mD",
+        "https://b23.tv/abcdef",
+        "https://www.jamendo.com/track/1978534/eternal-echoes",
+    ):
+        assert yf.normalize(url) == url, url
+
+
+def test_untrusted_redirect_target_is_not_trusted(env, monkeypatch):
+    """★★ 安全：短链跳到白名单**之外**时，不能采信跳转结果。
+
+    这是这一步唯一可能开出的口子 —— `normalize` 会真发一次 HTTP（跟着 302 走）。
+    如果它把"最终地址"直接交给 yt-dlp，那白名单就等于让给了任意服务端重定向
+    （在任意被放行的站点上找一个开放重定向即可绕过）。
+    正确做法：**只用跳转结果去抠 ID，再用 ID 拼一条自己构造的地址**；
+    跳转目标本身一律不采信。
+    """
+    yf, _ = env
+    monkeypatch.setattr(yf, "_resolve_redirect", lambda url: "https://evil.example/steal")
+    assert yf.normalize(REAL_QQ_SHORT) == REAL_QQ_SHORT
+
+
+def test_evil_redirect_never_reaches_the_command_line(env, monkeypatch, tmp_path):
+    """★★ 上一条的"落地"验证：真正传给 yt-dlp 的是原链接，绝不是跳转目标。
+
+    只看 `normalize` 的返回值还不够 —— 这里验的是最终落到 `subprocess` 参数里的东西。
+    """
+    yf, _ = env
+    monkeypatch.setattr(yf, "_resolve_redirect", lambda url: "https://evil.example/steal")
+    calls = _fake_tool(monkeypatch, yf, tmp_path)
+
+    yf.fetch(REAL_QQ_SHORT)
+
+    assert calls[0][-1] == REAL_QQ_SHORT
+    assert "evil.example" not in " ".join(calls[0])
+
+
+def test_redirect_failure_falls_back_to_the_original(env):
+    """解短链失败（超时/跳数超限/断网）不能让整次拉取失败。
+
+    `env` 里的替身就是"抛异常"，直接拿它当现场 —— 规范化失败时原样交给 yt-dlp，
+    由它自己去跳（它本来就能处理一部分短链）。
+    """
+    yf, _ = env
+    assert yf.normalize(REAL_QQ_SHORT) == REAL_QQ_SHORT
+
+
+def test_malformed_ids_are_rejected_not_concatenated(env):
+    """★ ID 的字符集**本身就是安全性质**：抠出来的值会被拼进 URL。
+
+    这是本模块唯一手工拼字符串的地方。`..`、`/`、`%` 一律不认，否则正则就成了
+    路径穿越/改查询串的入口。长度下限只是防呆（真实 songmid 是 14 位 base62）。
+    """
+    yf, _ = env
+    for bad in (
+        "https://y.qq.com/n/ryqq/songDetail/../../etc/passwd",
+        "https://y.qq.com/n/ryqq/songDetail/a%2Fb",
+        "https://y.qq.com/n/ryqq/songDetail/x y",
+        "https://y.qq.com/n/ryqq/songDetail/",
+    ):
+        assert yf._canonical_for(yf._host_of(bad), bad) is None, bad
+
+
+# ---------------------------------------------------------------- 登录态（显式开关）
+
+
+def test_cookies_are_off_by_default(env, monkeypatch, tmp_path):
+    """★ 默认必须发匿名请求。
+
+    `--cookies-from-browser` 会去解密用户浏览器的登录态数据库，是侵入性操作。
+    这个插件是"外部工具桥"，不该顺手摸用户的浏览器凭据 —— 要用必须用户自己显式打开。
+    """
+    yf, _ = env
+    calls = _fake_tool(monkeypatch, yf, tmp_path)
+    yf.fetch("https://music.163.com/song?id=1")
+    cmd = calls[0]
+    assert "--cookies" not in cmd
+    assert "--cookies-from-browser" not in cmd
+
+
+def test_cookie_file_is_passed_through(env, monkeypatch, tmp_path):
+    yf, _ = env
+    jar = tmp_path / "cookies.txt"
+    jar.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    monkeypatch.setenv(yf.ENV_COOKIES, str(jar))
+
+    calls = _fake_tool(monkeypatch, yf, tmp_path)
+    yf.fetch("https://music.163.com/song?id=1")
+
+    cmd = calls[0]
+    assert cmd[cmd.index("--cookies") + 1] == str(jar)
+
+
+def test_cookie_file_wins_over_browser(env, monkeypatch, tmp_path):
+    """两个都配时用文件 —— 文件是确定性的，浏览器那条在 Windows 上不可靠。
+
+    本机实测（2026-09-27）：Chrome ≥ v127 报 `Failed to decrypt with DPAPI`；
+    Edge/Chrome 只要还开着就报 `Could not copy Chrome cookie database`（库被锁）；
+    而且本机 Edge 的 `Local State` 里确认有 `app_bound_encrypted_key`
+    （即已启用 App-Bound Encryption）。所以默认推文件那条路。
+    """
+    yf, _ = env
+    jar = tmp_path / "cookies.txt"
+    jar.write_text("x", encoding="utf-8")
+    monkeypatch.setenv(yf.ENV_COOKIES, str(jar))
+    monkeypatch.setenv(yf.ENV_COOKIES_BROWSER, "edge")
+
+    calls = _fake_tool(monkeypatch, yf, tmp_path)
+    yf.fetch("https://music.163.com/song?id=1")
+
+    cmd = calls[0]
+    assert "--cookies" in cmd
+    assert "--cookies-from-browser" not in cmd
+
+
+def test_missing_cookie_file_is_a_loud_error(env, monkeypatch, tmp_path):
+    """★ 配了却不存在 → 直接报错，不能静默退回匿名。
+
+    静默忽略的后果：用户以为配好了，然后拿着"要登录"的报错反复试同一件事。
+    """
+    yf, _ = env
+    monkeypatch.setenv(yf.ENV_COOKIES, str(tmp_path / "nope.txt"))
+    _fake_tool(monkeypatch, yf, tmp_path)
+
+    with pytest.raises(yf.YtdlpError) as ei:
+        yf.fetch("https://music.163.com/song?id=1")
+    assert yf.ENV_COOKIES in str(ei.value)
+
+
+def test_cookie_browser_is_passed_through(env, monkeypatch, tmp_path):
+    yf, _ = env
+    monkeypatch.setenv(yf.ENV_COOKIES_BROWSER, "edge")
+    calls = _fake_tool(monkeypatch, yf, tmp_path)
+    yf.fetch("https://music.163.com/song?id=1")
+    cmd = calls[0]
+    assert cmd[cmd.index("--cookies-from-browser") + 1] == "edge"
+
+
+def test_probe_reports_cookie_mode(env, monkeypatch):
+    """探活要报登录态配了没 —— 前端据此提示，用户不用去猜环境变量。"""
+    yf, _ = env
+    monkeypatch.setattr(yf, "locate", lambda: None)
+    assert yf.probe()["cookie"]["mode"] == "none"
+    monkeypatch.setenv(yf.ENV_COOKIES_BROWSER, "edge")
+    assert yf.probe()["cookie"]["mode"] == "browser"
+
+
+def test_cookie_hint_distinguishes_configured_from_not(env, monkeypatch, tmp_path):
+    """★ "没配"和"配了但过期"要给不同的话。
+
+    两种情况用户下一步的动作完全不同：没配 → 去导 cookies；配了 → 重新导一份。
+    混成一句"要登录"用户就会原地打转。
+    """
+    yf, _ = env
+    assert yf.ENV_COOKIES in yf._cookie_hint("QQ音乐")
+
+    jar = tmp_path / "cookies.txt"
+    jar.write_text("x", encoding="utf-8")
+    monkeypatch.setenv(yf.ENV_COOKIES, str(jar))
+    assert "过期" in yf._cookie_hint("QQ音乐")
+
+    monkeypatch.delenv(yf.ENV_COOKIES)
+    monkeypatch.setenv(yf.ENV_COOKIES_BROWSER, "edge")
+    assert "还开着" in yf._cookie_hint("QQ音乐")
+
+
+# ---------------------------------------------------------------- 会话目录里的"上一首"
+
+
+def test_previous_song_leftover_is_not_mistaken_for_this_run(env, monkeypatch, tmp_path):
+    """★★ 上一首的残留不能被当成这一首的结果。
+
+    会话目录里躺着上一次刚扒好的歌时，`_probe_audio_ext` 如果扫**全目录**，
+    "这次什么都没产出"就会被那个残留伪装成成功 —— 用户拿到的其实是**上一首**，
+    而且他多半发现不了（文件名、时长都是真的音频）。连着扒两首时必现。
+    所以必须按本轮 `stem` 前缀过滤。
+    """
+    yf, _ = env
+    old = tmp_path / ".session" / "ytdlp_1111111111.mp3"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_bytes(b"OLD-SONG" * 100)
+
+    _fake_tool(monkeypatch, yf, tmp_path, produces=None)
+
+    with pytest.raises(yf.YtdlpError, match="没拿到音频"):
+        yf.fetch("https://music.163.com/song?id=1")
+    assert old.exists(), "不属于本次的残留不能被删"
+
+
+def test_leftover_from_a_failed_run_is_cleaned(env, monkeypatch, tmp_path):
+    """"跑完但没产出"也要收掉本轮残渣，否则它会骗过下一次的探针。"""
+    yf, _ = env
+    _fake_tool(monkeypatch, yf, tmp_path, produces=("ytdl", 10))
+    with pytest.raises(yf.YtdlpError, match="没拿到音频"):
+        yf.fetch("https://music.163.com/song?id=1")
+    assert list(tmp_path.glob("ytdlp_*")) == []
+
+
+def test_no_audio_message_lists_the_real_causes(env, monkeypatch, tmp_path):
+    """报错要给出"下一步三种可能"，不是一句"拉取失败"。"""
+    yf, _ = env
+    _fake_tool(monkeypatch, yf, tmp_path, produces=None)
+    with pytest.raises(yf.YtdlpError) as ei:
+        yf.fetch(QQ_CANON)
+    msg = str(ei.value)
+    assert "登录态" in msg and "yt-dlp -U" in msg

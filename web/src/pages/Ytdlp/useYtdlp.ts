@@ -29,6 +29,22 @@ export function useYtdlp() {
   const [summary, setSummary] = useState("")
   const [fetchedName, setFetchedName] = useState("")
   const [fetchedSite, setFetchedSite] = useState("")
+  /**
+   * 后端**实际**交给 yt-dlp 的地址。
+   *
+   * 用户粘短链时它和输入不一样（后端会把 `c6.y.qq.com/base/fcgi-bin/u?__=…`
+   * 规范化成 `y.qq.com/n/ryqq/songDetail/<mid>`）。界面只在两者不同时展示它 ——
+   * "这条链接为什么能/不能拉"的答案就在这一行里。
+   */
+  const [fetchedSourceUrl, setFetchedSourceUrl] = useState("")
+  /**
+   * 本次成功拉取时**提交的原始输入**。
+   *
+   * 页面拿它和 `fetchedSourceUrl` 比，决定要不要显示"实际解析到 …"那一行。
+   * 不能拿输入框当前值去比 —— 用户在结果出来后接着改输入框（很常见的动作），
+   * 那一行就会莫名其妙地出现/消失。
+   */
+  const [submittedUrl, setSubmittedUrl] = useState("")
 
   // 探活：`/ytdlp/status` 是纯本地调用（不联网），只在进页面时查一次。
   // 但**必须能手动重查** —— 用户的真实路径是"看到没装 → 去装 → 回来"，
@@ -72,6 +88,8 @@ export function useYtdlp() {
       const r = await fetchYtdlp(want)
       setFetchedName(r.name)
       setFetchedSite(r.site)
+      setFetchedSourceUrl(r.source_url || "")
+      setSubmittedUrl(want)
       setPreview(mediaUrl(r.url))
       setSummary(
         `${(r.bytes / 1024 / 1024).toFixed(1)} MB` +
@@ -84,6 +102,8 @@ export function useYtdlp() {
       // 失败要把上一条成功的产物清掉 —— 否则界面上留着旧音频，用户会以为是这次拉的
       setFetchedName("")
       setFetchedSite("")
+      setFetchedSourceUrl("")
+      setSubmittedUrl("")
       setPreview("")
       setSummary("")
       setErrorMessage(friendlyError(e, "拉取失败"))
@@ -95,6 +115,8 @@ export function useYtdlp() {
   const clear = useCallback(() => {
     setFetchedName("")
     setFetchedSite("")
+    setFetchedSourceUrl("")
+    setSubmittedUrl("")
     setPreview("")
     setSummary("")
     setFeedback("")
@@ -115,6 +137,8 @@ export function useYtdlp() {
     summary,
     fetchedName,
     fetchedSite,
+    fetchedSourceUrl,
+    submittedUrl,
     clear,
     /** yt-dlp 找到没。没找到时页面显示"怎么装"，输入框禁用 */
     ready: Boolean(status?.available),

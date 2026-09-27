@@ -2147,6 +2147,11 @@ export type YtdlpStatus = {
   version: string;
   /** 放行的站点（本插件**只**支持这些，不是 yt-dlp 的全量清单） */
   sites: { name: string; example: string }[];
+  /**
+   * 登录态配置。QQ 音乐这类站点不给登录态就只返"要登录"，所以这一项要能看见
+   * —— 用户配完 cookies 得有个地方确认自己配对了。`mode: "none"` = 发匿名请求。
+   */
+  cookie: { mode: "none" | "file" | "browser"; detail: string; ok: boolean };
   hint: string;
 };
 
@@ -2158,6 +2163,11 @@ export type YtdlpFetchResult = {
   bytes: number;
   /** 命中的站点显示名（如"网易云音乐"），用来在 UI 上确认解析对了 */
   site: string;
+  /**
+   * 实际交给 yt-dlp 的地址。用户粘的是短链时，这里是被**规范化**之后的规范地址
+   * —— 排查"这条链接为什么不行"时，这一项比任何日志都直接。
+   */
+  source_url: string;
   duration_s: number;
 };
 

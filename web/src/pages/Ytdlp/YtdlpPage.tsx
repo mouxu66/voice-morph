@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   Wrench,
 } from "lucide-react"
+import type { YtdlpStatus } from "@/api/client"
 import type { useYtdlp } from "@/pages/Ytdlp/useYtdlp"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { Card, PageShell, Section } from "@/components/layout/PageShell"
@@ -148,6 +149,13 @@ export function YtdlpPage(p: ReturnType<typeof useYtdlp>) {
                   {" · "}
                   确认是这首歌之后，去「翻唱」页就能直接用它。
                 </p>
+                {/* 只在"后端改写过地址"时出现。粘短链进来的用户看到这一行才明白
+                    为什么刚才那条链接能跑通 —— 也让"换条链接再试"有依据。 */}
+                {p.fetchedSourceUrl && p.fetchedSourceUrl !== p.submittedUrl && (
+                  <p className="mt-1.5 break-all px-0.5 font-mono text-[10px] leading-4 text-muted-foreground/70">
+                    实际解析到 {p.fetchedSourceUrl}
+                  </p>
+                )}
               </div>
             )}
 
@@ -177,6 +185,38 @@ export function YtdlpPage(p: ReturnType<typeof useYtdlp>) {
         <BoundaryNotes />
       </PageShell>
     </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  登录态一行                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 登录态。**为什么值得占一行**：QQ 音乐几乎全曲库都要登录态才发音频流
+ * （实测报的是 `only available for registered users`，不是付费墙），
+ * 所以"配没配"是这一页的高频事实 —— 而用户配完之后得有地方确认自己配对了，
+ * 否则他只能靠"再拉一次看看"来验证，那是在拿失败当探针。
+ *
+ * 未配时给一档中性提示（不是警告）：不配也能用网易云、B站等站点，
+ * 这不该被渲染成"你有问题"。
+ */
+function CookieNote({ c }: { c: YtdlpStatus["cookie"] | undefined }) {
+  if (!c) return null
+  const bad = !c.ok
+  const what =
+    c.mode === "file" ? "cookies 文件" : c.mode === "browser" ? `${c.detail} 的登录态` : "未配"
+  return (
+    <p className="mt-2 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[11px] leading-5">
+      <span className={cn("shrink-0", bad ? "text-amber-500" : "text-muted-foreground/80")}>
+        登录态
+      </span>
+      <span className={cn("font-mono", bad ? "text-amber-500" : "text-muted-foreground")}>{what}</span>
+      {c.mode === "none" && (
+        <span className="text-muted-foreground/70">· QQ 音乐这类站点会要求登录，拉失败时会给配置办法</span>
+      )}
+      {bad && <span className="text-amber-500">· 这个文件不存在</span>}
+    </p>
   )
 }
 
@@ -223,6 +263,7 @@ function EnvCard({ p, env }: { p: ReturnType<typeof useYtdlp>; env: EnvState }) 
                 {p.status?.version && <span className="font-mono text-[11px]">{p.status.version}</span>}
                 <span className="text-[11px]">外部工具，由你自行维护</span>
               </p>
+              <CookieNote c={p.status?.cookie} />
             </>
           )}
 

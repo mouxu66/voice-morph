@@ -47,15 +47,25 @@ export function CoverPage(p: ReturnType<typeof useCover>) {
               <p className="text-sm font-semibold text-card-foreground">1. 选择歌曲</p>
               <div
                 role="button"
-                tabIndex={0}
-                onClick={() => inputRef.current?.click()}
+                tabIndex={p.fetching ? -1 : 0}
+                onClick={() => {
+                  if (!p.fetching) inputRef.current?.click()
+                }}
                 onKeyDown={(e) => {
+                  if (p.fetching) return
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault()
                     inputRef.current?.click()
                   }
                 }}
-                className="mt-3 flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-border bg-background/50 px-4 py-8 text-center transition hover:border-primary/60"
+                className={cn(
+                  "mt-3 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-border bg-background/50 px-4 py-8 text-center transition",
+                  // 下载中禁选文件：此刻点一下选了本地文件，下载完成时又会被静默清掉
+                  // —— 用户看到的是"来源自己变了"（2026-09-27 修）
+                  p.fetching
+                    ? "cursor-not-allowed opacity-50"
+                    : "cursor-pointer hover:border-primary/60",
+                )}
               >
                 <Music4 className="h-7 w-7 text-primary" />
                 {p.file ? (
@@ -268,7 +278,21 @@ export function CoverPage(p: ReturnType<typeof useCover>) {
 
             {s?.status === "done" && p.resultUrl && (
               <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-5 shadow-lg">
-                <p className="text-sm font-semibold text-emerald-600">翻唱完成</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-semibold text-emerald-600">翻唱完成</p>
+                  {/* 提交失败后旧成品仍挂在结果区 —— 不打标就和新的「翻唱失败」错误条
+                      混淆，用户分不清错误说的是哪一次（2026-09-27 修） */}
+                  {p.resultStale && (
+                    <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600">
+                      上一次的结果
+                    </span>
+                  )}
+                </div>
+                {p.resultStale && (
+                  <p className="mt-1 text-[11px] leading-4 text-amber-600/90">
+                    刚才的尝试没有成功，下面是上一次的成品。
+                  </p>
+                )}
                 <p className="mt-1 font-mono text-xs text-muted-foreground">
                   {s.duration_s.toFixed(1)} 秒 · 变调 {s.pitch > 0 ? "+" : ""}
                   {s.pitch} 半音
