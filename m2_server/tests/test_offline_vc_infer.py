@@ -6,6 +6,7 @@
 """
 
 import os
+import random
 
 import numpy as np
 import pytest
@@ -123,6 +124,26 @@ class _FakeTorchReturns:
         return self._value
 
 
+def _seeded_junk(n: int, seed: int = 20260927) -> bytes:
+    """生成的"垃圾载荷"用**固定种子**，不用 `os.urandom`。
+
+    ★ 为什么必须固定种子：`diagnose_pth` 对 `\\x80` 开头的文件有两个分支 ——
+
+        · "早期就非法"    —— pickletools 走前缀时抛错
+        · "前缀合法（损坏可能在深处）" —— 走满 2000 个 op 都没抛
+
+    而随机字节**两支都可能落**：2026-09-27 实测 `os.urandom(4096-2)` 有
+    **0.5%**（400 次里 2 次）落到"前缀合法"那一支，但用例永远只断言另一支
+    → 大约每跑 200 次全量就红一次，而且极难复现（全量那次还会被 safe-delete
+    守卫在进程退出时掐断，连失败详情与汇总行都打不出来，只能 `-x` 重跑才定位到）。
+
+    固定种子既保留"假魔数 + 随机垃圾"的形状（与真出事那个夹具同形），
+    又让分支确定。两个分支各有一条用例显式覆盖 —— 见
+    `test_diagnose_reports_legal_prefix_but_deep_corruption`。
+    """
+    return random.Random(seed).randbytes(n)
+
+
 def test_diagnose_rejects_random_bytes_with_fake_magic(tmp_path):
     """★ 核心用例：`\x80\x02` + 随机数据（就是那个夹具的形状）必须被判为「不是权重文件」。
 
@@ -130,10 +151,25 @@ def test_diagnose_rejects_random_bytes_with_fake_magic(tmp_path):
     且那是**刻意的**廉价校验）—— 所以判读必须真的走一遍 pickle 结构。
     """
     p = tmp_path / "junk.pth"
-    p.write_bytes(b"\x80\x02" + os.urandom(512 * 1024 - 2))
+    p.write_bytes(b"\x80\x02" + _seeded_junk(512 * 1024 - 2))
     msg = offline_vc_infer.diagnose_pth(str(p))
     assert "pickle 流在**早期就非法**" in msg, f"没识破假魔数文件：{msg}"
     assert "524,288 字节" in msg, f"应报出文件大小（便于判断是否下载不完整）：{msg}"
+
+
+def test_diagnose_reports_legal_prefix_but_deep_corruption(tmp_path):
+    """另一个分支：前缀能走满 2000 个 op 时，判读会保留"损坏可能在深处"的说法。
+
+    这条是上面那条的**补集**。之前缺的就是它 —— 于是随机载荷偶尔掉进这一支时，
+    上一条会红，而看报错的人会以为是产品代码坏了。
+    载荷构造：`\\x80\\x02`（PROTO 2）后跟 2500 个 `N`（NONE），每个都是合法 op，
+    必然走满 2000 个才返回，因此分支完全确定。
+    """
+    p = tmp_path / "deep.pth"
+    p.write_bytes(b"\x80\x02" + b"N" * 2500)
+    msg = offline_vc_infer.diagnose_pth(str(p))
+    assert "前缀合法" in msg, msg
+    assert "损坏可能在深处" in msg, msg
 
 
 def test_diagnose_rejects_html(tmp_path):
@@ -187,9 +223,12 @@ def test_load_checkpoint_error_denies_the_weights_only_fix(tmp_path):
 
     这是本组用例的真正目的：错误信息如果不点破，下一个 agent 看到
     "Re-running with weights_only=False will likely succeed" 就会去关掉保护。
+
+    载荷同样用固定种子（见 `_seeded_junk`）—— 这里原本是 `os.urandom(4096-2)`，
+    0.5% 的概率会落进"前缀合法"分支，让这条断言随机变红。
     """
     p = tmp_path / "junk.pth"
-    p.write_bytes(b"\x80\x02" + os.urandom(4096 - 2))
+    p.write_bytes(b"\x80\x02" + _seeded_junk(4096 - 2))
     torch = _FakeTorchRaises(
         RuntimeError(
             "Weights only load failed. In PyTorch 2.6, we changed the default value of the "
