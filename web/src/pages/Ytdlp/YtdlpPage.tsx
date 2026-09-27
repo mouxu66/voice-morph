@@ -8,7 +8,9 @@ import {
   Music4,
   RefreshCw,
   ShieldCheck,
+  TriangleAlert,
   Wrench,
+  X,
 } from "lucide-react"
 import type { YtdlpStatus } from "@/api/client"
 import type { useYtdlp } from "@/pages/Ytdlp/useYtdlp"
@@ -31,6 +33,16 @@ import { cn } from "@/lib/utils"
 
 /** 把探活结果收敛成三种可渲染的状态，避免模板里到处写三目。 */
 type EnvState = "checking" | "ready" | "missing"
+
+/**
+ * 按钮上的字。取回可能要几十秒，光一个"取回中…"用户没法判断是在慢慢下还是卡住了。
+ *
+ * 阶段未知时**保留省略号**而不是编一个"下载中" —— 那会变成"显示的是猜的"。
+ */
+function progressLabel(p: { stage: string; percent: number | null }): string {
+  const pct = p.percent === null ? "" : ` ${Math.floor(p.percent)}%`
+  return p.stage ? `${p.stage}${pct}…` : "取回中…"
+}
 
 export function YtdlpPage(p: ReturnType<typeof useYtdlp>) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -119,9 +131,44 @@ export function YtdlpPage(p: ReturnType<typeof useYtdlp>) {
                 ) : (
                   <CloudDownload className="h-3.5 w-3.5" />
                 )}
-                {p.fetching ? "取回中…" : "取回并试听"}
+                {p.fetching ? progressLabel(p.progress) : "取回并试听"}
               </button>
+
+              {/* 取回是**同步阻塞**的：没有这条出口，用户唯一能做的是关页面 ——
+                  而后台 yt-dlp 还在跑（改动前就是这样）。它只在取回期间出现，
+                  不占常态版式。 */}
+              {p.fetching && (
+                <button
+                  type="button"
+                  onClick={() => void p.cancel()}
+                  className={cn(
+                    "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-border px-3 py-2.5",
+                    "bg-background text-xs font-medium text-muted-foreground transition",
+                    "hover:border-input hover:text-card-foreground",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60",
+                  )}
+                >
+                  <X className="h-3.5 w-3.5" />
+                  取消
+                </button>
+              )}
             </div>
+
+            {/* 进度条只在真的读到百分比时出现 —— 阶段文案单独走一行，
+                这样"还不知道进度"不会被画成 0%（那是"一点没下"的意思）。 */}
+            {p.fetching && p.progress.percent !== null && (
+              <div className="mt-3 flex items-center gap-2.5" aria-hidden="true">
+                <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary/70 transition-[width] duration-500"
+                    style={{ width: `${Math.max(0, Math.min(100, p.progress.percent))}%` }}
+                  />
+                </div>
+                <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                  {Math.floor(p.progress.percent)}%
+                </span>
+              </div>
+            )}
 
             {p.preview && (
               <div className="mt-4 rounded-xl border border-primary/30 bg-primary/[0.06] p-3 animate-in fade-in slide-in-from-top-2 duration-300">
@@ -149,6 +196,15 @@ export function YtdlpPage(p: ReturnType<typeof useYtdlp>) {
                   {" · "}
                   确认是这首歌之后，去「翻唱」页就能直接用它。
                 </p>
+                {/* ★ 兜底产物必须被标出来。MV 抽轨是混过影像声音的 192kbps AAC，
+                    不是母带 —— 用户有权知道自己拿到的是哪一种，别让他以为
+                    这首歌在平台上本来就是这个音质。 */}
+                {p.qualityNote && (
+                  <p className="mt-2 flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-2 py-1.5 text-[11px] leading-4 text-amber-700 dark:text-amber-300">
+                    <TriangleAlert className="mt-px h-3.5 w-3.5 shrink-0" />
+                    <span>{p.qualityNote}</span>
+                  </p>
+                )}
                 {/* 只在"后端改写过地址"时出现。粘短链进来的用户看到这一行才明白
                     为什么刚才那条链接能跑通 —— 也让"换条链接再试"有依据。 */}
                 {p.fetchedSourceUrl && p.fetchedSourceUrl !== p.submittedUrl && (

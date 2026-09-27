@@ -2152,6 +2152,20 @@ export type YtdlpStatus = {
    * —— 用户配完 cookies 得有个地方确认自己配对了。`mode: "none"` = 发匿名请求。
    */
   cookie: { mode: "none" | "file" | "browser"; detail: string; ok: boolean };
+  /**
+   * 会员曲兜底（QQ 音乐 MV 抽音轨）。**默认关**，由后端环境变量 `VM_MV_FALLBACK`
+   * 控制。开着时，yt-dlp 拿不到音频（会员曲）会自动改从官方 MV 抽音轨，
+   * 代价是音质打折 —— 所以这一项要显示出来，让用户知道自己在走哪条路。
+   */
+  mv_fallback?: {
+    enabled: boolean;
+    env: string;
+    /** 找到的 playwright-core 路径（空串 = 没找到，开着也用不了） */
+    playwright_core: string;
+    node: string;
+    /** 人话状态（"已开启：…" / "未开启。设 … 后重启后端"） */
+    detail: string;
+  };
   hint: string;
 };
 
@@ -2169,6 +2183,20 @@ export type YtdlpFetchResult = {
    */
   source_url: string;
   duration_s: number;
+  /**
+   * 这份音频**是怎么来的**。
+   *
+   * - `ytdlp`：正版音源（默认路径）
+   * - `mv_fallback`：QQ 音乐会员曲的兜底 —— 从官方 MV 抽的音轨
+   *
+   * 必须让用户看出差别：兜底产物是混过影像声音的 192kbps AAC，不是母带。
+   */
+  via?: "ytdlp" | "mv_fallback";
+  /**
+   * 只在 `via === "mv_fallback"` 时出现：音质打折的说明。
+   * UI **必须**把它显示出来，不能让兜底产物看起来和正版音源一样。
+   */
+  quality_note?: string;
 };
 
 /**
@@ -2181,6 +2209,18 @@ export async function ytdlpStatus(): Promise<YtdlpStatus> {
   return jsonFetch<YtdlpStatus>("/ytdlp/status");
 }
 
+/** 取回过程中的**作业状态**（`/ytdlp/fetch/{job_id}`）。 */
+export type YtdlpJobState = {
+  /** 作业还在不在。false = 跑完了 / 已取消 / id 不对 —— 不是错误。 */
+  found: boolean;
+  /** 人话阶段（"解析页面" / "下载中" / "转码中"…），拿不到就是空串 */
+  stage: string;
+  /** 下载百分比；yt-dlp 没吐进度行时是 null（别显示成 0%） */
+  percent: number | null;
+  cancelled: boolean;
+  elapsed_s: number;
+};
+
 /**
  * 粘一条平台分享链接 → 交给外部 yt-dlp 把音频拉到会话目录（**只下载，不跑链路**）。
  *
@@ -2188,11 +2228,41 @@ export async function ytdlpStatus(): Promise<YtdlpStatus> {
  * `/cover/run` 的 `src_name` 去跑翻唱，不必先下到本地中转。
  *
  * 失败（站点不在白名单 / 没装 yt-dlp / 歌曲要登录）都返回 400 且 `detail` 是人话。
+ *
+ * `jobId` 让这次取回**可取消**：后端按它登记一张作业票，`ytdlpCancel` 或
+ * `ytdlpJob` 都按同一个 id 找它。`signal` 让调用方还能在浏览器这一侧 abort
+ * （后端也会因为连接断开而把 yt-dlp 停掉，两条路都通）。
  */
-export async function fetchYtdlp(url: string): Promise<YtdlpFetchResult> {
+export async function fetchYtdlp(
+  url: string,
+  jobId = "",
+  signal?: AbortSignal,
+): Promise<YtdlpFetchResult> {
   return jsonFetch<YtdlpFetchResult>("/ytdlp/fetch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
+    body: JSON.stringify(jobId ? { url, job_id: jobId } : { url }),
+    signal,
   });
+}
+
+/**
+ * 查这次取回到哪一步了（**只读内存**，不碰网络、不碰 yt-dlp）。
+ *
+ * 取回是同步阻塞的，前端拿不到流式进度，所以按秒轮询这一条 —— 有了它，
+ * "这条链接是不是卡住了"用户自己就能判断，不用靠干等。
+ */
+export async function ytdlpJob(jobId: string): Promise<YtdlpJobState> {
+  return jsonFetch<YtdlpJobState>(`/ytdlp/fetch/${encodeURIComponent(jobId)}`);
+}
+
+/**
+ * 喊停这次取回。返回 `found: false` 表示作业已经不在了（跑完了 / id 不对），
+ * **不是错误** —— 用户在一个刚跑完的作业上点取消是完全正常的动作。
+ */
+export async function ytdlpCancel(jobId: string): Promise<{ ok: boolean; found: boolean }> {
+  return jsonFetch<{ ok: boolean; found: boolean }>(
+    `/ytdlp/fetch/${encodeURIComponent(jobId)}/cancel`,
+    { method: "POST" },
+  );
 }
