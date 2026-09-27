@@ -72,6 +72,11 @@ COVER_STATE: dict = {
     "url": "",
     "duration_s": 0.0,
     "pitch": 0,
+    # 实际用到的人声增益（auto_gain 时是实测 RMS 算出来的，与提交的 vocal_gain 无关）。
+    # 0.0 = 本轮还没算出来。存在状态里是为了让前端在**完成后面板**如实显示
+    # "人声 ×0.85" —— 以前这个数只塞在 message 里，而 message 只在 running 时渲染，
+    # 于是"听到的音量比例和界面滑块不一致"这件事用户无从得知（2026-09-27 修）。
+    "vocal_gain_applied": 0.0,
     "error": "",
 }
 _cover_lock = threading.Lock()
@@ -353,7 +358,9 @@ async def cover_run(
 
     auto_gain=True（默认）时忽略传入的 vocal_gain/accomp_gain，改由实测 RMS
     自动配平（见 `auto_vocal_gain`）—— 同理：用户听出"人声太小"时根本不知道
-    该补多少倍，量出来直接配比滑块靠谱。旧前端不传这个字段 → 走默认 True。
+    该补多少倍，量出来直接配比滑块靠谱。前端「音量平衡」区有对应勾选框，
+    关掉后才以上方两个滑块为准；实际用到的增益见 `/cover/status` 的
+    `vocal_gain_applied`（完成后面板会显示"人声 ×N.NN"）。
 
     歌曲来源二选一：`file`（上传）或 `src_name`（`/cover/fetch` 下好的会话文件名）。
     """
@@ -386,6 +393,7 @@ async def cover_run(
             url="",
             duration_s=0.0,
             pitch=pitch,
+            vocal_gain_applied=0.0,
             error="",
         )
 
@@ -473,6 +481,7 @@ def _cover_worker(
             percent=100.0,
             url=f"/api/media/outputs/{session_out.rel_url(out_path.name)}",
             duration_s=duration_s,
+            vocal_gain_applied=round(gains[0], 3),
             error="",
         )
     except Exception as e:

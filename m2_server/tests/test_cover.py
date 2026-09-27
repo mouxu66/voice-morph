@@ -219,6 +219,17 @@ def test_status_has_step_field_for_progress_ui(cover):
     assert cover.COVER_STATE["status"] == "idle"
 
 
+def test_status_has_vocal_gain_applied_field(cover):
+    """★ 完成面板要能显示"人声 ×N.NN"（2026-09-27 修）。
+
+    实际增益以前只塞在 `message` 里，而 message 仅 running 时渲染 —— 自动配平
+    （默认开）改了你听到的音量比例，界面却只字不提，用户对不上滑块与听感。
+    0.0 = 本轮还没算出来，前端据此不渲染这一段而不是显示 ×0.00。
+    """
+    assert "vocal_gain_applied" in cover.COVER_STATE
+    assert cover.COVER_STATE["vocal_gain_applied"] == 0.0
+
+
 def test_gpu_holder_blocks_new_job(cover, monkeypatch):
     """训练等独占任务在跑时要拒绝（避免争抢显卡），且给出理由。"""
     import runtime

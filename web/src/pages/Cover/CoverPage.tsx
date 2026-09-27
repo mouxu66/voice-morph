@@ -4,6 +4,7 @@ import type { useCover } from "@/pages/Cover/useCover"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { PageShell } from "@/components/layout/PageShell"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
+import { cn } from "@/lib/utils"
 
 /** 工序 → 给用户看的话。只给百分比用户会以为卡死（demucs + RVC 要几分钟）。 */
 const STEP_LABEL: Record<string, string> = {
@@ -181,9 +182,19 @@ export function CoverPage(p: ReturnType<typeof useCover>) {
             <div>
               <p className="text-sm font-semibold text-card-foreground">3. 音量平衡</p>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                默认两边都是 1.0 —— 这是分离后的自然关系，一般不用动。觉得人声被伴奏盖住再往上调。
+                自动配平：按分离后的实测音量，把 RVC 换声输出的人声拉到和伴奏相称的比例
+                （换完的人声普遍偏小，这是最常见的"听不清"）。关掉后才用下面两个滑块手动调。
               </p>
-              <div className="mt-3 space-y-2.5">
+              <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={p.autoGain}
+                  onChange={(e) => p.setAutoGain(e.target.checked)}
+                  className="accent-primary"
+                />
+                自动配平（默认开；勾上时下面两个滑块不生效）
+              </label>
+              <div className={cn("mt-3 space-y-2.5", p.autoGain && "pointer-events-none opacity-40")}>
                 <GainRow label="人声" value={p.vocalGain} onChange={p.setVocalGain} />
                 <GainRow label="伴奏" value={p.accompGain} onChange={p.setAccompGain} />
               </div>
@@ -261,6 +272,12 @@ export function CoverPage(p: ReturnType<typeof useCover>) {
                 <p className="mt-1 font-mono text-xs text-muted-foreground">
                   {s.duration_s.toFixed(1)} 秒 · 变调 {s.pitch > 0 ? "+" : ""}
                   {s.pitch} 半音
+                  {/* 自动配平时的实测人声增益。不显示就等于暗箱：
+                      滑块还停在用户拖的值上，真正生效的却是这个数（2026-09-27 修）。 */}
+                  {s.vocal_gain_applied > 0 &&
+                    ` · 人声 ×${s.vocal_gain_applied.toFixed(2)}${
+                      Math.abs(s.vocal_gain_applied - p.vocalGain) > 0.005 ? "（自动配平）" : ""
+                    }`}
                 </p>
                 <div className="mt-3">
                   <StudioAudioPlayer src={p.resultUrl} />

@@ -474,6 +474,12 @@ export type CoverStatus = {
   duration_s: number;
   /** 实际使用的变调（auto_pitch 时与提交值不同，以此为准） */
   pitch: number;
+  /**
+   * 实际用到的人声增益（0 = 本轮还没算出来）。auto_gain 时它是后端按实测 RMS
+   * 算出来的数，与提交的 vocal_gain 无关 —— 完成面板必须如实显示它，否则
+   * "滑块拖了半天没动、音量却变了"这件事用户永远无法从界面得知（2026-09-27 修）。
+   */
+  vocal_gain_applied: number;
   error: string;
 };
 
@@ -510,7 +516,13 @@ export async function runCover(
   /** true = 忽略传入 pitch，由后端按音域差自动算建议变调 */
   autoPitch = false,
   /** 会话里已下好的源文件名（粘直链那条路）；与 file 二选一 */
-  srcName = ""
+  srcName = "",
+  /**
+   * true（默认）= 后端按实测 RMS 自动配平人声，**覆盖**上面的 vocal/accompGain；
+   * false = 以上方两个滑块为准。必须显式发送 —— 后端默认 True，不传这个字段
+   * 时两个增益滑杆就是死控件（2026-09-27 修）。
+   */
+  autoGain = true,
 ): Promise<{ ok: boolean; voice_id: string }> {
   const form = new FormData();
   if (file) form.append("file", file);
@@ -521,6 +533,7 @@ export async function runCover(
   form.append("vocal_gain", String(vocalGain));
   form.append("accomp_gain", String(accompGain));
   form.append("auto_pitch", String(autoPitch));
+  form.append("auto_gain", String(autoGain));
   const res = await fetch(BASE + "/cover/run", { method: "POST", body: form });
   if (!res.ok) {
     let detail = res.statusText;

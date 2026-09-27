@@ -43,6 +43,14 @@ export function useCover() {
   const [indexRate, setIndexRate] = useState(0.5)
   const [vocalGain, setVocalGain] = useState(1)
   const [accompGain, setAccompGain] = useState(1)
+  /**
+   * 自动配平（默认开，与后端默认一致）：按实测 RMS 配人声/伴奏音量比。
+   * 勾上时上面两个增益滑块**不生效**（后端以实测值为准）—— 所以界面必须在
+   * 勾选态把它们置灰并说清"现在以实测为准"，完成后再把实测值显示出来。
+   * 这三个口径是 2026-09-27 一起补的：此前前端不传 auto_gain、也没有开关，
+   * 用户拖滑块毫无效果且看不到实测增益，等于两块死控件加一次暗箱。
+   */
+  const [autoGain, setAutoGain] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [errorMessage, setErrorMessage] = useState("")
@@ -189,7 +197,7 @@ export function useCover() {
     setFeedback("")
     setSubmitting(true)
     try {
-      await runCover(file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, srcName)
+      await runCover(file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, srcName, autoGain)
       // 源已经被这条任务用掉了（后端跑完就删，即用即删）。这里同步清掉试听，
       // 免得用户对着一个已经不在的文件再点一次「开始翻唱」而拿到 400。
       clearSource()
@@ -203,6 +211,7 @@ export function useCover() {
         url: "",
         duration_s: 0,
         pitch,
+        vocal_gain_applied: 0,
         error: "",
       })
       startPoll()
@@ -211,7 +220,7 @@ export function useCover() {
     } finally {
       setSubmitting(false)
     }
-  }, [file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, srcName, clearSource, startPoll])
+  }, [file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, srcName, autoGain, clearSource, startPoll])
 
   const running = Boolean(status?.running) || submitting
   const resultUrl = status?.url ? mediaUrl(status.url) : ""
@@ -221,7 +230,7 @@ export function useCover() {
     file, pickFile,
     srcName, srcUrl, setSrcUrl, srcPreview, srcSummary, fetching, fetchFromUrl, clearSource,
     pitch, setPitch, autoPitch, setAutoPitch,
-    indexRate, setIndexRate, vocalGain, setVocalGain, accompGain, setAccompGain,
+    indexRate, setIndexRate, vocalGain, setVocalGain, accompGain, setAccompGain, autoGain, setAutoGain,
     submitting, analyzing, errorMessage, feedback, status, running, resultUrl,
     analyzePitch, start,
     /** 有来源（本地文件或已下好的直链）才允许开跑/分析音域 */

@@ -90,6 +90,37 @@ describe("runCover 的源二选一", () => {
   });
 });
 
+/**
+ * auto_gain 必须**显式发送**（2026-09-27 修）。
+ *
+ * 曾经的坑：runCover 从来不传这个字段，后端默认 True → 自动配平直接**覆盖**
+ * 用户拖的 vocal_gain/accomp_gain，而前端界面上两个滑块没有任何禁用提示 ——
+ * 用户拖了个寂寞，还听不出区别在哪。默认值两边一致（都 true）只是巧合对齐，
+ * 一旦后端改默认、或哪天想默认关，两边又会悄悄漂开。所以这里钉住的是
+ * "字段一定在 FormData 里，且值跟入参走"，不是某个具体默认值。
+ */
+describe("runCover 的 auto_gain 显式透传", () => {
+  it("默认（不传第 9 参）也发 auto_gain=true", async () => {
+    const calls = stubFetch();
+
+    await runCover(null, "kangaroo", 0, 0.5, 1.2, 0.8, false, "cover_src_1.mp3");
+
+    const form = calls[0].init.body as FormData;
+    expect(form.get("auto_gain")).toBe("true");
+  });
+
+  it("关掉自动配平时发 false —— 这时两个增益滑块才真的是生效值", async () => {
+    const calls = stubFetch();
+
+    await runCover(null, "kangaroo", 0, 0.5, 1.5, 1, false, "cover_src_1.mp3", false);
+
+    const form = calls[0].init.body as FormData;
+    expect(form.get("auto_gain")).toBe("false");
+    // 手动模式下滑块值必须照原样发过去
+    expect(form.get("vocal_gain")).toBe("1.5");
+  });
+});
+
 describe("suggestCoverPitch 也认 src_name", () => {
   it("分析音域的源要和开跑用的是同一个", async () => {
     const calls = stubFetch(true, { ok: true, pitch: 3 });
