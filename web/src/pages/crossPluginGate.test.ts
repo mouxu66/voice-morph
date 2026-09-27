@@ -276,7 +276,16 @@ describe("声板素材管理（单条导入 + 成套音效包）", () => {
   it("★ 素材动作彼此互斥（否则目录刷新乱序，界面会停在「少一条」的状态）", () => {
     // 两个动作同时在飞时，后完成的那次刷新可能先落库 —— 而那是一个"刷新一次就对了"
     // 的偶发错，最难查。互斥写在 hook 的公共壳里（不在各个按钮上），所以钉它。
-    expect(hookSrc).toContain("if (busy) return null")
+    //
+    // ⚠️ 锚点从 `if (busy) return null` 改成 `busyRef`（2026-09-27）：
+    // 旧锚点钉的是**实现文本**，而那个实现恰好是错的 —— 用 state 当锁，
+    // `setBusy` 是异步的，同一 tick 连点两次两次都放行，**最该挡住的现场挡不住**。
+    // 修成 `busyRef`（同步）后旧断言必红。这类"把实现方式当契约"的锚点会在
+    // 正确重构时误报，所以换成钉**同步互斥这件事本身**（`busyRef` 的读写成对出现）。
+    // 真正的行为验证在 `src/pages/Tts/useSoundboard.test.ts`（同 tick 连点只放行一次）。
+    expect(hookSrc).toContain("busyRef")
+    expect(hookSrc).toMatch(/if \(busyRef\.current\) return/)
+    expect(hookSrc).toMatch(/busyRef\.current = true/)
     expect(panelSrc).toContain("const materialLocked =")
     // 素材锁与格子锁必须是两个名字：格子**绝不能**因 busy 变灰（发送中正是要出声时），
     // 上一条 describe 里的 `disabled={…busy}` 守卫靠这个区分才能继续有效。
@@ -304,7 +313,13 @@ describe("声板素材管理（单条导入 + 成套音效包）", () => {
   })
 
   it("★ 货架懒加载：没点开之前不请求（不白碰一次网络）", () => {
-    expect(hookSrc).toContain("if (shelf.loaded) return")
+    // ⚠️ 锚点从 `if (shelf.loaded) return` 改成 `shelfLoadedRef`（2026-09-27）：
+    // 同上，旧锚点钉实现文本，而那个实现也有同一个病 —— `useCallback([shelf.loaded])`
+    // 要等**重渲染**才换新闭包，`await openShelf(); await openShelf()` 时第二次读到的
+    // 仍是 false。改成 ref 后旧锚点必红。现在钉"判据是同步 ref"这件事，
+    // 行为验证在 `useSoundboard.test.ts`（成功后不重复请求）。
+    expect(hookSrc).toContain("shelfLoadedRef")
+    expect(hookSrc).toMatch(/if \(shelfLoadedRef\.current\) return/)
     expect(hookSrc).toContain("soundboardPacksAvailable")
   })
 })
