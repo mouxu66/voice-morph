@@ -68,6 +68,22 @@ QQ 音乐几乎全曲库都要登录才给音频流（实测那首歌报的是
       cookie database`（issue #7271，本机实测复现）。
 所以文档里推的是"自己导出 cookies.txt 再指 `VM_YTDLP_COOKIES`"，浏览器那条只
 当方便时能用就用。失败信息必须把这两条讲明白，否则用户只会看到一句"拉取失败"。
+
+第五条：**取回必须能停**（`FetchJob` + 空闲看门狗 + 进程树杀）
+------------------------------------------------------------
+原来的样子：`subprocess.run(timeout=600)`。粘一条坏链接，前端只能干等
+"取回中…"最多 10 分钟，用户唯一能做的是**关页面** —— 而后台 yt-dlp 还在跑。
+更要紧的是 `run` 的 timeout 只 kill **直接子进程**：yt-dlp 自己会再拉起 ffmpeg，
+超时后 ffmpeg 变成孤儿继续往会话目录里写，紧接着 `_cleanup` 的 `unlink`
+撞占用文件**静默失败**（2026-09-27 实测）。三条一起修：
+
+    ① **能取消**：`FetchJob` 是一张可撤销的作业票，前端拿 `job_id` 随时喊停；
+       前端关掉页面时 HTTP 连接断开，`ytdlp_api` 那边也会把作业取消掉。
+    ② **别等 10 分钟**：`600s` 的墙钟上限拦不住"挂着不动"，而单看总时长又会误杀
+       慢网下真在下载的大文件。加 `--newline` 后 yt-dlp 每次进度更新占一行，
+       所以**"静默"才是卡住的可靠信号** → 连续 `_IDLE_TIMEOUT_S` 秒无输出即中止。
+    ③ **按进程树杀**：Windows 走 `taskkill /F /T`，POSIX 走 `killpg`；
+       并且 `_cleanup` 改成**带重试**的删除（刚被杀的进程可能还占着句柄）。
 """
 
 from __future__ import annotations
@@ -76,8 +92,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -127,9 +145,24 @@ _SUPPORTED_FAMILIES: dict[str, str] = {
     "ximalaya.com": "喜马拉雅",
 }
 
-#: 拉取超时。整首歌（含音视频分离后的音频流）通常几秒到几十秒；
-#: 600s 是给"网络很慢的大文件"留的余量，不是给"挂着不动"的。
+#: 拉取超时（**墙钟总上限**）。整首歌（含音视频分离后的音频流）通常几秒到几十秒；
+#: 600s 是给"网络很慢的大文件"留的余量，不是给"挂着不动"的 —— 后者由
+#: `_IDLE_TIMEOUT_S` 负责拦（那才是用户真正会撞上的那一种）。
 _TIMEOUT_S = 600
+
+#: 「卡住」判定：连续这么久**一行输出都没有**就中止。
+#:
+#: 为什么不只看墙钟：600s 的墙钟拦不住"挂着不动"（用户就是干等十分钟），
+#: 而收紧墙钟又会误杀慢网下真在下载的大文件。yt-dlp 加了 `--newline` 之后
+#: 每次进度更新占一行，所以**静默**才是卡住的可靠信号。
+#: 90s 是给"解析页面 / ffmpeg 转码"这类本来就会安静一阵的阶段留的余量。
+_IDLE_TIMEOUT_S = 90
+
+#: `[download]  42.3% of ...` → 42.3。只用于给前端显示进度，解析不到不算错。
+_PROGRESS_RE = re.compile(r"\[download\]\s+([\d.]+)%")
+
+#: 看门狗轮询间隔。0.5s 足够跟上"点取消立刻停"的手感，又不会空转。
+_POLL_S = 0.5
 
 #: `--audio-format` 转出来的容器。mp3 最通用，demucs / ffmpeg 都直接吃。
 _AUDIO_FORMAT = "mp3"
@@ -161,6 +194,95 @@ _AUDIO_SUFFIXES = (".mp3", ".m4a", ".wav", ".flac", ".opus", ".webm", ".aac", ".
 
 class YtdlpError(RuntimeError):
     """给用户看的错误（消息即文案）。"""
+
+
+class FetchJob:
+    """一次取回的**可撤销作业票**。
+
+    存在的理由只有一个：`fetch` 是同步阻塞的（前端那边就是一个 await），
+    没有别的地方能让"用户改主意了"传进来。所以前端拿一个 id，作业在跑的时候
+    随时能 `cancel()`；`ytdlp_api` 检测到连接断开时也会调同一个 `cancel()`。
+
+    进度字段（`stage` / `percent`）只做展示：解析不到就是 `None`，
+    **绝不允许**因为"没读到进度行"而影响取回本身。
+    """
+
+    __slots__ = ("id", "cancelled", "_lock", "started_at", "stage", "percent")
+
+    def __init__(self, job_id: str):
+        self.id = job_id
+        self.cancelled = False
+        self.started_at = time.time()
+        self.stage = "准备中"
+        self.percent: float | None = None
+        self._lock = threading.Lock()
+
+    def cancel(self) -> None:
+        with self._lock:
+            self.cancelled = True
+
+    def note(self, stage: str | None = None, percent: float | None = None) -> None:
+        with self._lock:
+            if stage is not None:
+                self.stage = stage
+            if percent is not None:
+                self.percent = percent
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "stage": self.stage,
+                "percent": self.percent,
+                "cancelled": self.cancelled,
+                "elapsed_s": round(time.time() - self.started_at, 1),
+            }
+
+
+#: 正在跑的作业（job_id → FetchJob）。**只在这一层**，不落盘、不跨进程。
+#: 值里唯一会被别处读到的是 `cancelled`，所以用锁保护的那几个字段足够了。
+_JOBS: dict[str, FetchJob] = {}
+_JOBS_LOCK = threading.Lock()
+
+
+def new_job(job_id: str | None) -> FetchJob:
+    """登记一张作业票。同一个 id 重复登记返回**同一个**对象。
+
+    ★ "可重复"是刻意的：前端可能在取消请求之后再重试一次同一个 id，
+    若这里换了个新对象，那次取消就落在了**已经被丢弃的旧票**上 —— 看起来像
+    "取消按钮偶尔不灵"，而且只在慢请求上偶现。
+    """
+    key = (job_id or "").strip()
+    if not key:
+        key = f"anon-{int(time.time() * 1000)}-{os.getpid()}"
+    with _JOBS_LOCK:
+        job = _JOBS.get(key)
+        if job is None:
+            job = FetchJob(key)
+            _JOBS[key] = job
+        return job
+
+
+def job_of(job_id: str) -> FetchJob | None:
+    with _JOBS_LOCK:
+        return _JOBS.get((job_id or "").strip())
+
+
+def cancel_job(job_id: str) -> bool:
+    """喊停一张作业票。返回"找到没找到" —— 找不到就是跑完了（或 id 不对）。"""
+    job = job_of(job_id)
+    if job is None:
+        return False
+    job.cancel()
+    return True
+
+
+def forget(job: FetchJob | None) -> None:
+    """作业结束后把它从表里摘掉（**只摘自己那张**，别误伤同名的后来者）。"""
+    if job is None:
+        return
+    with _JOBS_LOCK:
+        if _JOBS.get(job.id) is job:
+            _JOBS.pop(job.id, None)
 
 
 def _candidates() -> list[Path]:
@@ -438,6 +560,146 @@ def probe() -> dict:
     }
 
 
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """按**进程树**中止 `proc`。
+
+    ★ 只 `proc.kill()` 是不够的：yt-dlp 会把 ffmpeg 拉成自己的子进程，杀了父亲
+    不管儿子 —— 孤儿 ffmpeg 会继续往会话目录里写它那份转码产物，随后 `_cleanup`
+    的 `unlink` 撞上被占用的文件**静默失败**（`except OSError: pass`）。
+    表现是"取消了，但文件还在长"。
+
+    Windows 用 `taskkill /T`（按父子链遍历），POSIX 用进程组。
+    """
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True, check=False, timeout=15,
+            )
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass  # 杀不动就退回到 kill()，别在收尾路径上再抛一个错盖住真正的原因
+    try:
+        proc.wait(timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def _note_progress(job: FetchJob | None, line: str) -> None:
+    """从 yt-dlp 的输出里抽一眼进度。**纯装饰**：抽不到就算了，不许影响取回。"""
+    if job is None:
+        return
+    m = _PROGRESS_RE.search(line)
+    if m:
+        try:
+            job.note(stage="下载中", percent=float(m.group(1)))
+        except ValueError:  # 理论到不了（正则只放数字/点），但展示字段不值得抛
+            pass
+        return
+    if "ExtractAudio" in line or "Extracting audio" in line:
+        job.note(stage="转码中")
+    elif "Extracting URL" in line or "Downloading webpage" in line or "Downloading API" in line:
+        job.note(stage="解析页面")
+    elif line.startswith("[") and "] " in line and "Deleting original" in line:
+        job.note(stage="收尾")
+
+
+def _run_tool(
+    cmd: list[str],
+    timeout_s: int | None,
+    job: FetchJob | None,
+    idle_s: float | None = None,
+) -> tuple[int, str]:
+    """跑 yt-dlp 并盯住它，返回 `(退出码, 合并后的全部输出)`。
+
+    三条停止条件，任一满足即**按进程树**中止并抛 `YtdlpError`：
+      · 作业被取消（用户点了取消 / 前端关了页面）
+      · 连续 `idle_s` 秒无输出（卡住）
+      · 超过 `timeout_s`（墙钟总上限）
+
+    `idle_s` 默认取模块级的 `_IDLE_TIMEOUT_S`（**在函数体里取**，不是写在默认值上
+    —— 写成默认值会是"定义时求值"，之后调参/打桩都改不动它）。`timeout_s` 同理：
+    收 `None` 时在函数体里落到 `_TIMEOUT_S`。
+
+    stderr 并进 stdout 读：yt-dlp 的进度和报错交替刷屏，两条流分开读要额外开一个
+    线程，而合并后 `_explain` 照样能用关键词归因（反正是给"人话"用的，不是给机器解析的）。
+    读取放独立线程 —— 主线程要留着一个能"到点就动手"的位置，阻塞在 readline 上就没法杀了。
+    """
+    if idle_s is None:
+        idle_s = _IDLE_TIMEOUT_S
+    if timeout_s is None:
+        timeout_s = _TIMEOUT_S  # 同上：在函数体里取，别写进默认值
+    kwargs: dict = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+    }
+    if os.name == "nt":
+        # 独立进程组：不让 Ctrl+C 之类的信号顺手带走它；taskkill /T 照样认父子链
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True  # 给 killpg 一个自己的进程组
+    try:
+        proc = subprocess.Popen(cmd, **kwargs)  # noqa: S603 —— exe 来自本地探测；参数已过白名单/由本模块拼出
+    except OSError as exc:
+        raise YtdlpError(f"启动 yt-dlp 失败：{exc}") from exc
+
+    state = {"last": time.monotonic(), "lines": []}
+
+    def pump() -> None:
+        try:
+            for raw in proc.stdout or ():
+                state["last"] = time.monotonic()
+                line = raw.rstrip("\r\n")
+                state["lines"].append(line)
+                _note_progress(job, line)
+        except (OSError, ValueError):
+            pass  # 管道被关（进程被杀）时正常收场
+
+    reader = threading.Thread(target=pump, name="ytdlp-reader", daemon=True)
+    reader.start()
+    deadline = time.monotonic() + timeout_s
+    try:
+        while proc.poll() is None:
+            if job is not None and job.cancelled:
+                _kill_tree(proc)
+                raise YtdlpError("已取消取回（yt-dlp 已中止，临时文件在收尾清理）")
+            now = time.monotonic()
+            if now - state["last"] > idle_s:
+                _kill_tree(proc)
+                raise YtdlpError(
+                    f"yt-dlp 连续 {int(idle_s)} 秒没有任何输出，判定卡住了，已中止。"
+                    "换条链接再试，或用「翻唱」页的上传 / 粘直链。"
+                )
+            if now > deadline:
+                _kill_tree(proc)
+                raise YtdlpError(f"yt-dlp 超过 {timeout_s} 秒没拉完，已中止。网络慢或这首歌太大。")
+            time.sleep(_POLL_S)
+    finally:
+        # 先把输出收干净再决定结果 —— 不然失败原因那一行可能还在管道里没读到
+        reader.join(timeout=3)
+        if proc.stdout is not None:
+            proc.stdout.close()
+    return proc.returncode or 0, "\n".join(state["lines"])
+
+
+def _tail_line(text: str) -> str:
+    """取"最有信息量的最后一行"。进度行会把真正的报错挤到上面去，所以跳过它们。"""
+    for line in reversed(text.splitlines()):
+        s = line.strip()
+        if s and not _PROGRESS_RE.search(s):
+            return s
+    return ""
+
+
 def _probe_audio_ext(path: Path, stem: str) -> str | None:
     """在会话目录里找出**本次**产出的音频文件。多个时取最大的（合并产物）。
 
@@ -457,7 +719,7 @@ def _probe_audio_ext(path: Path, stem: str) -> str | None:
     return str(max(cands, key=lambda p: p.stat().st_size))
 
 
-def fetch(url: str, timeout_s: int = _TIMEOUT_S) -> dict:
+def fetch(url: str, timeout_s: int | None = None, job: FetchJob | None = None) -> dict:
     """把 `url` 对应的音频拉进会话目录，返回与 `url_fetch.fetch_to_session` **同形**的结果。
 
     同形很重要：上游（`cover_api`）拿它当"这首歌从哪来"的一种答案，
@@ -466,6 +728,13 @@ def fetch(url: str, timeout_s: int = _TIMEOUT_S) -> dict:
     为什么不走 `url_fetch`：那个是"自己发 HTTP 的直链下载器"，面对的是已经能直接
     下载的 URL；这里面对的是**平台页面链接**，取回流地址要跑平台的页面逻辑 ——
     那正是 yt-dlp 干的活。两者的护栏口径不同（那边是逐跳校验 IP），不能混。
+
+    `job` 是可选的取消票（见 `FetchJob`）；不传就是"没人在看，跑完为止"——
+    CLI 的 `python ytdlp_fetch.py fetch <url>` 就是这种用法。
+
+    `timeout_s=None` 表示取模块级的 `_TIMEOUT_S`。**同样在函数体里取**，理由与
+    `_run_tool` 的 `idle_s` 一致：写成默认参数值会在定义时把 600 求值进去，
+    之后调参/打桩一律无效（这条踩过第二次了，两处都按同一口径写成 `None`）。
     """
     site = _check_supported(url)
     # 规范化放在白名单之后：只有"站点已放行"的链接才允许去解短链。
@@ -501,29 +770,17 @@ def fetch(url: str, timeout_s: int = _TIMEOUT_S) -> dict:
         target,
     ]
 
-    try:
-        r = subprocess.run(  # noqa: S603 —— exe 来自本地探测；target 已过站点白名单/由本模块拼出
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_s,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
+    if job is not None:
+        job.note(stage="启动 yt-dlp")
+    rc, output = _run_tool(cmd, timeout_s, job)
+    # 从"启动到跑完"这一段里任何一步失败，本轮自己的残渣都要收掉（只按 stem 删）
+    if rc != 0:
         _cleanup(out_dir, stem)
-        raise YtdlpError(f"yt-dlp 超过 {timeout_s} 秒没拉完，已中止。网络慢或这首歌太大。") from exc
-    except OSError as exc:
-        raise YtdlpError(f"启动 yt-dlp 失败：{exc}") from exc
-
-    if r.returncode != 0:
-        _cleanup(out_dir, stem)
-        raise YtdlpError(_explain(r, site))
+        raise YtdlpError(_explain(rc, output, site))
 
     got = _probe_audio_ext(out_dir, stem)
     if got is None:
-        # 本轮自己的残渣也要收掉（`.ytdl` 之类），别留给下一次 —— 但只按 stem 删。
+        # `.ytdl` 之类也在这里被收掉，别留给下一次
         _cleanup(out_dir, stem)
         raise YtdlpError(_no_audio_message(site))
 
@@ -553,18 +810,40 @@ def fetch(url: str, timeout_s: int = _TIMEOUT_S) -> dict:
     }
 
 
-def _cleanup(out_dir: Path, stem: str) -> None:
-    """失败时收尾：删掉这次留下的半截文件（含 yt-dlp 的中间产物）。
+def _cleanup(out_dir: Path, stem: str, attempts: int = 6) -> None:
+    """失败/取消时收尾：删掉这次留下的半截文件（含 yt-dlp 的中间产物）。
 
     必须按 `stem` 前缀删，**不能清空整个会话目录** —— 那里面有用户刚下好、
     还没跑翻唱的那首歌。这个函数被调用时是"这次失败了"，不是"清理场地"。
+
+    ★ 为什么要**重试**：超时/取消那条路上，我们刚 `taskkill /T` 掉进程树，
+    而 Windows 上被杀进程持有的文件句柄不是立刻释放的 —— 一次 `unlink` 常常
+    撞上 `WinError 32`。原来那句 `except OSError: pass` 会把它变成一个
+    **静默的假成功**：用户看到"已取消"，会话目录里却躺着一个还在长的半截文件，
+    而且它带着本轮的 stem 前缀，下一次 `_probe_audio_ext` 真有可能把它当产物。
+
+    仍然不抛异常：收尾失败不该盖掉真正的原因（那是用户唯一能看懂的那句话）。
     """
+    for i in range(max(1, attempts)):
+        try:
+            left = [
+                p for p in out_dir.glob(f"{stem}*")
+                if p.is_file() and not _unlink_quietly(p)
+            ]
+        except OSError:
+            return
+        if not left:
+            return
+        time.sleep(0.15 * (i + 1))  # 退避一下再试，给系统时间释放句柄
+
+
+def _unlink_quietly(p: Path) -> bool:
+    """删一个文件，返回"删干净了没"。"""
     try:
-        for p in out_dir.glob(f"{stem}*"):
-            if p.is_file():
-                p.unlink(missing_ok=True)
+        p.unlink(missing_ok=True)
+        return True
     except OSError:
-        pass  # 收尾失败不该盖掉真正的错误信息
+        return False
 
 
 def _cookie_hint(site: str) -> str:
@@ -606,13 +885,17 @@ def _no_audio_message(site: str) -> str:
     )
 
 
-def _explain(r: subprocess.CompletedProcess, site: str) -> str:
-    """把 yt-dlp 的 stderr 翻译成人话。
+def _explain(returncode: int, output: str, site: str) -> str:
+    """把 yt-dlp 的输出翻译成人话。
 
-    直接甩原始 stderr 给用户是没用的（那是几百行下载日志）。按最常见的几类
+    直接甩原始输出给用户是没用的（那是几百行下载日志）。按最常见的几类
     归因，剩下的才回落到最后一行。
+
+    ★ 收的是**合并后**的输出（stdout+stderr 一起）：关键词照样命中，
+    但取"最后一行"时要跳过进度行 —— 否则失败现场会显示成
+    `[download]  37.2% of ...`，比不显示还糟（见 `_tail_line`）。
     """
-    err = (r.stderr or "").strip()
+    err = (output or "").strip()
     low = err.lower()
     # "registered users" 是 QQ 音乐的原文；"sign in"/"login" 是别家的说法。
     # "cookie" 单列是因为 yt-dlp 的提示句里带 `--cookies-from-browser`。
@@ -628,7 +911,7 @@ def _explain(r: subprocess.CompletedProcess, site: str) -> str:
         return f"{site} 这首有版权/付费限制，拿不到音频流。换一首或换来源。"
     if "403" in err or "forbidden" in low:
         return f"{site} 拒绝了请求（403）。升级 yt-dlp 或配上登录态再试。"
-    tail = err.splitlines()[-1] if err else f"退出码 {r.returncode}"
+    tail = _tail_line(err) or f"退出码 {returncode}"
     return f"yt-dlp 失败：{tail[:300]}"
 
 
