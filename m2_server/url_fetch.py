@@ -14,10 +14,15 @@
 护栏顺序（越早拒越好，拒的时候必须给"人话"）
 -------------------------------------------
     ① scheme 只认 http/https；主机禁私网/回环（含 DNS 解析后的地址）
-    ② 手动跟随重定向，**每一跳重新过 ①** —— 防 302 逃逸到内网
+    ② 手动跟随重定向，**每一跳重新过 ①** —— 防 302 逃逸到内网；
+       探测/分片/兜底这些**自动跟随**的请求统一走 `_safe_get`，用 response hook
+       在 requests 跟下一跳之前审落点主机（CDN 302 常见，不能一禁了之）
     ③ 大小上限：写盘过程中实时累计拦，不只信 Content-Length
     ④ 落盘前嗅探文件头：HTML/JSON 直接拒（粘的是网页链接时给明确文案，
        而不是把 200KB 网页交给 ffmpeg 让它报"解码失败"）
+    ⑤ 收全才算数：分片每片读完必须正好等于请求区间、合起来正好全文；
+       单连接也要与 Content-Length 对上 —— truncate 预填零（分片）和提前收尾
+       （单连接）都产出"能放但坏"的成品，两种都不许静默通过
 
 失败一律抛 `FetchError`（消息是给用户看的），调用方只负责转成 HTTP 状态码。
 """
@@ -191,8 +196,56 @@ def _http_error(status: int) -> FetchError:
     return FetchError(f"下载失败（HTTP {status}）")
 
 
-def _fetch_single(resp, tmp: Path, max_bytes: int, first: bytes) -> int:
-    """单连接写盘（服务端不支持 Range 时的路径，也是分片不可用时的兜底）。"""
+_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+
+
+def _redirect_guard(resp, *_args, **_kwargs) -> None:
+    """requests 跟随重定向**之前**，对每一跳的落点过 `_check_host`。
+
+    CDN 302 很常见，不能 `allow_redirects=False` 一禁了之（探测/分片/兜底三条路
+    都要能跟着跳）；但每一跳的落点都必须过"非公网拒"的口径，否则这些**自动跟随**
+    的请求会把 302 带进内网（SSRF）。requests 对每个 hop 的响应都会派发一次
+    response hook —— 包括重定向响应本身，所以这里能看到每一次跳转的意图。
+
+    ⚠️ 签名里的 `*_args, **_kwargs` 不是摆设：`dispatch_hook` 会把 send 的
+    kwargs（timeout/verify/proxies…）一并转给 hook，只收一个位置参数会 TypeError。
+
+    抛 `FetchError` 会从 `requests.get` 里冒出来，与其它护栏同路。
+    """
+    if resp.status_code not in _REDIRECT_STATUSES:
+        return
+    loc = resp.headers.get("Location") or ""
+    if not loc:
+        return
+    nxt = urllib.parse.urljoin(resp.url, loc)
+    _check_host(urllib.parse.urlparse(nxt).hostname or "")
+
+
+def _safe_get(url: str, **kw) -> requests.Response:
+    """带逐跳重定向护栏的 GET。
+
+    调用方（Range 探测 / 分片 worker / 单连接兜底）自己管不了重定向细节，
+    统一走这里：`allow_redirects` 默认 True（CDN 跳转要能跟），并挂上
+    `_redirect_guard` 当 response hook。显式传 `allow_redirects=False` 的调用方
+    （探测）不受影响 —— hook 照样会看到 3xx，相当于多审一遍。
+    """
+    kw.setdefault("allow_redirects", True)
+    kw["hooks"] = {"response": _redirect_guard}
+    return requests.get(url, **kw)
+
+
+def _fetch_single(resp, tmp: Path, max_bytes: int, first: bytes, expect: int = 0) -> int:
+    """单连接写盘（服务端不支持 Range 时的路径，也是分片不可用时的兜底）。
+
+    `expect`（>0 时生效）是**同一个响应**声明的 Content-Length。收不够就是被截断了
+    —— 这条路径没有 truncate 零洞，但"提前收尾"照样产出**短而能播**的文件
+    （mp3 尾部缺一段，多数播放器照放），与分片那条是同一类静默坏档。
+    `expect=0` 表示调用方拿不到可信长度（例如换了条连接、长度来自上一个响应），
+    此时**不猜**、跳过校验。
+
+    ⚠️ 有 `Content-Encoding` 时不能比：requests 会自动解压，而 Content-Length
+    是**压缩后**的长度，一比就必然假红。音频直链极少 gzip，但"极少"不是"没有"。
+    """
     total = 0
     with tmp.open("wb") as f:
         for chunk in (first, *resp.iter_content(CHUNK_SIZE)):
@@ -202,7 +255,15 @@ def _fetch_single(resp, tmp: Path, max_bytes: int, first: bytes) -> int:
             if total > max_bytes:
                 raise FetchError(f"文件超过上限 {max_bytes // 1024 // 1024}MB，已中止")
             f.write(chunk)
+    if expect and total != expect and not _is_encoded(resp):
+        raise FetchError(f"下载不完整（收到 {total} / 应为 {expect} 字节）—— 连接被提前切断，重试一次")
     return total
+
+
+def _is_encoded(resp) -> bool:
+    """响应体是否被 requests 自动解压过（有的话 Content-Length 与落盘字节数无关）。"""
+    enc = (resp.headers.get("Content-Encoding") or "").strip().lower()
+    return bool(enc) and enc != "identity"
 
 
 def _probe_range(cur: str, timeout: tuple[float, float]) -> tuple[bool, int]:
@@ -212,7 +273,7 @@ def _probe_range(cur: str, timeout: tuple[float, float]) -> tuple[bool, int]:
     —— 分片只是提速手段，探测失败绝不能让它变成下载失败。
     """
     try:
-        resp = requests.get(
+        resp = _safe_get(
             cur,
             stream=True,
             timeout=timeout,
@@ -247,10 +308,14 @@ def _fetch_parallel(
     """按 Range 分片并行拉，写进同一个文件。
 
     护栏口径与单连接路径**完全一致**，只是每条分片自己重过一遍：
-      · 每一片都重新 `_check_host`（防 302 逃逸后拿到的地址被拿来分片）
+      · 每一片都重新 `_check_host`（防 302 逃逸后拿到的地址被拿来分片）；
+        请求走 `_safe_get`，自动跟随的重定向也逐跳审主机
       · 每一片都是加 `Range` 的独立请求，服务端若忽略 Range 会回 200 全量 →
         这种片**直接判失败**，不能把全量内容当分片拼进去（会拼出个坏文件）
       · 累计写入实时比对 `max_bytes`
+      · ★ 每片读完必须**正好** `want` 字节、全部合起来**正好** `size` ——
+        文件是 truncate 预填零的，少收的字节留在盘上就是零洞：ffmpeg 能打开、
+        能播，只是中间缺一段（"能放但坏"），所以这里必须硬拦
 
     并发数取 `min(parts, MAX_PARALLEL)` —— 再高对家用宽带没意义（实测 16 片
     只为单连接 1.83x，瓶颈在出口链路而不在片数），徒增被封风险。
@@ -271,9 +336,10 @@ def _fetch_parallel(
         if lo >= size:
             return
         hi = min((i + 1) * seg - 1, size - 1)
+        want = hi - lo + 1
         headers = {"User-Agent": USER_AGENT, "Range": f"bytes={lo}-{hi}"}
         try:
-            with requests.get(cur, stream=True, timeout=timeout, headers=headers) as r:
+            with _safe_get(cur, stream=True, timeout=timeout, headers=headers) as r:
                 if r.status_code != 206:
                     # 服务端没按分片给（回 200 全量）—— 拼进去必然坏档
                     raise FetchError("服务端不支持分片下载（Range 请求未生效）")
@@ -289,6 +355,13 @@ def _fetch_parallel(
                                     f"文件超过上限 {max_bytes // 1024 // 1024}MB，已中止"
                                 )
                         f.write(chunk)
+                    # ★ 收满才能走。文件是 truncate 预填零的，少收的字节会留在
+                    # 文件里当**零洞** —— ffmpeg 照样能打开、能播，只是中间缺一段
+                    # （"能放但坏"）。服务端提前收尾 / 连接被掐都会走到这里。
+                    if written[i] != want:
+                        raise FetchError(
+                            f"第 {i + 1} 片下载不完整（收到 {written[i]} / 应为 {want} 字节）"
+                        )
         except requests.RequestException as exc:
             raise FetchError(f"下载中断：{exc.__class__.__name__}") from exc
 
@@ -303,7 +376,12 @@ def _fetch_parallel(
         for fut in concurrent.futures.as_completed(futures):
             fut.result()  # 任一片抛错就整体失败（异常会在这里冒出来）
 
-    return sum(written)
+    total = sum(written)
+    # 对总账：各片各自验过"正好 want 字节"，这里再确认合起来就是全文。
+    # truncate 预填的零洞不会让任何一步报错 —— 少了它就是"能放但坏"的成品。
+    if total != size:
+        raise FetchError(f"分片下载不完整（共收到 {total} / 应为 {size} 字节）")
+    return total
 
 
 def fetch_to_session(
@@ -383,14 +461,17 @@ def fetch_to_session(
             if ok:
                 total = _fetch_parallel(cur, tmp, min(size, declared or size), max_bytes, timeout, PARALLEL_PARTS)
             else:
-                # 退回单连接：重新发一次普通请求
-                resp = requests.get(
-                    cur, stream=True, timeout=timeout, headers={"User-Agent": USER_AGENT}
-                )
+                # 退回单连接：重新发一次普通请求（重定向逐跳过 _redirect_guard）
+                resp = _safe_get(cur, stream=True, timeout=timeout, headers={"User-Agent": USER_AGENT})
                 first2 = next(resp.iter_content(CHUNK_SIZE), b"")
-                total = _fetch_single(resp, tmp, max_bytes, first2)
+                # 长度必须取**这条**响应的 —— 上一条是带 Range 的探测链路，
+                # 拿它的 Content-Length 去比会假红
+                total = _fetch_single(
+                    resp, tmp, max_bytes, first2,
+                    expect=int(resp.headers.get("Content-Length") or 0),
+                )
         else:
-            total = _fetch_single(resp, tmp, max_bytes, first)
+            total = _fetch_single(resp, tmp, max_bytes, first, expect=declared)
 
         tmp.replace(dst)
     except requests.RequestException as exc:

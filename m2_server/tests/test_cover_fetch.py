@@ -361,8 +361,26 @@ class RangeResp(FakeResp):
         self._want = want
 
 
-def _patch_range_get(monkeypatch, uf, body: bytes, *, probe_ok=True, segment_ok=True):
-    """替身 `requests.get`：区分 Range 探测、普通下载、分片下载三种请求。"""
+class ShortRangeResp(RangeResp):
+    """服务端回 **206**、Content-Range 照旧声称整段，但**只给 `give` 个字节**然后干净关闭。
+
+    这是"零洞文件"的成因：目标文件已被 `truncate(size)` 预填零，少收的字节不会让
+    任何一步报错 —— 文件长度对、ffmpeg 能打开、能播，只是中间缺一段。
+    它同时是**最难发现**的一类：既没有异常、也没有长度异常。
+    """
+
+    def __init__(self, body: bytes, want: str, give: int):
+        super().__init__(body, want)
+        lo = int(want.replace("bytes=", "").split("-")[0])
+        self._it = iter([body[lo : lo + give]])
+
+
+def _patch_range_get(monkeypatch, uf, body: bytes, *, probe_ok=True, segment_ok=True, give=None):
+    """替身 `requests.get`：区分 Range 探测、普通下载、分片下载三种请求。
+
+    `give` 非 None 时，每片只回 `give` 个字节（**206 状态码与 Content-Range 照旧
+    声称整段**）—— 模拟"服务端提前收尾并干净关闭"。见下面的短片用例。
+    """
     seen: dict = {"probe": 0, "plain": 0, "seg": []}
 
     class ProbeResp(FakeResp):
@@ -382,6 +400,8 @@ def _patch_range_get(monkeypatch, uf, body: bytes, *, probe_ok=True, segment_ok=
             seen["seg"].append(rng)
             if not segment_ok:
                 return FakeResp(status=200, headers={"Content-Type": "audio/mpeg"}, chunks=[body])
+            if give is not None:
+                return ShortRangeResp(body, rng, give)
             return RangeResp(body, rng)
         seen["plain"] += 1
         return FakeResp(
@@ -506,3 +526,245 @@ def test_small_file_skips_parallel_probe(_pub_dns, monkeypatch):
 
     assert seen["probe"] == 0, "小文件不该做 Range 探测"
     assert seen["seg"] == [], "小文件不该分片"
+
+
+# ------------------------------------------------- 收全才算数（零洞 / 截断）
+#
+# 2026-09-27 加的第五道栏杆。这里的失败模式**没有任何异常**：
+# 分片那条在 truncate 预填零之后少收字节 → 文件长度正确、内容是零洞；
+# 单连接那条提前收尾 → 文件短一截。两者 ffmpeg 都能打开、能播，
+# 用户拿到的是"能放但坏"的成品。所以必须靠**显式对账**把它揪出来，而不是等报错。
+
+
+def test_short_segment_is_rejected(_pub_dns, monkeypatch, tmp_path):
+    """★ 服务端 206 + Content-Range 声称整段、实际少给字节 → 必须整体失败。
+
+    这一条防的就是零洞：`truncate(size)` 已经把文件撑到全长，少收的字节留在盘上
+    就是"看起来正常"的洞。**没有这道校验时它一路绿到底。**
+    """
+    uf = _pub_dns
+    body = b"ID3" + b"w" * (2 * uf.PARALLEL_MIN_BYTES)
+    _patch_range_get(monkeypatch, uf, body, give=1024)
+
+    with pytest.raises(uf.FetchError, match=r"第 \d+ 片下载不完整"):
+        uf.fetch_to_session("http://pub.example/song.mp3", parallel=True)
+
+    assert list((tmp_path / ".session").glob("*")) == [], "不许把零洞文件留在会话目录"
+
+
+def test_truncated_single_download_is_rejected(env, monkeypatch, tmp_path):
+    """★ 单连接路径同样要对账：Content-Length 说要 5000、只给 4096 → 判失败。
+
+    这条路径没有 truncate，所以表现是"文件短一截"而不是零洞，但同属静默坏档
+    （mp3 尾部缺一段，多数播放器照放，用户听不出来）。
+    """
+    uf, _ = env
+    monkeypatch.setattr(
+        uf.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))]
+    )
+    _patch_get(
+        monkeypatch, uf,
+        [FakeResp(headers={"Content-Type": "audio/mpeg", "Content-Length": "5000"},
+                  chunks=[b"ID3" + b"\x00" * 4093])],
+    )
+    with pytest.raises(uf.FetchError, match="下载不完整"):
+        uf.fetch_to_session("http://pub.example/song.mp3")
+    assert list((tmp_path / ".session").glob("*")) == []
+
+
+def test_gzipped_response_skips_length_check(env, monkeypatch):
+    """★ 有 `Content-Encoding` 时**不许**比长度：requests 自动解压，落盘的是解压后的
+    字节，而 Content-Length 是压缩后的 —— 一比就是必然假红（把好下载判成截断）。"""
+    uf, _ = env
+    monkeypatch.setattr(
+        uf.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))]
+    )
+    payload = b"ID3" + b"\x00" * 100
+    _patch_get(
+        monkeypatch, uf,
+        [FakeResp(headers={"Content-Type": "audio/mpeg",
+                           "Content-Length": "37",  # 压缩后的长度，远小于落盘字节
+                           "Content-Encoding": "gzip"},
+                  chunks=[payload])],
+    )
+    info = uf.fetch_to_session("http://pub.example/song.mp3")
+    assert info["bytes"] == len(payload), "解压后的字节才是产物长度"
+
+
+def test_total_ledger_is_invariant_by_construction():
+    """说明性用例：`_fetch_parallel` 末尾那条 `total != size` 是**结构性不可达**的
+    防御断言，因此没有（也不该有）能把它变红的用例 —— 记在这里免得后人以为漏测。
+
+    理由：各片区间 `[i*seg, min((i+1)*seg-1, size-1)]`（`lo < size` 者）是
+    `[0, size-1]` 的一个**无缝无重叠划分**，而每片又各自被钉成"正好 `want` 字节"。
+    所以只要逐片校验通过，`sum(written) == size` 必然成立。真能出错的路径
+    （提前收尾）已经被逐片校验拦在前面了，见 `test_short_segment_is_rejected`。
+    """
+    size, parts = 3 * 1024 * 1024 + 7, 3
+    seg = size // parts + 1
+    spans = []
+    for i in range(parts):
+        lo = i * seg
+        if lo >= size:
+            continue
+        spans.append((lo, min((i + 1) * seg - 1, size - 1)))
+    assert sum(hi - lo + 1 for lo, hi in spans) == size
+    for (_, prev_hi), (next_lo, _) in zip(spans, spans[1:]):
+        assert next_lo == prev_hi + 1
+
+
+# ------------------------------------- 自动跟随路径的逐跳主机校验（护栏 ②）
+#
+# 2026-09-27 修：探测 / 分片 / 单连接兜底这三条路原来是**裸 requests.get**，
+# 而它们默认 `allow_redirects=True` —— 也就是说逐跳 `_check_host` 的主路径护栏
+# 在这三条上**根本没接上**，一条 302 就能把后端带进内网（用户粘条链接即可借道）。
+# 不能改成 `allow_redirects=False` 一禁了之：CDN 签名 URL 302 跳转很常见，
+# 禁掉等于把正常源也拒了。所以改成"跟着跳、但每一跳审落点"。
+
+
+def test_redirect_guard_passes_public_and_ignores_normal_responses(env, monkeypatch):
+    """护栏要**准**：公网落点放行、非 3xx 不碰 —— 过头拦会把 CDN 跳转全拒了。"""
+    uf, _ = env
+    monkeypatch.setattr(
+        uf.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))]
+    )
+    # 3xx 跳到公网 → 放行（真实 requests 会把 send 的 kwargs 一并转进来）
+    uf._redirect_guard(
+        FakeResp(status=302, headers={"Location": "http://cdn.example/b.mp3"}, url="http://pub.example/a.mp3"),
+        stream=True, timeout=(1, 2), verify=True, proxies={},
+    )
+    # 普通 200 → 什么都不做
+    uf._redirect_guard(FakeResp(status=200), timeout=(1, 2))
+    # 3xx 但没有 Location → 无事（后面的请求自然会失败，不在这一层编故事）
+    uf._redirect_guard(FakeResp(status=302, headers={}), timeout=(1, 2))
+
+
+def test_redirect_guard_resolves_relative_location(env, monkeypatch):
+    """相对 Location（`/b.mp3`）要按**当前 URL** 拼出来再判 —— 否则判了个空主机。"""
+    uf, _ = env
+    checked: list[str] = []
+    monkeypatch.setattr(uf, "_check_host", lambda host: checked.append(host))
+    uf._redirect_guard(
+        FakeResp(status=302, headers={"Location": "/b.mp3"}, url="http://pub.example/dir/a.mp3"),
+        timeout=(1, 2),
+    )
+    assert checked == ["pub.example"]
+
+
+def test_redirect_guard_blocks_hop_to_private(env, monkeypatch):
+    """★ 302 落点是内网/云元数据 → 抛 `FetchError`（与其它护栏同一条报错通道）。"""
+    uf, _ = env
+    for loc in ("http://127.0.0.1:8000/secret", "http://169.254.169.254/latest/meta-data",
+                "http://[::1]/x", "file:///C:/Windows/win.ini"):
+        with pytest.raises(uf.FetchError):
+            uf._redirect_guard(
+                FakeResp(status=302, headers={"Location": loc}, url="http://pub.example/a.mp3"),
+                stream=True, timeout=(1, 2), verify=True, proxies={},
+            )
+
+
+def test_safe_get_installs_redirect_guard(env, monkeypatch):
+    """`_safe_get` 必须把护栏**挂上**并允许跟随 —— 三条自动跟随路径都靠它。
+
+    这里同时钉住"hook 签名要吃得下 send 的 kwargs"：requests 的 `dispatch_hook`
+    会把 timeout/verify/proxies 一并转给 hook，只收一个位置参数会 `TypeError`。
+    （上一组用例已经用带完整 kwargs 的调用验过签名，这里验的是接线。）
+    """
+    uf, _ = env
+    captured: dict = {}
+
+    def fake_get(url, **kw):
+        captured.update(kw)
+        return FakeResp(status=200, chunks=[b""])
+
+    monkeypatch.setattr(uf.requests, "get", fake_get)
+    uf._safe_get("http://pub.example/a.mp3", stream=True, timeout=(1, 2))
+
+    assert captured["allow_redirects"] is True, "CDN 302 很常见，必须能跟"
+    assert captured["hooks"]["response"] is uf._redirect_guard, "自动跟随的每一跳都要过 _check_host"
+
+
+def _patch_hop_get(monkeypatch, uf, body: bytes, *, hop: str):
+    """替身：主路径与 Range 探测都正常，**只有自动跟随的那条**被 302 到内网。
+
+    `hop="seg"` 跳分片请求，`hop="probe"` 跳 Range 探测 —— 这两条都走 `_safe_get`
+    （自动跟随），是这个改动要盖住的地方。
+
+    区分三种请求靠的是 `(Range 头, allow_redirects)`：
+      · 主路径：无 Range + `allow_redirects=False`（手动逐跳那段）→ 正常 200
+      · 探测：  `bytes=0-0` + `allow_redirects=False`
+      · 分片：  `bytes=lo-hi` + 默认（跟随）
+    替身在派发 hook 时把 send 的 kwargs 一并传出，与 `requests.sessions.dispatch_hook`
+    的行为一致（只传 resp 会漏掉"签名吃不下 kwargs"这个坑）。
+    """
+    seen: dict = {"main": 0, "probe": 0, "seg": 0}
+
+    class ProbeResp(FakeResp):
+        def __init__(self):
+            super().__init__(status=206, headers={"Content-Range": f"bytes 0-0/{len(body)}"},
+                             chunks=[body[:1]])
+
+    def dispatch(resp, kw):
+        hook = (kw.get("hooks") or {}).get("response")
+        if hook is not None:
+            hook(resp, stream=kw.get("stream", False), timeout=kw.get("timeout"),
+                 verify=True, proxies={})
+        return resp
+
+    def fake_get(url, **kw):
+        rng = (kw.get("headers") or {}).get("Range")
+        manual = kw.get("allow_redirects") is False
+        if rng == "bytes=0-0" and manual:
+            seen["probe"] += 1
+            if hop == "probe":
+                return dispatch(FakeResp(status=302, headers={"Location": "http://10.0.0.7/evil"}), kw)
+            return ProbeResp()
+        if rng and rng.startswith("bytes=") and not manual:
+            seen["seg"] += 1
+            assert (kw.get("hooks") or {}).get("response") is not None, \
+                "自动跟随的分片请求必须带逐跳护栏"
+            return dispatch(FakeResp(status=302, headers={"Location": "http://127.0.0.1:8000/secret"}), kw)
+        seen["main"] += 1
+        return dispatch(
+            FakeResp(headers={"Content-Type": "audio/mpeg", "Content-Length": str(len(body))},
+                     chunks=[body]),
+            kw,
+        )
+
+    monkeypatch.setattr(uf.requests, "get", fake_get)
+    return seen
+
+
+def test_segment_redirect_to_private_is_blocked(_pub_dns, monkeypatch, tmp_path):
+    """★ 端到端：**分片**请求被 302 到内网 → 拦下，且不落任何残渣。
+
+    没有 hook 时 requests 会一头跟到 127.0.0.1，把后端变成内网探针
+    （用户只要能粘一条链接就能借我们的进程读内网）。
+    """
+    uf = _pub_dns
+    body = b"ID3" + b"r" * (2 * uf.PARALLEL_MIN_BYTES)
+    seen = _patch_hop_get(monkeypatch, uf, body, hop="seg")
+
+    with pytest.raises(uf.FetchError, match="内网"):
+        uf.fetch_to_session("http://pub.example/song.mp3", parallel=True)
+
+    assert seen["seg"] >= 1, "应当真的走到分片请求（否则这条用例没测到东西）"
+    assert list((tmp_path / ".session").glob("*")) == []
+
+
+def test_probe_redirect_to_private_is_not_silently_downgraded(_pub_dns, monkeypatch, tmp_path):
+    """★ 探测阶段撞上内网跳转**不许**被"降级成单连接"糊过去。
+
+    `_probe_range` 只把 `requests.RequestException` 当"不支持分片"，`FetchError`
+    必须冒出来 —— 否则一条 302 就能把 SSRF 从探测路径原封不动带到兜底路径上。
+    """
+    uf = _pub_dns
+    body = b"ID3" + b"p" * (2 * uf.PARALLEL_MIN_BYTES)
+    seen = _patch_hop_get(monkeypatch, uf, body, hop="probe")
+
+    with pytest.raises(uf.FetchError, match="内网"):
+        uf.fetch_to_session("http://pub.example/song.mp3", parallel=True)
+
+    assert seen["probe"] >= 1
+    assert seen["main"] == 1, "探测被拦下就该整体失败，不该再退回单连接"
+    assert list((tmp_path / ".session").glob("*")) == []
