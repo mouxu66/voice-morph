@@ -10,6 +10,7 @@ import {
   type RvcVoice,
 } from "@/api/client"
 import { friendlyError } from "@/lib/errors"
+import { formatDuration } from "@/lib/formatDuration"
 
 const POLL_MS = 2000
 
@@ -142,9 +143,7 @@ export function useCover() {
       setSrcPreview(mediaUrl(r.url))
       setSrcSummary(
         `${(r.bytes / 1024 / 1024).toFixed(1)} MB` +
-          (r.duration_s
-            ? ` · ${Math.floor(r.duration_s / 60)}:${String(Math.round(r.duration_s % 60)).padStart(2, "0")}`
-            : "")
+          (r.duration_s ? ` · ${formatDuration(r.duration_s)}` : "")
       )
       setFile(null)
       // 主动把来源切成直链时要说出来 —— 静默清掉本地文件会让用户以为

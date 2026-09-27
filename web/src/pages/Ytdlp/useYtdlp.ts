@@ -9,6 +9,7 @@ import {
   type YtdlpStatus,
 } from "@/api/client"
 import { friendlyError } from "@/lib/errors"
+import { formatDuration } from "@/lib/formatDuration"
 
 /**
  * 生成取回作业号。后端只认 `^[0-9A-Za-z_-]{8,64}$`，所以两条路都合规：
@@ -170,9 +171,7 @@ export function useYtdlp() {
       setPreview(mediaUrl(r.url))
       setSummary(
         `${(r.bytes / 1024 / 1024).toFixed(1)} MB` +
-          (r.duration_s
-            ? ` · ${Math.floor(r.duration_s / 60)}:${String(Math.round(r.duration_s % 60)).padStart(2, "0")}`
-            : "")
+          (r.duration_s ? ` · ${formatDuration(r.duration_s)}` : "")
       )
       // 兜底产物的话术要和正版音源分开 —— 不能让用户以为拿到的是母带。
       setFeedback(
