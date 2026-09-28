@@ -133,6 +133,57 @@ def test_input_device_probe_merges_both_suffixes(tmp_path, monkeypatch):
     assert probe["device"] == "麦克风阵列 (Senary Audio)"
 
 
+def test_device_from_blob_loose_reads_name_without_record_anchor():
+    """新版微信把设备名写在**没有** start_record 锚点的文件里 —— 回退通道必须读到。
+
+    2026-09-28 实测（微信 4.1.x）：`key_*_input.statistic` 里有
+    `CABLE Output (VB-Audio Virtual Cable)`，但整份文件没有 start_record/end_record，
+    严格通道恒 None → 每条发送都误报「读不到设备、可能静音」，而那条语音（UIA 校验
+    新增 41" 气泡）其实是有声音的。严格通道的语义保持不变（下面第一行断言）。
+    """
+    stray = (
+        b"\x12\x0096,1,165,184,205,0,0,0,0,"
+        + b"CABLE Output (VB-Audio Virtual Cable)"
+        + b",,,"
+    )
+    assert wp._device_from_blob(stray) is None  # 严格通道：无锚点不认（语义不破）
+    assert wp._device_from_blob_loose(stray) == "CABLE Output (VB-Audio Virtual Cable)"
+
+
+def test_device_from_blob_loose_rejects_non_endpoint_csv():
+    """回退通道也不能乱认：带括号但不像音频设备的串（IP / 群 ID / CPU 型号）要挡住。"""
+    stray = b"\x12\x0096,1,165,184,205,0,0,0,0,113.105.153.166 (cache)" + b",,,"
+    assert wp._device_from_blob_loose(stray) is None
+
+
+def test_device_from_blob_loose_takes_last_hit():
+    """同一文件里有多条设备行时取最后一条（遥测按时间追加，最新的在后）。"""
+    row = b"\x12\x0096,1,165,184,205,0,0,0,0,"
+    blob = (
+        row
+        + "麦克风阵列 (Senary Audio)".encode("utf-8")
+        + b",,,"
+        + row
+        + b"CABLE Output (VB-Audio Virtual Cable)"
+        + b",,,"
+    )
+    assert wp._device_from_blob_loose(blob) == "CABLE Output (VB-Audio Virtual Cable)"
+
+
+def test_input_device_probe_falls_back_when_no_anchor(tmp_path, monkeypatch):
+    """探针在严格通道读不到时必须自动降级到回退通道，而不是返回 None。"""
+    monkeypatch.setattr(wp, "_KVCOMM", tmp_path)
+    f = tmp_path / "key_1_2_3_1789823987_4201_3600_input.statistic"
+    f.write_bytes(
+        b"\x00\x01kv-misc:"
+        b"\x12\x0096,1,165,184,205,0,0,0,0,CABLE Output (VB-Audio Virtual Cable),,,"
+    )
+    probe = wp.input_device_probe()
+    assert probe["device"] == "CABLE Output (VB-Audio Virtual Cable)"
+    assert probe["file"] == f.name
+    assert wp.last_input_device() == "CABLE Output (VB-Audio Virtual Cable)"
+
+
 # ---------------- _await_uia_active：判早了会让发送退化到像素链路 ----------------
 
 

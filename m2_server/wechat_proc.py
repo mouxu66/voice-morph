@@ -417,7 +417,8 @@ def input_device_probe() -> dict:
             blob = f.read_bytes()
         except OSError:
             continue
-        name = _device_from_blob(blob)
+        # 严格通道（有 start_record 锚点）优先；新版微信没有这对锚点时走宽松回退。
+        name = _device_from_blob(blob) or _device_from_blob_loose(blob)
         if name:
             return {"device": name, "file": f.name, "hits": 1}
     return {"device": None, "file": None, "hits": 0}
@@ -435,6 +436,52 @@ def _device_from_blob(blob: bytes) -> str | None:
         if "(" in s and ")" in s:  # 设备名必带括号后缀，用它挡住假阳性
             return s
     return None
+
+
+# 回退通道的端点关键词白名单：整文件扫描时，只有设备名里带这些词才认。
+# 用白名单而不是"带括号就认"，是因为同一份遥测里还有 IP、群 ID、CPU 型号等
+# 同样形如 `9 个数字,某带括号串` 的 CSV 行（严格通道靠 start_record 上下文挡住，
+# 回退通道没有上下文，只能靠语义）。
+_ENDPOINT_HINTS = (
+    "cable",
+    "virtual",
+    "vb-audio",
+    "麦克风",
+    "扬声器",
+    "耳机",
+    "耳麦",
+    "microphone",
+    "speaker",
+    "headset",
+    "realtek",
+    "senary",
+    "立体声混音",
+    "line in",
+    "usb audio",
+)
+
+
+def _device_from_blob_loose(blob: bytes) -> str | None:
+    """宽松回退通道：**没有** `start_record` 锚点时，扫全文找「像音频设备名」的串。
+
+    2026-09-28 实测（微信 4.1.x）：设备名写在 `key_*_input.statistic` 里，但这份
+    文件里没有 `start_record`/`end_record` 这对锚点 —— 严格通道于是恒返回 None。
+    用户视角的后果是：语音明明发出去有声音（UIA 已校验新增 41" 气泡），每条却都带
+    一句「读不到微信上次录音用的输入设备，无法确认它会不会录到 CABLE」的误报，
+    连带让 auto 模式的"要不要重启微信"失去判据。
+
+    取**最后一个**命中（遥测按时间追加，最新的记录在后），并用端点关键词白名单
+    压假阳性。只读，不改微信任何东西。
+    """
+    hit = None
+    for h in _DEV_LINE.findall(blob):
+        s = h.decode("utf-8", "replace").strip()
+        if "(" not in s or ")" not in s:
+            continue
+        low = s.lower()
+        if any(k in low for k in _ENDPOINT_HINTS):
+            hit = s
+    return hit
 
 
 def last_input_device() -> str | None:
