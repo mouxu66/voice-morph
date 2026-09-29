@@ -202,11 +202,14 @@ function tickInterval() {
   return hits[0].fn;
 }
 
+// 文档级监听器要**记下来**（原来是 no-op 桩）：按住说话有一条关键不变量挂在 document 上
+// ——「按住期间不能把窗口设成鼠标穿透」，那是 document.mousemove 里的分支。
 global.document = {
+  _on: {},
   getElementById: (id) => (els[id] = els[id] || mkEl(id)),
   createElement: () => mkEl("tmp"),
   querySelectorAll: () => [],
-  addEventListener() {},
+  addEventListener(type, fn) { (this._on[type] = this._on[type] || []).push(fn); },
   elementFromPoint: () => null,
   documentElement: mkEl("html"),
   body: mkEl("body"),
@@ -225,6 +228,12 @@ global.window = {
     showBackendLog: () => petIpc.push(["showBackendLog"]),
     onPreviewResult: (cb) => { petCbs.preview = cb; },
     onSendResult: (cb) => { petCbs.send = cb; },
+    // 按住说话（2026-09-29）：两条 IPC + 一条状态回传。
+    // 回传单独存 petCbs.mic —— 测试靠它把主进程的真实状态推回渲染器
+    // （按钮文案/颜色/秒数全部由那个状态驱动，不是渲染器自己编的）。
+    micDown: (v) => petIpc.push(["micDown", v]),
+    micUp: () => petIpc.push(["micUp"]),
+    onMicState: (cb) => { petCbs.mic = cb; },
   },
   addEventListener() {},
 };
@@ -246,6 +255,18 @@ global.self = global;
 const fetchCalls = [];        // { url, method } —— 引擎启停必须按「先停再开」的顺序断言
 let cascadeRunning = false;   // 模拟「主界面把千问开起来了」
 let liveRunning = false;      // 模拟「主界面把 RVC 开起来了」
+
+// 发送前预检的桩（2026-09-29）：默认回「微信已打开、不会重启」这一常态；
+// 其它形态由用例自己塞 precheckStub（注定失败 / 会重启 / 字段缺失 / 404 / 直接抛错）。
+// 为什么得可控：面板上那条预检行的**全部价值**就在「不同结论要说不同的话」，
+// 一律回 ok:true 的桩会把「微信没开」和「后端旧版」这两件事混成同一句话。
+const PRECHECK_OK = {
+  ok: true, restart_mode: "0", restart_needed: false,
+  reason: "VM_WECHAT_RESTART=0 已关闭重启",
+  wechat_running: true, block_reason: "",
+  hint: "不会重启微信，直接切麦克风到 CABLE Output",
+};
+let precheckStub = null;
 global.fetch = async (url, opts) => {
   const u = String(url);
   const method = String((opts && opts.method) || "GET").toUpperCase();
@@ -264,9 +285,30 @@ global.fetch = async (url, opts) => {
       : { running: false }) };
   }
   if (u.includes("/api/rvc/live/status")) {
-    return { ok: true, status: 200, json: async () => ({ live_running: liveRunning }) };
+    // infer_ms / block_ms 是 2026-09-29 后端新加的（tail realtime_gui.log 实测推理耗时）。
+    // liveRunning 时才报数 —— 与后端一致（停变声后日志里还留着上次的数，但接口只在跑时报）。
+    return { ok: true, status: 200, json: async () => (liveRunning
+      ? { live_running: true, infer_ms: 82.4, infer_ms_p95: 130.2, infer_samples: 100, block_ms: 40 }
+      : { live_running: false }) };
+  }
+  if (u.includes("/api/wechat/precheck")) {
+    if (typeof precheckStub === "function") return precheckStub();
+    if (precheckStub) return precheckStub;
+    return { ok: true, status: 200, json: async () => ({ ...PRECHECK_OK }) };
   }
   let body = {};
+  // 音色清单（2026-09-29 起多一个 selected：主界面当前选中的音色 id）。
+  // 状态条上的「当前音色」就是靠它把「主界面选中」这个空 value 换成一个真名字的。
+  if (u.includes("/api/voices")) {
+    body = {
+      selected: "kangaroo",
+      voices: [
+        { id: "furina", display_name: "芙宁娜", has_reference: true },
+        { id: "kangaroo", display_name: "袋鼠骑士", has_reference: true },
+        { id: "noref", display_name: "无参考(应被过滤)", has_reference: false },
+      ],
+    };
+  }
   if (u.includes("/pet-market/applied")) {
     body = {
       id: "furina", frameW: 150, frameH: 150,
@@ -289,8 +331,17 @@ global.fetch = async (url, opts) => {
 // 显式挂一份。`engine` / `runningEngine` 是 let，只能用 getter 闭包读（对象字面量存不住活绑定）。
 // 追加在末尾不影响上面按行号做的错误定位。
 const EXPORT_HOOK = "\n;globalThis.__petFns = { setState, setEngine, playGuide, endGuide, setBubbleVisible, settleSendResult,"
+  + " setTab, loadVoices,"
   + " getEngine: function () { return engine; },"
-  + " getRunningEngine: function () { return runningEngine; } };\n";
+  + " getRunningEngine: function () { return runningEngine; },"
+  // 按住说话（2026-09-29）：micPhase / activeTab / panelTimer 都是模块作用域的 let，
+  // 只能用 getter 闭包读（对象字面量存不住活绑定）。panelTimer 是「按住时面板不许自己收」
+  // 那条不变量的唯一观测点。
+  + " getMicPhase: function () { return micPhase; },"
+  // 发送前预检：形态全靠后端响应决定，只能从外部不同形态地喂（见下面的预检用例）
+  + " refreshWechatPrecheck,"
+  + " getActiveTab: function () { return activeTab; },"
+  + " getPanelTimer: function () { return panelTimer; } };\n";
 let thrown = null;
 try {
   (0, eval)(code + EXPORT_HOOK);
@@ -306,6 +357,16 @@ for (const mm of html.matchAll(/id="(eng[A-Za-z]+)"\s+data-eng="([a-z]+)"/g)) {
   els[mm[1]] = els[mm[1]] || mkEl(mm[1]);
   els[mm[1]].dataset = { eng: mm[2] };
 }
+// 页签同理（setTab 读 b.dataset.tab）。从 HTML 抠出来，改了页签 id/名字测试会跟着走。
+for (const mm of html.matchAll(/id="(tab[A-Za-z]+)"\s+data-tab="([a-z]+)"/g)) {
+  els[mm[1]] = els[mm[1]] || mkEl(mm[1]);
+  els[mm[1]].dataset = { tab: mm[2] };
+}
+// 音色下拉：真实 <select> 永远有 options（HTMLOptionsCollection），而 DOM 桩不是解析器。
+// 不补上，refreshRemoteVoice 的「反查名字」路径就永远跑不到，测试会假绿。
+els.voiceSel = els.voiceSel || mkEl("voiceSel");
+els.voiceSel.options = [];
+els.voiceSel.add = (o) => { els.voiceSel.options.push(o); };
 
 // tick()/loadSkin() 是 async，用真 setTimeout 让 await 链推进完
 const flush = () => new Promise((r) => setTimeout(r, 20));
@@ -646,6 +707,278 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     });
   }
 
+  // ---------- 常驻遥控器（2026-09-29）：状态条 + 按住说话 ----------
+  // 量的是「桌宠从装饰变成遥控器」这个改动本身。两个最容易静默腐烂的地方：
+  //   ① 状态条上那三个数各自来自哪个源（药丸=实时状态 / 音色=下拉或后端 selected /
+  //      耗时=实时日志尾部），源错了不会报错，只会显示一个看起来很像真的的假数字；
+  //   ② 按住说话是**跨进程的状态机**（主进程持状态、这里只镜像）——
+  //      最容易出的错是「手势发出去、状态没人接」，界面上表现为“按了没反应”。
+  if (!OFFLINE) {
+    // 先把音色清单拉进来：真实路径上这一步由 showPanel() → refreshPanel() 触发（悬停面板），
+    // 而状态条的「当前音色」就是靠它把「主界面选中」那个空 value 换成真名字的。
+    // 不先拉的话下面那条断言测到的是“还没拉到”的占位态，不是要守的行为。
+    await petFns.loadVoices();
+    (els.voiceSel._on.change || []).forEach((fn) => fn());
+    // 让后端报「RVC 正在跑」：这时状态条三块同时在场（最挤的一帧）
+    cascadeRunning = false;
+    liveRunning = true;
+    await tickInterval()();
+    await flush();
+
+    check("状态条：变声在跑时三块同屏 —— 引擎名 + 音色 + 实测推理耗时", () => {
+      assert.strictEqual(els.pillText.textContent, "RVC 变声中");
+      assert.strictEqual(els.rmVoice.textContent, "袋鼠骑士",
+        "音色 chip 没显示出来（它是「当前音色」唯一的常驻入口）");
+      assert.strictEqual(els.rmLat.hidden, false, "变声在跑，推理耗时的 chip 却没出现");
+      assert.strictEqual(els.rmLat.textContent, "82ms",
+        "耗时显示的不是后端给的值：" + JSON.stringify(els.rmLat.textContent));
+      // 口径必须写清楚：这是单块推理耗时，不是端到端延迟（端到端还要加分块与音频驱动缓冲）
+      assert.match(String(els.rmLat.title), /推理/);
+      assert.match(String(els.rmLat.title), /端到端/);
+    });
+
+    // 停掉变声：日志尾部还留着上次的 82ms（后端接口就不再报了）——
+    // 照旧显示的话，用户会以为变声还在跑（那正是“只读日志”最容易掉进去的坑）。
+    liveRunning = false;
+    await tickInterval()();
+    await flush();
+
+    check("状态条·耗时只在真的在跑时报（停了就清空，不留上次的数）", () => {
+      assert.strictEqual(els.rmLat.hidden, true, "变声停了但耗时 chip 还在");
+      assert.strictEqual(els.rmLat.textContent, "", "变声停了却还显示上一轮的耗时");
+    });
+
+    check("状态条·音色：下拉是「主界面选中」时用 /api/voices 的 selected 反查真名", () => {
+      assert.strictEqual(els.voiceSel.value, "", "前置状态没构造出来：下拉应为「主界面选中」");
+      assert.strictEqual(els.rmVoice.textContent, "袋鼠骑士",
+        "下拉 value 为空时没去查 selected —— 用户看到的会是一句没用的「主界面选中」" +
+        "（实际：" + JSON.stringify(els.rmVoice.textContent) + "）");
+    });
+
+    check("状态条·音色：下拉选了具体音色就显示那一个（与发送链路同源）", () => {
+      els.voiceSel.value = "furina";
+      (els.voiceSel._on.change || []).forEach((fn) => fn());
+      assert.strictEqual(els.rmVoice.textContent, "芙宁娜",
+        "chip 没跟着下拉走 —— 显示的音色和真发出去用的音色会分叉");
+      els.voiceSel.value = "";
+      (els.voiceSel._on.change || []).forEach((fn) => fn());
+      assert.strictEqual(els.rmVoice.textContent, "袋鼠骑士");
+    });
+
+    // 药丸是个真按钮：点一下 = 启停**当前选中**的引擎（与分段里点已选中项同一件事）
+    petFns.setEngine("rvc");
+    const beforePill = fetchCalls.length;
+    (els.pill._on.click || [])[0]();
+    await flush();
+
+    check("药丸点一下就启停当前引擎（打的是选中引擎的端点）", () => {
+      const posts = fetchCalls.slice(beforePill).filter((c) => c.method === "POST").map((c) => c.url);
+      assert.strictEqual(posts.length, 1, "应恰好一个 POST，实际 " + JSON.stringify(posts));
+      assert.ok(posts[0].includes("/api/rvc/live/start"),
+        "应打选中引擎（rvc）的启动端点，实际 " + posts[0]);
+    });
+
+    // ---------- 按住说话：手势 → IPC → 状态回传 ----------
+    petIpc.length = 0;
+    els.voiceSel.value = "kangaroo";
+    (els.holdMic._on.pointerdown || [])[0]({ pointerId: 1 });
+
+    check("按住说话：pointerdown → pet:mic-down，且带上面板选中的音色", () => {
+      assert.deepStrictEqual(petIpc.filter((c) => c[0] === "micDown"), [["micDown", "kangaroo"]],
+        "按下没有下发 pet:mic-down（或没带上音色 id）—— 主进程不知道用哪个音色换声");
+      assert.strictEqual(petFns.getMicPhase(), "arming", "按下后应进入 arming（等 start 的响应）");
+    });
+
+    check("按住说话：pointerup → pet:mic-up（松手只表示「要停」，不停在本地）", () => {
+      (els.holdMic._on.pointerup || [])[0]();
+      assert.ok(petIpc.some((c) => c[0] === "micUp"), "松手没有下发 pet:mic-up —— 录音只能等 59s 上限自己停");
+      assert.strictEqual(petFns.getMicPhase(), "arming",
+        "松手不该直接把相位改成 idle —— 真正的下一个状态由主进程回传（换声可能要十几秒）");
+    });
+
+    check("按住说话：pointercancel 也算松手（系统抢走手势时不能挂着）", () => {
+      const before = petIpc.filter((c) => c[0] === "micUp").length;
+      (els.holdMic._on.pointercancel || [])[0]();
+      assert.ok(petIpc.filter((c) => c[0] === "micUp").length > before);
+    });
+
+    check("mic-state 回传驱动按钮：录制中整块转红 + 秒数在跳", () => {
+      assert.strictEqual(typeof petCbs.mic, "function", "onMicState 没被订阅（按钮状态就没人驱动了）");
+      petCbs.mic({ phase: "recording", startedAt: Date.now() - 2300, maxSeconds: 59 });
+      assert.strictEqual(petFns.getMicPhase(), "recording");
+      assert.ok(els.holdMic.classList.contains("rec"), "录制中按钮没转红（分不清在不在录）");
+      assert.match(String(els.micSec.textContent), /^2\.[0-9]s \/ 59s$/,
+        "秒数没显示出来：" + JSON.stringify(els.micSec.textContent));
+      petCbs.mic({ phase: "idle", startedAt: 0, maxSeconds: 59 });
+      assert.strictEqual(petFns.getMicPhase(), "idle");
+      assert.ok(!els.holdMic.classList.contains("rec"), "结束后按钮还红着");
+      assert.strictEqual(els.micSec.textContent, "");
+    });
+
+    // 按住期间的两条集成级不变量。它们不属于「功能」，而是「手势能不能真的走完」：
+    //   ① 窗口不能被设成鼠标穿透 —— 否则松手事件可能根本送不到页面；
+    //   ② 面板不能在那 500ms 后自动收 —— 按钮一没了，指针捕获和秒数一起没了。
+    petIpc.length = 0;
+    petCbs.mic({ phase: "recording", startedAt: Date.now(), maxSeconds: 59 });
+    (document._on.mousemove || [])[0]({ clientX: 5, clientY: 5, screenX: 5, screenY: 5 });
+
+    check("按住期间不把窗口设成鼠标穿透（否则松手可能收不到）", () => {
+      const last = petIpc.filter((c) => c[0] === "setIgnoreMouse").pop();
+      assert.ok(last, "mousemove 根本没调 setIgnoreMouse —— 那套穿透逻辑被改掉了？");
+      assert.strictEqual(last[1], false,
+        "按住期间把窗口设成了穿透：光标一滑出面板，pointerup 就可能到不了页面");
+      petCbs.mic({ phase: "idle", startedAt: 0, maxSeconds: 59 });
+      (document._on.mousemove || [])[0]({ clientX: 5, clientY: 5, screenX: 5, screenY: 5 });
+      const after = petIpc.filter((c) => c[0] === "setIgnoreMouse").pop();
+      assert.strictEqual(after[1], true, "结束按住后应恢复全窗穿透（否则透明窗一直吃鼠标）");
+    });
+
+    check("按住期间面板不自动收起（panelTimer 不能被挂上）", () => {
+      const leave = (els.panel._on.mouseleave || [])[0];
+      assert.strictEqual(typeof leave, "function", "面板没有 mouseleave 处理器？");
+      petCbs.mic({ phase: "recording", startedAt: Date.now(), maxSeconds: 59 });
+      leave();
+      assert.strictEqual(petFns.getPanelTimer(), null,
+        "按住期间挂了自动收起定时器 —— 按钮会带着秒数一起消失，而录音还在继续");
+      petCbs.mic({ phase: "idle", startedAt: 0, maxSeconds: 59 });
+      leave();
+      assert.notStrictEqual(petFns.getPanelTimer(), null,
+        "没在按的时候面板应照旧自动收（常驻面板会挡住桌面）");
+      clearTimeout(petFns.getPanelTimer());
+    });
+
+    check("旧主进程（preload 里没有 micDown）必须说出来，不能静默失败", () => {
+      const saved = window.pet.micDown;
+      delete window.pet.micDown;
+      petIpc.length = 0;
+      (els.holdMic._on.pointerdown || [])[0]({ pointerId: 3 });
+      assert.match(String(els.statusText.textContent), /新版桌面端|asar/,
+        "旧主进程时静默失败 —— 用户按半天会以为是自己没按住，而这他解决不了；" +
+        "实际状态行：" + JSON.stringify(els.statusText.textContent));
+      assert.strictEqual(petFns.getMicPhase(), "idle", "没发出去的按住不该让按钮停在“录制中”");
+      window.pet.micDown = saved;
+    });
+
+    check("「按住说话」是第三个页签：切过去时显示页体、收起动作行（并记住这一页）", () => {
+      (els.tabHold._on.click || [])[0]();
+      assert.strictEqual(petFns.getActiveTab(), "hold");
+      assert.ok(els.holdPane.classList.contains("on"), "按住页的页体没显示");
+      assert.ok(!els.speakPane.classList.contains("on"), "说话页没有让位");
+      assert.strictEqual(els.actRow.style.display, "none",
+        "「按住」页里还留着「合成并发送/试听」—— 它们作用的是说话页的输入框，会让人以为还要先打字");
+      assert.strictEqual(localStorageStore.get("pet_panel_tab"), "hold",
+        "页签没记住 —— 固定用「按住」的人每次悬停都要重新点一次");
+      // 这一页的入口同样受 hook.wechat 门控（整条链路终点是发微信）
+      assert.ok(/hide\("tabHold"/.test(codeStripped) && /hide\("holdPane"/.test(codeStripped),
+        "refreshCapVisibility 没有收起「按住说话」的页签/页体：关掉微信能力后它就是个一按必 404 的死页");
+      (els.tabSpeak._on.click || [])[0]();
+      assert.strictEqual(petFns.getActiveTab(), "speak");
+      assert.strictEqual(els.actRow.style.display, "", "回到说话页应把动作行放回来");
+    });
+
+    // ---------- 发送前预检：微信开没开 / 会不会重启，要**按下之前**就说 ----------
+    //
+    // 这一组钉的是那条最贵的失败路径：录 0..59 秒 + 换声十几秒，然后才被告知「微信没开」。
+    // 判据全部来自后端 /api/wechat/precheck（只读），前端只负责「把不同结论说成不同的话」。
+    const holdPre = els.holdPre;
+    const preFetches = () => fetchCalls.filter((c) => c.url.includes("/api/wechat/precheck")).length;
+
+    // ① 常态：微信在跑、不重启
+    precheckStub = null;
+    (els.tabHold._on.click || [])[0]();     // 进页 → 强制拉一次（绕过节流）
+    await flush();
+    check("进「按住说话」页就把预检拉出来：常态写「微信已打开」", () => {
+      assert.strictEqual(holdPre.className, "t-ok",
+        "常态预检的色调不对（应 t-ok）：" + JSON.stringify(holdPre.className));
+      assert.match(String(holdPre.textContent), /已打开|直接切麦克风/,
+        "预检行没显示常态结论：" + JSON.stringify(holdPre.textContent));
+    });
+
+    // ② 注定失败（block_reason 非空）：这才是「松手之后才报错」要治的那件事
+    precheckStub = { ok: true, status: 200, json: async () => ({
+      ...PRECHECK_OK,
+      wechat_running: false,
+      block_reason: "微信没有在运行：请先打开微信并登录、进入聊天窗口，再重试发送",
+    }) };
+    await petFns.refreshWechatPrecheck(true);
+    check("注定失败要在按下之前说，并转述后端的**分因**（没开 / 收托盘 / 登录页是三件事）", () => {
+      assert.strictEqual(holdPre.className, "t-bad", "注定失败应是 t-bad：" + JSON.stringify(holdPre.className));
+      assert.match(String(holdPre.textContent), /没有在运行/,
+        "应转述后端分因的首句，而不是自己编一句「出错了」：" + JSON.stringify(holdPre.textContent));
+      assert.strictEqual(holdPre.title, "微信没有在运行：请先打开微信并登录、进入聊天窗口，再重试发送",
+        "完整原因（含下一步）必须进 title —— 单行条的省略号正好会切掉最该看的那半句");
+    });
+
+    check("预检只告警、不拦人：数据可能已过期，不许因此禁用按钮", () => {
+      // 必须直接查 disabled：DOM 桩是直接调处理器，绕过了浏览器的「禁用按钮不发事件」——
+      // 只靠下面那行行为断言的话，把按钮禁掉这种实现**测不出来**（变异测试实测过）。
+      assert.ok(!els.holdMic.disabled,
+        "预检说必败时把按钮禁掉了 —— 刚把微信打开的人会按不动，比不告警更糟");
+      petIpc.length = 0;
+      (els.holdMic._on.pointerdown || [])[0]({ pointerId: 4 });
+      assert.strictEqual(petFns.getMicPhase(), "arming",
+        "预检为 bad 时按不下去了 —— 刚把微信打开的人会按不动，比不告警更糟");
+      assert.ok(petIpc.some((c) => c[0] === "micDown"), "预检存在时 micDown 没发给主进程");
+      petCbs.mic({ phase: "idle", startedAt: 0, maxSeconds: 59 });
+    });
+    await flush();
+
+    // ③ 会重启（VM_WECHAT_RESTART=auto/1 才出现；默认 0 时不会，所以这条只能靠桩喂）
+    precheckStub = { ok: true, status: 200, json: async () => ({
+      ...PRECHECK_OK,
+      restart_needed: true,
+      reason: "微信上次录音用的是「麦克风阵列 (Senary Audio)」，需重启让它重新枚举",
+    }) };
+    await petFns.refreshWechatPrecheck(true);
+    check("会重启微信也要提前说，原因进 tooltip", () => {
+      assert.strictEqual(holdPre.className, "t-warn", "会重启应是 t-warn（不是错误）：" + JSON.stringify(holdPre.className));
+      assert.match(String(holdPre.textContent), /重启/);
+      assert.match(String(holdPre.title), /重新枚举/, "重启的原因没进 tooltip");
+    });
+
+    // ④ 200 但字段缺失 = 前后端版本不一致（pet.html 是热替换的）
+    precheckStub = { ok: true, status: 200, json: async () => ({ ok: true, hint: "旧版后端" }) };
+    await petFns.refreshWechatPrecheck(true);
+    check("预检字段缺失时说「没有结论」，绝不猜成「微信没开」", () => {
+      assert.strictEqual(holdPre.className, "t-warn");
+      assert.match(String(holdPre.textContent), /没有结论|后端版本/,
+        "实际：" + JSON.stringify(holdPre.textContent));
+      assert.doesNotMatch(String(holdPre.textContent), /没开|没在运行/,
+        "把版本不一致说成「微信没开」会把用户指去查微信，方向完全错");
+    });
+
+    // ⑤ 预检接口不在（后端比桌宠旧 / 能力被关）与网络异常
+    precheckStub = { ok: false, status: 404, json: async () => ({}) };
+    await petFns.refreshWechatPrecheck(true);
+    check("预检 404 不吓人：它是只读咨询，打不开不影响发送", () => {
+      assert.strictEqual(holdPre.className, "t-warn", "预检打不开不该是红色警报：" + JSON.stringify(holdPre.className));
+      assert.match(String(holdPre.textContent), /旧|不在/);
+      assert.match(String(holdPre.title), /不影响发送/);
+    });
+
+    precheckStub = () => { throw new Error("后端没起来"); };
+    await petFns.refreshWechatPrecheck(true);
+    check("预检请求抛错时也要有个说法（不能停在上一句结论上）", () => {
+      assert.strictEqual(holdPre.className, "t-warn");
+      assert.match(String(holdPre.textContent), /打不开|没起来/,
+        "实际：" + JSON.stringify(holdPre.textContent));
+    });
+
+    // ⑥ 节流：tick 每 1s 都会路过，但真请求 5s 才有一次
+    precheckStub = null;
+    await petFns.refreshWechatPrecheck(true);
+    const afterForce = preFetches();
+    await petFns.refreshWechatPrecheck(false);   // 刚拉过 → 5s 内不重复
+    tickInterval()();                            // 就是 tick 那一帧（此刻正停在「按住」页）
+    await flush();
+    check("预检有节流：1s 轮询不会把它带着每秒枚举一次进程/窗口", () => {
+      assert.strictEqual(preFetches(), afterForce,
+        "多发了 " + (preFetches() - afterForce) + " 次预检请求");
+    });
+
+    (els.tabSpeak._on.click || [])[0]();   // 收尾：把页签还给说话页，别影响后面的用例
+  }
+
   if (OFFLINE) {
     // ---------- 回归点 11：后端离线提示必须常驻 ----------
     check("离线：药丸切到「后端离线」(t-err)、气泡上屏、精灵图切 error", () => {
@@ -676,6 +1009,9 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       assert.match(String(els.sprite.style.backgroundImage), /error\.webp/);
       assert.ok(els.root.classList.contains("compact"),
         "离线期间 .compact 被摘掉了 —— 面板会带着多余的 #recent 去和气泡抢高度");
+      // 离线那一帧必须把推理耗时抹掉：后端挂了它还挂着「82ms」，看着像变声还在跑。
+      assert.strictEqual(els.rmLat.hidden, true, "离线时状态条还留着推理耗时");
+      assert.strictEqual(els.rmLat.textContent, "");
     });
   } else {
     // 用子进程复跑本文件（VM_PET_OFFLINE=1）验证离线路径，

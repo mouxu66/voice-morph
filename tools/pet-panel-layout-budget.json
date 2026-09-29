@@ -1,0 +1,362 @@
+{
+  "_note": "桌宠面板纵向预算基线（自动生成）。更新：node tools/test-pet-panel-layout.cjs （设 VM_PET_BUDGET_UPDATE=1，会打印一份「这次吃了多少」的成本表）。reserve = capacity - need；门禁要求 reserve 只能变多（容差 tolerance_px）。reserve 为负 = 该状态底部已被切（已知不足，见 docs/桌宠遥控器.md）。",
+  "tolerance_px": 1,
+  "keys": {
+    "sweep:speak:bubble0": {
+      "need": 289,
+      "capacity": 298,
+      "reserve": 9,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 22,
+        "speakPane": 114,
+        "holdPane": 0,
+        "fxPane": 0,
+        "actRow": 29,
+        "status": 39,
+        "recent": 23,
+        "pane/engRow": 24,
+        "pane/field": 31,
+        "pane/field.sel": 29,
+        "pane/field#2": 18
+      }
+    },
+    "sweep:hold:bubble0": {
+      "need": 240,
+      "capacity": 298,
+      "reserve": 58,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 22,
+        "speakPane": 0,
+        "holdPane": 98,
+        "fxPane": 0,
+        "actRow": 0,
+        "status": 39,
+        "recent": 23,
+        "pane/holdPre": 15,
+        "pane/holdMic": 46,
+        "pane/holdHint": 29
+      }
+    },
+    "sweep:fx:bubble0": {
+      "need": 274,
+      "capacity": 298,
+      "reserve": 24,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 22,
+        "speakPane": 0,
+        "holdPane": 0,
+        "fxPane": 100,
+        "actRow": 29,
+        "status": 39,
+        "recent": 23,
+        "pane/fxModeRow": 24,
+        "pane/fxEmpty": 0,
+        "pane/fxGrid": 72,
+        "pane/fxPicks": 0
+      }
+    },
+    "sweep:speak:bubble1": {
+      "need": 234,
+      "capacity": 216,
+      "reserve": -18,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 0,
+        "speakPane": 112,
+        "holdPane": 0,
+        "fxPane": 0,
+        "actRow": 29,
+        "status": 39,
+        "recent": 0,
+        "pane/engRow": 24,
+        "pane/field": 31,
+        "pane/field.sel": 29,
+        "pane/field#2": 18
+      }
+    },
+    "sweep:hold:bubble1": {
+      "need": 187,
+      "capacity": 216,
+      "reserve": 29,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 0,
+        "speakPane": 0,
+        "holdPane": 98,
+        "fxPane": 0,
+        "actRow": 0,
+        "status": 39,
+        "recent": 0,
+        "pane/holdPre": 15,
+        "pane/holdMic": 46,
+        "pane/holdHint": 29
+      }
+    },
+    "sweep:fx:bubble1": {
+      "need": 221,
+      "capacity": 216,
+      "reserve": -5,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 0,
+        "speakPane": 0,
+        "holdPane": 0,
+        "fxPane": 100,
+        "actRow": 29,
+        "status": 39,
+        "recent": 0,
+        "pane/fxModeRow": 24,
+        "pane/fxEmpty": 0,
+        "pane/fxGrid": 72,
+        "pane/fxPicks": 0
+      }
+    },
+    "ok": {
+      "need": 289,
+      "capacity": 298,
+      "reserve": 9,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 22,
+        "speakPane": 114,
+        "holdPane": 0,
+        "fxPane": 0,
+        "actRow": 29,
+        "status": 39,
+        "recent": 23,
+        "pane/engRow": 24,
+        "pane/field": 31,
+        "pane/field.sel": 29,
+        "pane/field#2": 18
+      }
+    },
+    "offline": {
+      "need": 218,
+      "capacity": 220,
+      "reserve": 2,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 0,
+        "speakPane": 112,
+        "holdPane": 0,
+        "fxPane": 0,
+        "actRow": 29,
+        "status": 23,
+        "recent": 0,
+        "pane/engRow": 24,
+        "pane/field": 31,
+        "pane/field.sel": 29,
+        "pane/field#2": 18
+      }
+    },
+    "live": {
+      "need": 234,
+      "capacity": 238,
+      "reserve": 4,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 0,
+        "speakPane": 112,
+        "holdPane": 0,
+        "fxPane": 0,
+        "actRow": 29,
+        "status": 39,
+        "recent": 0,
+        "pane/engRow": 24,
+        "pane/field": 31,
+        "pane/field.sel": 29,
+        "pane/field#2": 18
+      }
+    },
+    "qwen": {
+      "need": 234,
+      "capacity": 238,
+      "reserve": 4,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 0,
+        "speakPane": 112,
+        "holdPane": 0,
+        "fxPane": 0,
+        "actRow": 29,
+        "status": 39,
+        "recent": 0,
+        "pane/engRow": 24,
+        "pane/field": 31,
+        "pane/field.sel": 29,
+        "pane/field#2": 18
+      }
+    },
+    "qwenidle": {
+      "need": 289,
+      "capacity": 298,
+      "reserve": 9,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 22,
+        "speakPane": 114,
+        "holdPane": 0,
+        "fxPane": 0,
+        "actRow": 29,
+        "status": 39,
+        "recent": 23,
+        "pane/engRow": 24,
+        "pane/field": 31,
+        "pane/field.sel": 29,
+        "pane/field#2": 18
+      }
+    },
+    "think": {
+      "need": 218,
+      "capacity": 238,
+      "reserve": 20,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 0,
+        "speakPane": 112,
+        "holdPane": 0,
+        "fxPane": 0,
+        "actRow": 29,
+        "status": 23,
+        "recent": 0,
+        "pane/engRow": 24,
+        "pane/field": 31,
+        "pane/field.sel": 29,
+        "pane/field#2": 18
+      }
+    },
+    "guide": {
+      "need": 190,
+      "capacity": 216,
+      "reserve": 26,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 0,
+        "speakPane": 112,
+        "holdPane": 0,
+        "fxPane": 0,
+        "actRow": 29,
+        "status": 0,
+        "recent": 0,
+        "pane/engRow": 24,
+        "pane/field": 31,
+        "pane/field.sel": 29,
+        "pane/field#2": 18
+      }
+    },
+    "busy": {
+      "need": 246,
+      "capacity": 298,
+      "reserve": 52,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 22,
+        "speakPane": 114,
+        "holdPane": 0,
+        "fxPane": 0,
+        "actRow": 29,
+        "status": 0,
+        "recent": 23,
+        "pane/engRow": 24,
+        "pane/field": 31,
+        "pane/field.sel": 29,
+        "pane/field#2": 18
+      }
+    },
+    "fx": {
+      "need": 274,
+      "capacity": 298,
+      "reserve": 24,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 22,
+        "speakPane": 0,
+        "holdPane": 0,
+        "fxPane": 100,
+        "actRow": 29,
+        "status": 39,
+        "recent": 23,
+        "pane/fxModeRow": 24,
+        "pane/fxEmpty": 0,
+        "pane/fxGrid": 72,
+        "pane/fxPicks": 0
+      }
+    },
+    "fxpick": {
+      "need": 296,
+      "capacity": 298,
+      "reserve": 2,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 22,
+        "speakPane": 0,
+        "holdPane": 0,
+        "fxPane": 122,
+        "actRow": 29,
+        "status": 39,
+        "recent": 23,
+        "pane/fxModeRow": 24,
+        "pane/fxEmpty": 0,
+        "pane/fxGrid": 72,
+        "pane/fxPicks": 20
+      }
+    },
+    "hold": {
+      "need": 196,
+      "capacity": 298,
+      "reserve": 102,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 22,
+        "speakPane": 0,
+        "holdPane": 98,
+        "fxPane": 0,
+        "actRow": 0,
+        "status": 0,
+        "recent": 23,
+        "pane/holdPre": 15,
+        "pane/holdMic": 46,
+        "pane/holdHint": 29
+      }
+    },
+    "holdrec": {
+      "need": 224,
+      "capacity": 298,
+      "reserve": 74,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 22,
+        "speakPane": 0,
+        "holdPane": 98,
+        "fxPane": 0,
+        "actRow": 0,
+        "status": 23,
+        "recent": 23,
+        "pane/holdPre": 15,
+        "pane/holdMic": 46,
+        "pane/holdHint": 29
+      }
+    },
+    "holdwarn": {
+      "need": 196,
+      "capacity": 298,
+      "reserve": 102,
+      "blocks": {
+        "phead": 22,
+        "tabRow": 22,
+        "speakPane": 0,
+        "holdPane": 98,
+        "fxPane": 0,
+        "actRow": 0,
+        "status": 0,
+        "recent": 23,
+        "pane/holdPre": 15,
+        "pane/holdMic": 46,
+        "pane/holdHint": 29
+      }
+    }
+  }
+}

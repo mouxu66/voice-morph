@@ -40,7 +40,8 @@ const ROOT = path.join(__dirname, "..");
 const PET_DIR = path.join(ROOT, "web", "electron", "pet");
 const OUT_DIR = path.join(ROOT, "outputs", "pet-preview");
 const SCENES = ["ok-dark", "ok-light", "offline-dark", "live-dark", "qwen-dark", "qwenidle-dark",
-                "think-dark", "guide-dark", "busy-dark", "fx-dark", "fxpick-dark"];
+                "think-dark", "guide-dark", "busy-dark", "fx-dark", "fxpick-dark",
+                "hold-dark", "holdrec-dark", "holdwarn-dark"];
 
 /** 找 Playwright 缓存里的 chromium-headless-shell。找不到返回 null（调用方负责报错/跳过）。 */
 function findChrome() {
@@ -75,11 +76,18 @@ function preScript(state) {
     dragEnd: function () {}, onGuide: function () {}, onPreviewResult: function () {},
     onSendResult: function () {}, sendLast: function () {}, sendText: function () {},
     sendWav: function () {}, previewText: function () {}, liveToggle: function () {},
-    showBackendLog: function () { return Promise.resolve(); }
+    showBackendLog: function () { return Promise.resolve(); },
+    // 按住说话（2026-09-29）：主进程与渲染进程之间的两条 IPC + 一条状态回传。
+    // 预览台只留一个回传句柄 —— 「录制中」那张图靠它从真状态推出来（页面自己的
+    // onMicState 回调把按钮文案/颜色/秒数全接管了），不是在截图脚本里硬塞文案。
+    micDown: function () {}, micUp: function () {},
+    onMicState: function (cb) { window.__petMicCb = cb; }
   };
   const SCEN = ${JSON.stringify(state)};
   const FAKE = {
-    "/api/voices": { voices: [
+    // selected 是 2026-09-29 加的：桌宠状态条要拿它反查「主界面选中」的真名字
+    // （下拉默认项的 value 是空串，光看下拉不知道那是谁）。
+    "/api/voices": { selected: "kangaroo", voices: [
       { id: "furina",   display_name: "芙宁娜",         has_reference: true },
       { id: "kangaroo", display_name: "袋鼠骑士",       has_reference: true },
       { id: "noref",    display_name: "无参考(应被过滤)", has_reference: false }
@@ -127,7 +135,27 @@ function preScript(state) {
           : { running: false }) };
     }
     if (u.includes("/api/rvc/live/status")) {
-      return { ok: true, status: 200, json: async () => ({ live_running: SCEN === "live" }) };
+      // infer_ms/block_ms 是 2026-09-29 加的（后端 tail realtime_gui.log 实测）：
+      // live 场景要让状态条上的耗时 chip 真的出现（那是全条最挤的形态：
+      // 「RVC 变声中」+ 音色 + 耗时三块同时在位，宽度预算就靠它量）。
+      return { ok: true, status: 200,
+        json: async () => (SCEN === "live"
+          ? { live_running: true, infer_ms: 82.4, infer_ms_p95: 130.2, infer_samples: 100, block_ms: 40 }
+          : { live_running: false }) };
+    }
+    // 发送前预检（2026-09-29）：常态回「微信已打开」；holdwarn 场景回「注定失败」——
+    // 那一条的文案最长（分因首句 + ⚠），专门用来量「文案变长会不会把面板顶高」：
+    // 预检行钉死了单行 + 省略号，所以两个场景的余量必须**一样**。
+    if (u.includes("/api/wechat/precheck")) {
+      const warn = SCEN === "holdwarn";
+      return { ok: true, status: 200, json: async () => ({
+        ok: true, restart_mode: "0", restart_needed: false,
+        reason: "VM_WECHAT_RESTART=0 已关闭重启",
+        wechat_running: !warn,
+        block_reason: warn
+          ? "微信没有在运行：请先打开微信并登录、进入聊天窗口，再重试发送"
+          : "",
+      }) };
     }
     for (const k of Object.keys(FAKE)) {
       if (u.includes(k)) return { ok: true, status: 200, json: async () => FAKE[k] };
@@ -172,6 +200,13 @@ window.addEventListener("load", function () {
   if (SCEN === "guide") playGuide({ title: "音色工坊",
     lines: ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"],
     action: "build", motion: "pop", duration: 60000 });
+  // ⚠ 这里和 measureScript 里各有一份同样的切页条件（截图模式不等 setTimeout，
+  //   量测模式要等布局稳定）—— 加新场景时**两处都要改**，只改一处的话：
+  //   量测数字对、截出来的图是另一页（2026-09-29 加 holdwarn 时真踩过）。
+  if (SCEN === "hold" || SCEN === "holdrec" || SCEN === "holdwarn") setTab("hold");
+  if (SCEN === "holdrec" && window.__petMicCb) {
+    window.__petMicCb({ phase: "recording", startedAt: Date.now() - 2300, maxSeconds: 59 });
+  }
 });
 </script>`;
 }
@@ -185,6 +220,7 @@ function measureScript(state) {
   return `<script>
 window.addEventListener("load", function () {
   var SCEN = ${JSON.stringify(state)};
+  var SWEEP = !!(SCEN && SCEN.sweep === true);   // 预算扫描模式：把所有页 × 两种气泡量一遍
   showPanel();
   if (SCEN === "busy") setBusy(sendBtn, true);
   if (SCEN === "offline") setStatus("后端没起来，先开主程序", "err");
@@ -205,12 +241,154 @@ window.addEventListener("load", function () {
   if (SCEN === "guide") playGuide({ title: "音色工坊",
     lines: ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"],
     action: "build", motion: "pop", duration: 60000 });
+  // 预算扫描的代表状态：与 ok 场景同一段文案 —— 余量是**跟基线比**的，
+  // 所以每次扫描里的文案必须固定，否则量到的是文案长度差而不是布局差。
+  if (SWEEP) setStatus("已合成 3.2s，试听中…满意就点「发送试听」", "ok");
   setTimeout(function () {
+    // 切页必须放在这个 timeout 里：页面的 bootstrap 是 async（await 能力清单），
+    // 它结尾还会调一次 setTab(activeTab, false)；在这里切才能保证量到的是目标页。
+    if (SCEN === "hold" || SCEN === "holdrec" || SCEN === "holdwarn") setTab("hold");
+    if (SCEN === "holdrec" && window.__petMicCb) {
+      window.__petMicCb({ phase: "recording", startedAt: Date.now() - 2300, maxSeconds: 59 });
+    }
     var R = function (el) { var r = el.getBoundingClientRect();
       return { w: +r.width.toFixed(1), h: +r.height.toFixed(1), top: +r.top.toFixed(1) }; };
+    /**
+     * 「文字有没有被裁」的共用量法（按钮与状态条 chip 都用它）。
+     * 判据不能用 scrollWidth > clientWidth —— 对带 overflow:hidden 的元素，
+     * scrollWidth 被钳到 clientWidth，溢出再多也报「正好」；而 overflow:hidden
+     * 恰恰是 ellipsis 生效的前提，所以那个判据对**所有会省略号的元素**都是瞎的。
+     * 改用 Range.getClientRects() 取文字的自然宽度：Range 给的是**布局矩形**，
+     * 裁剪只发生在绘制阶段，不影响它；再跟内容盒宽度（clientWidth 去掉左右 padding）比。
+     */
+    var clip = function (name, b) {
+      // display:none 的不测：clientWidth=0 而 Range 仍量得出自然宽，必假红
+      // （说话页场景里 fxMode 两颗按钮、fx 场景里 preview / 整个 holdPane 都是不在场的）。
+      if (!b || b.offsetParent === null) return null;
+      var cs2 = getComputedStyle(b);
+      var padL = parseFloat(cs2.paddingLeft) || 0;
+      var padR = parseFloat(cs2.paddingRight) || 0;
+      var avail = b.clientWidth - padL - padR;
+      var natural = 0;
+      try {
+        var rng = document.createRange();
+        rng.selectNodeContents(b);
+        var rects = rng.getClientRects();
+        for (var ri = 0; ri < rects.length; ri++) {
+          if (rects[ri].width > natural) natural = rects[ri].width;
+        }
+      } catch (e) { natural = -1; }
+      return { id: name, w: R(b).w, scrollW: b.scrollWidth, clientW: b.clientWidth,
+               textW: Math.round(natural * 100) / 100, availW: Math.round(avail * 100) / 100,
+               clipped: natural > avail + 1, txt: b.textContent.trim() };
+    };
+    // ---------- 纵向预算：快照工具（2026-09-29）----------
+    // 为什么要 budget：面板纵向预算是**死的**（max-height 300px），而只看
+    // 「装不装得下」（scrollH > clientH）时，新增一个控件可以把余量吃到 0
+    // 却依然「不溢出」—— 下一个控件才炸，而那时没人知道是谁吃掉的。
+    // 所以把**余量本身**当不变量（基线见 tools/pet-panel-layout-budget.json）。
+    /** 控件的稳定名字（报告要能指名道姓）：优先 id，其次 tag.class。 */
+    var ctlName = function (el) {
+      if (el.id) return el.id;
+      var cls = (el.className || "").toString().trim().split(/\\s+/)[0] || "";
+      return el.tagName.toLowerCase() + (cls ? "." + cls : "");
+    };
+    /**
+     * 自动枚举面板里所有**会显示**的可交互控件，逐个量文字有没有被裁。
+     * 为什么要自动枚举而不是维护一张清单：手写清单必然漏 —— 2026-09-29 之前
+     * 「按住说话」那颗按钮与状态条三个 chip 都是靠人记得才进来的；漏掉的那个被挤窄时
+     * 只会安静地变成「…」，没有任何信号。
+     * 只收 button/input：select 元素的 Range 量不出有意义的自然宽（option 不参与布局），
+     * 量它只会得到 0 而假装「没被裁」。
+     */
+    var controlsOf = function () {
+      var out = [];
+      Array.prototype.forEach.call(panel.querySelectorAll("button, input"), function (el) {
+        if (!el || el.offsetParent === null) return;  // display:none / 隐藏页里的不量（会假红）
+        var r = clip(ctlName(el), el);
+        if (r) out.push(r);
+      });
+      // 状态条那三个 chip 是 <span>，控件名单盖不到 —— 显式补上（它们是最挤的一行）
+      [["pill", pillEl], ["rmVoice", rmVoiceEl], ["rmLat", rmLatEl]].forEach(function (p) {
+        var r = clip(p[0], p[1]);
+        if (r) out.push(r);
+      });
+      return out;
+    };
+    /** 功能页页签（从 DOM 枚举 —— 加第四页时不需要有人回来改这里）。 */
+    var tabsInDom = function () {
+      var row = document.getElementById("tabRow");
+      if (!row) return [];
+      return Array.prototype.map.call(row.querySelectorAll("button[data-tab]"), function (b) {
+        return b.dataset.tab;
+      });
+    };
+    var activeTabName = function () {
+      var row = document.getElementById("tabRow");
+      if (!row) return null;
+      var on = Array.prototype.filter.call(row.querySelectorAll("button[data-tab]"), function (b) {
+        return b.classList.contains("on") || b.getAttribute("aria-selected") === "true";
+      });
+      return on.length ? on[0].dataset.tab : null;
+    };
+    /**
+     * 面板**最多能拿到多高**：临时把它顶到 1000px，看布局与 max-height 把它钳到哪里，
+     * 马上恢复。为什么要这么量（而不是用公式算）：
+     *   · 面板是 height:auto + max-height:300px，内容不超时 clientHeight 就等于内容高，
+     *     所以「可用高」根本无法从正常状态读出来（这也正是以前把“余量”误当成
+     *     clientHeight - scrollHeight 的原因：它恒为 0，只在被切时才是负数）；
+     *   · 公式算（480 - 宠物 - 气泡 - 间距）看着简单，但它把 flex 的实际行为复制了一份，
+     *     改一处 CSS 就会静默漂。实测不会有这个问题。
+     * ⚠️ 它**会临时改变布局**，所以调用方必须在读完 scrollHeight 之后再调它，
+     * 而且之后不能拿这次快照里的其它几何值当准。
+     */
+    var capacityOf = function () {
+      var prevH = panel.style.height;
+      panel.style.height = "1000px";
+      var cap = panel.clientHeight;
+      panel.style.height = prevH;
+      return cap;
+    };
+    /**
+     * 当前**可见功能页**的直接子块（带 pane/ 前缀）。
+     * 为什么不能只看面板的直接子块：面板的子块是「页签/动作行/状态行」这些容器，
+     * 新加一个控件时它们只会“整块长高” —— 报告只会说「speakPane 114→122px」，
+     * 而这并不能告诉你是**哪个控件**吃掉的。往下多量一层，报告才能指名。
+     * 只取一层（:scope > *）：再深就是布局细节，基线会碎得没法维护。
+     */
+    var paneChildren = function () {
+      var pane = document.querySelector("#panel .pane.on");
+      return pane ? pane.querySelectorAll(":scope > *") : [];
+    };
+    /**
+     * 把一批元素量成 [{id,h,disp,mb}]。没有 id 的用 class 链/tag 命名，**重名自动加 #n**。
+     * 重名那一条不能省：说话页里三个无 id 的 label 都叫 class="field"，
+     * 若都以 “pane/field” 为键，后一个会把前一个盖掉 —— 基线里就只剩最后一个，
+     * 前两个改矮/改高都看不见（那种“基线自己丢了证据”是最难查的）。
+     */
+    var blockList = function (els, prefix) {
+      var seen = {};
+      return Array.prototype.map.call(els, function (el) {
+        var cls = (el.className || "").toString().trim().split(/\\s+/).filter(Boolean).join(".");
+        var base = prefix + (el.id || cls || el.tagName.toLowerCase());
+        seen[base] = (seen[base] || 0) + 1;
+        var cs = getComputedStyle(el);
+        return { id: seen[base] > 1 ? base + "#" + seen[base] : base,
+                 h: el.offsetHeight, disp: cs.display, mb: cs.marginBottom };
+      });
+    };
+    /** 面板里所有带 id 的元素（含隐藏页里的）—— 用于「基线里的 id 还在不在」盘点。 */
+    var paneIds = function () {
+      return Array.prototype.map.call(panel.querySelectorAll("[id]"), function (e) { return e.id; });
+    };
     var steps = document.getElementById("steps");
-    var M = {
-      scen: SCEN,
+    /**
+     * 一次布局快照。**所有**断言都读它 —— 场景模式与预算扫描模式共用同一个函数，
+     * 否则两边各有一份「什么算量到了」，迟早漂成两套口径。
+     */
+    var snap = function (scen) {
+      return {
+      scen: scen,
       theme: getComputedStyle(document.documentElement).getPropertyValue("--c-surface").trim(),
       panelBg: getComputedStyle(panel).backgroundColor,
       panelOpacity: getComputedStyle(panel).opacity,
@@ -222,11 +400,8 @@ window.addEventListener("load", function () {
       // 把 scrollHeight / clientHeight 与每个直接子块的高度都打出来，才能定出该精简谁。
       panelScrollH: panel.scrollHeight,
       panelClientH: panel.clientHeight,
-      blocks: Array.prototype.map.call(panel.children, function (el) {
-        var cs = getComputedStyle(el);
-        return { id: el.id || el.className, h: el.offsetHeight,
-                 disp: cs.display, mb: cs.marginBottom };
-      }),
+      blocks: blockList(panel.children, "")
+        .concat(blockList(paneChildren(), "pane/")),   // 可见页的直接子块，带 pane/ 前缀（见上面注释）
       pill: { txt: pillText.textContent, w: R(pillEl).w, cls: pillEl.className },
       // 引擎分段的状态：选中（.on）与运行中（.running）必须分开 ——
       // 把「选中」当「已开启」是这次要防的核心错误。
@@ -261,31 +436,80 @@ window.addEventListener("load", function () {
       // 裁剪只发生在绘制阶段，不影响它；再跟内容盒宽度（clientWidth 去掉左右 padding）比。
       buttons: [["send", sendBtn], ["preview", previewBtn],
                 ["engRvc", engRvcBtn], ["engQwen", engQwenBtn],
-                ["tabSpeak", tabSpeakBtn], ["tabFx", tabFxBtn],
+                ["tabSpeak", tabSpeakBtn], ["tabHold", tabHoldBtn], ["tabFx", tabFxBtn],
+                ["holdMic", holdMicEl],
                 ["fxModeLive", fxModeLiveBtn], ["fxModePremix", fxModePremixBtn]].map(function (p) {
-        var b = p[1];
-        // display:none 的按钮不测：clientWidth=0 而 Range 仍量得出自然宽，必假红
-        // （说话页场景里 fxMode 两颗按钮、fx 场景里 preview 都是不在场的）。
-        if (!b || b.offsetParent === null) return null;
-        var cs2 = getComputedStyle(b);
-        var padL = parseFloat(cs2.paddingLeft) || 0;
-        var padR = parseFloat(cs2.paddingRight) || 0;
-        var avail = b.clientWidth - padL - padR;
-        var natural = 0;
-        try {
-          var rng = document.createRange();
-          rng.selectNodeContents(b);
-          var rects = rng.getClientRects();
-          for (var ri = 0; ri < rects.length; ri++) {
-            if (rects[ri].width > natural) natural = rects[ri].width;
-          }
-        } catch (e) { natural = -1; }
-        return { id: p[0], w: R(b).w, scrollW: b.scrollWidth, clientW: b.clientWidth,
-                 textW: Math.round(natural * 100) / 100, availW: Math.round(avail * 100) / 100,
-                 clipped: natural > avail + 1, txt: b.textContent.trim() };
+        return clip(p[0], p[1]);
       }).filter(Boolean),
+      // 状态条（2026-09-29）的三个 chip 走同一套判据。
+      // 必须量它们：头部那一行现在是「药丸(引擎名) + 音色 + 耗时」三块挤 184px，
+      // 是全面板最挤的地方之一，而 chip 是 <span> —— 上面那套“按钮”清单永远盖不到，
+      // 一旦超宽只会安静地变成省略号（或把右边的 chip 顶出窗口）。
+      strip: [["pill", pillEl], ["rmVoice", rmVoiceEl], ["rmLat", rmLatEl]].map(function (p) {
+        return clip(p[0], p[1]);
+      }).filter(Boolean),
+      // 自动枚举的控件（替代手写 buttons 清单，见 controlsOf 的注释）
+      controls: controlsOf(),
+      // —— 纵向预算台账（2026-09-29）——
+      // need = 内容需要多高；capacity = 布局最多给多高；reserve = 两者之差。
+      // ★ 不变量是 reserve：**只能变多，不能变少** —— 这才是「新增控件吃掉了余量」
+      //   的直接信号（只看溢出的话，余量被吃到 0 也算“没问题”，下一个人再动手就爆）。
+      budget: (function () {
+        var need = panel.scrollHeight;    // 必须在 capacityOf() 前读（它会临时改布局）
+        var clientH = panel.clientHeight;
+        var cap = capacityOf();
+        return {
+          maxH: getComputedStyle(panel).maxHeight,   // CSS 上的上限（300px）
+          clientH: clientH,
+          scrollH: need,
+          capacity: cap,
+          reserve: cap - need,                       // ★ 余量（负数 = 底部被切）
+          slack: clientH - need,                     // 兼容旧字段：被切多少（健康时恒为 0）
+        };
+      })(),
+      tab: activeTabName(),
+      tabs: tabsInDom(),
+      paneIds: paneIds(),
+      };
     };
-    console.log("MEASURE " + JSON.stringify(M));
+    var emit = function (scen) { console.log("MEASURE " + JSON.stringify(snap(scen))); };
+    // ---------- 预算扫描（sweep）：一次页面加载，把所有页 × 两种气泡都量一遍 ----------
+    // 为什么要扫「所有页」而不是继续手写场景：手写的场景清单漏了某一页时，
+    // 那一页可以无限长而门禁看不见。页签从 DOM 枚举（tabsInDom），所以加第四页
+    // 会自动被扫到 —— 若它的余量变少/溢出，门禁当场红。
+    // 两种气泡：气泡在屏时面板被压扁（#root.compact 让位），这是另一个约束，
+    // 而且每页的最挤形态不同（按住页那颗 46px 按钮就在按住页里）。
+    if (SWEEP) {
+      // 阶段 0 强制「无气泡」：不赌 setStatus 恰好没弹气泡（那会让两个阶段量到同一件事）
+      setBubbleVisible(false);
+      var tabs = tabsInDom();
+      var phase = 0;   // 0 = 无气泡，1 = 大头气泡（guide 82px，最挤）
+      var ti = 0;
+      var next = function () {
+        if (phase === 0 && ti >= tabs.length) {
+          phase = 1;
+          ti = 0;
+          // 用与 guide 场景同一段文案：气泡高固定，两次测量才可比
+          playGuide({ title: "音色工坊", lines: ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"],
+            action: "build", motion: "pop", duration: 60000 });
+          setTimeout(next, 260);
+          return;
+        }
+        if (ti >= tabs.length) {
+          console.log("SWEEP-DONE " + tabs.length + " 页 × 2 种气泡");
+          return;
+        }
+        setTab(tabs[ti], false);
+        setTimeout(function () {
+          emit("sweep:" + tabs[ti] + ":bubble" + phase);
+          ti += 1;
+          next();
+        }, 80);
+      };
+      next();
+      return;
+    }
+    emit(SCEN);
   }, 400);
 });
 </script>`;
@@ -364,7 +588,12 @@ function buildPage(scene, mode, keepAnim) {
   html = html.replace("</head>", head + "\n</head>");
   const at = html.indexOf("<script>");
   html = html.slice(0, at) + preScript(state) + "\n" + html.slice(at);
-  const tail = mode === "measure" ? measureScript(state) : postScript(state);
+  // sweep：一次页面加载把所有功能页 × 两种气泡都量一遍（预算扫描，见 sweep 那段注释）。
+  // 状态传对象而不是字符串，页面里所有 `SCEN === "xxx"` 分支自然全不命中 ——
+  // 不用为它另写一套 setup。
+  const tail = mode === "measure" ? measureScript(state)
+    : mode === "sweep" ? measureScript({ sweep: true })
+    : postScript(state);
   html = html.replace("</body>", tail + "\n</body>");
   return html;
 }
@@ -437,12 +666,16 @@ function runScene(scene, opts) {
   const r = spawnSync(chrome, args, { encoding: "utf-8", timeout: 120000 });
   const err = String(r.stderr || "");
   let json = null;
-  if (mode === "measure") {
+  let all = [];
+  if (mode !== "shot") {
+    // 一个页面可能打多行 MEASURE（sweep 模式：每页 × 每种气泡一行）——
+    // 只留最后一行会把前面的页静默丢掉（看起来还挺成功）。全部收下来。
     const lines = err.split("\n").filter((l) => l.includes("MEASURE "));
-    if (lines.length) json = extractMeasureJson(lines[lines.length - 1]);
+    all = lines.map(extractMeasureJson).filter(Boolean);
+    if (all.length) json = all[all.length - 1];
   }
-  return { ok: mode === "measure" ? !!json : fs.existsSync(png), json, png,
-           status: r.status, signal: r.signal, err };
+  return { ok: mode === "measure" ? !!json : mode === "sweep" ? all.length > 0 : fs.existsSync(png),
+           json, all, png, status: r.status, signal: r.signal, err };
 }
 
 /**
@@ -462,6 +695,19 @@ function measureScenes(scenes, opts) {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
   return { chrome, scenes: out };
+}
+
+/**
+ * 预算扫描：一次页面加载，把所有功能页 × {无气泡, 大头气泡} 量一遍。
+ * 供 `test-pet-panel-layout.cjs` 使用 —— 覆盖不靠手写场景清单，靠 DOM 里真实存在的页签。
+ */
+function measureSweep(opts) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pet-sweep-"));
+  try {
+    return runScene("sweep-dark", { mode: "sweep", tmp, pngDir: null, keepAnim: (opts || {}).keepAnim });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 function main() {
@@ -518,6 +764,7 @@ function main() {
   if (!ok) process.exit(1);
 }
 
-module.exports = { findChrome, measureScenes, runScene, extractMeasureJson, buildPage, SCENES, ROOT, PET_DIR, OUT_DIR };
+module.exports = { findChrome, measureScenes, measureSweep, runScene, extractMeasureJson, buildPage,
+                   SCENES, ROOT, PET_DIR, OUT_DIR };
 
 if (require.main === module) main();

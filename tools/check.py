@@ -4,7 +4,7 @@
 检查入口**：跑不跑、跑哪些、环境变量设没设，全靠人记得。2026-09-11 的代码审查
 就撞上两次「文档写着全绿、实际已过期」（GBK 编码失败的用例、随机挂的队列用例）。
 
-本脚本把八个检查串起来，顺序按「快 → 慢」，失败即停并返回非零：
+本脚本把九个检查串起来，顺序按「快 → 慢」，失败即停并返回非零：
 
     1. licenses    —— 第三方许可登记门禁：`THIRD_PARTY_NOTICES.md` 的机器块必须与
                       当前依赖集严格相等（漏登记 / 残留条目 / 缺义务行都判红）。
@@ -19,15 +19,19 @@
     4. ps1lint     —— 静态体检 scripts/*.ps1：语法解析 / 被吞掉的换行 / 必填参数 / BOM。
                       release.ps1 是发版唯一入口，它坏了会在最关键的时刻失败，而这类坑
                       本机 grep 看不出来。约 1s。没有 PowerShell 就跳过。
-    5. nodetest    —— 跑 tools/test-*.cjs 与冒烟脚本，并**复刻 CI 的"无 npm 依赖"环境**。
+    5. petlayout   —— 桌宠面板的**纵向预算门禁**：静态部分无需浏览器（新功能页/新控件
+                      必须登记预算），加上一次 headless Chromium 扫描（所有功能页 ×
+                      无气泡/大头气泡）实测余量。约 1.2s，**进 --fast** ——
+                      「新控件把面板底部挤掉」是提交那一刻就得拦下的，详见该步注释。
+    6. nodetest    —— 跑 tools/test-*.cjs 与冒烟脚本，并**复刻 CI 的"无 npm 依赖"环境**。
                       CI 的 backend job 从不 npm install，而本机装了 node_modules ——
                       没有这一步就会出现"本机绿、CI 红"（2026-09-14 真踩过）。
                       约 3.5s，进 --ci-fidelity 的裸 runner 复刻。
-    6. ruff        —— 静态扫描，专抓真 bug 类规则（F/E9：未定义名、未用变量、
+    7. ruff        —— 静态扫描，专抓真 bug 类规则（F/E9：未定义名、未用变量、
                       f-string 缺占位符、语法错误）。实测抓到过 rvc_common 的
                       未定义 logger（生产代码 NameError）。
-    7. pytest      —— m2_server 全量（默认）或快速子集（--fast）。
-    8. tsc -b      —— web 前端类型检查（不产出 dist）。
+    8. pytest      —— m2_server 全量（默认）或快速子集（--fast）。
+    9. tsc -b      —— web 前端类型检查（不产出 dist）。
 
 用法：
 
@@ -305,10 +309,11 @@ def _check_web() -> tuple[bool, str]:
     return _run("vitest", cmd + ["vitest", "run"], web)
 
 
-#: `tools/test-*.cjs` 里**已被专属步骤跑过**的两个，别在 nodetest 里重复一遍
+#: `tools/test-*.cjs` 里**已被专属步骤跑过**的，别在 nodetest 里重复一遍
 NODE_TESTS_OWNED_BY_OTHER_STEPS = {
-    "test-check-require.cjs",   # → requires 步
-    "test-electron-load.cjs",   # → electron 步
+    "test-check-require.cjs",        # → requires 步
+    "test-electron-load.cjs",        # → electron 步
+    "test-pet-panel-layout.cjs",     # → petlayout 步（它要进 --fast，而 nodetest 不进）
 }
 
 #: 不属于 tools/test-*.cjs、但同样该由本步守护的独立冒烟脚本
@@ -338,6 +343,33 @@ def _stray_electron_requires(path: Path) -> list[int]:
         if _STRAY_ELECTRON_RE.search(line):
             bad.append(lineno)
     return bad
+
+
+def _check_pet_layout(fast: bool) -> tuple[bool, str]:
+    """桌宠面板的**纵向预算门禁**（`tools/test-pet-panel-layout.cjs`）。
+
+    为什么它要自己占一步，而不是只躺在 nodetest 里：**nodetest 不进 --fast** ——
+    也就是说「新加个控件把面板底部挤掉」这件事在**提交那一刻**是没人拦的，
+    只会在 pre-push/CI 才红。而面板纵向预算是死的（实测最紧的场景只剩 2px），
+    一旦越界，用户看到的是「最近发送被切掉一截 / 面板里冒出滚动条」，
+    而写这段代码的人完全不知道是自己刚加的东西干的。
+
+    机制见该脚本的文件头：面板余量 `reserve = capacity - need` 被当成不变量
+    （基线 `tools/pet-panel-layout-budget.json`），越界时报「谁吃掉了多少」；
+    覆盖不靠手写场景清单，而是扫 DOM 里真实存在的所有功能页。
+
+    成本：静态部分 ~0ms（没有浏览器也能跑）；预算扫描（一次 headless Chromium，
+    把所有功能页 × 两种气泡量一遍）约 1s。所以 `--fast` 只跑这两段，
+    13 个命名场景留给全量。没有 node / 没有浏览器时跳过而非失败（与 nodetest 同口径），
+    但静态部分照跑 —— 「新增了功能页却没登记预算」在裸环境里也会红。
+    """
+    node = shutil.which("node")
+    if node is None:
+        return True, "跳过（未找到 node）"
+    cmd = [node, str(ROOT / "tools" / "test-pet-panel-layout.cjs")]
+    if fast:
+        cmd.append("--fast")
+    return _run("petlayout", cmd, ROOT)
 
 
 def _check_node_tests() -> tuple[bool, str]:
@@ -572,6 +604,7 @@ STEPS = {
     "requires": lambda fast: _check_requires(),
     "electron": lambda fast: _check_electron_load(),
     "ps1lint": lambda fast: _check_ps1_lint(),
+    "petlayout": lambda fast: _check_pet_layout(fast),
     "nodetest": lambda fast: _check_node_tests(),
     "ruff": lambda fast: _check_ruff(),
     "pytest": lambda fast: _check_pytest(fast),
@@ -810,7 +843,9 @@ def main(argv: list[str] | None = None) -> int:
         # 有人误用早已断掉的代码。都属于「只能在那一次提交拦住」的类别，故进 fast。
         # 成本：gate 约 0.5s、ownership 约 2.5s（大头是 plugin_manifest 的 import）。
         "licenses", "gate", "ownership", "requires", "electron", "ps1lint",
-        "ruff", "nodetest", "pytest", "web"
+        # petlayout 紧接着 ps1lint：二者都是 ~1s 级。它必须进默认名单（而不只在
+        # nodetest 里），否则「面板被挤掉」在 pre-commit 那一刻没人拦 —— 见该步的注释。
+        "petlayout", "ruff", "nodetest", "pytest", "web"
     ]
     if args.fast:
         names = [n for n in names if n not in ("web", "nodetest", "ps1lint")]
@@ -819,6 +854,18 @@ def main(argv: list[str] | None = None) -> int:
     unknown = [n for n in names if n not in STEPS]
     if unknown:
         print(f"未知检查项：{unknown}（可选：{', '.join(STEPS)}）")
+        return 2
+
+    # ★ 空检查集必须报错，不能汇总成「全部通过」。
+    # `--fast` 会把 web / nodetest / ps1lint 从名单里剔掉，所以 `--fast --only nodetest`
+    # 是**空集**：2026-09-29 实测它跑了 0 项，然后老老实实打印「结果：全部通过」——
+    # 而当时想看的是「nodetest 到底过不过」。空集绿灯是最骗人的一种绿：
+    # 越是拿它当“我刚跑过门禁”的证据，越危险。放在 --list 之前，
+    # 因为 `--list` 把那行「将执行：」打空同样看不出问题。
+    if not names:
+        print("检查集为空：--only 指定的项都被 --fast 剔掉了"
+              "（web / nodetest / ps1lint 不进快速集）。"
+              "要么去掉 --fast，要么换成快速集里的项。")
         return 2
 
     if args.list:
