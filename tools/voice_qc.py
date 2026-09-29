@@ -31,7 +31,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "m2_server"))
+sys.path.insert(0, str(ROOT / "tools"))
 import config as cfg  # noqa: E402
+import voice_metrics  # noqa: E402  嗓音客观指标（HNR/H1-H2/tilt/jitter/shimmer）
+import voice_report  # noqa: E402  三灯合成（用户可见的体检）
 
 WORKER = "http://127.0.0.1:8001"
 RVC_VENV_PY = cfg.RVC_ROOT / ".venv" / "Scripts" / "python.exe"
@@ -203,7 +206,45 @@ def run_dataset(dataset_dir: Path) -> dict:
         if rate > SPEED_WARN:
             res["warnings"].append(
                 f"语速过快 {rate:.1f} 字/秒（阈值 {SPEED_WARN}），素材本身语速快会直接劣化模型可懂度")
+
+    # ★ 训练前体检（2026-09-29）：在**还没训练**时给出「这份素材的预期质量」。
+    #   用户痛点是「训练完才知道音色不行」，而 HNR / H1-H2 / 谱倾斜只需要音频，
+    #   不依赖任何模型权重 —— 所以这一步能在切片阶段就亮灯，省掉白等的一小时。
+    #   取样策略：均匀取最多 20 条（全量跑 700 条素材在 UI 里太慢；20 条的中位数
+    #   已经足够稳定地反映素材整体，且抖动被中位数吸收）。
+    try:
+        sample = wavs if len(wavs) <= VOCAL_SAMPLE_MAX else wavs[:: max(1, len(wavs) // VOCAL_SAMPLE_MAX)][:VOCAL_SAMPLE_MAX]
+        metrics = [m for m in (voice_metrics.extract(f) for f in sample) if not m.get("error")]
+        res["vocal"] = _aggregate_vocal(metrics)
+        res["vocal"]["sampled"] = len(sample)
+        res["lamps"] = voice_report.three_lamps(
+            emb_sim=None,  # 训练前没有相似度可言 —— 这正是「部分可用」的意义
+            hnr=res["vocal"].get("hnr"),
+            h1_h2=res["vocal"].get("h1_h2"),
+            spectral_tilt=res["vocal"].get("spectral_tilt"),
+        )
+    except Exception as e:
+        res["vocal"] = {"error": f"{type(e).__name__}: {e}"}
+        res["lamps"] = None
     return res
+
+
+# 训练前体检的取样上限（条数）。20 是权衡：够稳、又在 UI 可接受的时间内。
+VOCAL_SAMPLE_MAX = 20
+
+
+def _aggregate_vocal(metrics: list[dict]) -> dict:
+    """把逐条指标聚合成一份素材级体检（**取中位数**，不是均值）。
+
+    中位数而非均值：素材里有几条带噪/破音的切片是常态，均值会被它们拉走，
+    而用户想知道的是「这份素材的典型水平」。
+    """
+    keys = ("hnr", "h1_h2", "spectral_tilt", "jitter_local", "shimmer_local", "f0_median")
+    out: dict = {"clips_measured": len(metrics), "error": None}
+    for k in keys:
+        vals = sorted(m[k] for m in metrics if m.get(k) is not None)
+        out[k] = round(vals[len(vals) // 2], 3) if vals else None
+    return out
 
 
 # ---------------- 变声验收 ----------------
@@ -420,6 +461,84 @@ def run_voice(exp: str, ref: str = "") -> dict:
     res["items"] = items
     res["score"] = round(sum(it["score"] for it in items.values())) if items else None
     res["pass"] = all(it["pass"] for it in items.values()) if items else False
+
+    # 5) 嗓音客观指标 + 三灯（2026-09-29 新增）。
+    #    ⚠️ 刻意**不进 items、不进 score** —— 现有 4 指标 ×25 = 100 分制是
+    #    rvc_live 训练回调与既有 QC 记录依赖的口径，加一项会把它从 100 分制
+    #    改成 125 分制，让历史 JSON 与新 JSON 不可比。这些量是**用户可见的
+    #    体检信息**，不是入库判据，所以并列放在 voice.vocal 里。
+    try:
+        vocal = voice_metrics.extract(out_path)
+        res["vocal"] = vocal
+        res["lamps"] = voice_report.three_lamps(
+            emb_sim=items.get("emb_sim", {}).get("value"),
+            hnr=vocal.get("hnr"),
+            h1_h2=vocal.get("h1_h2"),
+            spectral_tilt=vocal.get("spectral_tilt"),
+        )
+    except Exception as e:
+        # 体检失败绝不影响验收结论（与「任何一步失败都不裸崩」同一约定）
+        res["vocal"] = {"error": f"{type(e).__name__}: {e}"}
+        res["lamps"] = None
+    return res
+
+
+# ---------------- 训练前体检（轻量，不跑转写） ----------------
+
+def run_vocal_preview(dataset_dir: Path) -> dict:
+    """只算嗓音客观指标 + 三灯，**不做逐条转写**（那是 run_dataset 里最慢的一步）。
+
+    为什么单独一条路：用户要的是「训练前 3 秒知道这份素材行不行」。
+    run_dataset 会为了估语速去调 worker 8001 转写每一条切片（73 条要几分钟），
+    而体检只需要音频本身。把这两件事分开，体检就能做到几乎瞬时。
+    """
+    res: dict = {"dir": str(dataset_dir), "clips": 0, "clips_measured": 0,
+                 "sampled": 0, "hnr": None, "h1_h2": None, "spectral_tilt": None,
+                 "jitter_local": None, "shimmer_local": None, "f0_median": None,
+                 "lamps": None, "warnings": [], "error": None, "error_stage": None}
+    if not dataset_dir.exists():
+        res["error"] = f"数据集目录不存在: {dataset_dir}"
+        res["error_stage"] = "数据集目录"
+        return res
+    wavs = sorted(dataset_dir.glob("*.wav"))
+    res["clips"] = len(wavs)
+    if not wavs:
+        res["error"] = f"数据集目录没有 wav: {dataset_dir}"
+        res["error_stage"] = "数据集读取"
+        return res
+
+    ok, why = voice_metrics.metrics_available()
+    if not ok:
+        res["error"] = why
+        res["error_stage"] = "嗓音指标"
+        res["warnings"].append("parselmouth 不可用，无法做训练前体检")
+        return res
+
+    sample = wavs if len(wavs) <= VOCAL_SAMPLE_MAX else \
+        wavs[:: max(1, len(wavs) // VOCAL_SAMPLE_MAX)][:VOCAL_SAMPLE_MAX]
+    res["sampled"] = len(sample)
+    print(f"[vocal] 体检 {len(sample)}/{len(wavs)} 条切片…", flush=True)
+    metrics = []
+    for i, f in enumerate(sample, 1):
+        m = voice_metrics.extract(f)
+        if m.get("error"):
+            res["warnings"].append(f"{f.name}: {m['error']}")
+            continue
+        metrics.append(m)
+        if i % 10 == 0:
+            print(f"[vocal] {i}/{len(sample)}", flush=True)
+    if not metrics:
+        res["error"] = "没有一条切片能算出指标"
+        res["error_stage"] = "嗓音指标"
+        return res
+
+    agg = _aggregate_vocal(metrics)
+    res.update({k: agg[k] for k in ("clips_measured", "hnr", "h1_h2",
+                                    "spectral_tilt", "jitter_local",
+                                    "shimmer_local", "f0_median")})
+    res["lamps"] = voice_report.three_lamps(
+        emb_sim=None, hnr=agg.get("hnr"), h1_h2=agg.get("h1_h2"),
+        spectral_tilt=agg.get("spectral_tilt"))
     return res
 
 
@@ -453,8 +572,34 @@ def _write_section(exp: str, section: str, payload: dict) -> Path:
     return _qc_file(exp)
 
 
+def _lamp_icon(lamp: str | None) -> str:
+    return {voice_report.GREEN: "● 绿", voice_report.YELLOW: "● 黄",
+            voice_report.RED: "● 红"}.get(lamp, "○ 未测")
+
+
+def _print_lamps(lamps: dict | None):
+    """打印三灯。lamps 为 None 说明体检没跑成 —— 明确说出来，不静默跳过。"""
+    if not lamps:
+        print("  三灯: 未生成（嗓音指标不可用，见上方 error）")
+        return
+    print("  三灯体检:")
+    for l in lamps.get("lamps", []):
+        print(f"    {l['label']:6s} {_lamp_icon(l['lamp'])}  {l['detail']}")
+    print(f"    → {lamps.get('verdict')}")
+
+
 def _print_summary(exp: str, data: dict):
     print(f"\n=== 音色质检 {exp} ===")
+    vp = data.get("vocal_preview")
+    if vp:
+        if vp.get("error"):
+            print(f"训练前体检失败（{vp.get('error_stage') or '未知'}）: {vp['error']}")
+        else:
+            print(f"训练前体检（{vp.get('clips_measured')}/{vp.get('sampled')} 条，"
+                  f"素材共 {vp.get('clips')} 条）")
+        for w in vp.get("warnings", [])[:5]:
+            print(f"  警告: {w}")
+        _print_lamps(vp.get("lamps"))
     ds = data.get("dataset")
     if ds:
         if ds.get("error"):
@@ -475,6 +620,7 @@ def _print_summary(exp: str, data: dict):
             for k, it in v.get("items", {}).items():
                 print(f"  {k}: {it['detail']}  ->  {'PASS' if it['pass'] else 'FAIL'}")
             print(f"  score {v.get('score')}/100  ->  {'PASS' if v.get('pass') else 'FAIL'}")
+            _print_lamps(v.get("lamps"))
 
 
 def main():
@@ -482,12 +628,26 @@ def main():
     p.add_argument("--dataset", help="数据集预检：切片数/时长分布/响度/语速")
     p.add_argument("--voice", help="变声验收：测试音频经离线变声后四项指标 + score")
     p.add_argument("--ref", help="显式指定声纹对比的目标音色参考音频（缺省自动查找 voicebank/数据集）")
+    p.add_argument("--vocal-preview",
+                   help="训练前体检：只算嗓音指标 + 三灯，不做转写（秒级返回）")
     args = p.parse_args()
-    if not args.dataset and not args.voice:
-        p.error("至少指定 --dataset 或 --voice 之一")
+    if not args.dataset and not args.voice and not args.vocal_preview:
+        p.error("至少指定 --dataset / --voice / --vocal-preview 之一")
 
     exps: list[str] = []
     failed = False
+    if args.vocal_preview:
+        exp = Path(args.vocal_preview).name
+        print(f"[vocal] 训练前体检 {args.vocal_preview}", flush=True)
+        try:
+            payload = run_vocal_preview(Path(args.vocal_preview))
+        except Exception as e:
+            payload = {"error": f"{type(e).__name__}: {e}", "error_stage": "未知",
+                       "warnings": [], "lamps": None}
+        if payload.get("error"):
+            failed = True
+        _write_section(exp, "vocal_preview", payload)
+        exps.append(exp)
     if args.dataset:
         exp = Path(args.dataset).name
         print(f"[dataset] 预检 {args.dataset}", flush=True)

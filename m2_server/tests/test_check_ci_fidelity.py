@@ -140,9 +140,18 @@ def test_ci_fidelity_is_not_a_default_step(check):
       模块都得有归属，红的是"死代码还是漏接"必须有人做决定。症状同样是零。
     两者与 `licenses` 同类：**漏了就补不回来 / 事后才发现**，所以都进 pre-commit。
 
+    2026-09-29 又多了 `petlayout`，且**也进 --fast**：
+    * `petlayout` = `tools/test-pet-panel-layout.cjs`（约 1.2s）：桌宠面板的**纵向预算
+      门禁** —— 静态部分查"新功能页/新控件有没有登记预算"，外加一次 headless Chromium
+      扫描（所有功能页 × 无气泡/大头气泡）实测余量。面板 300px 高是死的，新控件把底部
+      挤掉是**提交那一刻就该拦下**的形状（见 `docs/桌宠遥控器.md`）。
+      它从 `nodetest` 里摘了出来（`NODE_TESTS_OWNED_BY_OTHER_STEPS` 有登记）——
+      因为 nodetest 不进 --fast，而这条必须进）。
+
     ⚠️ 本用例只在**全量**跑（不在 `FAST_TESTS` 里）—— 也就是说改了 `STEPS`
     集合后 `--fast` 是绿的、`pre-push`/CI 才红。2026-09-21 就是这样：`gate`
     与 `ownership` 两次提交各自只跑了 `--fast`，直到全量才发现这条没同步。
+    **2026-09-29 又犯了一次**：`petlayout` 加进 `STEPS` 时这边没跟，全量直接红。
     改 `STEPS` 请顺手跑一次全量（或至少 `pytest m2_server/tests/test_check_ci_fidelity.py`）。
     """
     assert "ci-fidelity" not in check.STEPS
@@ -153,6 +162,7 @@ def test_ci_fidelity_is_not_a_default_step(check):
         "requires",
         "electron",
         "ps1lint",
+        "petlayout",
         "nodetest",
         "ruff",
         "pytest",

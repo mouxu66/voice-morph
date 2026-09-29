@@ -287,7 +287,7 @@ export interface VoiceQcItem {
   hint?: string;
 }
 
-// 音色质检结果：outputs/qc/<exp>.json 的结构（dataset/voice 两节可并存）
+// 音色质检结果：outputs/qc/<exp>.json 的结构（dataset/voice/vocal_preview 三节可并存）
 export interface VoiceQc {
   exp: string;
   created_at?: string;
@@ -304,11 +304,53 @@ export interface VoiceQc {
     error?: string | null;
     error_stage?: string | null;
     hint?: string | null;
+    lamps?: LampsResult | null;
   } | null;
   dataset?: Record<string, unknown> | null;
+  // 训练前体检（tools/voice_qc.py --vocal-preview）：只有音频就能算，不依赖训练
+  vocal_preview?: {
+    clips?: number;
+    sampled?: number;
+    clips_measured?: number;
+    hnr?: number | null;
+    h1_h2?: number | null;
+    spectral_tilt?: number | null;
+    jitter_local?: number | null;
+    shimmer_local?: number | null;
+    f0_median?: number | null;
+    lamps?: LampsResult | null;
+    warnings?: string[];
+    error?: string | null;
+    error_stage?: string | null;
+  } | null;
   error?: string | null;
   error_stage?: string | null;
   hint?: string | null;
+}
+
+// ---------------- 音色体检「三灯」（2026-09-29） ----------------
+// 后端来源：GET /api/voice/lamps（读落盘的质检结果）与
+// POST /api/voice/lamps/scan（现场体检数据集目录）。
+// 合成为「相似度 / 自然度 / 夹嗓子风险」，见 tools/voice_report.py。
+
+export type Lamp = "green" | "yellow" | "red";
+
+export interface LampItem {
+  key: "similarity" | "naturalness" | "strain" | string;
+  label: string;
+  /** 原始测量值；null = 未测（**不是**不合格，两者必须分开显示） */
+  value: number | null;
+  /** null = 未测。前端不得把 null 渲染成红灯 */
+  lamp: Lamp | null;
+  detail: string;
+  sources: string[];
+}
+
+export interface LampsResult {
+  lamps: LampItem[];
+  verdict: string;
+  /** 有几个灯真的测到了（0~3） */
+  tested_count: number;
 }
 
 export interface VoiceList {
