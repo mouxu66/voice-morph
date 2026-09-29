@@ -965,6 +965,63 @@ export async function rvcLiveSetProfile(profile: string): Promise<LiveProfileRes
   return jsonFetch("/rvc/live/profile", { method: "POST", body: JSON.stringify({ profile }) });
 }
 
+// ---- 场景包（2026-09-29）----
+// 场景 = 给「我现在要开会 / 开黑」起个名字，一键把整组开关写到位。
+// 两类字段语义不同，别混（后端 live_settings.SCENES 的注释是权威）：
+//   in_settings —— 落盘，持久生效
+//   on_start    —— 不落盘，只在应用那一刻随变声启动传下去
+
+export type LiveScene = {
+  key: string;
+  label: string;
+  desc: string;
+  icon?: string;
+  order: number;
+  /** 会落盘的设置（持久生效） */
+  in_settings: Record<string, string | boolean>;
+  /** 只在应用时随启动传下去的伴随项（自我监听 / 字幕），不持久 */
+  on_start: Record<string, boolean>;
+};
+
+export type LiveScenesResult = {
+  ok: boolean;
+  scenes: LiveScene[];
+  /** 当前高亮的场景；用户手动改过单开关后为 null */
+  active: string | null;
+  /** 上次点过的场景（可能与 active 不同 = 之后被手动改过） */
+  stored: string;
+  current: Record<string, unknown>;
+};
+
+export type LiveSceneApplyResult = {
+  ok: boolean;
+  scene: string;
+  label: string;
+  applied: Record<string, string | boolean>;
+  /** 已随本次重启生效的伴随项；没重启时为空对象 */
+  applied_on_start: Record<string, boolean>;
+  /** 运行中但未重启：这些伴随项还没生效 */
+  on_start_pending: Record<string, boolean>;
+  needs_restart: boolean;
+  restarted: boolean;
+  tts_freed_mb?: number;
+  settings: Record<string, unknown>;
+};
+
+export async function rvcLiveGetScenes(): Promise<LiveScenesResult> {
+  return jsonFetch("/rvc/live/scenes");
+}
+
+export async function rvcLiveApplyScene(
+  scene: string,
+  restart = true,
+): Promise<LiveSceneApplyResult> {
+  return jsonFetch("/rvc/live/scene", {
+    method: "POST",
+    body: JSON.stringify({ scene, restart }),
+  });
+}
+
 export async function rvcLiveReset(): Promise<{ ok: boolean; reset?: boolean; error?: string }> {
   return jsonFetch("/rvc/live/reset", { method: "POST" })
 }

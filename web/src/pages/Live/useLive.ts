@@ -14,11 +14,14 @@ import {
   rvcLiveStart,
   rvcLiveStatus,
   rvcLiveStop,
+  rvcLiveGetScenes,
+  rvcLiveApplyScene,
   rvcTrainStart,
   rvcTrainStatus,
   sendChainCheck,
   setLiveAudioDevices,
   type LiveAudioDevices,
+  type LiveScene,
   type RvcGenStatus,
   type RvcLiveStatus,
   type RvcTrainStatus,
@@ -424,6 +427,59 @@ export function useLive() {
     [perfProfile],
   )
 
+  // ---- 场景包（2026-09-29）----
+
+  const [scenes, setScenes] = useState<{ scenes: LiveScene[]; active: string | null }>({
+    scenes: [],
+    active: null,
+  })
+  const [scenePending, setScenePending] = useState<string | null>(null)
+
+  const refreshScenes = useCallback(async () => {
+    try {
+      const r = await rvcLiveGetScenes()
+      setScenes({ scenes: r.scenes, active: r.active })
+    } catch {
+      // 场景是锦上添花的能力，拉不到就整块不渲染（见 LivePage 的 scenes.length 判断），
+      // 不该因为它失败而把整个实时页的反馈区变成报错。
+      setScenes({ scenes: [], active: null })
+    }
+  }, [])
+
+  const applyScene = useCallback(async (key: string) => {
+    setScenePending(key)
+    setFeedback(null)
+    try {
+      const r = await rvcLiveApplyScene(key)
+      // 诚实报告：on_start 那些项（自我监听/字幕）不落盘，只有重启了才算真生效。
+      // 没重启时要说「重启后生效」，不能说「已应用」。
+      const parts = [r.restarted ? `已切换为「${r.label}」，正在自动重启变声。` : `已切换为「${r.label}」。`]
+      if (r.restarted && Object.keys(r.applied_on_start).length) {
+        const labels = Object.entries(r.applied_on_start)
+          .filter(([, v]) => v)
+          .map(([k]) => (k === "monitor" ? "自我监听" : k === "subtitle" ? "字幕" : k))
+        if (labels.length) parts.push(`已开启${labels.join("、")}。`)
+      } else if (r.needs_restart) {
+        parts.push("自我监听 / 字幕等伴随项需重新开启变声后生效。")
+      }
+      if (r.tts_freed_mb) {
+        parts.push(`已卸载语音合成引擎，释放约 ${(r.tts_freed_mb / 1024).toFixed(1)} GB 显存。`)
+      }
+      setFeedback({ tone: "ok", text: parts.join("") })
+    } catch (error) {
+      setFeedback({ tone: "error", text: msgOf(error, "应用场景失败") })
+    } finally {
+      setScenePending(null)
+      tickRef.current()
+      void refreshScenes()
+    }
+  }, [refreshScenes])
+
+  // 场景清单：与设备清单同批拉（都只在挂载时需要一次；改设置后再刷）
+  useEffect(() => {
+    void refreshScenes()
+  }, [refreshScenes])
+
   return {
     voicesInfo,
     voices: voicesInfo?.voices ?? [],
@@ -453,6 +509,11 @@ export function useLive() {
     feedback,
     perfProfile,
     perfProfileDesc,
+    scenes: scenes.scenes,
+    activeScene: scenes.active,
+    scenePending,
+    applyScene,
+    refreshScenes,
     gpuTotalMb: liveStatus?.gpu_total_mb ?? null,
     gpuUsedMb: liveStatus?.gpu_used_mb ?? null,
     liveProcVramMb: liveStatus?.live_proc_vram_mb ?? null,

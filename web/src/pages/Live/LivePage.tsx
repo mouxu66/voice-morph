@@ -31,6 +31,7 @@ import { ErrorPanel } from "@/components/ErrorPanel"
 import { EffectLadderCard } from "@/components/EffectLadderCard"
 import { ChainResultList } from "@/components/ChainResultList"
 import { LiveLevelMeter } from "@/components/voice-studio/LiveLevelMeter"
+import { LiveScenePacks } from "@/components/voice-studio/LiveScenePacks"
 import { RvcChainDiagram } from "@/components/voice-studio/RvcChainDiagram"
 import { RvcVoicePicker } from "@/components/voice-studio/RvcVoicePicker"
 import { TrainLogConsole } from "@/components/voice-studio/TrainLogConsole"
@@ -250,6 +251,36 @@ export function LivePage(
                 知道了
               </button>
             </div>
+          </section>
+        )}
+
+        {/* 场景包：一键把整组开关写到位（用户想的是「我要开会」，不是参数） */}
+        {p.scenes.length > 0 && (
+          <section className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-primary">场景</p>
+              <h3 className="mt-1 flex items-center gap-2 text-lg font-semibold text-card-foreground">
+                <Sparkles className="h-4 w-4 text-primary" />
+                你想干什么
+              </h3>
+              <p className="mt-1.5 max-w-2xl text-xs leading-5 text-muted-foreground">
+                选一个场景，性能档、降噪、自我监听、字幕一次性调好。不用自己拼参数。
+                场景里「性能 / 降噪」是保存下来的；「自我监听 / 字幕」只在你点的那一刻随变声启动生效。
+              </p>
+            </div>
+            <LiveScenePacks
+              className="mt-4"
+              scenes={p.scenes}
+              active={p.activeScene}
+              pending={p.scenePending}
+              disabled={p.restarting}
+              onApply={(key) => void p.applyScene(key)}
+            />
+            {p.activeScene === null && (
+              <p className="mt-3 text-xs text-muted-foreground">
+                当前设置已被手动调整，不属于任何场景 —— 再点一个场景即可回到预设组合。
+              </p>
+            )}
           </section>
         )}
 

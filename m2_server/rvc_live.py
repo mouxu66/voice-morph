@@ -842,6 +842,89 @@ def _live_stream_ready() -> bool:
         return False
 
 
+def parse_infer_ms(text: str) -> list[float]:
+    """从日志文本里抽出所有「推理耗时：X.XX秒」→ 毫秒列表（纯函数，可单测）。
+
+    不用正则：这一行有全角/半角冒号两种写法，且数值后面紧跟“秒”与换行；
+    手写扫描既避开了正则的歧义，也不需要在模块里多引一个 re。
+    认不出的行直接跳过 —— 日志里还有大量别的内容（模型加载、STREAM_UP 等）。
+    """
+    out: list[float] = []
+    mark = "推理耗时"
+    for line in text.splitlines():
+        i = line.find(mark)
+        if i < 0:
+            continue
+        seg = line[i + len(mark) :].lstrip("：: \t")
+        num = ""
+        for ch in seg:
+            if ch.isdigit() or ch == ".":
+                num += ch
+            else:
+                break
+        if not num:
+            continue
+        try:
+            out.append(float(num) * 1000.0)
+        except ValueError:
+            continue
+    return out
+
+
+#: 只统计最近这么多条：实时链路的耗时随负载漂，长历史会把"现在"淹没
+_INFER_TAIL_N = 100
+
+
+def infer_latency() -> dict:
+    """实测推理耗时（读实时日志尾部）—— 桌宠状态条上的那个数。
+
+    **为什么不去新起一个测量进程**：RVC 实时链路本来就在打这个数
+    （`logs/<exp>/realtime_gui.log`，本机 4279 行里全是「推理耗时：0.08秒」）。
+    读它零成本、不占音频设备、不需要进 RVC venv。
+
+    ⚠️ **口径**：这是「单块推理耗时」，**不是端到端延迟**。
+    端到端还要加上分块缓冲（由档位的 `block_time` 决定，另用 `block_ms` 报出），
+    以及音频驱动的缓冲。所以消费方显示时必须写「推理」，不能笼统写「延迟」——
+    否则它会和 README 里那个 p50 50ms 对不上，而两个数其实都没错。
+
+    读法与 `_live_stream_ready` 同款：只 seek 尾部 8KB，不扫整个大日志。
+    没有样本时返回 `{}`（未启动过 / 未变声过），由消费方决定怎么显示。
+    """
+    try:
+        _, log_dir, _ = _exp_dirs()
+        path = log_dir / "realtime_gui.log"
+        if not path.exists():
+            return {}
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 8192))
+            tail = f.read().decode("utf-8", "replace")
+    except Exception as e:  # noqa: BLE001 —— 状态端点不该因为读日志失败而 500
+        logger.debug("[latency] 读取实时日志失败: %s", e)
+        return {}
+    vals = parse_infer_ms(tail)[-_INFER_TAIL_N:]
+    if not vals:
+        return {}
+    vals.sort()
+    mid = vals[len(vals) // 2] if len(vals) % 2 else (vals[len(vals) // 2 - 1] + vals[len(vals) // 2]) / 2
+    p95 = vals[min(len(vals) - 1, int(len(vals) * 0.95))]
+    return {
+        "infer_ms": round(mid, 1),
+        "infer_ms_p95": round(p95, 1),
+        "infer_samples": len(vals),
+    }
+
+
+def block_ms() -> int:
+    """当前档位的分块时长（毫秒）—— 端到端延迟里"等一块凑满"那部分的配置值。"""
+    try:
+        profile = live_settings.get()["perf_profile"]
+        return int(round(float(PROFILE_TUNING[profile]["block_time"]) * 1000))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _find_monitor_pids() -> list[int]:
     """按命令行找出自我监听回环进程（rvc_monitor.py）。"""
     try:
@@ -975,7 +1058,9 @@ def rvc_live_status(exp_name: str | None = None):
         "perf_profile_desc": PROFILE_DESC.get(live_settings.get()["perf_profile"], ""),
         # 推理子进程的线程上限（0 = 不注入，交系统默认；见 _thread_env）
         "omp_threads": OMP_THREADS,
-        **_gpu_snapshot(),
+        # 实测推理耗时（tail realtime_gui.log）+ 档位分块时长；两者口径不同，故分开报
+        **infer_latency(),
+        "block_ms": block_ms(),
         # 语音合成引擎（Qwen3-TTS worker）是否驻留显存：game 档卸载后为 False
         "tts_worker_alive": qwen3_tts.worker_alive(),
         # 实时转写（桌宠字幕）：running=转写子进程存活；stage/last_text 供桌宠渲染
@@ -1021,6 +1106,13 @@ class LiveDevicesPayload(BaseModel):
 
 class LiveProfilePayload(BaseModel):
     profile: str
+
+
+class LiveScenePayload(BaseModel):
+    scene: str
+    #: 应用场景时若变声正在跑，是否自动重启让它带上新的伴随项（监听/字幕）。
+    #: 默认 True —— 「一键开黑」不该让用户再去手动重启一次才生效。
+    restart: bool = True
 
 
 @router.get("/rvc/live/profile")
@@ -1079,6 +1171,91 @@ def rvc_live_profile_set(payload: LiveProfilePayload):
         "tts_worker_alive": qwen3_tts.worker_alive(),
         "tts_freed_mb": TTS_WORKER_VRAM_MB if (worker_was_alive and not deferred) else 0,
         "tts_freed_deferred": deferred,
+    }
+
+
+@router.get("/rvc/live/scenes")
+def rvc_live_scenes():
+    """场景包清单 + 当前落在哪个场景（供前端渲染场景卡片）。
+
+    ★ active 判定**以落盘的 scene 键为准**，不是「拿当前设置去反推最像哪个场景」。
+      为什么：gaming / wechat / meeting 三者的 in_settings 完全相同
+      （都是 perf_profile=game + denoise=True），反推只会恒等命中 order 最小的
+      gaming —— 用户点了「微信语音」却看到「开黑」被高亮，是**假信息**。
+      只有记得「点过哪个」才判得准。
+
+    ★ 但只记得还不够：用户点完场景后可能又手动改了降噪，那就不该继续高亮。
+      所以再叠一层 scene_matches 校验 —— 它答的是「还符不符合」，不是「是哪个」。
+      （这也是为什么它是 3 选 1 的歧义判定，而这里只当布尔校验用。）
+    """
+    cur = live_settings.get()
+    stored = cur["scene"]
+    active = stored if (stored and live_settings.scene_matches(stored, cur)) else None
+    return {
+        "ok": True,
+        "scenes": live_settings.scene_list(),
+        "active": active,
+        "stored": stored,       # 上次「点了哪个」；与 active 不同 = 之后被手动改过
+        "current": cur,
+    }
+
+
+@router.post("/rvc/live/scene")
+def rvc_live_scene_set(payload: LiveScenePayload):
+    """一键应用场景包。
+
+    做两件事，分开是有意的：
+      1. **落盘** in_settings 那几项（perf_profile / denoise）—— 持久生效；
+      2. **顺带** 把 on_start 那几项（monitor / subtitle）随重启传下去 ——
+         它们本来就不是设置项（见 live_settings.SCENES 的注释），
+         所以效果是「本次启动生效」。
+
+    变声正在跑且 restart=True 时自动重启，让伴随项真的带上；restart=False
+    则只落盘，由用户自己决定何时重启。
+    """
+    key = payload.scene.strip()
+    s = live_settings.scene_get(key)
+    if s is None:
+        opts = " / ".join(x["key"] for x in live_settings.scene_list())
+        raise HTTPException(status_code=400, detail=f"未知场景：{key}（可选 {opts}）")
+
+    before = live_settings.get()
+    # ① 落盘设置（用 update 的长签名逐个传，保留 input_device 不动）
+    applied = live_settings.update(
+        scene=key,
+        perf_profile=s["in_settings"].get("perf_profile"),
+        denoise=s["in_settings"].get("denoise"),
+    )
+    # ② game 档要卸载 TTS worker 释放显存；与 profile 端点同一套处理
+    worker_was_alive = False
+    if before["perf_profile"] != applied["perf_profile"]:
+        worker_was_alive = _sync_worker_for_profile(applied["perf_profile"])
+
+    restarted = False
+    running = _live_proc_alive()
+    if running and payload.restart:
+        try:
+            rvc_live_stop()
+        except Exception as e:  # pragma: no cover - 防御性兜底（与 profile 端点一致）
+            logger.warning("[scene] 应用场景停止旧变声异常（继续重启）: %s", e)
+        rvc_live_start(
+            exp_name=_active_exp(),
+            monitor=s["on_start"].get("monitor"),
+        )
+        restarted = True
+
+    return {
+        "ok": True,
+        "scene": key,
+        "label": s["label"],
+        "applied": {k: applied[k] for k in s["in_settings"]},
+        # 明确回传哪些项**没**落盘，免得前端把它当成持久状态展示
+        "applied_on_start": (dict(s["on_start"]) if restarted else {}),
+        "on_start_pending": (dict(s["on_start"]) if (not restarted and running) else {}),
+        "needs_restart": bool(running and not payload.restart),
+        "restarted": restarted,
+        "tts_freed_mb": TTS_WORKER_VRAM_MB if worker_was_alive else 0,
+        "settings": applied,
     }
 
 

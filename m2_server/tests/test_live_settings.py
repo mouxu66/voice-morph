@@ -34,7 +34,11 @@ def _tmp_settings(tmp_path, monkeypatch):
 
 def test_defaults_when_missing():
     s = live_settings.get()
-    assert s == {"input_device": "", "denoise": True, "perf_profile": "balanced"}
+    # 比对「默认值的每个键都在、且值对」，而不是全等 —— 否则每加一个设置项
+    # （如 2026-09-29 的 scene）都要来这里补一次字面量，改的人会烦到直接删断言。
+    for k, v in live_settings.DEFAULTS.items():
+        assert s[k] == v, f"默认值 {k} 不对：{s[k]!r} != {v!r}"
+    assert set(s) == set(live_settings.SETTING_KEYS)
 
 
 def test_roundtrip_update():
@@ -58,7 +62,8 @@ def test_corrupt_file_falls_back(tmp_path, monkeypatch):
     p = tmp_path / "live_settings.json"
     p.write_text("{not json", encoding="utf-8")
     monkeypatch.setattr(live_settings, "SETTINGS_PATH", p)
-    assert live_settings.get() == {"input_device": "", "denoise": True, "perf_profile": "balanced"}
+    for k, v in live_settings.DEFAULTS.items():
+        assert live_settings.get()[k] == v, f"损坏文件后 {k} 未回退默认值"
     # 保存覆盖坏文件后恢复正常
     live_settings.update(denoise=False)
     assert live_settings.get()["denoise"] is False
@@ -496,3 +501,161 @@ def test_gpu_ttl_falls_back_on_broken_settings(monkeypatch):
 
     monkeypatch.setattr(live_settings, "get", boom)
     assert rvc_live._gpu_ttl() == rvc_live._GPU_TTL_BALANCED
+
+
+# ============ 场景包（2026-09-29）============
+# 这一层的价值全在「用户能不能信任它」，所以测试集中在三件容易说谎的事：
+#   1. 场景表里的字段必须真的落到既有设置上（不能是空中楼阁的承诺）；
+#   2. 「现在高亮哪个场景」必须答得对（gaming/wechat/meeting 的设置一样！）；
+#   3. 用户手动改过之后，界面不能继续说「你在开黑模式」。
+
+
+class TestSceneTable:
+    def test_every_scene_has_required_fields(self):
+        for key, s in live_settings.SCENES.items():
+            assert s["label"], f"{key} 缺 label"
+            assert s["desc"], f"{key} 缺 desc"
+            assert "in_settings" in s and "on_start" in s, f"{key} 两桶字段必须都在"
+
+    def test_in_settings_only_uses_real_setting_keys(self):
+        """★ 场景里写的每个键都必须是 live_settings 真正管着的设置。
+
+        否则场景就是在承诺一个存不下来的状态 —— 用户下次打开发现没生效，
+        而这种「假承诺」比没有场景更糟。
+        """
+        allowed = set(live_settings.DEFAULTS) - {"scene"}
+        for key, s in live_settings.SCENES.items():
+            unknown = set(s["in_settings"]) - allowed
+            assert not unknown, f"{key} 的 in_settings 里有不存在的设置：{unknown}"
+
+    def test_perf_profile_values_are_legal(self):
+        """perf_profile 只能取 rvc_live.PROFILE_TUNING 里有的档位，否则重启即 400。"""
+        legal = set(rvc_live.PROFILE_TUNING)
+        for key, s in live_settings.SCENES.items():
+            p = s["in_settings"].get("perf_profile")
+            if p is not None:
+                assert p in legal, f"{key} 的 perf_profile={p} 不是合法档位（{legal}）"
+
+    def test_labels_are_unique(self):
+        labels = [s["label"] for s in live_settings.SCENES.values()]
+        assert len(labels) == len(set(labels)), f"场景标签重复：{labels}"
+
+
+class TestSceneRead:
+    def test_scene_list_sorted_by_order(self):
+        orders = [s["order"] for s in live_settings.scene_list()]
+        assert orders == sorted(orders)
+
+    def test_scene_list_is_json_serializable(self):
+        import json
+
+        json.dumps(live_settings.scene_list(), ensure_ascii=False)
+
+    def test_scene_get_unknown_returns_none(self):
+        assert live_settings.scene_get("__不存在__") is None
+
+    def test_scene_list_returns_copies(self):
+        """改返回值不该污染表本身（否则一个调用方就能改掉所有人的场景定义）。"""
+        got = live_settings.scene_list()
+        got[0]["in_settings"]["denoise"] = "被改坏了"
+        assert live_settings.SCENES["gaming"]["in_settings"]["denoise"] is True
+
+
+class TestSceneState:
+    def test_default_scene_is_empty(self):
+        assert live_settings.get()["scene"] == ""
+
+    def test_update_unknown_scene_is_rejected(self):
+        """未知场景名不能写进去 —— 否则界面会高亮一个不存在的场景。"""
+        assert live_settings.update(scene="__不存在__")["scene"] == ""
+        assert live_settings.update(scene="gaming")["scene"] == "gaming"
+
+    def test_broken_scene_in_file_falls_back_to_empty(self, tmp_path, monkeypatch):
+        import json
+
+        p = tmp_path / "live_settings.json"
+        p.write_text(json.dumps({"scene": "__手改坏的__"}), encoding="utf-8")
+        monkeypatch.setattr(live_settings, "SETTINGS_PATH", p)
+        assert live_settings.get()["scene"] == ""
+
+    def test_scene_roundtrip(self):
+        live_settings.update(scene="stream")
+        assert live_settings.get()["scene"] == "stream"
+        # 只改别的字段时，场景标记不该被清掉
+        live_settings.update(denoise=False)
+        assert live_settings.get()["scene"] == "stream"
+
+
+class TestSceneMatches:
+    def test_matches_exact_settings(self):
+        live_settings.update(perf_profile="game", denoise=True)
+        assert live_settings.scene_matches("gaming") is True
+
+    def test_no_match_when_user_deviated(self):
+        """★ 用户手动改了降噪 → 不该再算「还是开黑模式」。"""
+        live_settings.update(perf_profile="game", denoise=True)
+        assert live_settings.scene_matches("gaming") is True
+        live_settings.update(denoise=False)
+        assert live_settings.scene_matches("gaming") is False
+
+    def test_unknown_scene_never_matches(self):
+        assert live_settings.scene_matches("__不存在__") is False
+
+    def test_is_ambiguous_by_design(self):
+        """★ 钉住一个事实：gaming/wechat/meeting 的设置**完全一样**，
+        所以 scene_matches 对三者同真 —— 它只能当布尔校验，不能拿来选场景键。
+
+        这条用例是「防以后有人图省事，用 scene_matches 反推 active」，
+        那会恒等命中 order 最小的 gaming，把点了「微信语音」的用户显示成「开黑」。
+        """
+        live_settings.update(perf_profile="game", denoise=True)
+        same = [k for k in live_settings.SCENES if live_settings.scene_matches(k)]
+        assert len(same) >= 2, "若真的只剩一个命中，这条歧义警告可以删掉"
+        assert "gaming" in same and "wechat" in same
+
+
+class TestSceneEndpoints:
+    def test_list_endpoint_shape(self):
+        d = rvc_live.rvc_live_scenes()
+        assert d["ok"] is True
+        assert {s["key"] for s in d["scenes"]} == set(live_settings.SCENES)
+
+    def test_active_follows_stored_key_not_settings(self):
+        """★ 核心回归：点了 wechat 就该高亮 wechat，不能被 gaming 抢走。"""
+        for key in live_settings.SCENES:
+            rvc_live.rvc_live_scene_set(rvc_live.LiveScenePayload(scene=key, restart=False))
+            assert rvc_live.rvc_live_scenes()["active"] == key
+
+    def test_active_cleared_after_manual_change_but_stored_kept(self):
+        rvc_live.rvc_live_scene_set(rvc_live.LiveScenePayload(scene="gaming", restart=False))
+        assert rvc_live.rvc_live_scenes()["active"] == "gaming"
+        live_settings.update(denoise=False)          # 用户手动改
+        d = rvc_live.rvc_live_scenes()
+        assert d["active"] is None, "手动改过之后不该继续高亮"
+        assert d["stored"] == "gaming", "但仍应记得上次点的是哪个"
+
+    def test_unknown_scene_raises_400(self):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as ei:
+            rvc_live.rvc_live_scene_set(rvc_live.LiveScenePayload(scene="__nope__", restart=False))
+        assert ei.value.status_code == 400
+
+    def test_apply_writes_in_settings(self):
+        d = rvc_live.rvc_live_scene_set(rvc_live.LiveScenePayload(scene="wechat", restart=False))
+        s = live_settings.get()
+        assert s["perf_profile"] == "game"
+        assert s["denoise"] is True
+        assert s["scene"] == "wechat"
+        assert d["applied"] == {"perf_profile": "game", "denoise": True}
+
+    def test_on_start_not_reported_as_applied_when_not_restarted(self):
+        """★ 没重启时，monitor/subtitle 不能谎报成「已应用」。
+
+        它们不落盘、只在 start 时传下去；若这里混进 applied，界面会显示
+        「已开自我监听」而实际没开 —— 这是最典型的一种假成功。
+        """
+        d = rvc_live.rvc_live_scene_set(rvc_live.LiveScenePayload(scene="stream", restart=False))
+        assert d["applied_on_start"] == {}
+        assert "monitor" not in d["applied"]
+        assert "subtitle" not in d["applied"]
