@@ -23,6 +23,15 @@ contextBridge.exposeInMainWorld("pet", {
   sendWav: (wav) => ipcRenderer.send("pet:send-wav", String(wav || "")),
   previewText: (text, voiceId, noRvc) => ipcRenderer.send("pet:preview", String(text || "").slice(0, 500), String(voiceId || ""), noRvc === true),
   liveToggle: () => ipcRenderer.send("pet:live-toggle"),
+  // 按住说话：down/up 各一下，主进程负责录音→换声→发送（见 pet-actions.micHoldStart）
+  micDown: (voiceId) => ipcRenderer.send("pet:mic-down", String(voiceId || "")),
+  micUp: () => ipcRenderer.send("pet:mic-up"),
+  // 录音状态回传：面板据此显示“录制中 N 秒 / 换声中”，不靠猜
+  onMicState: (cb) => {
+    const handler = (_e, s) => cb(s);
+    ipcRenderer.on("pet:mic-state", handler);
+    return () => ipcRenderer.removeListener("pet:mic-state", handler);
+  },
   // 查看后端日志：后端离线时在气泡上点一下，主进程在文件管理器里定位 backend.log
   showBackendLog: () => ipcRenderer.invoke("backend:show-log"),
 });

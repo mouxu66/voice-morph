@@ -227,31 +227,103 @@
     background: rgb(var(--c-border-2) / 0.7); border-radius: 999px;
   }
 
-  /* —— 面板头：品牌标 + 标题 + 状态药丸 —— */
-  #phead { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
-  #plogo {
-    width: 17px; height: 17px; flex: 0 0 auto;
-    display: flex; align-items: center; justify-content: center;
-    border-radius: 6px;
-    background: linear-gradient(135deg, rgb(var(--c-accent-h)), rgb(var(--c-accent-p)));
-    box-shadow: 0 2px 8px rgb(var(--c-accent) / 0.35);
-    color: #fff;
+  /* —— 状态条（2026-09-29）：把原来那行「品牌标 + 标题 + 药丸」改成遥控器的仪表盘 ——
+     一眼看到三件事：变声开没开（药丸，可点）/ 正在用谁的音色 / 这一段的实测推理耗时。
+
+     为什么**不新增一行**：面板纵向预算已经被量测守卫钉死（ok-dark 自然高 289px、上限 300px，
+     只剩 11px），再塞一行就得从别处砍掉 25px 以上的功能。而头部这一行的信息价值本来就最低
+     —— 标题「变声工坊」是重复信息（这个 220px 的透明窗里只有这一个面板），
+     所以拿它换状态条，净新增高度 = 0（这就是这个设计成立的唯一理由）。
+
+     宽度预算 184px（204 - 面板左右各 10px padding），实测（live-dark 场景，最挤的形态）：
+       药丸「RVC 变声中」77.4 + 音色 52 + 耗时 35.6 + 2×4px 间距 = ~173 → 还剩 ~11px。
+     那 11px 是**留给延迟位数**的：实测推理耗时可能是 100ms 以上（3 位数比「82ms」宽 ~6px），
+     而音色 chip 是唯一可压缩的一个 —— 不预留下来，机器一慢音色名就先变省略号。
+     为此把原来那颗**装饰性**的品牌标（#plogo，aria-hidden 的 svg，没有任何 JS 引用）
+     从这一行里去掉了：药丸上的引擎名（RVC / 千问）是 2026-09-26 专门修过的用户诉求
+     （「不确定用的是哪一种」），而音色与耗时是这次新增的，三者都不能让；
+     标识性由按钮/原生窗口与图标承担，不在这一行跟数据抢宽度。 */
+  #phead { display: flex; align-items: center; gap: 4px; margin-bottom: 5px; min-width: 0; }
+  /* 只读状态 chip（音色 / 推理耗时）：没有交互 → 没有 hover 反馈，光标保持默认。
+     ⚠️ 选择器一律带 #panel 前缀：`#panel button` 这种「id + 元素」的通配比单个 #id
+     更具体（0,1,0,1 > 0,1,0,0），不带前缀的话下面 #holdMic 的 padding/display 会被它吃掉。 */
+  #panel #rmVoice, #panel #rmLat {
+    flex: 0 0 auto;
+    display: inline-flex; align-items: center;
+    max-width: 100%;
+    padding: 3px 5px; border-radius: 999px;
+    border: 1px solid rgb(var(--c-border) / 0.8);
+    background: rgb(var(--c-surface-2) / 0.55);
+    font-size: 10px; color: rgb(var(--c-t-400));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
   }
-  #plogo svg { width: 11px; height: 11px; }
-  #ptitle {
-    font-size: 11.5px; font-weight: 600; letter-spacing: .3px;
-    color: rgb(var(--c-t-strong));
-  }
-  #pill {
-    margin-left: auto; flex: 0 0 auto;
-    display: inline-flex; align-items: center; gap: 5px;
+  /* 音色文案最长（「卡通·懒羊羊（市场）」这种），所以**只有它**允许被压缩：
+     药丸与耗时都是 flex: 0 0 auto —— 宁可音色出省略号，也不让状态条整体溢出头部。 */
+  #panel #rmVoice { margin-left: auto; flex: 0 1 auto; min-width: 30px; color: rgb(var(--c-t-300)); }
+  #panel #rmLat { color: rgb(var(--c-t-500)); }
+  #panel #rmLat[hidden] { display: none; }
+  /* 药丸现在是个真 <button>（可点 = 变声开关）：#panel button 的通用外观会盖掉上面
+     #pill 的几项（padding / border-radius / background / font-size），所以要用更高的
+     优先级收回来。hover/active/focus 的反馈沿用通配的，不重写。
+     ⚠ 选择器里那个 ".pill" 是必需的，不是冗余：#panel button:not(.primary) { flex: 1 }
+     的优先级是 (0,2,0,1)，比 #panel #pill 的 (0,2,0,0) 更高，而且它在本文件里更靠后 ——
+     少了这个类名，药丸会被当成普通按钮 flex:1 撑满头部一行，把两个 chip 顶出窗口。 */
+  #panel #pill.pill {
+    flex: 0 0 auto;
+    display: inline-flex; align-items: center; gap: 4px;
     padding: 3px 8px 3px 7px; border-radius: 999px;
     border: 1px solid rgb(var(--c-border-2) / 0.7);
     background: rgb(var(--c-surface-2) / 0.8);
-    font-size: 10px; color: rgb(var(--c-t-400));
-    white-space: nowrap;
+    font-size: 10px; font-weight: 400; color: rgb(var(--c-t-400));
+    white-space: nowrap; cursor: pointer;
   }
-  #pill b { font-weight: 500; }
+  #panel #pill.pill:hover { border-color: rgb(var(--c-accent) / 0.6); color: rgb(var(--c-t-strong)); }
+  #panel #pill.pill:active { transform: translateY(1px); }
+
+  /* —— 按住说话（2026-09-29）——
+     为什么单独占一个功能页（第三个页签）而不是塞进「说话」页：那颗按钮要 46px 高才有
+     像样的按压面积，而面板只剩 11px 余量 —— 压成一行就等于放弃了「按住」这件事本身。
+     页签那一行本来就存在（说话/音效），多一页**不多占一个像素**（高度由 CSS 钉死不随数量变）。 */
+  #panel #holdMic {
+    display: flex; flex-direction: column; gap: 3px;
+    width: 100%; height: 46px; padding: 0;
+    border-radius: 12px;
+    font-size: 11.5px; font-weight: 600; color: rgb(var(--c-t-strong));
+    /* 按住期间手指可能滑出按钮、也可能被系统当成滚动手势：都禁掉，
+       否则 pointerup/pointercancel 会以难以预期的方式到达（见 renderer 的手势注释）。 */
+    touch-action: none;
+    user-select: none; -webkit-user-select: none;
+  }
+  #holdMic .mic-ic { width: 15px; height: 15px; }
+  #holdMic .mic-sec {
+    font-size: 10px; font-weight: 500; color: rgb(var(--c-t-500));
+    font-variant-numeric: tabular-nums;
+  }
+  /* 录制中整块转红：绿在本面板里已经表示「已连接 / 正在播」，
+     而「此刻正在录你说话」是需要注意的进行态，用警戒色才不会被误读成成功。 */
+  #holdMic.rec {
+    border-color: rgb(var(--c-err) / 0.55);
+    background: rgb(var(--c-err) / 0.16);
+    color: rgb(var(--c-err));
+  }
+  #holdMic.rec .mic-sec { color: rgb(var(--c-err)); }
+  #holdMic.wait { border-color: rgb(var(--c-accent) / 0.5); color: rgb(var(--c-accent-h)); }
+  #panel #holdHint { margin-top: 4px; font-size: 10px; line-height: 1.45; color: rgb(var(--c-t-500)); }
+  /* 发送前预检（2026-09-29）—— 这条链路最贵的失败是「录完 0..59 秒 + 换声十几秒之后
+     才被告知微信没开」，而那是按下之前就知道的事，所以提到按钮**上面**先说。
+     ★ 钉死单行 + 省略号：它是**状态**，不许因为后端文案变长就把面板顶高
+     （纵向预算见 tools/pet-panel-layout-budget.json；整段原因进 title）。 */
+  #panel #holdPre {
+    margin-bottom: 4px;
+    font-size: 10px; line-height: 1.45;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: rgb(var(--c-t-500));
+  }
+  #panel #holdPre.t-ok   { color: rgb(var(--c-ok)); }
+  #panel #holdPre.t-warn { color: rgb(var(--c-warn)); }
+  #panel #holdPre.t-bad  { color: rgb(var(--c-err)); }
+  #pill b { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   #pill i {
     width: 5px; height: 5px; border-radius: 50%; flex: 0 0 auto;
     background: rgb(var(--c-t-500));
@@ -589,7 +661,15 @@
   #root.compact #panel #recent { display: none; }
   /* 功能页切换器也参与让位：气泡在屏时用户本来就不该操作面板（合成中别动键鼠），
      待机时（无气泡）才是切页的时机 —— 与 #recent 的让位逻辑同一条线。
-     offline-dark 的量测守卫（220px 可用高）就是靠这条才装得下。 */
+     offline-dark 的量测守卫（220px 可用高）就是靠这条才装得下。
+
+     ⚠️ 2026-09-29 实测确认（把下面这行删掉后 offline / live / qwen / think 四个场景全红），
+     所以「把页签一直留着」不是可选方案。它对新增的「按住说话」页的**实际**影响：
+       · 想切到那一页 ⇒ 需要气泡不在屏（待机时就满足）；
+       · 已经停在那一页 ⇒ 不受影响 —— 那颗按钮在 #holdPane 里，不参与让位，
+         而且页签选择写进了 localStorage，固定在「按住」页的人一悬停就是它。
+     实时变声开着时桌宠会一直挂着「变声中 · 我听着」气泡（renderLive），那一页就切不过去；
+     但那正是开着实时变声的时刻 —— 它本来就不需要「按住说话」这条另走麦克风的链路。 */
   #root.compact #panel #tabRow { display: none; }
   #root.compact #panel #phead { margin-bottom: 4px; }
   #root.compact #panel .field { margin-bottom: 3px; }
@@ -699,25 +779,27 @@
     <div id="foot"><span id="steps"></span><span id="hint">点我跳过</span></div>
   </div>
   <div id="panel">
-    <!-- 面板头：品牌标 + 标题 + 状态药丸。药丸文案/色调由 setPill() 驱动，
-         它同时把「角色现在在干什么」从气泡搬到了面板上——悬停时气泡可能被挡住。 -->
+    <!-- 状态条（2026-09-29）：桌宠从「装饰」变遥控器——常驻显示【变声开关 / 当前音色 / 推理耗时】。
+         药丸是个真 <button>：点一下开、再点一下关。为什么它可以和下面的「麦克风」分段重复：
+         分段在「说话」页里，切到「按住」「音效」页就看不见了，而这两页也需要能开关变声
+         —— 遥控器上的开关不该跟着页签消失。（它调的仍是同一个 toggleLive()，不存在两套开关逻辑。）
+         文案限 3 个汉字内，引擎名放 tooltip（见 CSS #phead 的宽度预算）。 -->
     <div id="phead">
-      <span id="plogo" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
-          <path d="M3 10v4" /><path d="M7.5 6v12" /><path d="M12 3v18" /><path d="M16.5 7v10" /><path d="M21 10v4" />
-        </svg>
-      </span>
-      <span id="ptitle">变声工坊</span>
-      <span id="pill" class="pill t-idle"><i></i><b id="pillText">待机</b></span>
+      <button type="button" id="pill" class="pill t-idle"
+              title="实时变声开关（点一下开 / 再点一下关）"><i></i><b id="pillText">待机</b></button>
+      <span id="rmVoice" title="当前音色">—</span>
+      <span id="rmLat" hidden title="实测推理耗时">—</span>
     </div>
 
-    <!-- 功能页切换（2026-09-26）：把「发微信语音」的全部入口收进桌宠面板，免得用户
-         频繁切回主应用分屏操作。面板纵向预算装不下两套表单 → 说话/音效 两个互斥页，
+    <!-- 功能页切换（2026-09-26 两页 → 2026-09-29 三页）：把「发微信语音」的全部入口收进桌宠面板，
+         免得用户频繁切回主应用分屏操作。面板纵向预算装不下三套表单 → 互斥页签。
          动作行/状态行/最近发送共用（见 CSS #tabRow 段的说明）。
-         sound.fx-board 被关掉时整行由 refreshCapVisibility() 收起（CAP 门控）。 -->
+         sound.fx-board 被关掉时「音效」页签收起、hook.wechat 关掉时「按住」收起（CAP 门控）。 -->
     <div id="tabRow" role="tablist" aria-label="面板功能页">
       <button type="button" id="tabSpeak" data-tab="speak"
               title="输入文字合成发微信 / 麦克风实时变声">说话</button>
+      <button type="button" id="tabHold" data-tab="hold"
+              title="按住说话：录真实麦克风 → 换声 → 直接发微信（不用先打字合成）">按住说话</button>
       <button type="button" id="tabFx" data-tab="fx"
               title="音效声板：点格子立即出声，或勾选混进语音一起发">音效</button>
     </div>
@@ -775,6 +857,28 @@
     </label>
     </div><!-- /#speakPane -->
 
+    <!-- 按住说话页（2026-09-29）：桌宠当遥控器的主手势。
+         后端链路：`/api/capture/mic/start`（抓**真实麦克风**，不是默认录音设备——
+         变声开着时默认设备已被切到 CABLE Output，按默认去录会录到已经变好的声音，
+         再换一次声就是双重变声）→ 松手 `/api/capture/mic/stop`（顺手 RVC 换声）
+         → 复用既有 `sendWechatWav` 发进微信。全程**不需要开实时变声、不碰虚拟声卡切换**
+         （切声卡的物理代价 3~6 秒，按住几秒说话根本来不及）。
+         手势与状态机在主进程（pet-actions.micHoldStart）：松手早于 start 响应、
+         手指滑出按钮、按住不放超上限，三种情况都要有归属。 -->
+    <div id="holdPane" class="pane">
+      <!-- 发送前预检（只读）：微信开没开、这次会不会重启、这次是不是**注定失败**。
+           放在按钮上面 —— 它是按下去的前提，顺序上先读它再读按钮。 -->
+      <div id="holdPre" aria-live="polite">微信状态检查中…</div>
+      <button type="button" id="holdMic" title="按住不放说话（0.3~59 秒），松手自动换声发微信">
+        <svg class="mic-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v1a7 7 0 0 0 14 0v-1" /><path d="M12 18v4" />
+        </svg>
+        <span id="micLabel">按住说话</span>
+        <span id="micSec" class="mic-sec"></span>
+      </button>
+      <div id="holdHint">按住不放、说完松手，自动换声发微信（单次 0.3~59 秒）</div>
+    </div><!-- /#holdPane -->
+
     <!-- 音效声板（fx 页）：sound.fx-board 插件的快捷入口。
          「实时播放」= 点格子立即出声（one-shot POST /play，走虚拟声卡）——
          前提是微信正在录/在放，这正是桌宠场景的主用法；
@@ -802,7 +906,7 @@
           它与分段里已选中的引擎永远是同一个，两处文案都在报"RVC"。）
          音色下拉独占一行是历史布局决定：204px 分给 4 个控件后每个只剩 ~41px，
          「合成并发送」被 nowrap 挤到溢出。 -->
-    <div class="row">
+    <div class="row" id="actRow">
       <button id="send" class="primary" type="button" title="用选中音色合成，并录成微信语音消息">
         <span class="spin"></span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -859,6 +963,8 @@ const API = "http://127.0.0.1:8000/api/cascade/status";
 const LIVE_API = "http://127.0.0.1:8000/api/rvc/live/status";
 // core.system 的能力，**永远挂载**。实时变声被关掉时用它判断「后端在不在」（见下面 CAP 门控）
 const HEALTH_API = "http://127.0.0.1:8000/api/health";
+// 发送前预检（hook.wechat 的能力，随该能力一起关）：只读，不动声卡、不碰微信
+const PRECHECK_API = "http://127.0.0.1:8000/api/wechat/precheck";
 
 // ===CAP-GATE-START===
 // ---------------- 能力门控（2026-09-20）----------------
@@ -933,7 +1039,7 @@ const SPRITE_ANIM = {
 // ---------------- 动态皮肤 ----------------
 // skin.json（后端 /api/pet-market/applied）:
 //   { id, frameW, frameH, states: { state: { sheet, frames, dur } } }
-// 内置芙宁娜（id=furina）直接用本地 svg/*.webp，不依赖后端；其余皮肤 sheet
+// 内置芙宁娜（id=furina）直接用本地 svg 目录里的 webp，不依赖后端；其余皮肤 sheet
 // 走 http://127.0.0.1:8000/api/pet-market/sheet/<id>/<sheet>。
 const SKIN_SHEET_API = "http://127.0.0.1:8000/api/pet-market";
 let petSkin = { id: "", frameW: 150, frameH: 150, states: {} };   // 当前皮肤（空=内置）
@@ -1076,9 +1182,13 @@ function setMotion(motion) {
  * 面板头部状态药丸。text 为显示文案，tone ∈ idle|listen|think|play|build|err
  * （对应 CSS #pill.t-* 的圆点颜色与呼吸动画）。
  */
-function setPill(text, tone) {
+function setPill(text, tone, title) {
   pillText.textContent = text;
   pillEl.className = "pill t-" + (tone || "idle");
+  // tooltip 跟着状态走。★ 引擎名（RVC / 千问）现在住在这里而不是文案里 —— 状态条上
+  // 药丸只有 3 个汉字的宽度预算（见 CSS #phead），而「RVC 变声中」实测要 77px，
+  // 一放就把右边的音色 chip 挤没。悬停能看全，和面板其它 tooltip 一个路数。
+  pillEl.title = title || "实时变声开关：点一下开 / 再点一下关";
 }
 
 /**
@@ -1310,7 +1420,12 @@ async function tick() {
       setBubbleVisible(true);
       titleEl.textContent = "后端离线";
       textEl.textContent = "后端没起来，先开主程序（点此看日志）";
-      setPill("后端离线", "err");
+      setPill("后端离线", "err", "后端没起来：先把主程序打开");
+      refreshRemoteLatency(null);   // 离线时不能留着上次的推理耗时（看着像还在变声）
+      // 预检条同理：后端都没了，预检不可能有结论。留着上次那句「微信已打开」
+      // 会让用户以为这条链路的收尾（发送）是通的。
+      setHoldPre("后端没起来 · 预检不可用", "bad");
+      precheckAt = 0;               // 恢复在线时重新拉，不穿用离线前的时刻
       // 抖一下提醒，然后收成静态的 error 姿势 —— 后端长时间不恢复时不该一直晃
       setTimeout(() => { if (backendOffline && !guide) setMotion(null); }, 1800);
     }
@@ -1325,8 +1440,17 @@ async function tick() {
     titleEl.textContent = "后端在线";
     textEl.textContent = "回来啦，随时可以用～";
     setPill("在线", "play");
+    void refreshWechatPrecheck(true);   // 恢复在线：预检也要重新看一次（微信可能被改了状态）
     setTimeout(() => { if (!backendOffline && !guide) { lastKey = null; void tick(); } }, 3000);
   }
+  // 状态条随真实状态走（音色 + 推理耗时）。
+  // ⚠ 耗时特别是要在这一层重算：离线那一帧必须把上次的数抹掉，否则后端挂了它还挂着「82ms」，
+  //   看起来像变声还在跑。音色是本地信息（voiceSel），离线时照显。
+  refreshRemoteVoice();
+  refreshRemoteLatency(live);
+  // 发送前预检：只在看着「按住说话」那一页时刷（它是那一页的东西，别人不看时
+  // 每 5s 去枚举一次进程/窗口纯属浪费）。进页与刚发完那两次是 force 的，见 setTab / onMicState。
+  if (activeTab === "hold") void refreshWechatPrecheck(false);
   // 谁在跑：级联优先（两者互斥，真同时出现也只可能是切换的那一瞬间）
   runningEngine = (cascadeData && cascadeData.running) ? "qwen"
                 : (live && live.live_running) ? "rvc" : null;
@@ -1341,10 +1465,10 @@ async function tick() {
     render(cascadeData);
     // 引擎名是「头条状态」，盖过 render() 内部 setState 写的「我在听」。
     // 必须放在 render 之后 —— setState 会重写药丸。
-    setPill("千问变声中", "listen");
+    setPill("千问变声中", "listen", "千问变声 正在变声 · 点一下停");
   } else if (runningEngine === "rvc") {
     renderLive(live);
-    setPill("RVC 变声中", "listen");
+    setPill("RVC 变声中", "listen", "RVC 实时 正在变声 · 点一下停");
   } else {
     lastText = "";
     setState("idle");   // 都没运行 / 后端没起：安静待机，不报错打扰
@@ -1381,9 +1505,22 @@ const statusEl = document.getElementById("status");
 const statusText = document.getElementById("statusText");
 const recentEl = document.getElementById("recent");
 const tabSpeakBtn = document.getElementById("tabSpeak");
+const tabHoldBtn = document.getElementById("tabHold");
 const tabFxBtn = document.getElementById("tabFx");
 const speakPaneEl = document.getElementById("speakPane");
+const holdPaneEl = document.getElementById("holdPane");
 const fxPaneEl = document.getElementById("fxPane");
+const actRowEl = document.getElementById("actRow");
+// 状态条（#phead）三件套：药丸(pillEl/pillText)在文件上半段就已取到，这里补两个只读 chip
+const rmVoiceEl = document.getElementById("rmVoice");
+const rmLatEl = document.getElementById("rmLat");
+// 按住说话：按钮 + 两行文案（#holdMic 内部不能直写 textContent —— 里面还有 <svg> 图标）
+const holdMicEl = document.getElementById("holdMic");
+const micLabelEl = document.getElementById("micLabel");
+const micSecEl = document.getElementById("micSec");
+// 发送前预检条（按住页最上面那行）。声明在这里而不是函数旁边：setTab 恢复上次页签时
+// 就可能碰它，而那个调用点在文件更后面 —— 提前声明可彻底排除 TDZ 隐患（同 lastPreview）。
+const holdPreEl = document.getElementById("holdPre");
 const fxGridEl = document.getElementById("fxGrid");
 const fxPicksEl = document.getElementById("fxPicks");
 const fxEmptyEl = document.getElementById("fxEmpty");
@@ -1528,6 +1665,9 @@ function hidePanel() {
   panel.style.display = "none";
 }
 function schedulePanelHide() {
+  // 按住说话期间面板不能自己收：面板一 display:none，那颗按钮就没了 ——
+  // 指针捕获被释放、秒数也看不到，而录音还在继续（用户只觉得“按住的东西凭空消失”）。
+  if (micHolding()) return;
   if (panelTimer) return;
   panelTimer = setTimeout(() => {
     panelTimer = null;
@@ -1562,6 +1702,10 @@ async function loadVoices() {
     const r = await fetch("http://127.0.0.1:8000/api/voices", { cache: "no-store" });
     if (!r.ok) return;
     const j = await r.json();
+    // 主界面当前选中的音色 id（后端 /api/voices 的 selected 字段）：
+    // 下拉的默认项是「主界面选中」（value 空串），不查这个字段就不知道那是谁，
+    // 状态条上的「当前音色」只能写成一句没用的「主界面选中」。
+    voiceSelectedId = typeof j.selected === "string" ? j.selected : "";
     const usable = (j.voices || []).filter((v) => v.has_reference || v.pth_exists);
     const saved = localStorage.getItem(VOICE_KEY) || "";
     const cur = voiceSel.value || saved;
@@ -1588,12 +1732,79 @@ async function loadVoices() {
  * 所以**下拉里列出的每个音色都能试听** —— 能被列出的前提就是它 has_reference ∨ pth_exists。
  */
 function syncVoiceGates() {
-  const named = (voiceSel.options[voiceSel.selectedIndex] || {}).text || "";
+  const named = optionTextById(voiceSel.value) ||
+    ((voiceSel.options || [])[voiceSel.selectedIndex] || {}).text || "";
   const id = voiceSel.value || "";
   previewBtn.title = id
     ? `试听「${named}」：用你输入的文字合成，末尾过 RVC 换成这个音色（只播放，不发送）`
     : "试听（默认=主界面当前选中）：用你输入的文字合成，末尾过 RVC（只播放，不发送）";
   voiceSel.title = "合成用的音色（默认=主界面当前选中）";
+  refreshRemoteVoice();
+}
+
+// ---------------- 状态条（#phead）：常驻遥控器的仪表盘 ----------------
+// 三件套：药丸(pillEl，可点的变声开关) / 音色(#rmVoice) / 推理耗时(#rmLat)。
+// 它们占的是原来「品牌标 + 标题」那一行 —— 面板纵向预算只剩 11px，加行就得砍功能（见 CSS）。
+
+/** /api/voices 的 selected：主界面当前选中的音色 id（下拉 value 为空时用它反查名字）。 */
+let voiceSelectedId = "";
+
+/**
+ * 状态条·音色 chip。显示的是**面板接下来真的会用的那个音色**：
+ *   · 下拉选了具体音色 → 用它；
+ *   · 下拉是「主界面选中」（value 空）= 后端 `selected_voice()` 说了算 → 用 `selected` 反查真名。
+ * 为什么不用文本里的「（自训/市场）」尾巴：chip 只有 ~50px，尾巴一上就只剩省略号。
+ * 查不到（旧后端 / 接口挂了）时退回「主界面选中」，**不编名字**。
+ */
+/**
+ * 下拉里某个 value 对应的显示文本（找不到返回空串）。
+ * 用下标循环而不是 for…of：HTMLOptionsCollection 在老引擎里不可迭代，
+ * 而测试用的 DOM 桩给的是普通数组 —— 两种都得能跑。
+ */
+function optionTextById(id) {
+  const opts = voiceSel && voiceSel.options;
+  if (!opts || !id) return "";
+  for (let i = 0; i < opts.length; i++) {
+    if (opts[i] && String(opts[i].value) === String(id)) return opts[i].text || "";
+  }
+  return "";
+}
+
+function refreshRemoteVoice() {
+  if (!rmVoiceEl) return;
+  const id = voiceSel.value || "";
+  const want = id || voiceSelectedId;
+  let name = optionTextById(want);
+  // 选中的音色不在下拉里（例如已删除、或只有权重没参考音被筛掉）时，id 本身也比空着强
+  if (!name && id) name = id;
+  if (!name && voiceSelectedId) name = voiceSelectedId;
+  name = name.replace(/（(自训|市场)）$/, "").trim();
+  rmVoiceEl.textContent = name || "主界面选中";
+  rmVoiceEl.title = (id ? "按住说话/合成用这个音色：" : "用主界面选中的音色：")
+    + (name || "还没选，去主界面挑一个");
+}
+
+/**
+ * 状态条·推理耗时 chip。
+ *
+ * ★ 只在实时变声**正在跑**时显示：后端是从实时日志尾部取「推理耗时」的，变声停了以后
+ *   那个数还留在日志里，照直报出来会让人以为现在也在跑（本机日志 4279 行就是这么来的）。
+ *
+ * ⚠️ 口径必须写清楚（tooltip）：这是**单块推理耗时**，不是端到端延迟 ——
+ *   端到端还要加上分块缓冲（`block_ms`，由性能档位决定）与音频驱动缓冲。
+ *   它和 README 里那个 p50 对不上不是谁错了，是两个数量的不是同一件事。
+ */
+function refreshRemoteLatency(live) {
+  if (!rmLatEl) return;
+  const ms = live && live.live_running ? Number(live.infer_ms) || 0 : 0;
+  rmLatEl.hidden = !(ms > 0);
+  rmLatEl.textContent = ms > 0 ? Math.round(ms) + "ms" : "";
+  if (!(ms > 0)) { rmLatEl.title = "变声开启后显示实测推理耗时"; return; }
+  const p95 = Number(live.infer_ms_p95) || 0;
+  const block = Number(live.block_ms) || 0;
+  rmLatEl.title = `实测单块推理 ${Math.round(ms)}ms`
+    + (p95 ? `（p95 ${Math.round(p95)}ms，最近 ${live.infer_samples || "?"} 块）` : "")
+    + (block ? `；端到端还要加每块 ${block}ms 的缓冲与音频驱动缓冲` : "");
 }
 
 /**
@@ -1659,7 +1870,13 @@ let sfxPlayingId = null;      // 正在响的格子（乐观高亮用，超时�
 let sfxLoadedAt = 0;          // 上次拉 catalog 的时间（60s 节流，别每次悬停都打）
 let sfxWarmDone = false;      // /warm 只发一次
 
-try { if (localStorage.getItem(TAB_KEY) === "fx") activeTab = "fx"; } catch {}
+// 记住上次的页：常驻遥控器的用户往往固定在一页（比如就用「按住说话」），
+// 每次悬停都要先点一下页签的话，那个「常驻」就没意义了。
+const TAB_NAMES = ["speak", "hold", "fx"];
+try {
+  const saved = localStorage.getItem(TAB_KEY);
+  if (TAB_NAMES.includes(saved)) activeTab = saved;
+} catch {}
 try { if (localStorage.getItem(FX_MODE_KEY) === "premix") sfxMode = "premix"; } catch {}
 
 /** innerHTML 转义：样本名/图标来自后端与用户导入，不能裸拼。 */
@@ -1671,13 +1888,18 @@ function esc(s) {
 
 /** 切功能页。save=false 用于恢复/门控归位（不重复写 localStorage）。 */
 function setTab(next, save) {
-  activeTab = next === "fx" ? "fx" : "speak";
+  activeTab = TAB_NAMES.includes(next) ? next : "speak";
   if (save) { try { localStorage.setItem(TAB_KEY, activeTab); } catch {} }
-  if (tabSpeakBtn) tabSpeakBtn.classList.toggle("on", activeTab === "speak");
-  if (tabFxBtn) tabFxBtn.classList.toggle("on", activeTab === "fx");
-  if (speakPaneEl) speakPaneEl.classList.toggle("on", activeTab === "speak");
-  if (fxPaneEl) fxPaneEl.classList.toggle("on", activeTab === "fx");
+  for (const [btn, name] of [[tabSpeakBtn, "speak"], [tabHoldBtn, "hold"], [tabFxBtn, "fx"]]) {
+    if (btn) btn.classList.toggle("on", activeTab === name);
+  }
+  for (const [pane, name] of [[speakPaneEl, "speak"], [holdPaneEl, "hold"], [fxPaneEl, "fx"]]) {
+    if (pane) pane.classList.toggle("on", activeTab === name);
+  }
   if (activeTab === "fx") void loadSfx(true);   // 进音效页就刷新清单（强制，绕过节流）
+  // 进「按住说话」页就复查预检（强制）：切过来时看到的必须是**此刻**的微信状态，
+  // 否则刚把微信关掉的人会拿着上一次的「已打开」按下去。
+  if (activeTab === "hold") void refreshWechatPrecheck(true);
   refreshFxActions();
 }
 
@@ -1795,7 +2017,7 @@ if (fxPicksEl) fxPicksEl.addEventListener("click", (e) => {
   renderFxPicks();
   refreshFxActions();
 });
-[tabSpeakBtn, tabFxBtn].forEach((b) => {
+[tabSpeakBtn, tabHoldBtn, tabFxBtn].forEach((b) => {
   if (b) b.addEventListener("click", () => setTab(b.dataset.tab, true));
 });
 function refreshFxModeSeg() {
@@ -1828,7 +2050,7 @@ function refreshCapVisibility() {
   };
   hide("engRow", !CAP.live);      // 「麦克风」+ 引擎二选一分段（启停已并入分段，无独立按钮）
   // ⚠️ 「最近发送」「试听」「发送」三个都属于 hook.wechat（后两个打的是
-  //    /api/wechat/*）—— 关掉它之后这些接口根本不存在，留着就是一按 404 的按钮。
+  //    wechat 那几个端点）—— 关掉它之后这些接口根本不存在，留着就是一按 404 的按钮。
   //    试听曾经就是这么给市场音色变成死钮的（那次是把按钮禁用，也不是消失），
   //    所以这里一并收：能力没了就该看不见，而不是点了才知道。
   hide("recent", !CAP.wechat);    // 「最近发送」（点一条重发）
@@ -1840,6 +2062,19 @@ function refreshCapVisibility() {
   hide("tabRow", !CAP.fx);
   hide("fxPane", !CAP.fx);
   if (!CAP.fx && activeTab === "fx") setTab("speak", false);
+  // 「按住说话」整条链路的终点是 `sendWechatWav` → 同样归 hook.wechat。
+  // （录/换声那两步的 capture/mic 端点在 pet.companion 里，也就是桌宠自身的能力，
+  //   它关掉的话桌宠入口本身就没了，所以这里只需盯 wechat 这一道。
+  //   ⚠ 上面别写成带星号的接口名 —— `斜杠+星号` 会被任何用正则剥块注释的工具当成
+  //   块注释开头，一路吃到下一个 `星号+斜杠`，把下面几行代码一起呑掉（已踩）。）
+  hide("tabHold", !CAP.wechat);
+  hide("holdPane", !CAP.wechat);
+  if (!CAP.wechat && activeTab === "hold") setTab("speak", false);
+  // 药丸（变声开关）扫不到路由时不能装成能点：这一页上点它只会 404。
+  // 不禁用（它同时也在报后端离线/在线），改由点击时给一句方向明确的提示。
+  if (pillEl) pillEl.title = CAP.live
+    ? (pillEl.title || "实时变声开关：点一下开 / 再点一下关")
+    : "实时变声能力已关闭（主界面 → 桌面 → 插件里打开它）";
 }
 
 function refreshPanel() {
@@ -1869,6 +2104,9 @@ function refreshFxActions() {
   // 这里的条件取并集，避免切页时把 CAP 收起来的按钮又亮回去。
   if (previewBtn) previewBtn.style.display = (fx || !CAP.wechat) ? "none" : "";
   if (sendBtn) sendBtn.disabled = fx && !sfxPicks.length ? true : false;
+  // 整行动作行在「按住说话」页收起：那一页的动作是按住那颗大按钮本身，
+  // 「合成并发送 / 试听」在那里只会让人以为还要先打字（它们作用的是「说话」页的输入框）。
+  if (actRowEl) actRowEl.style.display = activeTab === "hold" ? "none" : "";
   refreshSendLabel();
 }
 
@@ -2005,6 +2243,205 @@ sayEl.addEventListener("keydown", (e) => { if (e.key === "Enter") doSendText(); 
 [engRvcBtn, engQwenBtn].forEach((b) => {
   if (b) b.addEventListener("click", () => { void pickEngine(b.dataset.eng); });
 });
+
+// 状态条上的药丸也是变声开关：走同一个 toggleLive()，
+// 但它在「按住说话」「音效」两页也能用 —— 引擎分段只在「说话」页里，
+// 而遥控器上的开关不该跟着页签消失（两处不会出现两套逻辑，都是 toggleLive）。
+if (pillEl && pillEl.addEventListener) pillEl.addEventListener("click", () => {
+  if (!CAP.live) {
+    setStatus("实时变声能力已关闭：主界面 → 桌面 → 插件里打开它", "err");
+    return;
+  }
+  void toggleLive();
+});
+
+// ---------------- 按住说话（第三个功能页）----------------
+//
+// 手势：按下 → `micDown` → 主进程 POST `/api/capture/mic/start`；松手 → `micUp` →
+// 主进程 POST `/api/capture/mic/stop`（顺手 RVC 换声）→ `sendWechatWav` 发进微信。
+//
+// ★ 为什么状态机在主进程、这里只镜像：录音什么时候停由**用户松手**决定，而松手有三种意外
+//   ——早于 start 的响应、手指滑出按钮、根本不松手。主进程必须把「已经按下了」这件事
+//   持有一段跨 IPC 的时间；渲染进程做不到（面板在鼠标移开 500ms 后就会收起）。
+//   所以下面的 micPhase 只是**显示用**的镜像，真值由 `pet:mic-state` 推回来。
+let micPhase = "idle";        // idle | arming | recording | converting | sending
+let micStartedAt = 0;         // 由主进程报的 startedAt（不用本地时刻：start 要等后端响应）
+let micMaxS = 59;             // 单次按住上限，主进程随 mic-state 报回来
+let micTicker = null;
+
+const MIC_TIP = {
+  arming:     "正在开麦克风…",
+  recording:  "松手结束并发送",
+  converting: "正在换声…",
+  sending:    "正在发进微信…",
+};
+
+// ---------------- 发送前预检：微信开没开 / 这次会不会重启 ----------------
+//
+// 这条链路的顺序是「录 0..59 秒 → 换声十几秒 → 才轮到发送」，而「微信没开」是**按下
+// 之前**就能知道的事。后端 /api/wechat/precheck 是只读的（不动声卡、不碰微信），里面的
+// block_reason 就是 send_text 那条 _send_preflight 的判据 —— **不在前端重写一份**：
+// 本仓在 kangaroo → kangaroo_v2 上吃过「两处各抄一份判断、漂掉一个」的亏。
+//
+// ★ 只告警、**不拦人**：预检数据可能过期（用户刚把微信打开），拿旧数据去禁用按钮会把
+//   「我刚开了微信」变成「按不了了」—— 那比不告警更糟。按下后一切照旧，真失败仍会有报错。
+const PRECHECK_TTL = 5000;   // precheck 要枚举进程/窗口，别跟 tick 的 1s 轮询同频
+let precheckAt = 0;
+
+/** 单行状态条：整段原因进 title（省略号会切掉尾巴，而尾巴往往正是下一步）。 */
+function setHoldPre(text, tone) {
+  if (!holdPreEl) return;
+  holdPreEl.textContent = text;
+  holdPreEl.className = tone ? "t-" + tone : "";
+  holdPreEl.title = text;
+}
+
+/** 取分因文案的第一句（冒号/句号/括号之前）——只做截断，不改写后端的判据。 */
+function firstClause(s) {
+  return String(s || "").split(/[：:。；;，,（(]/)[0].trim();
+}
+
+function renderWechatPrecheck(d) {
+  if (!holdPreEl) return;
+  const running = d && typeof d.wechat_running === "boolean" ? d.wechat_running : null;
+  if (running === null) {
+    // 200 但没有这个字段 = 前后端版本不一致（pet.html 是热替换的，后端可能还是旧的）。
+    // 绝不能当成「微信没开」—— 那会把用户指去查微信，方向完全错。
+    setHoldPre("预检没有结论（后端版本比桌宠旧？）", "warn");
+    return;
+  }
+  if (d.block_reason) {
+    // 非空 = 后端已判定这次**注定失败**（分因来自 find_wechat_hwnd）。
+    // 完整原因进 title：单行条放不下，而省略号正好会切掉最该看的那半句。
+    setHoldPre("⚠ " + firstClause(d.block_reason), "bad");
+    holdPreEl.title = d.block_reason;
+    return;
+  }
+  if (!running) {
+    // 没有硬失败 = auto/1 模式会自己把它拉起来 → 说清要等，而不是说「发不出去」
+    setHoldPre("微信没在运行 · 这次会先拉起它（要等十几秒）", "warn");
+    return;
+  }
+  if (d.restart_needed) {
+    setHoldPre("这次会重启微信 · 约十几秒", "warn");
+    holdPreEl.title = d.reason || "";    // 为什么重启（遥测判据）只放 tooltip
+    return;
+  }
+  setHoldPre("微信已打开 · 直接切麦克风", "ok");
+}
+
+/** 拉一次预检并上屏。force=false 时 5s 内不重复（tick 每 1s 都会路过这里）。 */
+async function refreshWechatPrecheck(force) {
+  if (MOCK || !holdPreEl) return;
+  if (!CAP.wechat) return;            // 能力关掉时整个 #holdPane 都收起来了
+  if (micHolding()) return;           // 按住/换声期间不抢后端，也不改文案（那几秒该显示进度）
+  const now = Date.now();
+  if (!force && now - precheckAt < PRECHECK_TTL) return;
+  precheckAt = now;
+  try {
+    const r = await fetch(PRECHECK_API, { cache: "no-store" });
+    if (!r.ok) {
+      // 预检打不开**不影响发送**（它只是提前告知），所以只给 warn，不吓人
+      setHoldPre(r.status === 404 ? "预检接口不在（后端比桌宠旧）" : "预检打不开（HTTP " + r.status + "）", "warn");
+      holdPreEl.title = "预检是只读的，打不开不影响发送；但「微信没开」这类问题会退化成松手后才发现";
+      return;
+    }
+    renderWechatPrecheck(await r.json());
+  } catch {
+    setHoldPre("预检打不开（后端没起来？）", "warn");
+  }
+}
+
+/** 录制中的秒数。要报出来——不报的话用户不知道按了几秒，也不知道离上限还有多久。 */
+function tickMicSec() {
+  if (!micSecEl) return;
+  if (micPhase === "idle") { micSecEl.textContent = ""; return; }
+  if (micPhase !== "recording" && micPhase !== "arming") {
+    micSecEl.textContent = MIC_TIP[micPhase] || "";
+    return;
+  }
+  const sec = Math.max(0, (Date.now() - micStartedAt) / 1000);
+  micSecEl.textContent = `${sec.toFixed(1)}s / ${micMaxS}s`;
+}
+
+function renderMic() {
+  if (holdMicEl) {
+    // 录制中整块转红（见 CSS）：绿在本面板里已经是「已连接/正在播」的意思，
+    // 而「正在录你的声音」是需要注意的进行态。
+    holdMicEl.classList.toggle("rec", micPhase === "recording");
+    holdMicEl.classList.toggle("wait",
+      micPhase === "arming" || micPhase === "converting" || micPhase === "sending");
+  }
+  // 按钮主文案恒为「按住说话」（它就是那个手势的名字），进度写在下面的 #micSec 里
+  tickMicSec();
+}
+
+/** 秒表只靠需要的时候跑：面板平时是 1s 轮询，录制时才有“秒数在跳”的需求。 */
+function startMicTicker() {
+  if (micTicker) return;
+  micTicker = setInterval(() => {
+    if (micPhase === "recording" || micPhase === "arming") tickMicSec();
+    else { clearInterval(micTicker); micTicker = null; }
+  }, 200);
+}
+
+/** 记录中的“按住”阶段（鼠标穿透 / 面板自动收起都要让位，见下面的守卫）。 */
+function micHolding() { return micPhase !== "idle"; }
+
+function micDown(e) {
+  if (micPhase !== "idle") return;            // 已在按着：重复的 down 忽略
+  if (!CAP.wechat) { setStatus("微信发送能力已关闭，「按住说话」发不出去", "err"); return; }
+  // ⚠ 主进程还是旧版时 preload 里根本没有 micDown（改 *.cjs 必须重打 asar 才生效，
+  //   而 pet.html 是热替换的）—— 这种情况必须**说出来**，静静失败最糟：
+  //   用户按半天会以为是手没按住，而这根本不是他能解决的问题。
+  if (!window.pet || !window.pet.micDown) {
+    setStatus("按住说话需要新版桌面端：主进程还是旧的（pet.html 已热替换、asar 未重打）", "err");
+    return;
+  }
+  micPhase = "arming";
+  micStartedAt = Date.now();
+  renderMic();
+  // 指针捕获：光标滑出按钮后 pointerup 仍送回这里。否则松手事件丢掉，
+  // 只能等主进程那个 59s 上限兜底 —— 用户看到的是「按了没反应，还在录」。
+  try { holdMicEl.setPointerCapture(e.pointerId); } catch {}
+  window.pet.micDown(voiceSel.value || "");
+}
+
+/**
+ * 松手。**这里不直接改 micPhase**：松手只表示「要停」，下一个状态由主进程回传
+ * （stop 要先录完再换声，换声那步可能要十几秒）。
+ */
+function micUp() {
+  if (micPhase === "idle") return;
+  if (window.pet && window.pet.micUp) window.pet.micUp();
+}
+
+if (holdMicEl && holdMicEl.addEventListener) {
+  holdMicEl.addEventListener("pointerdown", micDown);
+  // pointerup 可能落在任意位置（捕获后仍回到按钮），单独用一个什么也不查的处理器：
+  // 按住期间任何形式的“松开”都应当收尾，包括 pointercancel（系统抢走手势，比如触屏滚动）。
+  for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    holdMicEl.addEventListener(ev, micUp);
+  }
+  // 右键/长按菜单在按住手势里是干扰项
+  holdMicEl.addEventListener("contextmenu", (e) => e.preventDefault());
+}
+
+// 主进程回传的录音状态：按钮文案/颜色/秒数全靠它（没有它就只能瞎显示）。
+if (window.pet && window.pet.onMicState) {
+  window.pet.onMicState((s) => {
+    micPhase = (s && s.phase) || "idle";
+    if (s && s.maxSeconds) micMaxS = Number(s.maxSeconds) || micMaxS;
+    micStartedAt = (s && s.startedAt) || Date.now();
+    renderMic();
+    if (micHolding()) startMicTicker();
+    // 一次发送结束（不论成败）就复查预检：微信可能刚被拉起/重启/被扔回登录页，
+    // 而那正是下一次按下前最该知道的事。
+    else void refreshWechatPrecheck(true);
+    // 状态行也同步说一句：换声/发送这两段最长（换声十几秒），只靠按钮上那行小字容易被忽略。
+    if (MIC_TIP[micPhase]) setStatus(MIC_TIP[micPhase], micPhase === "recording" ? "ok" : "");
+  });
+}
 
 // 主进程回传：合成产物 → 自动播放
 if (window.pet && window.pet.onPreviewResult) {
@@ -2198,7 +2635,11 @@ document.addEventListener("mousemove", (e) => {
     if (movedFar) { window.pet && window.pet.dragMove(); }
     return;
   }
-  window.pet && window.pet.setIgnoreMouse(!overInteractive(e));
+  // ⚠ 按住说话期间必须保持窗口可交互：光标一旦被拖出面板，overInteractive 就返回 false
+  // → setIgnoreMouse(true) → 整个透明窗变成点击穿透，pointerup 很可能就送不到页面了，
+  // 录音只能等主进程 59s 上限自己停。
+  const ignore = micHolding() ? false : !overInteractive(e);
+  window.pet && window.pet.setIgnoreMouse(ignore);
 });
 document.addEventListener("mouseup", (e) => {
   if (!dragging) return;
@@ -2210,7 +2651,8 @@ document.addEventListener("mouseup", (e) => {
   // 想发最近合成 → 右键桌宠「发送微信语音（用最近合成）」，或悬停用面板。
 });
 document.documentElement.addEventListener("mouseleave", () => {
-  if (!dragging) window.pet && window.pet.setIgnoreMouse(true);
+  // 同 mousemove 的守卫：按住说话没结束时不能把窗口设成穿透（否则松手就可能收不到）
+  if (!dragging && !micHolding()) window.pet && window.pet.setIgnoreMouse(true);
 });
 window.pet && window.pet.setIgnoreMouse(true);   // 初始全穿透，悬停角色后恢复
 

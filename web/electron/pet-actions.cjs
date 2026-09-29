@@ -393,6 +393,102 @@ function toggleLiveFromPet() {
   ).on("error", () => petGuideFail("后端服务没连上"));
 }
 
+// ---------------- 按住说话（桌宠当常驻遥控器）----------------
+//
+// 手势：按住 → `/api/capture/mic/start`；松开 → `/api/capture/mic/stop`（顺手用 RVC 换声）
+// → 复用既有的 `sendWechatWav` 发进微信。整条链路**不需要开实时变声、不碰虚拟声卡切换**
+// （切声卡的物理代价是 3~6 秒，按住几秒说话根本来不及）。
+//
+// ★ 为什么"按住"只能落在桌宠按钮上，而不能替用户按住微信的录音键：
+//   微信那边是"**单击**开始持续录音 → 点 ↑ 绿钮结束发送"，`wechat_voice.py` 里记着
+//   2026-09-10 的真机实测——"保持按住不松反而起不了浮层"；而软件模拟的 Alt 又不触发它
+//   （`play_to_cable` 的注释）。所以这个手势在微信侧根本不成立，桌宠侧才是它唯一能落地的地方。
+const MIC_MAX_S = 59; // 与后端 mic_capture.MAX_HOLD_SECONDS 对齐（微信单条语音 60s 上限）
+const micHold = { phase: "idle", startedAt: 0, wantStop: false, voiceId: "", timer: null };
+
+function micSnapshot() {
+  return { phase: micHold.phase, startedAt: micHold.startedAt, maxSeconds: MIC_MAX_S };
+}
+
+/** 把录音状态推给面板：按钮的"录制中 N 秒 / 换声中"全靠它，否则用户只能靠猜。 */
+function pushMicState() {
+  const w = getPetWin();
+  if (w && !w.isDestroyed()) w.webContents.send("pet:mic-state", micSnapshot());
+}
+
+function _micClearTimer() {
+  if (micHold.timer) {
+    clearTimeout(micHold.timer);
+    micHold.timer = null;
+  }
+}
+
+/** 按下：开始录真实麦克风。voiceId = 面板选中的音色（换声用；空则由后端取当前选中）。 */
+function micHoldStart(voiceId) {
+  if (micHold.phase !== "idle") return; // 已经在按着了：重复的 down 事件忽略
+  micHold.phase = "arming";
+  micHold.wantStop = false;
+  micHold.voiceId = String(voiceId || "");
+  pushMicState();
+  backendPost("/api/capture/mic/start", { max_seconds: MIC_MAX_S }, (d, code) => {
+    if (!d.ok) {
+      micHold.phase = "idle";
+      pushMicState();
+      petGuideFail((d.error || d.detail || `HTTP ${code}`).toString().slice(0, 120));
+      return;
+    }
+    micHold.phase = "recording";
+    micHold.startedAt = Date.now();
+    pushMicState();
+    // 到上限自己收尾（不管用户松不松手）：按住不放、或 up 事件丢失，都不该留一个永远在录的线程
+    micHold.timer = setTimeout(() => {
+      if (micHold.phase === "recording") micHoldEnd();
+    }, MIC_MAX_S * 1000);
+    // 早退竞态：用户在 start 响应回来之前就松手了 —— 不能把这句话丢掉
+    if (micHold.wantStop) micHoldEnd();
+  }, 15000);
+}
+
+/** 松开：停止录音 → 换声 → 发送。 */
+function micHoldEnd() {
+  if (micHold.phase === "idle") return;
+  if (micHold.phase === "arming") {
+    // start 还在飞：记一个意愿，等它回来再停（见 micHoldStart 尾部的早退分支）
+    micHold.wantStop = true;
+    return;
+  }
+  if (micHold.phase !== "recording") return; // 已经在换声/发送了：不重复触发
+  _micClearTimer();
+  const heldS = (Date.now() - micHold.startedAt) / 1000;
+  micHold.phase = "converting";
+  pushMicState();
+  backendPost(
+    "/api/capture/mic/stop",
+    { voice_id: micHold.voiceId, pitch: 0, index_rate: 0.5 },
+    (d, code) => {
+      if (!d.ok) {
+        micHold.phase = "idle";
+        pushMicState();
+        petGuideFail((d.error || d.detail || `HTTP ${code}`).toString().slice(0, 120));
+        return;
+      }
+      micHold.phase = "sending";
+      pushMicState();
+      // 文案把"录了多久"说出来：按住说话最常见的失败是**按太短**，
+      // 不给这个数用户会以为是变声没起作用。
+      showPetGuide({
+        title: "按住说话",
+        lines: [`录了 ${heldS.toFixed(1)}s，换声完成（${d.duration_s || "?"}s）`, "正在发进微信…"],
+        action: "work", motion: "work", duration: 6000,
+      });
+      micHold.phase = "idle";
+      pushMicState();
+      sendWechatWav(d.file, d.duration_s);
+    },
+    120000,
+  );
+}
+
 module.exports = {
   sendWechatWav,
   previewWechatTextFromPet,
@@ -401,4 +497,7 @@ module.exports = {
   manualWechatFromPet,
   sendWechatTextFromPet,
   toggleLiveFromPet,
+  micHoldStart,
+  micHoldEnd,
+  MIC_MAX_S,
 };

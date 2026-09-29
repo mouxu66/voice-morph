@@ -293,6 +293,11 @@ function createPetWindow(actions = {}) {
   ipcMain.on("pet:send-wav", (_e, wav) => actions.sendWechatWav && actions.sendWechatWav(String(wav || "")));   // 历史记录重发
   ipcMain.on("pet:preview", (_e, text, voiceId, noRvc) => actions.previewWechatTextFromPet && actions.previewWechatTextFromPet(String(text || "").trim(), String(voiceId || ""), noRvc === true));
   ipcMain.on("pet:live-toggle", () => actions.toggleLiveFromPet && actions.toggleLiveFromPet());
+  // 按住说话：一条手势拆成 down/up 两个事件。为什么要拆而不是"一次调用带回时长"：
+  // 录音什么时候停由**用户松手**决定，中间还可能有松手早于 start 响应、手指滑出按钮
+  // 导致 up 丢失等情形，状态机必须放在主进程（见 pet-actions.micHoldStart）。
+  ipcMain.on("pet:mic-down", (_e, voiceId) => actions.micHoldStart && actions.micHoldStart(String(voiceId || "")));
+  ipcMain.on("pet:mic-up", () => actions.micHoldEnd && actions.micHoldEnd());
 
   // 右键菜单：显隐策略 + 页面导览 + 隐藏
   petWin.webContents.on("context-menu", () => {
