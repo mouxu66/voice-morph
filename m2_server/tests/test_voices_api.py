@@ -170,7 +170,7 @@ async def _noop_await(*a, **kw):
 
 @pytest.fixture()
 def voices_client(tmp_path, monkeypatch):
-    """VOICEBANK / RVC_ROOT 指向临时目录，与真实环境隔离。"""
+    """VOICEBANK / RVC_ROOT / MEDIA_DIR 指向临时目录，与真实环境隔离。"""
     import config as cfg
     import server
 
@@ -178,6 +178,12 @@ def voices_client(tmp_path, monkeypatch):
     vb.mkdir()
     monkeypatch.setattr(voices_api, "VOICEBANK", vb)
     monkeypatch.setattr(cfg, "RVC_ROOT", tmp_path / "rvc")
+    # ⚠ MEDIA_DIR 也必须隔离：清单里的 `selected` 来自 common.selected_voice()，
+    # 而它读的是 cfg.MEDIA_DIR/voicebank/selected_voice.json（**运行期**读，不看 voices_api.VOICEBANK）。
+    # 不管它，断言就会跟着开发机上真实的选中态跑 —— 本机有音色时这条测试时红时绿。
+    media = tmp_path / "media"
+    (media / "voicebank").mkdir(parents=True)
+    monkeypatch.setattr(cfg, "MEDIA_DIR", media)
     from fastapi.testclient import TestClient
 
     return TestClient(server.app), vb
@@ -217,7 +223,29 @@ def _make_rvc_exp(exp, source=None, meta_display=None):
 
 def test_voices_empty(voices_client):
     c, _ = voices_client
-    assert c.get("/api/voices").json() == {"voices": []}
+    # selected 恒为字符串（没选过 → 空串，不是 null）：消费方 pet.html 直接拿它去查名字，
+    # 给 null 会在前端多一层判空（而且容易漏）。
+    assert c.get("/api/voices").json() == {"voices": [], "selected": ""}
+
+
+def test_voices_reports_selected_voice(voices_client):
+    """清单要带上「主界面当前选中的音色」（2026-09-29 新增的 selected）。
+
+    为什么需要它：桌宠状态条要常驻显示「当前音色」，而面板上那个音色下拉的默认项是
+    「主界面选中」（value 是空串）—— 没有这个字段就只能显示一句「主界面选中」，
+    用户问的「现在到底是谁」答不上来。消费方：pet.html 的 refreshRemoteVoice()。
+    """
+    import config as cfg
+
+    c, vb = voices_client
+    _write_ref(vb, "merg_004", "袋鼠骑士")
+    assert c.get("/api/voices").json()["selected"] == ""
+    (cfg.MEDIA_DIR / "voicebank" / "selected_voice.json").write_text(
+        '{"voice_id": "merg_004"}', encoding="utf-8"
+    )
+    body = c.get("/api/voices").json()
+    assert body["selected"] == "merg_004"
+    assert body["voices"][0]["id"] == "merg_004"
 
 
 def test_voices_lists_voicebank_entry(voices_client):
