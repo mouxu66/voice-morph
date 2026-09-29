@@ -115,6 +115,10 @@ seed_vc_repo/
 
 # ===== 微调数据/产物（大文件不入库）=====
 tts_trial/ft_data/
+
+# ===== SaMoye SVC 官方仓库（第三方 clone + 大权重 hubert/whisper index，不入库；
+# 4.8 GB，与 seed_vc_repo 同类。仅本地阅读/实验，不入库也不进任何训练集）=====
+samoye_svc_repo/
 tts_trial/ft_output/
 tts_trial/ft_samples/
 
