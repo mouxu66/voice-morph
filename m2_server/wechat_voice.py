@@ -2108,6 +2108,24 @@ def send_voice(req: SendVoiceReq):
         _send_lock.release()
 
 
+def _precheck_block() -> str:
+    """这次发送**注定失败**吗（非空 = 必败，内容是分因文案）。
+
+    给「按住说话」这种长链路用的：那一条要「录 0..59 秒 → 换声十几秒 → 才轮到发送」，
+    等松手之后才告诉他「微信没开」，代价是白等十几秒 —— 所以判断要能**提前**拿到。
+
+    判据直接复用 `send_text` 那条 `_send_preflight()`（分因文案来自
+    `wechat_proc.find_wechat_hwnd`），**不在这里重写一份**：本仓在
+    `kangaroo` → `kangaroo_v2` 那次已经吃过「两处各抄一份判据、漂掉一个」的亏。
+    自己出错时返回空串（fail-open）：预检是只读咨询，内部出错不该变成
+    「你的微信坏了」的假警报 —— 真出错时松手后的报错仍然会出现。
+    """
+    try:
+        return _send_preflight()
+    except Exception:
+        return ""
+
+
 @router.get("/precheck")
 def precheck():
     """发送前自检（**只读**，不动声卡、不碰微信）：这次发送会不会重启微信、为什么。
@@ -2132,6 +2150,11 @@ def precheck():
         "last_input_device": probe.get("device"),
         "device_source": probe.get("file"),
         "target_keyword": _device_keyword(),
+        # 注定失败的原因（空串 = 没发现硬失败）。与 restart_needed 是**两件事**：
+        # 默认 VM_WECHAT_RESTART=0 时后者恒为 False，而「微信没开」这种必败
+        # 只有这里说得出来（前端别自己拿 wechat_running 去推——进程在≠窗口可用，
+        # 微信收托盘/停在登录页时进程都在）。
+        "block_reason": _precheck_block(),
         "hint": (
             "微信会先被重启，再切麦克风到 CABLE Output"
             if need

@@ -663,6 +663,58 @@ def test_precheck_is_readonly_and_explains(monkeypatch):
     assert "重启" in out["hint"]
 
 
+# ---------------- precheck.block_reason：这次是不是**注定失败**（2026-09-29） ----------------
+#
+# 起因：「按住说话」松手之后才告诉他「微信没开」，代价是白录 0..59 秒 + 十几秒换声。
+# 判据复用 send_text 那条 _send_preflight（不重写一份），由 precheck 只读地转述。
+
+
+def _stub_no_wechat(monkeypatch):
+    """微信进程都没有、也没有可见窗口（find_wechat_hwnd 会因此报分因）。"""
+    monkeypatch.setattr(wp, "list_wechat_processes", lambda: [])
+    monkeypatch.setattr(wp, "enum_wechat_windows", lambda: [])
+    monkeypatch.setattr(
+        wp, "input_device_probe", lambda: {"device": None, "file": None, "hits": 0}
+    )
+
+
+def test_precheck_block_reason_when_wechat_closed(monkeypatch):
+    """默认 VM_WECHAT_RESTART=0（没人会替用户开微信）→ 这次发送注定失败，得提前说。"""
+    monkeypatch.setenv(wv.RESTART_MODE_ENV, "0")
+    _stub_no_wechat(monkeypatch)
+    out = wv.precheck()
+    assert out["ok"] is True
+    assert out["restart_needed"] is False, "mode=0 不重启是既有语义，别顺手改"
+    assert "没有在运行" in out["block_reason"], out["block_reason"]
+    assert "打开微信" in out["block_reason"], (
+        "block_reason 要带下一步（find_wechat_hwnd 的分因文案），"
+        "退化成「没找到微信」就白跑这一趟：" + out["block_reason"]
+    )
+
+
+def test_precheck_block_reason_empty_in_auto_mode(monkeypatch):
+    """auto/1 模式后端会自己拉起/重启微信 → 没有可预判的硬失败，不能误报。"""
+    monkeypatch.setenv(wv.RESTART_MODE_ENV, "auto")
+    _stub_no_wechat(monkeypatch)
+    out = wv.precheck()
+    assert out["block_reason"] == "", "auto 会自己把微信拉起来，不该报「必败」"
+    assert out["restart_needed"] is True
+
+
+def test_precheck_block_reason_fails_open(monkeypatch):
+    """预检自己炸了 → 空串（fail-open）：内部错误不该演成「你的微信坏了」。"""
+    monkeypatch.setenv(wv.RESTART_MODE_ENV, "0")
+    _stub_no_wechat(monkeypatch)
+
+    def boom() -> str:
+        raise OSError("枚举窗口炸了")
+
+    monkeypatch.setattr(wv, "_send_preflight", boom)
+    out = wv.precheck()
+    assert out["ok"] is True
+    assert out["block_reason"] == ""
+
+
 # ---------------- find_wechat_hwnd：报错分因（2026-09-18） ----------------
 #
 # 起因：用户只看到「没找到微信窗口」，分不清是没开微信、收进托盘还是停在登录页。
@@ -695,6 +747,11 @@ def test_find_wechat_hwnd_tray_only_says_open_chat_window(monkeypatch):
     msg = str(e.value)
     assert "在运行" in msg and "托盘" in msg
     assert "22" in msg  # 报出 pid，方便对任务管理器
+    # ★ 首句必须是**问题本身**：桌宠「按住说话」页那行预检只显示到第一个「（」/「：」为止
+    #   （一行、204px）。写「微信在运行…」会让一条红色警报读成「一切正常」。
+    assert msg.startswith("微信没有任何可见窗口"), (
+        "托盘那条的首句被改回「微信在运行」了 —— 桌宠预检行会把它读成“没事”：" + msg
+    )
 
 
 def test_find_wechat_hwnd_login_page_reports_area(monkeypatch):
