@@ -100,14 +100,33 @@ else:
 
 # CORS / 跨站守卫
 # ---------------------------------------------------------------
-# 默认（未显式配置 VM_CORS_ORIGINS）仅放行本机来源：file:// 页面（Electron /
-# 浏览器打开 dist，Origin 为 null 或 file://）、开发服务器 localhost:*、
-# 以及无 Origin 头的本机调用（curl / RN 原生 / 测试）。任意远程网页
-# （https://evil.com）的 fetch 请求会被 _OriginGuardMiddleware 直接 403，
+# 默认（未显式配置 VM_CORS_ORIGINS）仅放行**本机与局域网自己的页面**：
+#   · file:// 页面（Electron / 浏览器打开 dist，Origin 为 null 或 file://）；
+#   · 开发服务器 localhost:*；
+#   · 无 Origin 头的本机调用（curl / RN 原生 / 测试）；
+#   · ★ 局域网私有地址（手机浏览器打开 http://<本机IP>:8000/remote.html 时的来源）。
+# 任意公网网页（https://evil.com）的 fetch 请求会被 _OriginGuardMiddleware 直接 403，
 # 杜绝"无鉴权 + CORS 通配"下被跨站调用破坏性接口（DELETE 音色 / 触发下载 /
 # /tts 占显存）。显式配置 VM_CORS_ORIGINS 时走用户白名单并跳过守卫。
+#
+# ★ 为什么必须放行私有网段（2026-09-29 手机遥控页实测）：浏览器对**同源 POST 也会带
+#   Origin 头**（Fetch 规范：非 GET/HEAD 一律带）。手机打开遥控页做「打字发语音」或
+#   「手机当麦克风」时，Origin 就是那台电脑的局域网 IP，只放行 localhost 的结果是：
+#   页面能打开（GET 不带 Origin）、一按按钮就 403 —— 表现为"连上了但什么都干不了"。
+#   放行私有网段不削弱这条守卫：Origin 来自浏览器实际加载的页面地址，公网攻击者
+#   无法让自己的页面拿一个 192.168.x.x / 10.x.x.x 的来源（DNS 重绑定时 Origin 仍是
+#   他的域名，照样被拦）。这条同时管 CORS 预检 —— 预检由 CORS 层短路返回，
+#   守卫管不到，所以只能改这个共用正则（JSON POST 会触发预检，multipart 不会）。
+_PRIVATE_HOST = (
+    r"(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}"  # 10.0.0.0/8
+    r"|192\.168\.\d{1,3}\.\d{1,3}"  # 192.168.0.0/16（家用路由默认）
+    r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"  # 172.16.0.0/12
+    r"|[a-z0-9-]+\.local)"  # mDNS 主机名（同一 Wi-Fi 内可解析）
+)
 LOCAL_ORIGIN_RE = re.compile(
-    r"^(?:null|file://|https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?)$"
+    r"(?i)^(?:null|file://|https?://(?:localhost|127\.0\.0\.1|\[::1\]|"
+    + _PRIVATE_HOST
+    + r")(?::\d+)?)$"
 )
 
 

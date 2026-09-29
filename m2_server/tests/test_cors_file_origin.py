@@ -102,3 +102,61 @@ def test_localhost_dev_server_origin_is_allowed(client):
     r = client.get(PROBE_PATH, headers={"Origin": "http://localhost:5173"})
     assert r.status_code != 403
     assert r.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+# ---------------- 手机遥控页（局域网来源，2026-09-29）----------------
+# 为什么必须单列一组：手机浏览器打开 `http://<本机IP>:8000/remote.html` 时，
+# **同源 POST 也会带 Origin 头**（Fetch 规范：非 GET/HEAD 一律带）。只放行 localhost
+# 的症状极具误导性 ——
+#   · 页面能打开（GET 不带 Origin，守卫看到空 Origin 就放行）；
+#   · 一按「发到微信 / 按住说话」就 403，看起来像"连上了但什么都干不了"。
+# 而且**预检也必须放行**：JSON POST 会先发 OPTIONS，预检由 CORS 层短路返回、
+# 根本走不到 _OriginGuardMiddleware，所以只能改这个共用正则（multipart 上传不预检，
+# 但 send_text/send_voice 是 JSON）。
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://192.168.1.5:8000",  # 家用路由默认网段
+        "http://10.0.0.7:8000",
+        "http://172.16.4.9:8000",
+        "http://172.31.255.254:8000",  # 172.16/12 的上界
+        "http://my-pc.local:8000",  # mDNS 主机名（Windows 上手机可能这么访问）
+    ],
+)
+def test_lan_origin_is_allowed(client, origin):
+    r = client.get(PROBE_PATH, headers={"Origin": origin})
+    assert r.status_code != 403, f"局域网页面不该被跨站守卫拒绝：{origin}"
+    assert r.headers.get("access-control-allow-origin") == origin
+
+    pre = client.options(
+        "/api/health",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert pre.status_code == 200, "预检不通 = 手机上所有 JSON 写操作全废"
+    assert pre.headers.get("access-control-allow-origin") == origin
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://evil.example.com",
+        "http://8.8.8.8:8000",  # 公网地址
+        "http://172.32.0.1:8000",  # 172.16/12 之外（看着像私有网段）
+        "http://169.254.1.1:8000",  # 链路本地（不在放行范围）
+        "http://192.168.1.5.evil.com:8000",  # 把私有 IP 当前缀骗匹配
+    ],
+)
+def test_private_lookalike_origins_are_still_rejected(client, origin):
+    """对照：放行私有网段**不能**变成放行一切。
+
+    最后一条是典型的"看着像内网"的伪造来源 —— 每条锚定在 `^…$` 与主机名整体匹配上，
+    所以它必须仍然是 403。
+    """
+    r = client.get(PROBE_PATH, headers={"Origin": origin})
+    assert r.status_code == 403, f"这个来源不该被放行：{origin}"

@@ -1,0 +1,978 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <!-- viewport-fit=cover：iPhone 刘海屏下 env(safe-area-inset-*) 才生效 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0b1020" />
+    <title>变声工坊 · 手机遥控</title>
+    <!--
+      手机遥控页（2026-09-28）
+
+      为什么是一个**独立的自包含 HTML**，而不是主应用里的一条 React 路由：
+        1. 手机上的诉求与桌面端完全不同（单手、竖屏、三个动作、不看参数），
+           塞进桌面 SPA 只会继承那套侧栏与 800 行页面的信息密度；
+        2. 它必须**零构建**就能用：这个文件被 Vite 从 `public/` 原样拷进 `dist/`，
+           后端已经在托管 `web_dist`（server.py 的 SPA 兜底那一段），
+           所以不需要新增任何后端路由 —— 少改一个门禁面就少一处会漂的地方；
+        3. 主应用那条路要走 React 路由表 + 插件清单的 `routes`，而这不是一个"能力页"，
+           它只是**同一批接口的另一种排布**。
+
+      怎么打开（PC 与手机同一个 Wi-Fi）：
+        http://<电脑局域网IP>:8000/remote.html?api_key=<VM_API_TOKEN>
+      没设 VM_API_TOKEN 时可以省掉 `?api_key=`（后端默认 LAN-only 放行）。
+
+      ★ 「手机当麦」这一页有个**浏览器硬限制**，必须先说清楚（2026-09-29）：
+        `navigator.mediaDevices.getUserMedia`（让网页直接录音）**只在安全上下文里存在** ——
+        https，或 http://localhost。手机用 `http://<电脑IP>:8000` 打开时它压根不存在
+        （不是“权限被拒”，是这个 API 没被暴露），所以本页对两条路都做了：
+          · 安全上下文 → 真正的「按住说话」，页面里直接录音；
+          · 普通 http → 自动退成「点一下录音」，用 `<input capture>` 调起手机自带录音机，
+            录完自动传回电脑换声 —— 表单控件不受安全上下文限制，每台手机都能走。
+        两条路产物是同一种东西（一段音频 → `/api/capture/mic/upload` → 换声 → 发微信），
+        所以后端只有一个上传端点，不按“手机是怎么录的”分叉。
+
+      ★ 本页所有请求都是**同源相对路径**（一律以 /api 开头），不写任何带端口的地址字面量 ——
+        这是刻意的：`web/src/backendSurfaceAudit.test.ts` 会清点"直接打后端端口的 UI 面"
+        并要求登记，同源相对路径既不需要登记，也不会因为换端口/换 IP 而失效。
+
+      ★ 认证：token 走 `api_key` 查询参数（不是自定义 Header）——
+        手机上的原生音频播放器（`<audio src>`）带不了 Header，与 mobile/ 当初的选择一致。
+        URL 里带了就存进 localStorage，之后不必再带（方便加书签）。
+    -->
+    <style>
+      :root {
+        --bg: #0b1020;
+        --card: #151c31;
+        --card-2: #1d2540;
+        --line: #2a3350;
+        --txt: #e8ecf6;
+        --dim: #9aa6c4;
+        --acc: #6d8cff;
+        --ok: #35d39a;
+        --warn: #ffc86b;
+        --bad: #ff6b81;
+        --radius: 14px;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f4f6fb;
+          --card: #ffffff;
+          --card-2: #eef1f8;
+          --line: #dde3f0;
+          --txt: #131a2b;
+          --dim: #5b6785;
+          --acc: #3b5bdb;
+          --ok: #0f9d6b;
+          --warn: #a86a00;
+          --bad: #c22b45;
+        }
+      }
+      * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        background: var(--bg);
+        color: var(--txt);
+        font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", Roboto, sans-serif;
+        /* 竖屏手机：左右留 14px；底部给 iOS 手势条留位 */
+        padding: 0 14px calc(84px + env(safe-area-inset-bottom));
+        overflow-x: hidden;
+      }
+      header {
+        position: sticky; top: 0; z-index: 5;
+        display: flex; align-items: center; gap: 10px;
+        padding: calc(env(safe-area-inset-top) + 12px) 0 10px;
+        background: linear-gradient(var(--bg) 72%, transparent);
+      }
+      h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: 0.2px; }
+      .pill {
+        margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+        font-size: 12.5px; color: var(--dim);
+        border: 1px solid var(--line); border-radius: 999px; padding: 5px 10px;
+        background: var(--card); white-space: nowrap;
+      }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
+      .dot.ok { background: var(--ok); }
+      .dot.bad { background: var(--bad); }
+      .dot.warn { background: var(--warn); }
+
+      .card {
+        background: var(--card); border: 1px solid var(--line);
+        border-radius: var(--radius); padding: 14px; margin-bottom: 12px;
+      }
+      .card > h2 {
+        font-size: 13px; margin: 0 0 10px; color: var(--dim);
+        font-weight: 600; letter-spacing: 0.4px;
+      }
+      label.field { display: block; margin-bottom: 12px; }
+      label.field > span { display: block; font-size: 12.5px; color: var(--dim); margin-bottom: 6px; }
+      label.field > span b { color: var(--txt); font-weight: 600; }
+
+      select, textarea {
+        width: 100%; font: inherit; color: var(--txt); background: var(--card-2);
+        border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px;
+        /* iOS 上 <16px 会触发聚焦自动放大，所以正文控件统一 16px */
+        font-size: 16px;
+      }
+      textarea { min-height: 104px; resize: vertical; line-height: 1.55; }
+      select { appearance: none; padding-right: 34px;
+        background-image: linear-gradient(45deg, transparent 50%, var(--dim) 50%),
+          linear-gradient(135deg, var(--dim) 50%, transparent 50%);
+        background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+        background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+      }
+      .row { display: flex; gap: 10px; align-items: center; }
+      .row > * { flex: 1; }
+      .meta { font-size: 12.5px; color: var(--dim); margin-top: 6px; }
+      .meta b { color: var(--txt); }
+
+      button {
+        font: inherit; font-weight: 600; color: var(--txt);
+        background: var(--card-2); border: 1px solid var(--line);
+        border-radius: 11px; padding: 13px 16px; cursor: pointer;
+        /* 44px 是触摸目标下限 */
+        min-height: 46px;
+      }
+      button:active { transform: translateY(1px); }
+      button[disabled] { opacity: 0.5; }
+      button.primary { background: var(--acc); border-color: var(--acc); color: #fff; }
+      button.danger { border-color: var(--bad); color: var(--bad); background: transparent; }
+      button.ghost { background: transparent; }
+      .btns { display: flex; gap: 10px; margin-top: 12px; }
+      .btns > button { flex: 1; }
+      .btns.stack { flex-direction: column; }
+      .btns.stack > button { flex: none; }
+
+      .kv { display: grid; grid-template-columns: auto 1fr; gap: 7px 12px; font-size: 13.5px; }
+      .kv dt { color: var(--dim); white-space: nowrap; }
+      .kv dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+
+      .log {
+        margin: 12px 0 0; padding: 11px 12px; border-radius: 10px;
+        background: var(--card-2); border: 1px solid var(--line);
+        font-size: 12.5px; line-height: 1.65; color: var(--dim);
+        white-space: pre-wrap; overflow-wrap: anywhere;
+        max-height: 46vh; overflow-y: auto;
+      }
+      .log:empty { display: none; }
+      .note { font-size: 12.5px; line-height: 1.6; color: var(--dim); margin: 10px 0 0; }
+      .note.warn { color: var(--warn); }
+      .note.bad { color: var(--bad); }
+      .note.ok { color: var(--ok); }
+      /* 播放器：显示与否**只由 .hidden 决定**。
+         ★ 曾经这里写过 `audio:empty { display: none }` 想"没音频时不留空壳"——
+         但 `:empty` 看的是子节点，而 `<audio src=…>` 并没有子节点，于是**设了 src 也永远
+         不显示**：试听按钮点了没反应、但控制台一声不吭（2026-09-29 渲染实测抓到，
+         两个面板都中招）。空 audio 由 JS 加 .hidden 收起来就好。 */
+      audio { width: 100%; margin-top: 10px; }
+
+      /* 「按住说话」那颗按钮：手机上按住两三秒不能只靠 46px 的目标高度，
+         而且按住期间**不能**被当成滚动/长按选择 —— touch-action/user-select 都得关。 */
+      button.hold {
+        width: 100%; height: 132px; margin-top: 2px; font-size: 17px; border-radius: 16px;
+        background: var(--card-2); border: 2px dashed var(--line);
+        touch-action: none; user-select: none; -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
+      button.hold.rec {
+        background: var(--bad); border: 2px solid var(--bad); color: #fff;
+        transform: none;
+      }
+
+      nav {
+        position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
+        display: flex; gap: 6px; padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+        background: color-mix(in srgb, var(--bg) 88%, transparent);
+        border-top: 1px solid var(--line);
+        backdrop-filter: blur(10px);
+      }
+      nav button {
+        flex: 1; min-height: 50px; border-radius: 12px;
+        background: transparent; border-color: transparent; font-size: 13px;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+      }
+      nav button[aria-selected="true"] { background: var(--card-2); border-color: var(--line); color: var(--acc); }
+      nav button i { font-style: normal; font-size: 17px; line-height: 1; }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>变声工坊 · 遥控</h1>
+      <span class="pill"><i class="dot" id="connDot"></i><span id="connText">连接中…</span></span>
+    </header>
+
+    <!-- ============================== 打字发语音 ============================== -->
+    <main id="panel-say">
+      <section class="card">
+        <h2>谁在说 / 怎么说</h2>
+        <label class="field">
+          <span>目标音色（<b>谁在说</b>，决定像不像）</span>
+          <select id="sayVoice"></select>
+        </label>
+        <label class="field" style="margin-bottom: 0">
+          <span>语气参考（<b>怎么说</b>，留空＝跟随电脑上当前选中的音色）</span>
+          <select id="sayRef"></select>
+        </label>
+        <p class="note" id="sayVoiceNote"></p>
+      </section>
+
+      <section class="card">
+        <h2>说什么</h2>
+        <textarea id="sayText" placeholder="在这里打字，电脑会用你选的音色念出来并发成微信语音"></textarea>
+        <p class="meta">
+          已输入 <b id="sayCount">0</b> 字
+          <span id="saySplit"></span>
+        </p>
+        <div class="btns">
+          <button id="btnPreview" class="ghost">试听（不发）</button>
+          <button id="btnSend" class="primary">发到微信</button>
+        </div>
+        <p class="note" id="sayHint"></p>
+        <audio id="sayAudio" controls preload="none" class="hidden"></audio>
+      </section>
+
+      <section class="card">
+        <h2>电脑那边</h2>
+        <dl class="kv" id="precheck"></dl>
+        <p class="note" id="precheckNote">点「发到微信」前先看一眼这里，比真发一条快得多，也不会打扰对方。</p>
+      </section>
+
+      <section class="card hidden">
+        <h2>进度</h2>
+        <div class="log" id="sayLog"></div>
+      </section>
+    </main>
+
+    <!-- ============================== 手机当麦克风 ============================== -->
+    <main id="panel-mic" class="hidden">
+      <section class="card">
+        <h2>谁在说</h2>
+        <label class="field" style="margin-bottom: 6px">
+          <span>目标音色（<b>谁在说</b>，决定像不像）</span>
+          <select id="micVoice"></select>
+        </label>
+        <p class="note" id="micVoiceNote"></p>
+        <p class="note" id="micPcNote"></p>
+      </section>
+
+      <section class="card">
+        <h2>说话</h2>
+        <button id="btnHold" class="hold">按住说话</button>
+        <!--
+          两个 file input 是两个用途，不是重复：
+            · micFile 带 `capture` → 直接调起手机**录音机**（http 下走这条）；
+            · micPick 不带 capture → 从手机里挑一个已经存在的音频文件。
+        -->
+        <input id="micFile" type="file" accept="audio/*" capture class="hidden" />
+        <input id="micPick" type="file" accept="audio/*" class="hidden" />
+        <p class="meta">已录 <b id="micSecs">0.0</b> 秒 · 上限 <b id="micMax">59</b> 秒（微信单条语音就是 60 秒）</p>
+        <p class="note" id="micHint"></p>
+        <!-- 两个备用入口竖着排、占满一行：横排时 390px 宽塞不下这两句中文（会各自折行） -->
+        <div class="btns stack">
+          <button id="btnMicRec" class="ghost">🎙️ 用手机自带录音机录</button>
+          <button id="btnMicPick" class="ghost">📁 选手机里已有的音频文件</button>
+        </div>
+      </section>
+
+      <section class="card hidden" id="micCard">
+        <h2>这条语音</h2>
+        <audio id="micAudio" controls preload="none" class="hidden"></audio>
+        <dl class="kv" id="micResult"></dl>
+        <div class="btns">
+          <button id="btnMicAgain" class="ghost">重录</button>
+          <button id="btnMicSend" class="primary">发到微信</button>
+        </div>
+        <p class="note" id="micSendNote"></p>
+      </section>
+
+      <section class="card hidden">
+        <h2>进度</h2>
+        <div class="log" id="micLog"></div>
+      </section>
+    </main>
+
+    <!-- ============================== 实时变声 ============================== -->
+    <main id="panel-live" class="hidden">
+      <section class="card">
+        <h2>实时变声</h2>
+        <dl class="kv" id="liveStatus"></dl>
+        <p class="note" id="liveNote"></p>
+      </section>
+
+      <section class="card">
+        <h2>用哪个音色</h2>
+        <label class="field" style="margin-bottom: 0">
+          <span>切换后会写进电脑上的配置，下次启动生效</span>
+          <select id="liveVoice"></select>
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>操作</h2>
+        <div class="btns stack">
+          <button id="btnLiveStart" class="primary">开始变声</button>
+          <button id="btnLiveStop" class="danger">停止变声（并把声卡还原）</button>
+          <button id="btnMonitor" class="ghost">自我监听：未知</button>
+          <button id="btnReset" class="ghost">强制还原声卡（出问题时用）</button>
+        </div>
+        <p class="note warn">
+          变声运行期间会占用系统默认麦克风与 CABLE。停不下来时用「强制还原声卡」兜底。
+        </p>
+      </section>
+
+      <section class="card hidden">
+        <h2>日志</h2>
+        <div class="log" id="liveLog"></div>
+      </section>
+    </main>
+
+    <nav>
+      <button id="tab-say" aria-selected="true" data-tab="say"><i>⌨️</i>打字发语音</button>
+      <button id="tab-mic" aria-selected="false" data-tab="mic"><i>🎙️</i>手机当麦</button>
+      <button id="tab-live" aria-selected="false" data-tab="live"><i>🔊</i>实时变声</button>
+    </nav>
+
+    <script>
+      // ---------------------------------------------------------------- 认证
+      const TOKEN_KEY = 'vm_remote_api_key'
+      const fromUrl = new URLSearchParams(location.search).get('api_key') || ''
+      if (fromUrl) {
+        try { localStorage.setItem(TOKEN_KEY, fromUrl) } catch (e) { /* 隐私模式下写不了，忽略 */ }
+      }
+      let TOKEN = fromUrl
+      try { TOKEN = TOKEN || localStorage.getItem(TOKEN_KEY) || '' } catch (e) { /* 同上 */ }
+
+      /** 给 URL 挂上 api_key。<audio src> 带不了 Header，只能走查询参数。 */
+      function withKey(url) {
+        if (!TOKEN) return url
+        return url + (url.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(TOKEN)
+      }
+
+      // ---------------------------------------------------------------- 请求
+      class ApiError extends Error {
+        constructor(msg, code) { super(msg); this.code = code }
+      }
+
+      /** 统一的响应处理：401 / 404 / 业务失败三种含意完全不同，只写一处。 */
+      async function readJson(res, path) {
+        if (res.status === 401) {
+          throw new ApiError('需要 api_key —— 在电脑上把带 ?api_key=… 的完整链接发给手机，或关掉 VM_API_TOKEN', 401)
+        }
+        if (res.status === 404) {
+          // 404 有两种来源，给的建议必须不同，否则把人指向错的地方：
+          //   ① 该**能力**被关掉了（插件不挂路由）→ 去能力管理开回来；
+          //   ② 核心端点也不存在 → 那是**页面与后端版本不一致**（改完前端没重新构建/同步），
+          //      跟"能力管理"毫无关系。拿 ① 的文案去解释 ② 会让人去关错地方。
+          throw new ApiError(
+            CORE_API.some((c) => path.startsWith(c))
+              ? '后端没有这个接口 —— 手机上的页面比电脑上的后端新，重新构建/同步一次前端再试'
+              : '这个能力在电脑端没有开启（或路径被拼错）—— 去电脑上「设置 → 能力管理」看看',
+            404,
+          )
+        }
+        let data = null
+        try { data = await res.json() } catch (e) { /* 空体或非 JSON */ }
+        if (!res.ok) {
+          const detail = (data && (data.detail || data.error)) || ('HTTP ' + res.status)
+          throw new ApiError(typeof detail === 'string' ? detail : JSON.stringify(detail), res.status)
+        }
+        // 后端有些端点用 200 + ok:false 表达业务失败（如发送结果 partial/failed）
+        return data
+      }
+
+      /** 核心端点：它们不属于任何可关插件，所以 404 的含意完全不同（见上面的注释）。 */
+      const CORE_API = ['/api/health', '/api/plugins', '/api/voices']
+
+      /** 发一个请求，把响应交给 readJson —— “连不上”与“HTTP 错误”是两回事。 */
+      async function send(path, opts) {
+        let res
+        try {
+          res = await fetch(withKey(path), opts)
+        } catch (e) {
+          throw new ApiError('连不上电脑上的变声工坊 —— 确认 PC 端开着、且手机与它在同一个 Wi-Fi', 0)
+        }
+        return await readJson(res, path)
+      }
+
+      async function api(path, { method = 'GET', body } = {}) {
+        return await send(path, {
+          method,
+          headers: body ? { 'Content-Type': 'application/json' } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+        })
+      }
+
+      /**
+       * multipart 上传。**不要**手写 Content-Type：boundary 必须由浏览器生成，
+       * 手写会让后端解不出表单（表现为 422/“缺 file 字段”，很难看出是这里的事）。
+       */
+      async function apiForm(path, form) {
+        return await send(path, { method: 'POST', body: form })
+      }
+
+      const $ = (id) => document.getElementById(id)
+      const setNote = (el, text, kind) => {
+        el.className = 'note' + (kind ? ' ' + kind : '')
+        el.textContent = text || ''
+      }
+      function setConn(state, text) {
+        $('connDot').className = 'dot ' + state
+        $('connText').textContent = text
+      }
+      function log(el, text) {
+        el.textContent = text
+        el.scrollTop = el.scrollHeight
+        // 日志为空时连外壳一起收起来：只剩一个"日志"标题的空卡片看起来像坏了
+        const card = el.closest('.card')
+        if (card) card.classList.toggle('hidden', !text)
+      }
+      const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+      // ---------------------------------------------------------------- 能力清单
+      // 关掉的能力在电脑端**连路由都不挂**，请求会 404。与其让用户看到一句英文 404，
+      // 不如先读一次清单，把不可用的入口直接标出来（与主应用/桌宠认同一份清单）。
+      let caps = {}
+      async function loadCaps() {
+        try {
+          const d = await api('/api/plugins')
+          for (const p of (d && d.plugins) || []) caps[p.id] = p.state
+        } catch (e) { /* 清单读不到不致命：接口 404 时另有提示 */ }
+      }
+      const capOff = (id) => caps[id] === 'disabled' || caps[id] === 'broken'
+
+      // ---------------------------------------------------------------- 音色
+      let voices = []
+      function fillVoices(sel, list, placeholder) {
+        sel.innerHTML = ''
+        if (placeholder !== null && placeholder !== undefined) {
+          const o = document.createElement('option')
+          o.value = ''
+          o.textContent = placeholder
+          sel.appendChild(o)
+        }
+        for (const v of list) {
+          const o = document.createElement('option')
+          o.value = v.id
+          o.textContent = v.display_name || v.id
+          sel.appendChild(o)
+        }
+      }
+      async function loadVoices() {
+        const d = await api('/api/voices')
+        voices = (d && d.voices) || []
+        // 「谁在说」只能选有 RVC 权重的 —— 没有权重时 rvc_voice 会被后端判为未就绪
+        const canSpeak = voices.filter((v) => v.model_ready)
+        // 「怎么说」只能选有参考音的 —— 没参考音时 TTS 那条链根本合不出来
+        const canRefer = voices.filter((v) => v.has_reference)
+        fillVoices($('sayVoice'), canSpeak, canSpeak.length ? null : '（这台电脑还没有可用的 RVC 音色）')
+        fillVoices($('sayRef'), canRefer, '自动（跟随电脑当前音色）')
+        fillVoices($('liveVoice'), canSpeak, canSpeak.length ? null : '（无可用的 RVC 音色）')
+        fillVoices($('micVoice'), canSpeak, canSpeak.length ? null : '（无可用的 RVC 音色）')
+
+        const saved = localStorage.getItem('vm_remote_voice') || ''
+        if (saved && canSpeak.some((v) => v.id === saved)) $('sayVoice').value = saved
+        setNote(
+          $('sayVoiceNote'),
+          canSpeak.length
+            ? `共 ${voices.length} 个音色，其中 ${canSpeak.length} 个能出声、${canRefer.length} 个能当语气参考。`
+            : '去电脑上的「训练变声 / 音色市场」先做一个音色 —— 手机这边不含训练功能。',
+          canSpeak.length ? '' : 'warn',
+        )
+        setNote(
+          $('micVoiceNote'),
+          canSpeak.length
+            ? '手机这条链路靠 RVC 换声，所以这里只列“能出声”的音色。'
+            : '电脑上还没有能出声的 RVC 音色 —— 手机这边不含训练功能，先去电脑上做一个。',
+          canSpeak.length ? '' : 'warn',
+        )
+      }
+
+      // ---------------------------------------------------------------- 打字发语音
+      function sayOpts() {
+        return {
+          text: $('sayText').value,
+          rvc_voice: $('sayVoice').value || '',
+          voice_id: $('sayRef').value || '',
+          pitch: 0,
+          index_rate: 0.5,
+        }
+      }
+
+      $('sayText').addEventListener('input', () => {
+        const n = $('sayText').value.trim().length
+        $('sayCount').textContent = String(n)
+        // 微信单条语音有 60s 上限，后端按 ~54s 预算自动拆条；
+        // 这里不编造"每秒几个字"的换算，只说明会发生什么
+        $('saySplit').textContent = n > 120 ? '（较长，会自动拆成多条依次发送）' : ''
+      })
+      $('sayVoice').addEventListener('change', () => {
+        try { localStorage.setItem('vm_remote_voice', $('sayVoice').value) } catch (e) { /* 忽略 */ }
+      })
+
+      async function runSay(btn, kind) {
+        const text = $('sayText').value.trim()
+        if (!text) { setNote($('sayHint'), '先写点要说的内容。', 'warn'); return }
+        if (!voices.some((v) => v.model_ready)) {
+          setNote($('sayHint'), '电脑上还没有可用的 RVC 音色，先去做一个。', 'warn')
+          return
+        }
+        const isSend = kind === 'send'
+        const path = isSend ? '/api/wechat/send_text' : '/api/wechat/preview_text'
+        const t0 = Date.now()
+        const tick = setInterval(() => {
+          const s = Math.round((Date.now() - t0) / 1000)
+          log($('sayLog'), (isSend ? '发送中' : '合成中') + '：已等 ' + s + ' 秒…（首次合成要加载模型，通常 5–20 秒）')
+        }, 1000)
+        document.querySelectorAll('#panel-say button').forEach((b) => (b.disabled = true))
+        log($('sayLog'), (isSend ? '正在合成并发送…' : '正在合成试听…'))
+        setNote($('sayHint'), '')
+        $('sayAudio').classList.add('hidden')
+
+        try {
+          const d = await api(path, { method: 'POST', body: sayOpts() })
+          const secs = Math.round((Date.now() - t0) / 1000)
+          const steps = [].concat(d.steps || []).map((s) => '· ' + s).join('\n')
+          const head = d.steps ? '（' + secs + ' 秒）' : ''
+          log($('sayLog'), head + (steps ? '\n' + steps : ''))
+
+          if (d.ok) {
+            if (isSend) {
+              const n = d.sent_chunks || (d.wavs ? d.wavs.length : 1)
+              setNote($('sayHint'), '已发出 ' + n + ' 条微信语音。', 'ok')
+            } else {
+              setNote($('sayHint'), d.note || '试听就绪 —— 这是"发出去会是什么样"，不是修辞过的版本。', '')
+            }
+          } else {
+            // partial / failed / manual_fallback：后端刻意返回 200，让界面按 outcome 展示
+            setNote($('sayHint'), (d.error || d.hint || ('发送未完成：' + (d.outcome || 'unknown'))), 'warn')
+            if (d.remaining_wavs && d.remaining_wavs.length) {
+              log($('sayLog'), $('sayLog').textContent + '\n\n还有 ' + d.remaining_wavs.length + ' 条没发出去（原文还在输入框里，可以直接再点一次「发到微信」重试）。')
+            }
+          }
+          const url = d.url || (d.wavs && d.wavs.length ? '/api/media/outputs/.session/' + d.wavs[0] : '')
+          if (url) {
+            $('sayAudio').src = withKey(url)
+            $('sayAudio').classList.remove('hidden')
+          }
+        } catch (e) {
+          log($('sayLog'), '')
+          setNote($('sayHint'), e.message, 'bad')
+        } finally {
+          clearInterval(tick)
+          document.querySelectorAll('#panel-say button').forEach((b) => (b.disabled = false))
+          if (capOff('hook.wechat')) $('btnSend').disabled = true
+        }
+      }
+      $('btnPreview').addEventListener('click', () => runSay($('btnPreview'), 'preview'))
+      $('btnSend').addEventListener('click', () => runSay($('btnSend'), 'send'))
+
+      async function refreshPrecheck() {
+        const dl = $('precheck')
+        try {
+          const d = await api('/api/wechat/precheck')
+          const rows = [
+            ['微信', d.wechat_running ? '已打开' : '没检测到'],
+            ['这次发送', d.restart_needed ? '会重启微信' : '直接切麦克风'],
+            ['原因', d.reason || '—'],
+          ]
+          dl.innerHTML = rows
+            .map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>')
+            .join('')
+          setNote($('precheckNote'), d.hint || '', d.wechat_running ? '' : 'warn')
+        } catch (e) {
+          dl.innerHTML = ''
+          setNote($('precheckNote'), e.message, 'bad')
+        }
+      }
+
+      // ---------------------------------------------------------------- 手机当麦克风
+      // 这一页只做一件事：把**手机当麦克风**说的话换成电脑上那个音色，再发进微信。
+      //
+      // ★ 两条录音路径必须是“先探测再用”，而不是写成一种：
+      //   `getUserMedia` 只在**安全上下文**里存在（https / localhost）。手机用
+      //   `http://<电脑IP>:8000` 打开时它压根不存在 —— 不是权限被拒，是没这个 API。
+      //   所以：能拿到就用真正的按住说话；拿不到就自动退成 `<input capture>`（调手机自带
+      //   录音机），并在文案里说明原因 —— 不解释的话用户只会觉得“这按钮坏了”。
+      //
+      // ★ 后端不关心手机是怎么录的：两条路径都汇到同一个上传端点。
+      const canHold = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+      // 与 mic_capture.MAX_HOLD_SECONDS 对齐（微信单条 60s 上限 - 1s 收尾余量）。
+      const MAX_HOLD_S = 59
+
+      let micRec = null
+      let micChunks = []
+      let micTimer = null
+      let micStartAt = 0
+      let micHolding = false
+      let micWantStop = false
+      let micClip = null
+
+      const micForm = () => [
+        ['voice_id', $('micVoice').value || ''],
+        ['pitch', '0'],
+        ['index_rate', '0.5'],
+      ]
+
+      function micTick() {
+        if (!micStartAt) return
+        const secs = (Date.now() - micStartAt) / 1000
+        $('micSecs').textContent = secs.toFixed(1)
+        if (secs >= MAX_HOLD_S) {
+          // 到上限自己收尾：一直按着不放（或手指滑出后 up 事件丢了）不应留下一个一直录的会话
+          setNote($('micHint'), '到 ' + MAX_HOLD_S + ' 秒上限，自动结束了 —— 微信单条语音就 60 秒。', 'warn')
+          holdUp()
+        }
+      }
+
+      async function holdDown() {
+        if (micHolding || micRec) return
+        micHolding = true
+        micWantStop = false
+        if (!canHold) {
+          micHolding = false
+          $('micFile').click()
+          return
+        }
+        setNote($('micHint'), '正在打开麦克风…（首次会弹授权）')
+        let stream
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+          })
+        } catch (e) {
+          micHolding = false
+          setNote(
+            $('micHint'),
+            '打不开麦克风：' + ((e && e.message) || e) +
+              '。也可以点下面的「用手机录音机录」—— 那条路不需要网页拿麦克风权限。',
+            'bad',
+          )
+          return
+        }
+        micChunks = []
+        const rec = new MediaRecorder(stream)
+        micRec = rec
+        rec.ondataavailable = (e) => { if (e.data && e.data.size) micChunks.push(e.data) }
+        // 无论怎么结束，轨都得关 —— 不然手机上会一直亮着“正在录音”的提示
+        rec.addEventListener('stop', () => { stream.getTracks().forEach((t) => t.stop()) })
+        rec.start()
+        micStartAt = Date.now()
+        micTimer = setInterval(micTick, 100)
+        micTick()
+        $('btnHold').textContent = '正在录…松开结束'
+        $('btnHold').classList.add('rec')
+        setNote($('micHint'), '')
+        // 手指比 getUserMedia 快：授权框弹出期间就松手了 → 拿到就开始收尾，不让用户白等
+        if (micWantStop) holdUp()
+      }
+
+      async function holdUp() {
+        if (!micHolding) return
+        micHolding = false
+        const rec = micRec
+        if (!rec) {
+          micWantStop = true // 标记“手指已经松了”，getUserMedia 回来就立即收尾
+          return
+        }
+        clearInterval(micTimer)
+        micTimer = null
+        const secs = (Date.now() - micStartAt) / 1000
+        const stopped = new Promise((r) => rec.addEventListener('stop', r, { once: true }))
+        rec.stop()
+        await stopped
+        micRec = null
+        micStartAt = 0
+        $('btnHold').textContent = '按住说话'
+        $('btnHold').classList.remove('rec')
+        const blob = new Blob(micChunks, { type: rec.mimeType || 'audio/webm' })
+        if (secs < 0.5 || blob.size < 2000) {
+          setNote($('micHint'), '录到的太短（' + secs.toFixed(2) + 's）—— 按住不放、说完再松手', 'warn')
+          return
+        }
+        const type = rec.mimeType || 'audio/webm'
+        uploadClip(blob, 'phone.' + (type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm'))
+      }
+
+      async function uploadClip(blob, name) {
+        const t0 = Date.now()
+        log($('micLog'), '正在上传 ' + Math.max(1, Math.round(blob.size / 1024)) + ' KB…')
+        const tick = setInterval(() => {
+          const s = Math.round((Date.now() - t0) / 1000)
+          log($('micLog'), '电脑正在换声：已等 ' + s + ' 秒…（首次要加载模型，通常 5–20 秒）')
+        }, 1000)
+        document.querySelectorAll('#panel-mic button').forEach((b) => (b.disabled = true))
+        setNote($('micHint'), '')
+        try {
+          const fd = new FormData()
+          fd.append('file', blob, name)
+          for (const [k, v] of micForm()) fd.append(k, v)
+          const d = await apiForm('/api/capture/mic/upload', fd)
+          micClip = d
+          renderClip(d, Math.round((Date.now() - t0) / 1000))
+          log($('micLog'), '换声完成：' + d.file + '（' + d.duration_s + ' 秒）')
+          setNote($('micHint'), '换好了 —— 先听一下，再点「发到微信」。', 'ok')
+        } catch (e) {
+          log($('micLog'), '')
+          micClip = null
+          setNote($('micHint'), e.message, 'bad')
+        } finally {
+          clearInterval(tick)
+          document.querySelectorAll('#panel-mic button').forEach((b) => (b.disabled = false))
+          if (capOff('hook.wechat')) $('btnMicSend').disabled = true
+        }
+      }
+
+      function renderClip(d, secs) {
+        const rows = [
+          ['时长', d.duration_s + ' 秒'],
+          ['音色', d.converted ? (d.voice_id || '—') : '未换声（排查用）'],
+          ['换声耗时', secs + ' 秒'],
+        ]
+        $('micResult').innerHTML = rows
+          .map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>')
+          .join('')
+        $('micAudio').src = withKey(d.url)
+        $('micAudio').classList.remove('hidden')
+        $('micCard').classList.remove('hidden')
+        setNote($('micSendNote'), '')
+      }
+
+      async function sendClip() {
+        if (!micClip) return
+        document.querySelectorAll('#panel-mic button').forEach((b) => (b.disabled = true))
+        log($('micLog'), '正在发进微信…（这一步会抢微信前台，别动键鼠）')
+        try {
+          // 复用既有的发送端点（桌宠那条链路用的同一个）：上传端点已经把“换好声的 wav”
+          // 落进了会话目录，而 send_voice 的裸文件名解析本来就是“先会话目录、后 outputs 根”。
+          const d = await api('/api/wechat/send_voice', { method: 'POST', body: { wav: micClip.file } })
+          const steps = [].concat(d.steps || []).map((s) => '· ' + s).join('\n')
+          log(
+            $('micLog'),
+            (steps ? steps + '\n' : '') +
+              (d.ok ? '已发送。' : '未完成：' + (d.error || d.hint || d.outcome || 'unknown')),
+          )
+          setNote(
+            $('micSendNote'),
+            d.ok ? '已发出一条微信语音。' : (d.error || d.hint || '发送未完成：' + (d.outcome || 'unknown')),
+            d.ok ? 'ok' : 'warn',
+          )
+        } catch (e) {
+          setNote($('micSendNote'), e.message, 'bad')
+        } finally {
+          document.querySelectorAll('#panel-mic button').forEach((b) => (b.disabled = false))
+        }
+      }
+
+      async function refreshMicPrecheck() {
+        try {
+          const d = await api('/api/wechat/precheck')
+          setNote(
+            $('micPcNote'),
+            d.wechat_running
+              ? '电脑那边：微信已打开，' + (d.restart_needed ? '这次发送会重启微信。' : '直接切麦克风。')
+              : '电脑那边：没检测到微信 —— 录音与换声不受影响，但最后一步发送会失败。',
+            d.wechat_running ? '' : 'warn',
+          )
+        } catch (e) {
+          setNote($('micPcNote'), '', '')
+        }
+      }
+
+      // 手势接入：能 stream 就按住/松手，不能就整颗按钮变成“调起录音机”。
+      // 松手有四种意外都得有归属：早于 getUserMedia（micWantStop 标记）、
+      // 滑出按钮（pointer capture + pointercancel/lostpointercapture）、按住不放（到上限自停）。
+      function wireHoldButton() {
+        const b = $('btnHold')
+        $('micMax').textContent = String(MAX_HOLD_S)
+        if (!canHold) {
+          b.textContent = '🎙️ 点一下录音'
+          b.addEventListener('click', () => $('micFile').click())
+          setNote(
+            $('micHint'),
+            '当前是用普通 HTTP 打开的，浏览器不给网页直接用麦克风 —— 点一下会跳到手机自带的录音机，录完自动传回电脑换声。',
+            'warn',
+          )
+          return
+        }
+        b.addEventListener('pointerdown', (e) => {
+          try { b.setPointerCapture(e.pointerId) } catch (err) { /* 某些浏览器不给捕获，不影响录音 */ }
+          holdDown()
+        })
+        b.addEventListener('pointerup', holdUp)
+        b.addEventListener('pointercancel', holdUp)
+        b.addEventListener('lostpointercapture', holdUp)
+      }
+
+      $('btnMicRec').addEventListener('click', () => $('micFile').click())
+      $('btnMicPick').addEventListener('click', () => $('micPick').click())
+      const onPicked = (ev) => {
+        const f = ev.target.files && ev.target.files[0]
+        ev.target.value = '' // 清空，否则再选同一个文件不会再触发 change
+        if (f) uploadClip(f, f.name || 'phone.m4a')
+      }
+      $('micFile').addEventListener('change', onPicked)
+      $('micPick').addEventListener('change', onPicked)
+      $('btnMicAgain').addEventListener('click', () => {
+        micClip = null
+        $('micAudio').src = ''
+        $('micAudio').classList.add('hidden')
+        $('micResult').innerHTML = ''
+        $('micCard').classList.add('hidden')
+        $('micSecs').textContent = '0.0'
+        log($('micLog'), '')
+        setNote($('micHint'), '', '')
+      })
+      $('btnMicSend').addEventListener('click', sendClip)
+
+      // ---------------------------------------------------------------- 实时变声
+      let liveTimer = null
+      function renderLive(d) {
+        const rows = [
+          ['状态', d.live_running ? (d.live_ready ? '运行中（已就绪）' : '正在启动…') : '已停止'],
+          ['音色', d.exp || '—'],
+          ['自我监听', d.monitor_on ? '开' : '关'],
+          ['输入设备', d.input_device || '—'],
+          ['输出设备', d.output_device || '—'],
+          ['性能档位', d.perf_profile_desc || d.perf_profile || '—'],
+        ]
+        if (d.gpu_used_mb != null) rows.push(['显存', d.gpu_used_mb + ' / ' + (d.gpu_total_mb || '?') + ' MB'])
+        if (d.last_error) rows.push(['最近错误', d.last_error])
+        $('liveStatus').innerHTML = rows
+          .map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>')
+          .join('')
+
+        $('btnLiveStart').disabled = !!d.live_running
+        $('btnLiveStop').disabled = !d.live_running
+        $('btnMonitor').disabled = !d.live_running
+        $('btnMonitor').textContent = '自我监听：' + (d.monitor_on ? '开' : '关')
+        if (d.exp && voices.some((v) => v.id === d.exp)) $('liveVoice').value = d.exp
+        setNote($('liveNote'), d.model_ok === false && d.model_detail ? String(d.model_detail) : '', d.model_ok === false ? 'warn' : '')
+      }
+      async function refreshLive() {
+        try {
+          const d = await api('/api/rvc/live/status')
+          renderLive(d)
+          setConn('ok', '已连上电脑')
+        } catch (e) {
+          // 能力被关掉时状态端点恒 404 —— 那**不是"连不上电脑"**，
+          // 把连接灯打成"断开"会让用户去查 Wi-Fi/后端，方向完全错了。
+          if (e.code === 404) {
+            setConn('warn', '部分能力未开启')
+            setNote($('liveNote'), e.message, 'warn')
+          } else {
+            setConn('bad', '断开')
+            setNote($('liveNote'), e.message, 'bad')
+          }
+        }
+      }
+      function startPolling() {
+        stopPolling()
+        refreshLive()
+        // 3 秒一次：够快看得出状态变化，又不至于让手机一直保持无线电唤醒
+        liveTimer = setInterval(refreshLive, 3000)
+      }
+      function stopPolling() {
+        if (liveTimer) { clearInterval(liveTimer); liveTimer = null }
+      }
+
+      async function liveAction(btn, label, path, opts) {
+        document.querySelectorAll('#panel-live button').forEach((b) => (b.disabled = true))
+        log($('liveLog'), label + '…')
+        try {
+          const d = await api(path, opts)
+          log($('liveLog'), label + '：' + (d && d.error ? d.error : '完成') + (d && d.note ? '（' + d.note + '）' : ''))
+        } catch (e) {
+          log($('liveLog'), label + '失败：' + e.message)
+        } finally {
+          await refreshLive()
+        }
+      }
+      $('btnLiveStart').addEventListener('click', () => {
+        const exp = $('liveVoice').value
+        liveAction($('btnLiveStart'), '开始变声', '/api/rvc/live/start' +
+          (exp ? '?exp_name=' + encodeURIComponent(exp) : ''), { method: 'POST' })
+      })
+      $('btnLiveStop').addEventListener('click', () => {
+        if (!confirm('停止实时变声，并把系统声卡还原？')) {
+          refreshLive()
+          return
+        }
+        liveAction($('btnLiveStop'), '停止变声', '/api/rvc/live/stop', { method: 'POST' })
+      })
+      $('btnMonitor').addEventListener('click', () => {
+        const on = !$('btnMonitor').textContent.endsWith('开')
+        liveAction($('btnMonitor'), '自我监听', '/api/rvc/live/monitor?on=' + (on ? 'true' : 'false'), { method: 'POST' })
+      })
+      $('btnReset').addEventListener('click', () => {
+        if (!confirm('强制把系统音频设备恢复为真实默认设备？变声会同时停止。')) {
+          refreshLive()
+          return
+        }
+        liveAction($('btnReset'), '还原声卡', '/api/rvc/live/reset', { method: 'POST' })
+      })
+
+      // ---------------------------------------------------------------- 标签切换
+      function switchTab(name) {
+        for (const id of ['say', 'mic', 'live']) {
+          $('panel-' + id).classList.toggle('hidden', id !== name)
+          $('tab-' + id).setAttribute('aria-selected', String(id === name))
+        }
+        // 只给当前标签轮询：手机电池比"后台也刷"值钱
+        if (name === 'live') startPolling()
+        else stopPolling()
+        if (name === 'say') refreshPrecheck()
+        if (name === 'mic') refreshMicPrecheck()
+      }
+      $('tab-say').addEventListener('click', () => switchTab('say'))
+      $('tab-mic').addEventListener('click', () => switchTab('mic'))
+      $('tab-live').addEventListener('click', () => switchTab('live'))
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) stopPolling()
+        else if (!$('panel-live').classList.contains('hidden')) startPolling()
+      })
+
+      // ---------------------------------------------------------------- 启动
+      ;(async function boot() {
+        try {
+          await api('/api/health')
+          setConn('ok', '已连上电脑')
+        } catch (e) {
+          setConn('bad', '断开')
+          setNote($('sayHint'), e.message, 'bad')
+           return
+        }
+        await loadCaps()
+        if (capOff('hook.wechat')) {
+          $('btnSend').disabled = true
+          $('btnPreview').disabled = true
+          setNote($('sayHint'), '「微信发送」这个能力在电脑端被关掉了 —— 去电脑上「设置 → 能力管理」开启后重启后端。', 'warn')
+        }
+        if (capOff('sound.rvc-live')) {
+          $('btnLiveStart').disabled = true
+          setNote($('liveNote'), '「实时变声」这个能力在电脑端被关掉了 —— 去电脑上「设置 → 能力管理」开启后重启后端。', 'warn')
+        }
+        // 先接手势（它会写按钮文案与“为什么不能用网页录音”的提示）……
+        wireHoldButton()
+        // ……再判能力。顺序不能反：麦克风上传端点属于 `pet.companion`（与桌宠同一份采集能力），
+        // 关掉它时整块都不可用，要提前说，而不是让用户按下去才发现 404；
+        // 也不能被前面那句“HTTP 下浏览器不给麦克风”的提示盖过去 —— 那是两个不同的原因。
+        if (capOff('pet.companion')) {
+          $('btnHold').disabled = true
+          $('btnMicRec').disabled = true
+          $('btnMicPick').disabled = true
+          setNote($('micHint'), '「手机当麦」靠的是电脑端的采集能力，它在「设置 → 能力管理」里被关掉了 —— 开启后重启后端再来。', 'warn')
+        }
+        try {
+          await loadVoices()
+        } catch (e) {
+          setNote($('sayVoiceNote'), '读音色列表失败：' + e.message, 'bad')
+        }
+        await refreshPrecheck()
+        switchTab('say')
+      })()
+    </script>
+  </body>
+</html>

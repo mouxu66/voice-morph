@@ -100,7 +100,11 @@ def list_voices():
         items.values(),
         key=lambda v: (not v.get("model_ready"), not v.get("has_reference", True), v["id"]),
     )
-    return {"voices": voices}
+    # `selected`：主界面当前选中的音色 id。
+    # 桌宠状态条要显示「当前音色」—— 它上面的下拉默认项是「主界面选中」（value 为空串），
+    # 光看下拉根本不知道那是谁；没有这个字段就只能显示一句「主界面选中」，
+    # 而用户问的正是"现在到底是谁"。消费方是 `pet.html` 的 `refreshRemoteVoice()`。
+    return {"voices": voices, "selected": selected_voice()}
 
 
 def _read_qc_json(exp: str):

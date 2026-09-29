@@ -88,6 +88,7 @@
 变声/
 ├── web/                  # 桌面端（Electron + React）；构建产物 web/dist；打包 release2/
 │   ├── src/              # React 前端（7 个主路由页 + useAppStore 轮询 health/voices）
+│   ├── public/remote.html # ★ 手机浏览器遥控页（零安装、无构建步骤，随 dist 一起发）
 │   ├── electron/         # 主进程按职责拆 6 模块：main(装配) backend(后端进程/HTTP)
 │   │                     #   pet(桌宠) pet-actions(桌宠动作) alt-hint(置顶提示) update-ipc(更新)
 │   └── package.json
@@ -209,7 +210,25 @@ resp.stream_to_file("out.mp3")
 
 ---
 
-## 移动端（Expo）
+## 手机端
+
+### 手机浏览器遥控页（零安装，推荐）
+
+`web/public/remote.html` 是后端**直接托管**的一个自包含页面 —— 手机不用装任何东西，
+浏览器打开即可，也不涉及应用商店：
+
+```
+http://<电脑局域网IP>:8000/remote.html?api_key=<VM_API_TOKEN>
+```
+
+三个标签页：**打字发语音**（选音色 → 打字 → 试听/一键发成微信语音）、
+**手机当麦**（按住说话 → 传到 PC 换声 → 试听 → 发进微信；普通 http 下自动退成“调手机自带录音机”）
+与 **实时变声遥控**（看延迟/设备/显存，启停变声、切音色、开关自我监听、强制还原声卡）。
+没设 `VM_API_TOKEN` 时可省掉 `?api_key=`（后端默认 LAN-only 放行）。
+改完页面要让它进到已安装的桌面端：`cd web && npm run ship`。
+详见 [`docs/手机遥控页.md`](docs/手机遥控页.md)。
+
+### 移动端（Expo，可选）
 
 Expo SDK 54 + RN 0.81 + expo-router 文件路由 + Zustand。`mobile/src/api.ts` 调 PC 后端实现**微信语音遥控**：手机打字 → PC 用 Qwen3-TTS 合成 → 自动发到微信（走 `wechat_voice` 接口 + 桌宠置顶引导点击发送）。当前需手动填 PC 局域网 IP（后续补 mDNS 自动发现）。
 
