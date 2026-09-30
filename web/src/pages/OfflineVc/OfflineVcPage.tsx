@@ -11,7 +11,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { mediaUrl } from "@/api/client"
 import { downloadUrl } from "@/lib/download"
@@ -36,6 +36,21 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
   // 下载状态：失败的 key+原因必须浮出到 UI，不再静默吞掉
   const [dlBusy, setDlBusy] = useState<string | null>(null)
   const [dlFail, setDlFail] = useState<{ key: string; msg: string } | null>(null)
+
+  // 结果一出来就把它滚进视野。
+  // 为什么这件事值一段代码：本页从「开始离线变声」到结果面板之间还夹着批量队列，
+  // 结果落在几百像素之下 —— 用户点完只顾着等，出结果时屏幕还停在原地，
+  // **看起来就像"点了没反应"**。而这一步正是他第一次听见"自己的声音变成它"的瞬间，
+  // 错过了就白做（第 ⑤ 条「60 秒魔法时刻」最要紧的一环就是"结果必须被看见"）。
+  // 用 resultUrl 而不是状态位做触发：每次新结果滚动一次，重复渲染不会反复跳。
+  const resultRef = useRef<HTMLDivElement>(null)
+  const scrolledUrl = useRef("")
+  useEffect(() => {
+    if (!p.resultUrl || p.resultUrl === scrolledUrl.current) return
+    if (p.batchProcessing) return // 批量会连续出结果，跟着跳反而晃眼；队列里本来就有逐条播放位
+    scrolledUrl.current = p.resultUrl
+    resultRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })
+  }, [p.resultUrl, p.batchProcessing])
 
   const runDownload = async (key: string, url: string, filename: string) => {
     setDlFail(null)
@@ -62,6 +77,47 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
 
       <PageShell className="grid gap-10 lg:grid-cols-[minmax(0,1.6fr)_360px]">
         <section className="space-y-8">
+          {/* 深链引导条：从首页「录一句听听」带 `?voice=` 跳过来时显示。
+              为什么需要它：这条路的用户刚在首页点了"想听自己的声音变成它"，
+              落地后要的是一句"现在做什么"，而不是自己在几步表单里找头绪。
+              ★ 成功与失败分开说：**没找到就直说没找到**，绝不显示"已为你选好" ——
+              否则他会对着一个不是自己挑的音色录音，白录一遍。 */}
+          {p.deepLinkGuide && (
+            <div className="flex items-start gap-3 rounded-2xl border border-primary/40 bg-primary/10 px-4 py-3.5">
+              <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-foreground">
+                  轮到你了：用「{voiceName}」的嗓子说一句
+                </p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  点下面的「开始录音」说 5–10 秒，再点「开始离线变声」——几秒后就能听到
+                  它用这个嗓子把你的话重新说一遍。不想录也可以直接拖个音频进来。
+                </p>
+              </div>
+              <button type="button" onClick={p.dismissDeepLinkGuide} aria-label="关闭提示"
+                className="shrink-0 text-muted-foreground/70 transition hover:text-foreground">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+          {p.deepLinkMiss && (
+            <div className="flex items-start gap-3 rounded-2xl border border-yellow-500/40 bg-yellow-500/10 px-4 py-3.5">
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-foreground">
+                  没找到音色「{p.deepLinkVoiceId}」，没能替你选上
+                </p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  它可能还没装完，或者缺少索引文件。在下面「第二步」里挑一个能用的即可，
+                  效果一样；要修那个音色，去音色页重装一次。
+                </p>
+              </div>
+              <button type="button" onClick={p.dismissDeepLinkGuide} aria-label="关闭提示"
+                className="shrink-0 text-muted-foreground/70 transition hover:text-foreground">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
           <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
             <p className="text-xs font-medium text-primary">第一步 · 准备音频</p>
             <h3 className="mt-2 text-lg font-semibold text-card-foreground">录音或导入文件</h3>
@@ -365,11 +421,18 @@ export function OfflineVcPage(p: ReturnType<typeof useOfflineVc>) {
           )}
 
           {done && st && (
-            <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
+            <div ref={resultRef}
+              className="rounded-2xl border border-primary/50 bg-primary/5 p-5 shadow-lg ring-1 ring-primary/20 backdrop-blur-xl sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <p className="text-xs font-medium text-primary">转换结果</p>
-                  <h3 className="mt-2 text-lg font-semibold text-card-foreground">变声完成 · 全长 {st.duration_s}s</h3>
+                  {/* 标题带上音色名：这一句才是"我自己的话、别人的嗓子"的锚点。
+                      名字取 `st.voice_id`（**这次转换实际用的**）而不是当前选中项 ——
+                      用户完全可能在等待期间改了上面的音色下拉，那时标题必须说结果的真话。 */}
+                  <h3 className="mt-2 text-lg font-semibold text-card-foreground">
+                    这就是它用「{p.rvcVoices.find((v) => v.id === st.voice_id)?.display_name ?? st.voice_id}」的嗓子说的
+                  </h3>
+                  <p className="mt-1 text-xs text-muted-foreground">变声完成 · 全长 {st.duration_s}s</p>
                 </div>
                 <a href={p.resultUrl} download={`offlinevc-${st.voice_id}.wav`}
                   onClick={(e) => { e.preventDefault(); void runDownload("result", p.resultUrl, `offlinevc-${st.voice_id}.wav`) }}

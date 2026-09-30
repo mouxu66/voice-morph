@@ -9,6 +9,7 @@ import { ChainStatusBar } from "@/components/ChainStatusBar"
 import { Card, PageShell, Section } from "@/components/layout/PageShell"
 import { cn } from "@/lib/utils"
 import { getUseCase, profileOf } from "@/lib/useProfile"
+import { liveDeepLink, offlineVcDeepLink } from "@/lib/deepLink"
 import { useAppStore } from "@/store/useAppStore"
 import { useHomeDemo } from "@/pages/Home/useHomeDemo"
 
@@ -27,7 +28,8 @@ const CATEGORY_TONE: Array<[RegExp, string, string]> = [
 const DEFAULT_TONE = ["from-violet-500/25 to-violet-500/5", "ring-violet-500/30"] as const
 
 /** 首页试听卡：demo 直接播；无 demo 首次生成（下载模型 → 转换），ready 后直播。
- *  主动作「用它开麦说话」：已装直接跳实时变声并预选；未装一键安装→装完自动跳。 */
+ *  主动作「录一句听听」：装上就能用自己的声音试一句，几秒出结果（跳到离线变声并预选）；
+ *  次动作「开麦」：已装时出现，跳实时变声（要虚拟声卡、开着麦，是进阶那条路）。 */
 function HomeDemoCard(props: {
   item: MarketItem
   previews: ReturnType<typeof useHomeDemo>["previews"]
@@ -36,13 +38,14 @@ function HomeDemoCard(props: {
   installed: string[]
   installing: ReturnType<typeof useHomeDemo>["installing"]
   onUseIt: (item: MarketItem) => void
+  onTryIt: (item: MarketItem) => void
   fav: boolean
   onToggleFav: () => void
   compareOn: boolean
   picked: boolean
   onTogglePick: () => void
 }) {
-  const { item, previews, onTrigger, isPlayable, installed, installing, onUseIt, fav, onToggleFav, compareOn, picked, onTogglePick } = props
+  const { item, previews, onTrigger, isPlayable, installed, installing, onUseIt, onTryIt, fav, onToggleFav, compareOn, picked, onTogglePick } = props
   const voiceId = item.prefs?.voice_id ?? item.voice_id ?? ""
   const prev = previews[voiceId]
   const demoUrl = isPlayable(item.demo) ? mediaUrl(item.demo as string) : null
@@ -119,13 +122,29 @@ function HomeDemoCard(props: {
               <CircleAlert className="h-3 w-3 shrink-0" />安装失败，点上方试听可重试
             </span>
           ) : (
-            <button type="button" onClick={() => onUseIt(item)}
-              className={cn("inline-flex w-full items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition",
-                isInstalled
-                  ? "border border-primary/50 bg-primary text-primary-foreground hover:bg-primary/90"
-                  : "border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20")}>
-              <Mic2 className="h-3 w-3" />{isInstalled ? "用它开麦说话" : `装好用它开麦${item.size_hint_mb ? `（约 ${item.size_hint_mb}M）` : ""}`}
-            </button>
+            /* 主次是有意的：**「录一句听听」才是第一次该走的路**。
+               它只要麦克风权限，几秒出结果；而「开麦」要先有虚拟声卡、开着麦克风，
+               而且用户很难判断"到底变成没变成"——那是熟练之后的事。
+               未装时不并列显示开麦：此刻唯一的动作是"把它装上"，摆两个按钮只会让人犹豫。 */
+            <div className="flex gap-1.5">
+              <button type="button" onClick={() => onTryIt(item)}
+                className={cn("inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition",
+                  isInstalled
+                    ? "border border-primary/50 bg-primary text-primary-foreground hover:bg-primary/90"
+                    : "border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20")}>
+                <AudioLines className="h-3 w-3 shrink-0" />
+                <span className="truncate">
+                  {isInstalled ? "录一句听听" : `装好，听听你的声音${item.size_hint_mb ? `（约 ${item.size_hint_mb}M）` : ""}`}
+                </span>
+              </button>
+              {isInstalled && (
+                <button type="button" onClick={() => onUseIt(item)}
+                  title="打开实时变声：在微信 / 游戏 / 会议里直接用它说话"
+                  className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground transition hover:border-primary hover:text-primary">
+                  <Mic2 className="h-3 w-3" />开麦
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -279,12 +298,32 @@ export function HomePage() {
     .map((vid) => featured.find((it) => vidOf(it) === vid))
     .filter((it): it is MarketItem => Boolean(it))
 
-  /** 「用它开麦说话」：已装直接跳实时变声并预选；未装先一键安装，装完自动跳 */
+  /** 「开麦」：已装直接跳实时变声并预选；未装先一键安装，装完自动跳 */
   const handleUseIt = useCallback(
     async (item: MarketItem) => {
       const voiceId = item.prefs?.voice_id ?? item.voice_id ?? ""
       const ok = await demo.installVoice(item) // 已装时内部直接返回 true
-      if (ok && voiceId) navigate(`/live?tab=rvc&voice=${encodeURIComponent(voiceId)}`)
+      if (ok && voiceId) navigate(liveDeepLink(voiceId))
+    },
+    [demo, navigate],
+  )
+
+  /**
+   * 「录一句听听」：装上后跳到**离线变声**并预选该音色 —— 第一次体验该走的那条路。
+   *
+   * 为什么不是直接跳实时变声（那才是产品的终极形态）：实时变声要先配虚拟声卡、
+   * 把麦克风接进链路，用户还得自己判断"到底变没变"；而这条只要麦克风权限，
+   * 录 5 秒、几秒出结果、**能立刻听见自己的话被换成那个嗓子**。
+   * 先把"变声真的有效"这件事演给他看，再谈开麦（第 ⑤ 条「60 秒魔法时刻」）。
+   *
+   * 装完才跳：音色没就绪时 `?voice=` 到了对岸也选不中（那边只认清单里有的），
+   * 会让用户看着一个不是自己挑的音色发懵。
+   */
+  const handleTryIt = useCallback(
+    async (item: MarketItem) => {
+      const voiceId = item.prefs?.voice_id ?? item.voice_id ?? ""
+      const ok = await demo.installVoice(item)
+      if (ok && voiceId) navigate(offlineVcDeepLink(voiceId))
     },
     [demo, navigate],
   )
@@ -437,6 +476,7 @@ export function HomePage() {
                   installed={demo.installed}
                   installing={demo.installing}
                   onUseIt={handleUseIt}
+                  onTryIt={handleTryIt}
                   fav={demo.favs.includes(vidOf(item))}
                   onToggleFav={() => demo.toggleFav(vidOf(item))}
                   compareOn={compareOn}
