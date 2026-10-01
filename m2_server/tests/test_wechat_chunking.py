@@ -15,6 +15,7 @@
 
 import random
 import sys
+import wave
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -869,6 +870,31 @@ def test_do_send_single_path_shares_batch_kernel(tmp_path, monkeypatch):
 #   · 音效时长**并进预算**（不许因为加了音效而破 54s → 静默截断）。
 
 
+def _write_silent_wav(path: Path, ms: int, frame_rate: int = 24000) -> None:
+    """写一段**静音** wav（16-bit 单声道 PCM），帧数由时长精确算出。
+
+    ★ 刻意不走 pydub/ffmpeg（原来这里是 `AudioSegment.silent(...).export(...)`）：
+    我们要的只是"一个真实可读、时长可控的 wav"，而 `AudioSegment.export()` 会去
+    spawn 一个 **ffmpeg** 子进程做编解码 —— 这把测试挂在一个它**根本不需要**的
+    外部二进制上。后果是典型的「本机装了 ffmpeg 就绿、裸 runner / CI 上就红」，
+    而且报错是 subprocess 的 `[WinError 2] 系统找不到指定的文件`，看不出真因。
+
+    这不是假想：2026-10-01 推送时 `--ci-fidelity`（按设计会把 ffmpeg 从 PATH
+    摘掉）一次报出本文件 **11 条 ERROR**，而 `test_pet_market` / `test_pet_scan` /
+    `test_pet_skin_build` 这些**走了 `ffmpeg_bin` 探测的**都干净 skip 了 ——
+    本文件是全项目唯一的漏网之鱼。静音 PCM 用标准库 `wave` 三行就够。
+
+    注意**读取**不受影响：pydub 的 `from_wav` 走标准库 `wave`、不 spawn ffmpeg，
+    所以产品代码（读素材）与那些读产物的断言都不用改。
+    """
+    frames = int(round(frame_rate * ms / 1000.0))
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(frame_rate)
+        w.writeframes(b"\x00\x00" * frames)
+
+
 #: 假素材库：id → (名字, 秒数)。用假库是为了不依赖本机真实音效素材，
 #: 也让"音效到底多长"可控 —— 预算用例必须能精确摆布这个数字。
 _FAKE_SFX = {
@@ -885,13 +911,11 @@ def sfx_files(tmp_path_factory):
     `m2_server/tests/` 里写临时产物（那会让仓库里出现跑测试才有的垃圾文件，
     而且 CI 上并行跑会互相覆盖）。
     """
-    from pydub import AudioSegment
-
     d = tmp_path_factory.mktemp("sfx_wavs")
     out: dict[str, Path] = {}
     for sid, (_name, seconds) in _FAKE_SFX.items():
         p = d / f"{sid}.wav"
-        AudioSegment.silent(duration=int(seconds * 1000), frame_rate=24000).export(str(p), format="WAV")
+        _write_silent_wav(p, int(seconds * 1000))
         out[sid] = p
     return out
 
@@ -925,8 +949,6 @@ def _fake_synth(seconds_per_char: float = 0.1, log: list | None = None, out_dir:
     写入位置优先用 `out_dir`（用例给的临时目录），否则落 `cfg.OUTPUTS_DIR`
     —— 那个在 `isolate_split` 里已经指到 `tmp_path`，所以同样不污染仓库。
     """
-    from pydub import AudioSegment
-
     target_dir = out_dir if out_dir is not None else cfg.OUTPUTS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     counter = [0]
@@ -936,9 +958,8 @@ def _fake_synth(seconds_per_char: float = 0.1, log: list | None = None, out_dir:
             log.append(sentence)
         counter[0] += 1
         ms = max(50, int(len(sentence) * seconds_per_char * 1000))
-        seg = AudioSegment.silent(duration=ms, frame_rate=24000)
         p = target_dir / f"_synth_{counter[0]:04d}.wav"
-        seg.export(str(p), format="WAV")
+        _write_silent_wav(p, ms)
         return p.read_bytes()
 
     return synth
