@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -167,7 +168,27 @@ def test_separate_output_lands_in_session_dir(cover, tmp_path):
 # ---------------------------------------------------------------- 变调建议
 
 
-def test_pitch_suggest_direction(cover, tmp_path, monkeypatch):
+@pytest.fixture
+def fake_librosa(monkeypatch):
+    """往 sys.modules 里塞一个**假** librosa，让 `import librosa` 能成功。
+
+    ★ 这是必需的，不是多此一举。librosa 在本项目是**可选依赖**，而且 CI
+      （.venv-ci）**刻意不装它** —— requirements-dev.txt 白纸黑字写着「两个刻意
+      不装的包，别『顺手补上』」，因为 test_effects.py 有两条用例专门验证
+      「librosa 缺失时效果器直通」这条降级路径，装了反而会把它们 skip 掉。
+
+      于是任何依赖 librosa 的测试都必须自己解决 import。这三条的本意就写着
+      「不真跑 librosa」—— 它们替换了 `_median_f0`，**只是漏了 import 这一步**。
+      漏掉的后果是典型的「本机绿、CI 红」：.venv 里手工装过 librosa 所以过，
+      CI 上 `_pitch_suggest` 走 except 返回 0 → 断言 12 却得到 0。
+
+      假模块够用即可：`_median_f0` 已被替换，librosa 的属性一个都不会被真正用到。
+      `setitem` 会在用例结束后自动还原（monkeypatch 的保证）。
+    """
+    monkeypatch.setitem(sys.modules, "librosa", types.ModuleType("librosa"))
+
+
+def test_pitch_suggest_direction(cover, tmp_path, monkeypatch, fake_librosa):
     """★ 变调方向的符号不能反。
 
     目标音色的基准音高**高**于人声 → 要**升**（正半音）。
@@ -184,7 +205,7 @@ def test_pitch_suggest_direction(cover, tmp_path, monkeypatch):
     assert pitch == 12, "参考音高一个八度 → 升 12 半音"
 
 
-def test_pitch_suggest_lower_is_negative(cover, tmp_path, monkeypatch):
+def test_pitch_suggest_lower_is_negative(cover, tmp_path, monkeypatch, fake_librosa):
     monkeypatch.setattr(cover, "_median_f0", lambda path, np, librosa: 100.0 if "ref" in str(path) else 200.0)
     vb = cover.cfg.MEDIA_DIR / "voicebank" / "kangaroo"
     vb.mkdir(parents=True, exist_ok=True)
@@ -193,9 +214,29 @@ def test_pitch_suggest_lower_is_negative(cover, tmp_path, monkeypatch):
     assert cover._pitch_suggest(tmp_path / "v.wav", "kangaroo") == -12
 
 
-def test_pitch_suggest_zero_when_no_reference(cover, tmp_path):
-    """没有参考音时给 0（不调），而不是抛 —— 建议值算不出来时"不动"最安全。"""
+def test_pitch_suggest_zero_when_no_reference(cover, tmp_path, fake_librosa):
+    """没有参考音时给 0（不调），而不是抛 —— 建议值算不出来时"不动"最安全。
+
+    这条原本在无 librosa 的环境里**因为错误的原因通过**（import 失败直接落到
+    兜底的 return 0），加了假模块后才真正测到「没有参考音」这一条路径。
+    """
     assert cover._pitch_suggest(tmp_path / "v.wav", "不存在的音色") == 0
+
+
+def test_pitch_suggest_zero_when_librosa_missing(cover, tmp_path, monkeypatch):
+    """★ librosa 真的缺失时 → 给 0（不调），不许抛。
+
+    覆盖 `_pitch_suggest` 的 except 兜底 —— 「建议值算不出来时不动」是这个模块
+    的核心安全保证，却一直没有测试盯着。用 `sys.modules[...] = None` 强制 import
+    失败（Python 约定：值为 None 表示「该模块不可导入」，抛 ImportError）。
+    这样这条**在任何环境都真跑** —— 不能靠「碰巧没装 librosa」来触发，
+    否则在装了 librosa 的开发机上就永远测不到。
+    """
+    monkeypatch.setitem(sys.modules, "librosa", None)
+    vb = cover.cfg.MEDIA_DIR / "voicebank" / "kangaroo"
+    vb.mkdir(parents=True, exist_ok=True)
+    (vb / "reference.wav").write_bytes(b"RIFF")
+    assert cover._pitch_suggest(tmp_path / "v.wav", "kangaroo") == 0
 
 
 def test_pitch_suggest_survives_analysis_explosion(cover, tmp_path, monkeypatch):
