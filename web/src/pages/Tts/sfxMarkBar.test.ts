@@ -74,6 +74,32 @@ describe("SfxMarkBar 的接线（三处缺一不可）", () => {
   })
 })
 
+describe("SfxMarkBar 也挂到有声书页（2026-10-01）", () => {
+  const bookSrc = readRel(path.join("pages", "Audiobook", "AudiobookPage.tsx"))
+
+  it("路由层把**同一个**声板实例传给有声书页（hook 只在路由层调一次）", () => {
+    expect(routeSrc).toContain("<AudiobookPage {...book} soundboard={soundboard} />")
+  })
+
+  it("★ SRT 模式下整块不渲染 —— 那个模式后端不认标记，\"能用而不生效\"比没有更糟", () => {
+    expect(bookSrc).toContain("{!p.isSrt && (")
+    expect(bookSrc).toContain("<SfxMarkBar sb={p.soundboard}")
+  })
+
+  it("textarea 有 ref，插完要把光标移到片段之后", () => {
+    expect(bookSrc).toContain("ref={textArea}")
+    expect(bookSrc).toContain("setSelectionRange")
+    // ⚠️ 读 value 必须等一帧：setText 走 state，同帧读到的是旧值
+    expect(bookSrc).toContain("requestAnimationFrame")
+  })
+
+  it("★ 插入规则与单段合成页同款（越界夹住 + 前导空格按需补）", () => {
+    // 两处若漂了，同一个按钮在两个页面上会留下不同的文字，用户只会以为"这里插得不对"
+    expect(bookSrc).toContain("raw < 0 || raw > current.length")
+    expect(bookSrc).toContain("/\\s$/.test(before)")
+  })
+})
+
 describe("标记插入本身（useTts.insertMark）", () => {
   it("插在偏移处并向返回值里导出", () => {
     expect(hookSrc).toContain("const insertMark = useCallback(")

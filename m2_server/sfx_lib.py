@@ -354,3 +354,52 @@ def mix_into(
             out = np.concatenate([out, np.zeros(need, dtype=np.float32)])
         out[off : off + y.size] += y
     return _peak_norm(out, peak), notes
+
+
+def assemble(
+    pieces: list[np.ndarray],
+    sr: int,
+    after: list[str | None] | None = None,
+    *,
+    sent_gap_s: float = 0.3,
+    sfx_gap_s: float = 0.15,
+    peak: float = 0.97,
+) -> tuple[np.ndarray, list[str]]:
+    """把「若干已合成片段 + 每段之后要插的音效」拼成一条 PCM。返回 (结果, 说明列表)。
+
+    与 `wechat_voice._split_for_budget` 的拼接**同语义**（那边是微信发送路径的唯一实现，
+    这里是"输字合成"路径的唯一实现 —— 同一段文字从两条路走，拼出来的静音节奏必须一样）：
+
+        [片段0] ⟨sent_gap⟩ [片段1] ⟨sent_gap + sfx_gap⟩ [音效] [片段2] …
+
+    gap 值由**调用方**传入（`wechat_voice.SENT_GAP_S` / `SFX_GAP_S`）：本模块是叶子，
+    不许 import 那个带 router 与子进程管理的模块。默认值与那两个常量一致，测试可传 0。
+
+    ⚠️ 片段必须已经统一到 `sr`（本函数不重采样人声，只重采样音效素材）——
+    调用方拿到的多段 wav 若采样率不同，是调用方该在上面收口的事。
+
+    音效读不出来只跳过并记一笔，不抛异常（与 `mix_into` 同一约定）：
+    一条素材坏了不该让整段语音合成不出来。
+    """
+    out: list[np.ndarray] = []
+    notes: list[str] = []
+    gap_n = max(0, int(round(sent_gap_s * sr)))
+    sfx_gap_n = max(0, int(round(sfx_gap_s * sr)))
+    aft = list(after or [])
+    for i, pcm in enumerate(pieces):
+        if i:
+            out.append(np.zeros(gap_n, dtype=np.float32))
+        out.append(_mono(pcm))
+        sid = str(aft[i]).strip() if i < len(aft) and aft[i] else ""
+        if not sid:
+            continue
+        try:
+            s_pcm, s_sr = load_pcm(sid)
+        except SfxError as e:
+            notes.append(str(e))
+            continue
+        out.append(np.zeros(sfx_gap_n, dtype=np.float32))
+        out.append(_resample(s_pcm, s_sr, int(sr)))
+    if not out:
+        return np.zeros(0, dtype=np.float32), notes
+    return _peak_norm(np.concatenate(out), peak), notes

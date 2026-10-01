@@ -235,7 +235,10 @@ describe("特效声板的 `sound.fx-board` 门控", () => {
   it("★ 路由层把「宿主开着」与「自己开着」相与后才启用（hook 只调一次）", () => {
     const routeSrc = readRel(path.join("pages", "Tts", "index.tsx"))
     expect(routeSrc).toContain('pluginVisible(catalog, "sound.fx-board")')
-    expect(routeSrc).toContain("useSoundboard(wechatOn && fxBoardOn)")
+    // ⚠️ 2026-10-01：宿主由 `wechatOn` 放宽成 `bookOn || wechatOn` —— 有声书页也挂了
+    // `SfxMarkBar`（它的素材名就从声板目录来）。只认微信时，用户若只开有声书能力，
+    // 工具栏拿不到素材、整块不渲染，而页面上没有任何线索说明为什么。
+    expect(routeSrc).toContain("useSoundboard((bookOn || wechatOn) && fxBoardOn)")
   })
 
   it("挂在 ② 半自动 与 ③ 手动 两处（半自动是用户主场景之二）", () => {

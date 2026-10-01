@@ -145,6 +145,10 @@ FAST_TESTS = [
     # 放进 --fast：这三条退化后**都不报错**，只表现为"用户听到的东西不对"。
     "m2_server/tests/test_sfx_mark.py",
     "m2_server/tests/test_wechat_chunking.py",
+    # 音效标记混进**输字合成**（same-process 实测增量 ≈1.1s）：标记不只在微信那条路 ——
+    # 单段合成 / 试听 / 有声书里同样要「标记不进 TTS + 音效插在它那一段之后 + 错名字 400」。
+    # 这三条此前只有微信路径有，于是别的路径把"爆炸"两个字念了出来（2026-10-01 用户报障）。
+    "m2_server/tests/test_sfx_in_synthesis.py",
 ]
 
 

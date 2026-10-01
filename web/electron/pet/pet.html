@@ -582,6 +582,58 @@
   #panel .pane { display: none; }
   #panel .pane.on { display: block; }
 
+  /* —— 说话页的「插音效」胶囊行（2026-10-01）——
+     一行横向滚动的小胶囊，点一下把 `[名字] ` 插进上面的输入框（光标处）。
+     ★ 它**必须**跟「千问直出」同一行（这就是 #sayRow 存在的唯一理由）：面板纵向预算
+       是死的，最紧的 offline 场景只剩 2px 余量，另起一行会把底部「最近发送」切掉 ——
+       上次加「千问直出」那一行就是这么溢出的（docs/犯错档案-工程.md §8.57）。
+       胶囊高 14px（10px 字 + 1px 上下 padding + 1px 边框），压在那行 label 的 18px 之内，
+       所以这一行的高度仍由 label 决定，**净新增 = 0**。加控件前先看
+       tools/pet-panel-layout-budget.json，改完必跑 node tools/test-pet-panel-layout.cjs。
+     为什么 label 用 id 不用 class="field"：`#root.compact #panel .field{margin-bottom:3px}`
+     会连 flex 行内的 label 一起改（那 3px 会**实打实**加进行高）；拆出 id 就没有这场
+     具体度之争。另外它是 #speakPane 的最后一个子块，margin-bottom 本就不计入父高。 */
+  #sayRow { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+  #noRvcField { flex: 0 0 auto; display: inline-flex; align-items: center; cursor: pointer; }
+  /* 横向滚动单行（与 #fxPicks / #recent 同款：高度钉死，宽了就滚、绝不换行长高）。
+     padding-right + 右侧渐隐遮罩同 #recent：样本多时最后一颗必然被切在半路，
+     直接切会看成"排版坏了"，渐隐才读得出"右边还有，横向拖"（实测 ~110px 只够两颗）。 */
+  #sayFx {
+    flex: 1 1 auto; min-width: 0;
+    display: flex; flex-wrap: nowrap; align-items: center; gap: 3px;
+    overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none;
+    padding-right: 10px;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 10px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 10px), transparent);
+  }
+  #sayFx::-webkit-scrollbar { display: none; }
+  #sayFx:empty { display: none; }
+  /* 文案用「插音效」而不是「音效」：它右边紧挨着「千问直出」那个复选框，只写"音效"
+     会被读成"千问直出音效"一个词；「插」字点明这是**动作**（点一下插进输入框）。 */
+  #sayFxLabel { flex: 0 0 auto; font-size: 10px; letter-spacing: .2px; color: rgb(var(--c-t-500)); }
+  /* ⚠️ 选择器必须带 #sayFx：通用的 `#panel button:not(.primary)` 是 (0,1,1,1)，比
+     `#panel .fxq` (0,1,1,0) 更具体 —— 会拿它的 `flex:1` 把胶囊撑成等宽，名字长的那颗
+     随即被裁成省略号（那种裁法在量测里是**红条**，不是"看着也行"）。 */
+  #panel #sayFx .fxq {
+    box-sizing: border-box;
+    flex: 0 0 auto; height: 14px; padding: 0 5px;
+    display: inline-flex; align-items: center;
+    border: 1px solid rgb(var(--c-border-2) / 0.7);
+    border-radius: 999px;
+    background: rgb(var(--c-surface-2) / 0.8);
+    box-shadow: none; transform: none;
+    font: inherit; font-size: 10px; font-weight: 500; line-height: 1;
+    color: rgb(var(--c-t-400));
+    white-space: nowrap; overflow: hidden;
+    cursor: pointer;
+  }
+  #panel #sayFx .fxq:hover {
+    border-color: rgb(var(--c-border-2));
+    background: rgb(var(--c-surface-3) / 0.9);
+    color: rgb(var(--c-t-strong));
+  }
+
   /* —— 音效声板（fx 页）：3 列格子 + 预混勾选 ——
      格子两行内容（emoji + 名字），34px 高 × 3 列；max-height 钉死两行
      （34+4+34=72，整两行不多不少），样本多时内部滚动 —— 与 #panel 同款
@@ -853,17 +905,30 @@
       <select id="voiceSel" title="合成用的音色（默认=主界面当前选中）"></select>
     </div>
 
-    <!-- 音色引擎开关（2026-09-26 A/B：千问直出与"千问+RVC"听感接近，交给用户自己选）。
+    <!-- 音色引擎开关「千问直出」（2026-09-26 A/B：千问直出与"千问+RVC"听感接近，交给用户自己选）
+         + 「插音效」胶囊（2026-10-01），**同一行**。
          勾选 = 纯千问零样本克隆（要求音色自带参考音，市场装的只有 RVC 权重的音色不适用）；
          不勾 = 默认链路：千问合成后再过 RVC 换声，音色由 RVC 权重决定。
          文案只写「千问直出」不写「（不过 RVC）」—— 面板上"RVC"字样出现的次数
-         已经太多了（用户 2026-09-26 点名"有点多东西"），完整解释放 title 里。 -->
-    <label class="field" for="noRvc"
-           title="勾上：纯千问克隆（快、语气自然，不过 RVC）；不勾：合成后再过 RVC 换声（音色更像训练目标）">
-      <input id="noRvc" type="checkbox"
-             style="width:auto; margin:0 6px 0 2px; vertical-align:middle; accent-color:rgb(var(--c-accent-h))" />
-      <span style="font-size:11px; color:rgb(var(--c-t-500)); vertical-align:middle">千问直出</span>
-    </label>
+         已经太多了（用户 2026-09-26 点名"有点多东西"），完整解释放 title 里。
+
+         ⚠️ 音效胶囊**为什么挤在这一行**：面板纵向预算是死的（最紧的 offline 场景只剩 2px，
+         见 tools/pet-panel-layout-budget.json），另起一行必然把底部「最近发送」切掉 ——
+         上次加「千问直出」这一行就是这么溢出的（docs/犯错档案-工程.md §8.57）。
+         胶囊 14px 高，压在这行 label 的 18px 之内 → 这一行的净新增高度 = 0。 -->
+    <div id="sayRow">
+      <label id="noRvcField" for="noRvc"
+             title="勾上：纯千问克隆（快、语气自然，不过 RVC）；不勾：合成后再过 RVC 换声（音色更像训练目标）">
+        <input id="noRvc" type="checkbox"
+               style="width:auto; margin:0 6px 0 2px; vertical-align:middle; accent-color:rgb(var(--c-accent-h))" />
+        <span style="font-size:11px; color:rgb(var(--c-t-500)); vertical-align:middle">千问直出</span>
+      </label>
+      <!-- 点一下把 `[名字] ` 插到上面输入框的光标处（见 insertSayMark）：合成时音效拌进语音，
+           标记本身**不会**被念出来。名字取自与「音效」页同一次的 /catalog 拉取（renderSayFx），
+           所以两处素材永远一致；声板关掉/没素材时这里是空的（CSS `:empty` 收起，不占高度）。 -->
+      <div id="sayFx" role="group" aria-label="插入音效标记"
+           title="点一下把 [名字] 插到光标处 —— 合成时这个音效拌进语音，标记本身不会被念出来"></div>
+    </div>
     </div><!-- /#speakPane -->
 
     <!-- 按住说话页（2026-09-29）：桌宠当遥控器的主手势。
@@ -900,7 +965,7 @@
         <span id="fxModeLabel">模式</span>
         <div id="fxModeSeg" role="group" aria-label="音效用法：实时播放或混进语音发送">
           <button type="button" id="fxModeLive" data-mode="live"
-                  title="点格子立即播放（走虚拟声卡，微信那边正在录音就能听见）">实时播放</button>
+                  title="点格子立即播放：音效进虚拟声卡，微信那边听得到；本机扬声器不外放（想自己听请开「自我监听」）">实时播放</button>
           <button type="button" id="fxModePremix" data-mode="premix"
                   title="点格子先勾选，点下方「发送」时把勾选的音效混进一条语音里一起发出">混进语音</button>
         </div>
@@ -1517,6 +1582,8 @@ const tabSpeakBtn = document.getElementById("tabSpeak");
 const tabHoldBtn = document.getElementById("tabHold");
 const tabFxBtn = document.getElementById("tabFx");
 const speakPaneEl = document.getElementById("speakPane");
+// 说话页的「插音效」胶囊条（与「音效」页共用同一份 sfxItems，见 renderSayFx）
+const sayFxEl = document.getElementById("sayFx");
 const holdPaneEl = document.getElementById("holdPane");
 const fxPaneEl = document.getElementById("fxPane");
 const actRowEl = document.getElementById("actRow");
@@ -1887,6 +1954,9 @@ let sfxPicks = [];            // 预混队列：{ id, name, icon, mode, at_s }
 let sfxPlayingId = null;      // 正在响的格子（乐观高亮用，超时后自动熄灭）
 let sfxLoadedAt = 0;          // 上次拉 catalog 的时间（60s 节流，别每次悬停都打）
 let sfxWarmDone = false;      // /warm 只发一次
+// 「音效走虚拟声卡、本机扬声器不出声」那句话每次点格子都刷会把状态行占满，
+// 而它是个一次性知识 → 首次实时播放时报一次就够（用户反馈"我都听不到"，2026-10-01）。
+let sfxLiveHintShown = false;
 
 // 记住上次的页：常驻遥控器的用户往往固定在一页（比如就用「按住说话」），
 // 每次悬停都要先点一下页签的话，那个「常驻」就没意义了。
@@ -1921,9 +1991,56 @@ function setTab(next, save) {
   refreshFxActions();
 }
 
+/**
+ * 说话页的「插音效」胶囊（2026-10-01）。
+ *
+ * 与「音效」页**同源**：都用同一份 `sfxItems`（同一次 /catalog），所以两处的名字永远一致
+ * （各拉一份的话，新导入的音效会只在一处出现 —— 用户只会以为"这里坏了"）。
+ * 声板关掉或没有素材时清空：空 div 由 CSS `:empty` 收起，不占面板高度（预算只剩 2px）。
+ *
+ * 为什么只写名字不写图标：这一条横滚条实际可用宽度只有 ~110px（外面那行还要放
+ * 「千问直出」），带图标就只剩一颗半可见 —— 名字才是用户要挑的那个东西。
+ */
+function renderSayFx() {
+  if (!sayFxEl) return;
+  if (!CAP.fx || !sfxItems.length) { sayFxEl.innerHTML = ""; return; }
+  sayFxEl.innerHTML = '<span id="sayFxLabel">插音效</span>' + sfxItems.map((it) =>
+    '<button type="button" class="fxq" data-name="' + esc(it.name) + '" title="插入 ['
+    + esc(it.name) + ']：合成时拌进语音，不会被念出来">' + esc(it.name) + "</button>").join("");
+}
+
+/**
+ * 把 `[名字] ` 插到说话页输入框的**光标处**（没有光标信息就追加到末尾）。
+ *
+ * ⚠️ `#say` 是 `<input>` 不是 `<textarea>` —— 用 selectionStart/setSelectionRange，
+ *    没有 textarea 那套 API。
+ * ⚠️ `maxlength=200` 只拦**键盘输入**，不拦程序赋值 —— 所以这里自己挡一道：
+ *    插完超长就给一句提示，而不是留下一个"看起来还能打、其实再也打不进字"的输入框。
+ * 规则与主界面「插音效」工具栏（`useTts.insertMark` / 有声书页）逐字对齐：
+ * 前导空格按需补、片段后补一个空格、越界夹住 —— 同一个按钮在不同界面必须留下同一种文字。
+ */
+function insertSayMark(name) {
+  if (!sayEl || !name) return;
+  const snip = "[" + name + "] ";
+  const cur = sayEl.value;
+  const raw = sayEl.selectionStart == null ? -1 : sayEl.selectionStart;
+  const at = raw < 0 || raw > cur.length ? cur.length : raw;
+  const before = cur.slice(0, at);
+  const after = cur.slice(at);
+  const lead = before === "" || /\s$/.test(before) ? "" : " ";
+  if (cur.length + lead.length + snip.length > 200) {
+    setStatus("输入框快满了（上限 200 字），先删几个字再插音效", "err");
+    return;
+  }
+  sayEl.value = before + lead + snip + after;
+  const pos = at + lead.length + snip.length;
+  sayEl.focus();
+  try { sayEl.setSelectionRange(pos, pos); } catch {}
+}
+
 /** 拉声板清单并渲染。force=false 时 60s 内不重复拉（refreshPanel 每次悬停都跑）。 */
 async function loadSfx(force) {
-  if (!CAP.fx) return;
+  if (!CAP.fx) { renderSayFx(); return; }   // 能力关了要把说话页那排胶囊也收掉
   const now = Date.now();
   if (!force && now - sfxLoadedAt < 60000) return;
   sfxLoadedAt = now;
@@ -1956,6 +2073,9 @@ async function loadSfx(force) {
 }
 
 function renderFxGrid() {
+  // 说话页的胶囊与这些格子同源（都是 sfxItems）→ 顺手一起刷，避免两处只有一处更新。
+  // 放在最前面：即使 fxGridEl 意外缺失，胶囊也不该跟着哑掉。
+  renderSayFx();
   if (!fxGridEl) return;
   fxGridEl.innerHTML = sfxItems.map((it) => {
     const playing = sfxPlayingId === it.id ? " on" : "";
@@ -1992,6 +2112,13 @@ async function sfxPlay(it) {
       body: JSON.stringify({ id: it.id }),
     });
     if (!r.ok) setStatus("播放失败：HTTP " + r.status, "err");
+    // 用户报障"加了音效我自己听不到"（2026-10-01）：音效只写进虚拟声卡（CABLE），
+    // 本机扬声器**不出声**，要靠微信那边正在录音/或开「自我监听」才听得到。
+    // 一次性说清（每次点都刷会把状态行占满），其余时候靠格子高亮给"已响"的反馈。
+    else if (!sfxLiveHintShown) {
+      sfxLiveHintShown = true;
+      setStatus("已播：音效进虚拟声卡，微信那边听得到；本机不外放（想自己听请开「自我监听」）", "");
+    }
   } catch {
     setStatus("后端没连上，播放失败", "err");
   }
@@ -2020,6 +2147,12 @@ if (fxGridEl) fxGridEl.addEventListener("click", (e) => {
   if (!it) return;
   if (sfxMode === "premix") togglePick(it);
   else void sfxPlay(it);
+});
+// 说话页的「插音效」胶囊：点一下把 `[名字] ` 插进输入框（与「音效」页同一份素材清单）。
+// 委托挂容器上：胶囊是 innerHTML 批量生成的，逐个挂监听每次重渲染都要重来一遍。
+if (sayFxEl) sayFxEl.addEventListener("click", (e) => {
+  const chip = e.target.closest(".fxq");
+  if (chip) insertSayMark(chip.dataset.name || "");
 });
 if (fxPicksEl) fxPicksEl.addEventListener("click", (e) => {
   const chip = e.target.closest(".fxchip");

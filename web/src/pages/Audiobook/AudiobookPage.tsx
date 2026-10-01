@@ -8,18 +8,55 @@ import {
   Sparkles,
   Square,
 } from "lucide-react"
+import { useRef } from "react"
 import { Link } from "react-router-dom"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
+import { SfxMarkBar } from "@/pages/Tts/SfxMarkBar"
 import { mediaUrl } from "@/api/client"
 import type { useAudiobook } from "@/pages/Audiobook/useAudiobook"
 import { voiceOptionLabel } from "@/lib/voiceLabel"
 
-export function AudiobookPage(p: ReturnType<typeof useAudiobook>) {
+export function AudiobookPage(
+  p: ReturnType<typeof useAudiobook> & {
+    /** 路由层那一个 `useSoundboard` 实例（可选：声板关掉时本页仍要能渲染）。 */
+    soundboard?: Parameters<typeof SfxMarkBar>[0]["sb"]
+  },
+) {
   const st = p.status
   const selectedName =
     p.voices.find((v) => v.id === p.selectedVoiceId)?.display_name ?? p.selectedVoiceId
   const finished = st && !st.running && (st.status === "done" || st.status === "error") && st.url
+  const textArea = useRef<HTMLTextAreaElement | null>(null)
+
+  /**
+   * 点「插音效」时把 `[爆炸]` 插进长文，并把光标停到片段之后。
+   *
+   * 规则与单段合成页（`useTts.insertMark`）逐字对齐 —— 同一个按钮在两个页面上
+   * 必须留下同一种文字（前导空格按需补、片段后补一个空格、越界要夹住），
+   * 否则用户会以为"有声书这里插得不对"。那边是 `useCallback` 里的同款实现，
+   * 改动其一请一并改另一处。
+   */
+  const insertMark = (snippet: string) => {
+    const el = textArea.current
+    const raw = el && el.selectionStart != null ? el.selectionStart : -1
+    p.setText((current) => {
+      const at = raw < 0 || raw > current.length ? current.length : raw
+      const before = current.slice(0, at)
+      const after = current.slice(at)
+      const lead = before === "" || /\s$/.test(before) ? "" : " "
+      return `${before}${lead}${snippet} ${after}`
+    })
+    // ⚠️ `requestAnimationFrame` 不能省：`setText` 是 React state，
+    // 同一帧里读 `textArea.current.value` 还是旧值，`setSelectionRange` 会夹到旧长度上。
+    requestAnimationFrame(() => {
+      const node = textArea.current
+      if (!node) return
+      const pos = (raw < 0 ? node.value.length : raw) + snippet.length + 1
+      node.focus()
+      node.setSelectionRange(pos, pos)
+    })
+  }
 
   return (
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
@@ -73,12 +110,19 @@ export function AudiobookPage(p: ReturnType<typeof useAudiobook>) {
             </div>
 
             <textarea
+              ref={textArea}
               value={p.text}
               onChange={(e) => p.setText(e.target.value)}
               rows={12}
               placeholder={"粘贴整篇文稿，或直接把 .srt 文件内容贴进来（识别到时间轴 --> 自动切 SRT 模式）\n示例：第一章 雾都之夜。雨点敲打着窗棂，他推开那扇沉重的门……"}
               className="mt-5 w-full resize-y rounded-md border border-border bg-background px-3 py-2.5 font-mono text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary"
             />
+
+            {/* SRT 模式**不认**标记（那个模式按字幕时间轴对齐，术语里的方括号多半是原文），
+                所以这时整条工具栏藏起来 —— 留着能用而不能生效，比没有更糟。 */}
+            {!p.isSrt && (
+              <SfxMarkBar sb={p.soundboard} text={p.text} onInsert={(snippet) => insertMark(snippet)} />
+            )}
 
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-muted-foreground transition hover:border-primary hover:text-primary">

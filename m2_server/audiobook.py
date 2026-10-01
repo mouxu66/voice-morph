@@ -137,6 +137,112 @@ def _detect_lang(s: str) -> str:
     return "Chinese" if cjk * 2 >= len(s.strip()) else "English"
 
 
+# ---------------- 音效标记 `[爆炸]`（2026-09-25） ----------------
+# 语义与 `wechat_voice._split_for_budget` / `tts_api._synth_marked` 一致：
+# **音效跟在它前面那段文字之后**，标记本身不参与合成（不会被念出来）。
+# 唯一解析实现在 `sfx_mark.py`，这里只做"哪一片之后插哪个"的编排。
+
+
+def _reject_unknown_marks(sents: list[str]) -> None:
+    """入口同步校验：句子里有 `[未知名]` 立刻 400，不留到后台线程里才发现。
+
+    为什么必须在起线程之前：任务跑在 daemon 线程里，错误只能写进
+    `AUDIOBOOK_STATE["error"]`，用户看到的是"跑完了但结果不对"。而写错音效名
+    是用户当场能自己修的错，越早说越好（与微信路径同一文案、同一口径）。
+    """
+    import sfx_mark
+
+    unknown: list[str] = []
+    for s in sents:
+        if not sfx_mark.has_mark(s):
+            continue
+        _segs, unk, _problems = sfx_mark.parse(s)
+        unknown.extend(unk)
+    if unknown:
+        avail = "、".join(sfx_mark.available()[:12])
+        raise HTTPException(
+            status_code=400,
+            detail=f"没有这个音效：{'、'.join(unknown)}。可用：{avail}",
+        )
+
+
+def _pieces_of(text: str) -> tuple[list[str | None], list[str | None]]:
+    """一句文字 → (要念的片段, 每片之后要插的音效 id)。
+
+    没有标记时返回 `([text], [None])` —— 调用方据此走与旧实现逐字相同的路径。
+    片段为 `None` 表示"这里没有要念的字，但**要插一声**"（整片被标记吃掉，
+    如 `[掌声]` 单独成句），由合成侧用静音占位。
+    """
+    import sfx_mark
+
+    if not sfx_mark.has_mark(text):
+        return [text], [None]
+    segs, _unknown, _problems = sfx_mark.parse(text)
+    texts: list[str | None] = []
+    after: list[str | None] = []
+    for t, sid in segs:
+        if not t.strip():
+            if sid is None:
+                continue  # 首尾的空片（标记在开头/结尾产生的），丢掉
+            texts.append(None)
+        else:
+            texts.append(t.strip())
+        after.append(sid)
+    if not texts:  # pragma: no cover —— 只有全空白输入才会走到，入口已挡
+        return [text], [None]
+    return texts, after
+
+
+def _synth_pieces(texts, after, qwen_tts, ref, voice_id) -> tuple["object", int]:
+    """逐片合成 →（带音效时）组装 → (PCM float32, sr)。
+
+    无标记时只合成一次、结果原样返回（**不做峰值归一**）—— 现有产物的音量
+    一个字节都不变，这是"无标记零回归"的落点。
+    """
+    import io
+
+    import numpy as np
+    import soundfile as sf
+
+    raws: list[tuple[object, int]] = []
+    for t in texts:
+        if t is None:
+            raws.append((None, 0))
+            continue
+        wav = qwen_tts(
+            t,
+            ref_audio=str(ref),
+            ref_text="",
+            language=_detect_lang(t),
+            voice_id=voice_id,
+        )
+        data, psr = sf.read(io.BytesIO(wav), dtype="float32", always_2d=False)
+        if getattr(data, "ndim", 1) > 1:
+            data = data.mean(axis=1)
+        raws.append((np.ascontiguousarray(data, dtype=np.float32), int(psr)))
+
+    if len(raws) == 1 and not any(after):
+        pcm, psr = raws[0]
+        if pcm is not None:
+            return pcm, psr
+
+    from wechat_voice import SENT_GAP_S, SFX_GAP_S
+
+    import sfx_lib
+
+    sr = next((psr for pcm, psr in raws if pcm is not None), 24000)
+    pieces = [
+        np.zeros(max(1, int(0.01 * sr)), dtype=np.float32)
+        if pcm is None
+        else (pcm if psr == sr else sfx_lib._resample(pcm, psr, sr))
+        for pcm, psr in raws
+    ]
+    out, _notes = sfx_lib.assemble(
+        pieces, sr, after, sent_gap_s=SENT_GAP_S, sfx_gap_s=SFX_GAP_S
+    )
+    return out, sr
+
+
 @router.post("/audiobook/run")
 async def audiobook_run(req: AudiobookRequest):
     """提交有声书合成任务。文本自动识别 SRT（含 --> 时间轴）或普通长文。"""
@@ -158,6 +264,7 @@ async def audiobook_run(req: AudiobookRequest):
             sents = split_sentences(req.text)
             if not sents:
                 raise HTTPException(status_code=400, detail="文本为空或无法切分出句子")
+            _reject_unknown_marks(sents)  # 音效名写错要在起线程之前就说
             jobs = [(s, None, None) for s in sents]
 
         _ab_cancel.clear()
@@ -185,6 +292,7 @@ async def audiobook_run(req: AudiobookRequest):
 
 
 def _audiobook_worker(jobs, voice_id: str, gap_ms: int, mode: str):
+    import soundfile as sf
     from pydub import AudioSegment
     from qwen3_tts import tts as qwen_tts
 
@@ -202,23 +310,21 @@ def _audiobook_worker(jobs, voice_id: str, gap_ms: int, mode: str):
                     running=False, status="cancelled", current_text="", error="已取消"
                 )
                 return
-            AUDIOBOOK_STATE.update(current_text=text, done=i, percent=int(i * 100 / total))
+            # 音效标记只认 text 模式：srt 模式是逐条字幕对齐时间轴，一句里再切片
+            # 会把时间轴算乱，而字幕里的方括号更可能是原文内容。
+            if mode == "text":
+                texts, after = _pieces_of(text)
+            else:
+                texts, after = [text], [None]
+            spoken = "".join(t for t in texts if t) or text
+            AUDIOBOOK_STATE.update(current_text=spoken, done=i, percent=int(i * 100 / total))
             seg_url = ""
             dur = 0.0
             try:
-                wav = qwen_tts(
-                    text,
-                    ref_audio=str(ref),
-                    ref_text="",
-                    language=_detect_lang(text),
-                    voice_id=voice_id,
-                )
                 seg_path = session_out.new_path(f"audiobook_{stamp}_seg{i + 1:04d}")
-                seg_path.write_bytes(wav)
-                import soundfile as sf
-
-                d, sr = sf.read(str(seg_path))
-                dur = round(len(d) / sr, 2)
+                pcm, sr = _synth_pieces(texts, after, qwen_tts, ref, voice_id)
+                sf.write(str(seg_path), pcm, sr, subtype="PCM_16")
+                dur = round(pcm.size / sr, 2)
                 seg_url = f"/api/media/outputs/{session_out.rel_url(seg_path.name)}"
                 pieces.append(AudioSegment.from_wav(str(seg_path)))
             except Exception:
@@ -227,7 +333,7 @@ def _audiobook_worker(jobs, voice_id: str, gap_ms: int, mode: str):
             AUDIOBOOK_STATE["segments"].append(
                 {
                     "i": i + 1,
-                    "text": text,
+                    "text": spoken,
                     "url": seg_url,
                     "duration_s": dur,
                     "failed": seg_url == "",

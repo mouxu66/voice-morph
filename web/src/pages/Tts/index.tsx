@@ -32,7 +32,10 @@ export function TtsRoute() {
   const tts = useTts()
   const book = useAudiobook(bookOn)
   const wechat = useWechatSend(wechatOn)
-  const soundboard = useSoundboard(wechatOn && fxBoardOn)
+  // 声板（素材目录）在**单段合成/有声书/微信**三处都要用（`SfxMarkBar` 的素材名
+  // 就从它来），所以只要还有任一宿主 tab 开着就启用它 —— 以前只认微信，
+  // 结果是"只开有声书"时工具栏拿不到素材，整块不渲染。
+  const soundboard = useSoundboard((bookOn || wechatOn) && fxBoardOn)
   const seeded = useRef(false)
 
   useEffect(() => {
@@ -48,7 +51,13 @@ export function TtsRoute() {
       tabs={[
         { key: "single", label: "单段合成", content: <TtsPage {...tts} soundboard={soundboard} /> },
         ...(bookOn
-          ? [{ key: "book", label: "有声书（长文本）", content: <AudiobookPage {...book} /> }]
+          ? [
+              {
+                key: "book",
+                label: "有声书（长文本）",
+                content: <AudiobookPage {...book} soundboard={soundboard} />,
+              },
+            ]
           : []),
         ...(wechatOn
           ? [

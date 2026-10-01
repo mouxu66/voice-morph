@@ -10,6 +10,7 @@
 
 from pathlib import Path
 
+import sfx_mark
 import session_out
 from common import selected_voice, voice_ref
 from fastapi import APIRouter, HTTPException
@@ -57,14 +58,14 @@ def synth_wav(
     if not voice_id:
         raise HTTPException(status_code=400, detail="请先选择音色")
     ref, _ref_text = voice_ref(voice_id)
-    try:
-        from qwen3_tts import tts as qwen_tts
 
+    def _kw(t: str) -> dict:
+        """本次合成的 qwen_tts 参数（带音效标记时会被调用多次，每次换一段文字）。"""
         # 优先 ICL 语气克隆(ref_text 有内容即走 ICL，音色/语气最贴原视频)；
         # ref_text 为空才回退纯声纹(x-vector)模式。6.4s 参考音 + 真实文字稿在 8GB 显存已验证可跑。
         # 传了 style_ref 时改用风格参考 ICL + 长文分段(seg_chars>0)，见 worker /tts。
         kw = {
-            "text": text,
+            "text": t,
             "ref_audio": str(ref),
             "ref_text": _ref_text,
             "language": "Chinese" if text_language.startswith("zh") else "English",
@@ -83,7 +84,17 @@ def synth_wav(
                 kw["style_ref_text"] = style_ref_text
             if seg_chars > 0:
                 kw["seg_chars"] = seg_chars
-        wav_bytes = qwen_tts(**kw)
+        return kw
+
+    if sfx_mark.has_mark(text):
+        # 带 `[音效名]` 标记：逐段合成再按位置拌进音效（见 sfx_mark.py）。
+        # 没有标记时一个字节的行为都不变 —— 这条分支不参与无标记的常规路径。
+        return _synth_marked(text, _kw, voice_id)
+
+    try:
+        from qwen3_tts import tts as qwen_tts
+
+        wav_bytes = qwen_tts(**_kw(text))
     except HTTPException:
         raise
     except Exception as e:
@@ -96,6 +107,86 @@ def synth_wav(
     d, sr = sf.read(str(out))
     duration_s = round(len(d) / sr, 1)
     return out, duration_s, voice_id
+
+
+def _synth_marked(text: str, kw_for, voice_id: str) -> tuple[Path, float, str]:
+    """带 `[音效名]` 标记的合成：切片 → 逐片合成 → 组装 → 落会话目录。
+
+    标记语义与 `wechat_voice._split_for_budget` 一致（音效跟在它前面那段文字之后），
+    区别只在于这里**不做微信 54s 预算装箱** —— 输字合成没有单条时长上限。
+    拼接用的两个静音常量从 `wechat_voice` 取，保证同一段文字从两条路走节奏一致。
+
+    ⚠️ 未知名字**必须 400**，不能静默当普通文字念出来：用户写了 `[爆炸声]`，
+    结果发出去的语音里有人念"爆炸声"三个字，是这套功能最坏的结果。
+    """
+    import io
+
+    import numpy as np
+    import soundfile as sf
+    from wechat_voice import SENT_GAP_S, SFX_GAP_S
+
+    import sfx_lib
+
+    segs, unknown, _problems = sfx_mark.parse(text)
+    if unknown:
+        avail = "、".join(sfx_mark.available()[:12])
+        raise HTTPException(
+            status_code=400,
+            detail=f"没有这个音效：{'、'.join(unknown)}。可用：{avail}",
+        )
+
+    from qwen3_tts import tts as qwen_tts
+
+    # (PCM 或 None=占位静音, 采样率, 这一段之后要插的音效 id)
+    raws: list[tuple[np.ndarray | None, int, str | None]] = []
+    for spoken, sid in segs:
+        t = spoken.strip()
+        if not t:
+            if sid is None:
+                continue  # 真正的空片（首尾残留），丢掉
+            # 整片被标记吃掉（`[掌声]` 单独成片）：没有要念的字，但这一片存在的
+            # 意义就是"这里插一声" —— 给一小段静音占位（与微信侧同值），音效照插。
+            raws.append((None, 0, sid))
+            continue
+        try:
+            wav_bytes = qwen_tts(**kw_for(t))
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"TTS 失败: {e}")
+        data, psr = sf.read(io.BytesIO(wav_bytes), dtype="float32", always_2d=False)
+        if getattr(data, "ndim", 1) > 1:
+            data = data.mean(axis=1)
+        raws.append((np.ascontiguousarray(data, dtype=np.float32), int(psr), sid))
+
+    if not raws:  # pragma: no cover —— 入口的 text.strip() 已经挡掉全空白
+        raise HTTPException(status_code=400, detail="text 里没有可合成的内容")
+
+    # 采样率以第一段**真实**合成的为准（同一个 worker，本就该一致）；
+    # 真不一致时按它重采样对齐，而不是让拼接产出变速音频。
+    # 全是占位静音（`[掌声]` 单独成段，没有要念的字）时没有真实段可参照，
+    # 随便取一个默认值即可 —— 反正只有静音，没有会被变速的内容。
+    sr = next((psr for pcm, psr, _i in raws if pcm is not None), 24000)
+    pieces: list[np.ndarray] = []
+    for pcm, psr, _i in raws:
+        if pcm is None:
+            pieces.append(np.zeros(max(1, int(0.01 * sr)), dtype=np.float32))
+        elif psr == sr:
+            pieces.append(pcm)
+        else:
+            pieces.append(sfx_lib._resample(pcm, psr, sr))
+    after = [sid for _p, _s, sid in raws]
+
+    pcm, notes = sfx_lib.assemble(
+        pieces, sr, after, sent_gap_s=SENT_GAP_S, sfx_gap_s=SFX_GAP_S
+    )
+    if notes:
+        # 素材存在但读不出来（文件损坏等）。同样不能静默 —— 用户以为插上了。
+        raise HTTPException(status_code=400, detail="；".join(notes))
+
+    out = session_out.new_path("tts")
+    sf.write(str(out), pcm, sr, subtype="PCM_16")
+    return out, round(pcm.size / sr, 1), voice_id
 
 
 @router.post("/tts")
