@@ -207,7 +207,7 @@ async def seedvc_run(
         if target_voice_id:
             ref_path, _ = voice_ref(target_voice_id)  # 合法性/存在性校验，缺失抛 400/404
         else:
-            ref_path = None  # 上传态在 worker 内落盘
+            ref_path = None  # 上传态：字节在路由内读完（见下），worker 内落盘
 
         SEEDVC_STATE.update(
             running=True,
@@ -234,11 +234,28 @@ async def seedvc_run(
         )
     raw_path.write_bytes(raw)
 
+    # ★ 上传的参考音必须在**路由内**读全：FastAPI 0.141 起在端点返回后自动关闭表单
+    #   文件句柄（routing.py 的 file_stack.push_async_callback(body.close)），
+    #   后台线程里再读 target.file 就是「I/O operation on closed file」——
+    #   端到端测试实测抓到（此前从未有测试走到这条分支）。主文件上面的 await read()
+    #   一直是这个口径，参考音此前漏了同样的处理。
+    tgt_bytes = b""
+    if ref_path is None:
+        tgt_bytes = await target.read()
+        if len(tgt_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"参考音频过大：>{MAX_UPLOAD_BYTES // (1024 * 1024)}MB 拒绝转换",
+            )
+
     threading.Thread(
         target=_seedvc_worker,
         kwargs={
             "raw_path": raw_path,
-            "target": target,
+            "target_bytes": tgt_bytes,
+            "target_suffix": (Path(target.filename or "a.wav").suffix or ".wav")
+            if target is not None
+            else ".wav",
             "ref_path": ref_path,
             "target_label": target_label,
             "mode": mode,
@@ -420,9 +437,10 @@ def run_conversion(
 
 def _seedvc_worker(
     raw_path: Path,
-    target: UploadFile,
-    ref_path: Path | None,
-    target_label: str,
+    target_bytes: bytes = b"",
+    target_suffix: str = ".wav",
+    ref_path: Path | None = None,
+    target_label: str = "",
     convert_style: bool = False,
     similarity_cfg_rate: float = 0.5,
     top_p: float = 0.9,
@@ -449,13 +467,12 @@ def _seedvc_worker(
         _preprocess(raw_path, in_src, denoise)
 
         # 目标参考：voicebank 直接复用；上传则落盘后预处理
+        # （字节已由路由读完传入 —— 线程里不许碰 UploadFile，句柄已关）
         if ref_path is not None and ref_path.exists():
             tgt_for_vc = ref_path
         else:
-            tgt_raw = session_out.new_path(
-                f"seedvc_tgt_{stamp}", Path(target.filename or "a.wav").suffix or ".wav"
-            )
-            tgt_raw.write_bytes(target.file.read())
+            tgt_raw = session_out.new_path(f"seedvc_tgt_{stamp}", target_suffix)
+            tgt_raw.write_bytes(target_bytes)
             _preprocess(tgt_raw, in_tgt, False)
             tgt_for_vc = in_tgt
 
