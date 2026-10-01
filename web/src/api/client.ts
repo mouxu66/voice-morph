@@ -1390,6 +1390,19 @@ export type WechatHistoryItem = {
   duration_s: number;
   ts: number;
   outcome: string;
+  /**
+   * 这条现在还能不能重发/试听。
+   *
+   * 产物默认是**会话级**的（退出即删，见 `session_out` 模块注释里用户的原话），
+   * 所以历史里多数条目在退出应用后文件已不在磁盘上。后端每次请求现算这个字段
+   * （可用性是动态的）。**缺省按「不可用」处理**：宁可少给一个按钮，
+   * 也不要摆一个按下去必然报错的「重发」。
+   */
+  available?: boolean;
+  /** 长文分段发送：这一批总共几条（单条不发这个字段）。 */
+  total_chunks?: number;
+  /** 发送时的告警（如静音检测），落库供事后查线索。 */
+  warning?: string;
 };
 
 export type WechatSendResult = {

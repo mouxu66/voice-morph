@@ -313,22 +313,45 @@ export function WechatSendPage(
                       <span className="line-clamp-1 font-mono text-xs text-card-foreground">
                         {it.wav} · {it.duration_s}s
                       </span>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void p.sendAuto(it.wav)}
-                        className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
-                      >
-                        重发
-                      </button>
+                      {/* 产物是**会话级**的（退出即删 —— 用户在 2026-09-25 明确要的：
+                          「不需要的退出直接就删掉」），所以历史里多数条目的文件早已不在。
+                          不可用就**不给按钮**并说明原因：摆一个按下去必然失败的「重发」
+                          比没有按钮更糟 —— 用户会以为是发送功能坏了。
+                          `available` 缺省按不可用处理（旧后端不返回该字段时同理）。 */}
+                      {it.available ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void p.sendAuto(it.wav)}
+                          className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
+                        >
+                          重发
+                        </button>
+                      ) : (
+                        <span
+                          className="shrink-0 text-[11px] text-muted-foreground/70"
+                          title="产物默认即用即删，退出应用就清空。发送前点过「保存」的会留在作品库里，这里也才能重发。"
+                        >
+                          原文件已删
+                        </span>
+                      )}
                     </div>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="mt-5 text-xs leading-5 text-muted-foreground">
-                还没有发送记录。第一次成功发送后，这里会列出每条语音的时间和状态，点「重发」可以原样再发一条。
-              </p>
+              <>
+                <p className="mt-5 text-xs leading-5 text-muted-foreground">
+                  还没有发送记录。第一次成功发送后，这里会列出每条语音的时间和状态，文件还在的可以直接「重发」。
+                </p>
+                {/* 提前把系统行为讲明白：产物默认即用即删（这是用户要的），
+                    所以「有些历史不能重发」不是 bug，而是没保存过的必然结果。
+                    讲在这里比等他发现按钮没了再来问要好。 */}
+                <p className="mt-2 text-[11px] leading-5 text-muted-foreground/70">
+                  产物默认「即用即删」，退出应用就清空 —— 想留着以后回听或重发的，
+                  发送前先点一下「保存」，它会进作品库。
+                </p>
+              </>
             )}
           </div>
         </section>

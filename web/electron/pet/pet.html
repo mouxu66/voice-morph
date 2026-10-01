@@ -491,6 +491,15 @@
     color: rgb(var(--c-accent-h));
   }
   #panel .hempty { font-size: 10.5px; color: rgb(var(--c-t-500)); }
+  /* 原文件已随会话清理的历史条目 —— **不可点**。
+     ★ hover 也必须不变色：面板上"会变色 = 能点"是用户唯一的暗示，
+       给一个和能点条目一样的 hover，等于骗他点一下、然后什么都不发生。 */
+  #panel .hitem.hgone { cursor: default; opacity: .55; }
+  #panel .hitem.hgone:hover {
+    border-color: rgb(var(--c-border-2) / 0.6);
+    background: rgb(var(--c-surface-2) / 0.7);
+    color: rgb(var(--c-t-400));
+  }
 
   /* —— 实时变声引擎：RVC 实时 / 千问变声 二选一 ——
      两个引擎在后端是**互斥**的（互相 409：「两者抢 GPU 且都占 CABLE」），
@@ -1832,14 +1841,23 @@ async function loadRecent() {
       ? items.map((it) => {
           const t = new Date(it.ts * 1000);
           const hm = `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
-          return `<span class="hitem" data-wav="${it.wav}" title="重发 ${it.wav}（${hm}，${it.duration_s}s）">${relTime(it.ts)} · ${it.duration_s}s</span>`;
+          // 产物是**会话级**的（退出即删），历史里多数条目的文件早已不在。
+          // ★ 不可用就**故意不带 `data-wav`**（点击派发只认它，见下面的监听器）：
+          //   摆一个点了没反应的胶囊，用户只会以为桌宠卡了。
+          //   `available` 缺省按不可用处理（旧后端不返回该字段时同理）。
+          return it.available
+            ? `<span class="hitem" data-wav="${esc(it.wav)}" title="重发 ${esc(it.wav)}（${hm}，${it.duration_s}s）">${relTime(it.ts)} · ${it.duration_s}s</span>`
+            : `<span class="hitem hgone" title="${esc(it.wav)}（${hm}，${it.duration_s}s）—— 原文件已随会话清理，不能重发">${relTime(it.ts)} · 已清理</span>`;
         }).join("")
       : '<span class="hempty">还没发过语音</span>';
   } catch {}
 }
 recentEl.addEventListener("click", (e) => {
   const it = e.target.closest(".hitem");
-  if (it && window.pet && window.pet.sendWav) window.pet.sendWav(it.dataset.wav);
+  // ★ 只认带 `data-wav` 的：不可用条目故意不带它（见 loadRecent）。
+  //   这道判断同时挡住 `sendWav(undefined)` —— 那会变成一次莫名其妙的失败。
+  const wav = it && it.dataset.wav;
+  if (wav && window.pet && window.pet.sendWav) window.pet.sendWav(wav);
 });
 
 // ---------------- 功能页切换 + 音效声板（sound.fx-board）----------------

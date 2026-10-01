@@ -2966,7 +2966,21 @@ def _append_history(
 
 @router.get("/history")
 def send_history():
-    """最近发送的微信语音列表（供桌宠面板展示，点一条可重发）。"""
+    """最近发送的微信语音列表（供桌宠面板展示，点一条可重发）。
+
+    ★ `available`：这条现在还能不能重发/试听。
+    为什么必须有它 —— 产物默认是**会话级**的（`session_out` 模块注释记着用户原话
+    「即用即删……有需要的保存，不需要的退出直接就删掉」），所以历史里绝大多数条目
+    在退出应用后**文件已经不在磁盘上了**（本机实测：20 条历史、文件命中 0 处）。
+    没有这个字段时，界面上的「重发」按钮对已清理的条目照样可点 —— 点了必然失败，
+    是个**假承诺**。宁可如实说"这条的文件已随会话清理"，也不摆一个按下去就报错的按钮。
+
+    判据用 `session_out.find()`（先会话目录、后 outputs 根）：用户点过「保存」的
+    条目会落在 outputs 根，那些**仍然可用** —— 所以这不是"历史全都不能重发"。
+
+    每次请求现算、不写回文件：可用性是**动态**的（文件随时可能被清），
+    存进 json 只会立刻过期。
+    """
     hist = []
     if HISTORY_FILE.exists():
         try:
@@ -2976,6 +2990,7 @@ def send_history():
     # 向后兼容：旧记录没有 outcome 字段，补默认 ok
     for it in hist:
         it.setdefault("outcome", "ok")
+        it["available"] = session_out.find(str(it.get("wav") or "")) is not None
     return {"ok": True, "items": hist}
 
 
