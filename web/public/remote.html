@@ -418,6 +418,10 @@
         el.className = 'note' + (kind ? ' ' + kind : '')
         el.textContent = text || ''
       }
+      /** 取第一句（按中文标点切）—— 手机屏幕窄，整段原因放不下。
+       *  切法与 pet.html 的同名函数**逐字一致**：两边都靠它把后端的
+       *  `block_reason` 压成一行，口径不一致就会一边说全、一边说半句。 */
+      const firstClause = (s) => String(s || '').split(/[：:。；;，,（(]/)[0].trim()
       function setConn(state, text) {
         $('connDot').className = 'dot ' + state
         $('connText').textContent = text
@@ -573,15 +577,28 @@
         const dl = $('precheck')
         try {
           const d = await api('/api/wechat/precheck')
+          // block_reason 非空 = 后端已判定这次**注定失败**（判据复用 send_text 那条
+          // _send_preflight，分因文案来自 find_wechat_hwnd）—— 不在前端重写一份。
+          //
+          // ★ 它比单看 wechat_running 准：微信**进程活着、但被收进托盘或停在登录页**时
+          //   wechat_running 仍是 true，而这次发送照样必败。手机这条路要付出
+          //   「录 0..59 秒 → 换声十几秒」才轮到发送，等松手才说「微信没开」白等十几秒。
+          const blocked = !!d.block_reason
           const rows = [
             ['微信', d.wechat_running ? '已打开' : '没检测到'],
-            ['这次发送', d.restart_needed ? '会重启微信' : '直接切麦克风'],
-            ['原因', d.reason || '—'],
+            ['这次发送', blocked ? '发不出去' : d.restart_needed ? '会重启微信' : '直接切麦克风'],
+            ['原因', (blocked ? d.block_reason : d.reason) || '—'],
           ]
           dl.innerHTML = rows
             .map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>')
             .join('')
-          setNote($('precheckNote'), d.hint || '', d.wechat_running ? '' : 'warn')
+          if (blocked) {
+            setNote($('precheckNote'), '⚠ ' + firstClause(d.block_reason), 'bad')
+            $('precheckNote').title = d.block_reason // 全文进 title：单行放不下，省略号正好切掉最该看的那半句
+          } else {
+            setNote($('precheckNote'), d.hint || '', d.wechat_running ? '' : 'warn')
+            $('precheckNote').title = ''
+          }
         } catch (e) {
           dl.innerHTML = ''
           setNote($('precheckNote'), e.message, 'bad')
@@ -769,12 +786,18 @@
       async function refreshMicPrecheck() {
         try {
           const d = await api('/api/wechat/precheck')
+          // 与 refreshPrecheck 同一套判据：block_reason 优先 —— 它是「注定失败」，
+          // 而 wechat_running 只说明进程活着（收进托盘的微信照样发不出去）。
+          // 这条链路的代价更高（录完还要换声十几秒），提前拦住更值。
+          const blocked = !!d.block_reason
           setNote(
             $('micPcNote'),
-            d.wechat_running
-              ? '电脑那边：微信已打开，' + (d.restart_needed ? '这次发送会重启微信。' : '直接切麦克风。')
-              : '电脑那边：没检测到微信 —— 录音与换声不受影响，但最后一步发送会失败。',
-            d.wechat_running ? '' : 'warn',
+            blocked
+              ? '电脑那边：⚠ ' + firstClause(d.block_reason) + '（录音与换声不受影响，最后一步发送会失败）'
+              : d.wechat_running
+                ? '电脑那边：微信已打开，' + (d.restart_needed ? '这次发送会重启微信。' : '直接切麦克风。')
+                : '电脑那边：没检测到微信 —— 录音与换声不受影响，但最后一步发送会失败。',
+            blocked ? 'bad' : d.wechat_running ? '' : 'warn',
           )
         } catch (e) {
           setNote($('micPcNote'), '', '')

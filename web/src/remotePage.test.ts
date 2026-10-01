@@ -136,6 +136,28 @@ describe('手机遥控页 remote.html', () => {
     expect(txt, '第三个前端面必须与主应用/桌宠用同一份清单').toContain('/api/plugins')
     expect(txt).toMatch(/capOff\(/)
   })
+
+  it('★ 认 block_reason：两条发送路径都要提前拦住「注定失败」', () => {
+    // 后端 /api/wechat/precheck 的 block_reason 非空 = 这次发送**注定失败**
+    // （判据复用 send_text 的 _send_preflight，页面不在前端重写一份）。
+    //
+    // 为什么值得钉：手机这条路要付出「录 0..59 秒 → 换声十几秒」才轮到发送，
+    // 而「微信没开 / 被收进托盘」是**按下之前**就知道的事。桌宠早就这么做了
+    // （pet.html 的 renderWechatPrecheck），遥控页漏掉的话，同一个用户会在两处
+    // 得到完全不同的待遇：电脑上立刻被拦住，手机上白等十几秒才失败。
+    //
+    // 页面里有**两条**发送路径（语音发送 tab / 手机当麦 tab），各有一条预检 ——
+    // 只改一处等于只拦住一条。所以按函数体分别查，而不是整页查一次。
+    const html = readFileSync(PAGE, 'utf8')
+    for (const fn of ['refreshPrecheck', 'refreshMicPrecheck']) {
+      const at = html.indexOf(`function ${fn}`)
+      expect(at, `找不到 ${fn} —— 函数被改名了？`).toBeGreaterThan(0)
+      expect(
+        html.slice(at, at + 1000),
+        `${fn} 没认 block_reason —— 这条路径会在白等十几秒后才报错`,
+      ).toContain('block_reason')
+    }
+  })
 })
 
 /** 后端 .py 多数是 CRLF —— 解析前统一成 LF，别让行尾把正则弄红。 */
