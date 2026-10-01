@@ -10,6 +10,21 @@ export interface HealthInfo {
   cuda: boolean | null;
 }
 
+/** 本机局域网访问信息 —— 对应 `/api/system/lan`，遥控页二维码的数据源 */
+export interface LanInfo {
+  /** RFC1918 私网 IPv4；`null` = 没找到手机能直连的地址（没插网线/只有虚拟网卡） */
+  ip: string | null;
+  port: number;
+  /**
+   * 遥控页完整地址（可直接生成二维码/点击打开）。
+   * 设了 `VM_API_TOKEN` 时后端已把 `?api_key=` 拼好；没找到地址时为 `null`。
+   */
+  url: string | null;
+  token_set: boolean;
+  /** token 未设置时的安全提醒；设置了就是空串 */
+  note: string;
+}
+
 /** 一个加载失败的后端能力（路由模块 / 启动钩子）—— 对应 `/api/capabilities` 的 broken 项 */
 export interface CapabilityBroken {
   module: string;

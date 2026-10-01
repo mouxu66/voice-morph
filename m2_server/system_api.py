@@ -414,6 +414,79 @@ def system_warmup():
     return status()
 
 
+@router.get("/system/lan")
+def system_lan():
+    """本机局域网访问信息：遥控页二维码的数据源（issue #1 的对症方案）。
+
+    背景：手机浏览器做不了 mDNS 服务发现（网页没有 Bonjour 浏览能力，`.local`
+    在安卓浏览器上也不可靠），所以「自动发现」这条路在浏览器端走不通 ——
+    对症的是**桌面端把完整 URL 展示成二维码**，手机扫码即开，不用手填 IP。
+
+    URL 口径与 `web/public/remote.html` 头部注释一致：
+    `http://<局域网IP>:<端口>/remote.html`，设了 `VM_API_TOKEN` 再拼 `?api_key=`。
+    """
+    ip = next((c for c in _lan_candidates() if _is_rfc1918(c)), None)
+    url = f"http://{ip}:{cfg.SERVER_PORT}/remote.html" if ip else None
+    if url and cfg.API_TOKEN:
+        url += f"?api_key={cfg.API_TOKEN}"
+    return {
+        "ip": ip,
+        "port": cfg.SERVER_PORT,
+        "url": url,
+        "token_set": bool(cfg.API_TOKEN),
+        "note": "" if cfg.API_TOKEN else "未设置 VM_API_TOKEN：局域网内任意设备都可访问全部接口",
+    }
+
+
+def _lan_candidates() -> list[str]:
+    """收集本机可能的局域网 IPv4 候选（主路由优先，全部网卡兜底）。
+
+    UDP connect 只查路由表、**不真发包**（对 10.255.255.255 这种保留地址），
+    是拿「默认路由出口 IP」最快也最通用的办法。
+    """
+    import socket
+
+    ips: list[str] = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("10.255.255.255", 1))
+            ips.append(s.getsockname()[0])
+        finally:
+            s.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip not in ips:
+                ips.append(ip)
+    except OSError:
+        pass
+    return ips
+
+
+def _is_rfc1918(ip: str) -> bool:
+    """只有 RFC1918 私网三段才算「手机能直连」的候选。
+
+    为什么不拿第一个非回环地址就用（本机实测踩过）：这台机器常年跑
+    Mihomo/Clash 的 TUN 虚拟网卡（fake-ip 段 198.18.0.0/15）与 Radmin VPN ——
+    `ipaddress.is_private` 对这些也返回 True（都是 IANA 专用段），但手机根本连不上。
+    所以判据必须钉死 RFC1918 三段，APIPA(169.254)/CGNAT(100.64)/fake-ip 一律排除。
+    """
+    import ipaddress
+
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if addr.version != 4:
+        return False
+    return addr in ipaddress.ip_network("10.0.0.0/8") or addr in ipaddress.ip_network(
+        "172.16.0.0/12"
+    ) or addr in ipaddress.ip_network("192.168.0.0/16")
+
+
 @router.post("/system/storage/clean")
 def system_storage_clean(req: StorageCleanRequest):
     """清理指定目标：只删文件，受保护项跳过并返回原因；单文件失败不中断。"""

@@ -3,6 +3,7 @@ import type {
   ClipItem,
   DiagnoseInfo,
   HealthInfo,
+  LanInfo,
   PluginCatalog,
   PluginPresetResult,
   PluginToggleResult,
@@ -16,6 +17,7 @@ import type {
 
 // 预热状态的结构定义在 types.ts，这里转出供页面直接 import（与本地定义的 Wechat* 类型并列）
 export type { WarmupStatus };
+export type { LanInfo };
 
 // 后端统一挂在 /api 前缀下。全仓**只在这里**判定一次"该用相对还是绝对地址"
 // （2026-09-13 收敛：此前 client.ts / useEffects.ts / useWorkshop.ts 各写了一份）。
@@ -176,6 +178,17 @@ export async function diagnose(): Promise<DiagnoseInfo> {
  */
 export async function getWarmup(): Promise<WarmupStatus> {
   return jsonFetch<WarmupStatus>("/system/warmup");
+}
+
+/**
+ * 本机局域网访问信息：遥控页二维码的数据源。
+ *
+ * 手机浏览器做不了 mDNS 服务发现（网页没有 Bonjour 能力，`.local` 在安卓上
+ * 也不可靠），所以「扫码即开」是浏览器场景下自动化的天花板 —— issue #1 的对症方案。
+ * URL 里已按需拼好 `?api_key=`（后端负责），前端拿来即用，不要自己再拼。
+ */
+export async function getLan(): Promise<LanInfo> {
+  return jsonFetch<LanInfo>("/system/lan");
 }
 
 export async function listVoices(): Promise<VoiceInfo[]> {

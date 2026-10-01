@@ -2,6 +2,7 @@ import { Link } from "react-router-dom"
 import { ArrowRight, Boxes, Camera, CloudDownload, Hammer, Library, Mic2, Music4, Radio, ScanSearch, ShoppingBag, Sparkles, Volume2 } from "lucide-react"
 import { Card, PageShell } from "@/components/layout/PageShell"
 import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
+import { RemoteQrCard } from "./RemoteQrCard"
 
 /**
  * 能力索引 —— 给那些**没有导航入口**的能力一个统一的落点。
@@ -81,6 +82,10 @@ export function CapabilityIndexRoute() {
           </Link>
         ))}
       </div>
+
+      {/* 遥控二维码：能力清单之外的「入口补丁」—— 手机遥控本没有导航入口，
+          且 issue #1 的对症方案就是「桌面端展示可扫的完整地址」（见 RemoteQrCard 头注）。 */}
+      <RemoteQrCard />
 
       <Card tone="flat" className="mt-6 flex items-start gap-3 p-4">
         <ScanSearch className="mt-0.5 h-4 w-4 shrink-0 text-primary" />

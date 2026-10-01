@@ -149,6 +149,9 @@ FAST_TESTS = [
     # 单段合成 / 试听 / 有声书里同样要「标记不进 TTS + 音效插在它那一段之后 + 错名字 400」。
     # 这三条此前只有微信路径有，于是别的路径把"爆炸"两个字念了出来（2026-10-01 用户报障）。
     "m2_server/tests/test_sfx_in_synthesis.py",
+    # 端点契约（无模型无盘，TestClient 直调）：遥控页二维码的数据源 /system/lan。
+    # 退化后果是「手机扫码扫不出能用的地址」，界面上看不出来 → 放进 --fast。
+    "m2_server/tests/test_system_lan.py",
 ]
 
 
