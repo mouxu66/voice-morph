@@ -29,6 +29,7 @@ import { PageShell } from "@/components/layout/PageShell"
 import { AuditionEntry } from "@/components/AuditionEntry"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { EffectLadderCard } from "@/components/EffectLadderCard"
+import { AdvancedSection } from "@/components/AdvancedSection"
 import { ChainResultList } from "@/components/ChainResultList"
 import { LiveLevelMeter } from "@/components/voice-studio/LiveLevelMeter"
 import { LiveScenePacks } from "@/components/voice-studio/LiveScenePacks"
@@ -612,8 +613,19 @@ export function LivePage(
             )}
           </section>
 
-          {/* 03 训练流水线 */}
-          <section className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
+          {/* 03 训练流水线 —— **收进「进阶」**（2026-10-01）。
+              它和「开麦变声」不同频：训练是攒素材 → 生成语料 → 跑模型的长流程
+              （自己就写着「约 30–60 分钟」），一辈子做几次；而变声是每天用的那件事。
+              它又恰好是页面里最大的一块，首屏滚动成本最高的就是它。
+              折叠走**条件渲染**（见组件注释）：收起来时进度条、训练日志台这些
+              子组件不挂载，省掉它们的渲染成本。
+              ⚠️ 但 useLive 的状态轮询挂在 hook 里（`useLive.ts` 的 setInterval，
+              空闲 5s / 忙时 1.5s 一次），**不受折叠影响** —— 别误以为
+              "收起来就不轮询了"，那是不成立的。 */}
+          <AdvancedSection
+            summary="进阶：给这个音色训练专属模型"
+            hint="攒够素材 → 生成语料 → 训练。跑完模型就绪，「用哪个音色变声」里能直接选到它"
+          >
             <p className="text-xs font-medium text-primary">03 / 训练</p>
             <h3 className="mt-1 flex items-center gap-2 text-lg font-semibold text-card-foreground">
               <Mic2 className="h-4 w-4 text-primary" />
@@ -782,7 +794,7 @@ export function LivePage(
                 训练大约需要 30–60 分钟，期间可以关掉页面去干别的，回来进度还在。
               </p>
             )}
-          </section>
+          </AdvancedSection>
         </div>
 
         {/* 03.5 效果阶梯：想更像？回去补素材 */}
