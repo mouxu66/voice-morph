@@ -2040,7 +2040,11 @@ function insertSayMark(name) {
 
 /** 拉声板清单并渲染。force=false 时 60s 内不重复拉（refreshPanel 每次悬停都跑）。 */
 async function loadSfx(force) {
-  if (!CAP.fx) { renderSayFx(); return; }   // 能力关了要把说话页那排胶囊也收掉
+  // 能力关了：整个声板不拉，说话页那排胶囊也随之不渲染 —— renderSayFx 自带
+  // `!CAP.fx → innerHTML=""` 的清空判据，所以这里不必再单独刷一次。
+  // ⚠️ 这一行必须保持**逐字** `if (!CAP.fx) return;`：petCapabilityGate.test.ts
+  // 拿它当"门控真的接到调用点上"的锚点（2026-10-01 曾因改成块语句把它弄红）。
+  if (!CAP.fx) return;
   const now = Date.now();
   if (!force && now - sfxLoadedAt < 60000) return;
   sfxLoadedAt = now;
