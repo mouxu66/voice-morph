@@ -537,3 +537,42 @@ def test_lint_is_not_in_fast_subset(check, capsys):
     assert proc.returncode == 0, f"--fast --list 退出码 {proc.returncode}：\n{out}"
     # 名单是逐行打印的步骤名；只要 web 出现就说明 lint 被带进了 pre-commit
     assert "\nweb" not in "\n" + out, f"web 步被放进了 --fast 名单：\n{out}"
+
+
+# ---------------- 8. 汇总行的自述也不能是第二份拷贝 ----------------
+# 上面那条门禁补上 lint 之后，我漏改了 `--ci-fidelity` 汇总行 ——
+# 它还硬编码着"前端 job（tsc -b + vitest）"。而**汇总行是整个复刻流程里唯一
+# 给人读的一行文字**：它写错，等于给一个（当时其实是假的）绿盖章。
+# 与 §7 同一个病，只是对象从"测试里的清单"换成了"输出里的措辞"。
+
+
+def test_web_func_src_reads_the_real_file(check):
+    """`_web_func_src()` 必须真的从磁盘读到 `_check_web` 的函数体。
+
+    它不用 `inspect.getsource` 是有原因的（脚本常被当 `__main__` 跑，
+    那时模块对象没有可用源码，`inspect` 会抛 OSError）——所以要钉住
+    "读磁盘"这条替代路径确实有效，且退化时**不抛异常而是返回空串**。
+    """
+    body = check._web_func_src()
+    assert "def _check_web(" in body, "没从磁盘读到 _check_web 的源码"
+    # 退化路径也不能崩（空串会让汇总行退化成"前端 job（，本机近似）"）
+    assert isinstance(body, str)
+
+
+def test_ci_fidelity_summary_does_not_hardcode_web_steps(check):
+    """汇总行必须现算步骤名，不得硬编码 —— 硬编码就是第二份会腐烂的拷贝。
+
+    变异验证：把 `_check_web` 的函数体换成一个空壳，`_web_func_src()` 的
+    结果里就没有步骤名了；这说明它确实读的是源码而非别处写死的清单。
+    """
+    import re as _re
+
+    body = check._web_func_src()
+    steps = set(_re.findall(r'_run\(\s*"([^"]+)"', body))
+    assert steps, "从源码里现算不到任何步骤 —— 这条守卫的取值路径本身坏了"
+    # 汇总行里不许出现形如 "tsc -b + vitest" 的手写清单
+    summary_src = (ROOT / "tools" / "check.py").read_text("utf-8")
+    assert not _re.search(r"前端 job（tsc", summary_src), (
+        "汇总行又硬编码了前端步骤清单 —— 步骤变了这行不会跟着变，"
+        "而它是唯一给人读的一行（2026-10-02 因此漏改过）"
+    )

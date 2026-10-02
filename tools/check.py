@@ -789,6 +789,21 @@ def _ensure_ci_venv(recreate: bool) -> tuple[Path | None, str, str]:
     return py, want, real or want
 
 
+def _web_func_src() -> str:
+    """从**磁盘上的** `check.py` 抠出 `_check_web` 的函数体源码。
+
+    为什么不用 `inspect.getsource`：本脚本常被当 `__main__` 直接跑，那时模块对象
+    没有可用的源码（`inspect` 会抛 OSError）。而且这份源码是给**人读的一行汇总**
+    用的，宁可读不到就退化成"未知"，也不要因为取不到而崩掉整个复刻流程。
+    """
+    try:
+        src = Path(__file__).read_text(encoding="utf-8")
+        start = src.index("def _check_web(")
+        return src[start:src.index("\ndef ", start + 1)]
+    except (OSError, ValueError):
+        return ""
+
+
 def _check_ci_fidelity(recreate: bool = False) -> int:
     """在干净 venv 里跑 CI 的那条命令，并诚实报告"哪些差异没被复刻"。"""
     _say(f"\n=== [ci-fidelity] 复刻 CI（干净 venv：{CI_VENV.name}/）")
@@ -821,9 +836,15 @@ def _check_ci_fidelity(recreate: bool = False) -> int:
 
     ci_node = _ci_node_version(_ci_workflow_text()) or DEFAULT_CI_NODE
     ok = backend_ok and web_ok is not False
+    # ⚠️ 这一行**从 `_check_web` 的源码现算**，不写死步骤名（2026-10-02）。
+    # 原来这里硬编码着"tsc -b + vitest"，而那时 `_check_web` 已经漏了 lint ——
+    # 汇总行是**唯一会被人读的文字**，它写错就等于给假绿盖章。
+    # 与 `test_check_ci_fidelity.py` §7 同理：自述不能是第二份拷贝。
+    _web_steps = sorted(set(re.findall(r'_run\(\s*"([^"]+)"', _web_func_src())))
     print("\n================ ci-fidelity 汇总 ================")
     print(f"  [{'PASS' if backend_ok else 'FAIL'}] 后端 job（requires/electron/ruff/pytest）")
-    print(f"  [{'SKIP' if web_ok is None else ('PASS' if web_ok else 'FAIL')}] 前端 job（tsc -b + vitest，本机近似）")
+    print(f"  [{'SKIP' if web_ok is None else ('PASS' if web_ok else 'FAIL')}] "
+          f"前端 job（{' + '.join(_web_steps)}，本机近似）")
     print(f"  Python：CI 钉 {want} / 本次实际 {real}")
     print(f"  node  ：CI 钉 {ci_node} / 本机 {_probe_node() or '未知'}")
     print("  本机资源：已按裸 runner 模拟（VM_BARE_RUNNER=1），跳过集应与 CI 对齐")
