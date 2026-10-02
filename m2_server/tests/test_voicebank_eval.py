@@ -168,13 +168,32 @@ class TestSaturationPoint:
         # → 饱和档是 30s：录到 30s 就够了
         sat = ve.saturation_point([3, 10, 30, 60], [0.50, 0.70, 0.75, 0.76])
         assert sat is not None
+        assert sat["status"] == "saturated"
         assert sat["duration_tag"] == "30s"
 
-    def test_still_climbing_returns_none(self):
+    def test_still_climbing_is_reported_not_as_saturation(self):
         """逐档都在涨 = 还没饱和。硬指一个档位会得出"录 3s 就够"的错误建议。"""
-        assert ve.saturation_point([3, 10, 30, 60], [0.10, 0.20, 0.30, 0.40]) is None
+        sat = ve.saturation_point([3, 10, 30, 60], [0.10, 0.20, 0.30, 0.40])
+        assert sat is not None
+        assert sat["status"] == "still_climbing"
+        assert sat["duration_s"] is None
+
+    def test_non_monotonic_is_not_reported_as_saturation(self):
+        """★ 端到端演示实测踩到的 bug（2026-10-02）。
+
+        指标序列 [-21.9, -22.4, -20.6, -20.5] 的**首个相邻增量是负的**（回退）。
+        旧判据只看「首个增量 < 阈值」→ 会报成「3s 就饱和了」，而它根本没饱和。
+        正确行为：出现负增量就不下饱和结论，如实说不可判定。
+        """
+        sat = ve.saturation_point([3, 10, 30, 60],
+                                  [-21.9, -22.4, -20.6, -20.5])
+        assert sat is not None
+        assert sat["status"] == "non_monotonic"
+        assert sat["duration_s"] is None
+        assert "非单调" in sat["note"]
 
     def test_no_total_gain_returns_none(self):
+        """总增益 ≤ 0 = 数据不足以判定（与"非单调"、"未饱和"都不是一回事）。"""
         assert ve.saturation_point([3, 10, 30], [0.50, 0.50, 0.40]) is None
 
     def test_single_duration_returns_none(self):
@@ -188,13 +207,22 @@ class TestSaturationPoint:
         这样全模块只有一个地方需要担心方向。"""
         sat = ve.saturation_point([3, 10, 30, 60], [5.0, 3.0, 2.5, 2.4],
                                   higher_is_better=False)
-        assert sat is not None and sat["duration_tag"] == "30s"
+        assert sat is not None
+        assert sat["status"] == "saturated"
+        assert sat["duration_tag"] == "30s"
 
     def test_same_numbers_flip_with_direction(self):
-        """同一组数字，方向不同 → 饱和判定必须不同（防止"忘了传方向"）。"""
+        """同一组数字，方向不同 → 结论必须不同（防止"忘了传方向"）。
+
+        这组数字是**单调下降**的：
+        - 当"越小越好"（如 jitter）时它是进步，且在 30s 饱和；
+        - 当"越大越好"时它整体是退步 → 总增益 ≤ 0 → 数据不足以判定（None），
+          **不能**报成一个饱和档位。
+        """
         vals = [5.0, 3.0, 2.5, 2.4]
         durs = [3, 10, 30, 60]
-        assert ve.saturation_point(durs, vals, higher_is_better=False) is not None
+        assert ve.saturation_point(durs, vals,
+                                   higher_is_better=False)["status"] == "saturated"
         assert ve.saturation_point(durs, vals, higher_is_better=True) is None
 
 

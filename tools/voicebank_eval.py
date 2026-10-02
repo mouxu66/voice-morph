@@ -309,12 +309,21 @@ def saturation_point(durations: list[float], values: list[float], *,
     durations 升序、values 同序。内部按 `higher_is_better` 归一，调用方不用管方向
     （方向搞反是这个模块最容易犯的错，所以收进函数内部一次搞定）。
 
-    总增益 = 末档 − 首档（≤ 0 视为「录更久没有增益」，返回 None）。
-    饱和点 = 第一个满足「从该档再加一档，增量 < gain_ratio × 总增益」的档位。
-    含义：**录到这一档就够了，再录更久收益已经不明显。**
+    返回 **None = 数据不足以判定**（档位不足 2 档 / 总增益 ≤ 0）。
+    否则返回 dict：
 
-    返回 None 的三种情况都会在报告里明说，不假装找到了：档位不足 2 档 / 总增益 ≤ 0 /
-    逐档都在涨（没有饱和）。
+        status          "saturated" | "still_climbing" | "non_monotonic"
+        duration_s      饱和档秒数（**仅 status == "saturated" 时有意义**）
+        duration_tag    同上，标签形式
+        gain_fraction   该档增量占总增益的比例（仅 saturated）
+        note            非 saturated 时的一句话解释
+
+    ★ 为什么必须区分 `non_monotonic`（2026-10-02 端到端演示实测踩到）：
+      若判据只是「首个相邻增量 < 阈值就宣布饱和」，**指标非单调时会给出荒谬结论** ——
+      实测某指标序列是 [-21.9, -22.4, -20.6, -20.5]，第一步是**负增量**（回退），
+      却被报成「3s 就饱和了」，而它其实根本没饱和。
+      正确做法：**出现负增量就不下饱和结论**，如实说「趋势非单调，饱和点不可判定」。
+      （同一条纪律：报告宁可说"没测出来"，也不要给一个看起来很像结论的错数。）
     """
     if len(durations) < 2 or len(values) != len(durations):
         return None
@@ -324,13 +333,18 @@ def saturation_point(durations: list[float], values: list[float], *,
     total = v[-1] - v[0]
     if total <= 0:
         return None
-    for i in range(len(v) - 1):
-        step = v[i + 1] - v[i]
+    steps = [v[i + 1] - v[i] for i in range(len(v) - 1)]
+    if any(s < 0 for s in steps):
+        return {"status": "non_monotonic", "duration_s": None, "duration_tag": None,
+                "gain_fraction": None,
+                "note": "指标随档位非单调（出现回退），饱和点不可判定"}
+    for i, step in enumerate(steps):
         if step < gain_ratio * total:
-            return {"duration_s": float(durations[i]),
+            return {"status": "saturated", "duration_s": float(durations[i]),
                     "duration_tag": _dur_tag(durations[i]),
-                    "gain_fraction": round(step / total, 4)}
-    return None
+                    "gain_fraction": round(step / total, 4), "note": None}
+    return {"status": "still_climbing", "duration_s": None, "duration_tag": None,
+            "gain_fraction": None, "note": "逐档都在涨，尚未饱和"}
 
 
 # ---------------- plan：实验设计矩阵 ----------------
@@ -719,6 +733,24 @@ def analyze(exp: str, *, root: Path | None = None,
     return res
 
 
+def _sat_text(sat: dict | None) -> str:
+    """把饱和点结论渲染成一句话。
+
+    ★ 三种「没有结论」必须分开说 —— 一律写成"未饱和"会让读者以为
+    「再录更久还能变好」，而真实情况可能是"根本测不出趋势"（数据不足或非单调）。
+    """
+    if not sat:
+        return "数据不足以判定"
+    st = sat.get("status")
+    if st == "saturated":
+        return f"{sat['duration_tag']}（该档增量占总增益 {sat['gain_fraction']:.1%}）"
+    if st == "non_monotonic":
+        return "非单调，不可判定"
+    if st == "still_climbing":
+        return "未饱和（逐档都在涨）"
+    return "数据不足以判定"
+
+
 def _render_md(res: dict) -> str:
     """把报告渲染成人类可读的 Markdown。数字原样带出，不做二次加工。"""
     L = [f"# 嗓音保存复现质量评测 · {res.get('exp')}", "",
@@ -736,10 +768,8 @@ def _render_md(res: dict) -> str:
         if not bd:
             continue
         cols = [str(bd.get(t)) for t in tags]
-        sat = v.get("saturation")
-        sat_s = (f"{sat['duration_tag']}（该档增量占总增益 {sat['gain_fraction']:.1%}）"
-                 if sat else "未饱和")
-        L.append(f"| {metric} | {v.get('direction')} | " + " | ".join(cols) + f" | {sat_s} |")
+        L.append(f"| {metric} | {v.get('direction')} | " + " | ".join(cols)
+                 + f" | {_sat_text(v.get('saturation'))} |")
     L.append("")
 
     L += ["## RQ2 文本条件 → 质量", "",
