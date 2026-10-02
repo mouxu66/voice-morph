@@ -117,69 +117,20 @@ SATURATION_GAIN_RATIO = 0.10
 # 相关系数的最小样本数。低于它返回 None（不编造数字）。
 MIN_CORR_N = 3
 
-# ---------------- 语料 ----------------
+# ---------------- 语料（★ 唯一真相源在 m2_server/voicepreserve.py） ----------------
 #
-# 参考脚本：**按顺序念**，时长档 = 取前 N 秒（前缀截断）。
-# 为什么用前缀截断而不是随机抽句：档位之间**只差"录了多久"**这一个变量，
-# 内容完全被控制住 —— 否则"10s 档比 3s 档好"可能只是抽到了更好念的句子。
+# 这段语料**同时**被产品（引导用户照着念）与研究（评测矩阵）使用，
+# 所以它只能有一份定义 —— 两处各写一份会漂移，而漂移的后果是**实验失效**
+# （研究测的是 A 脚本，产品却让用户念 B 脚本，结论对不上任何真实使用）。
 #
-# 选句原则：日常自然（声音保存要念的就是以后真会说的话）+ 尽量覆盖普通话声韵母。
-REFERENCE_SCRIPT = [
-    "你好，很高兴见到你。",
-    "今天天气很好，我们一起出去走走吧。",
-    "我想喝一杯温水，谢谢。",
-    "请帮我打开窗户，房间里有点闷。",
-    "妈妈做的饭菜永远是最好吃的。",
-    "明天上午九点我们在地铁站见面。",
-    "这本书写得很有意思，我看了两遍。",
-    "孩子，你要记得按时吃饭。",
-    "我有点累了，想早点休息。",
-    "春天来了，路边的花都开了。",
-    "麻烦你帮我拿一下那个包。",
-    "他说话的声音很温柔，让人很安心。",
-    "我们家的猫喜欢趴在阳台上晒太阳。",
-    "这个周末我打算去看望爷爷奶奶。",
-    "请你慢一点说，我听得不太清楚。",
-    "学校门口新开了一家面馆，味道不错。",
-    "谢谢你一直陪在我身边。",
-    "下雨了，出门记得带伞。",
-    "我特别喜欢清晨的安静。",
-    "他现在在外地工作，过年才回来。",
-    "你把钥匙放在桌子上就好。",
-    "这首老歌让我想起了小时候。",
-    "医生说我需要多喝水，多休息。",
-    "我们拍一张合影留作纪念吧。",
-    "不管发生什么，我都会支持你。",
-    "山上的空气很新鲜，风也凉快。",
-    "请你把这段话再念一遍给我听。",
-    "晚上八点有一场很好看的电影。",
-    "我从来没有去过那么远的地方。",
-    "希望你以后每天都开开心心的。",
-]
+# 因此这里 **import** 而不是复制。本模块是离线工具、`voicepreserve` 是运行时存储层，
+# 依赖方向看着有点反常 —— 但语料的归属是「用户要念什么」这个**产品问题**，
+# 产品侧才是它的家。`test_voicebank_eval.py` 有一条对账断言钉住这条依赖。
+import voicepreserve as _vp  # noqa: E402
 
-# 四类复现文本。style 是给合成器的语气提示（不是要念出来的字）。
-REPRO_TEXTS: dict[str, list[dict[str, str]]] = {
-    "same": [
-        {"text": "你好，很高兴见到你。", "style": "平静"},
-    ],
-    "cross": [
-        {"text": "麻烦你把空调的温度调低一点。", "style": "平静"},
-        {"text": "我下周要去一趟广州出差。", "style": "平静"},
-    ],
-    "emotion": [
-        {"text": "太好了，我终于等到这一天了！", "style": "高兴"},
-        {"text": "你怎么能这样说话呢！", "style": "生气"},
-        {"text": "我真的不知道该怎么办了。", "style": "难过"},
-    ],
-    "long": [
-        {"text": "如果你以后有机会去到很远的地方，一定要记得给家里打个电话，"
-                 "别让我们担心。", "style": "平静"},
-    ],
-}
-
-# 参考脚本容量的估算语速（字/秒）。用来提示「你的档位要录多久才够」。
-# 4 字/秒 ≈ 240 字/分钟，是普通话朗读的常见速率。
-SCRIPT_CHARS_PER_SEC = 4.0
+REFERENCE_SCRIPT: tuple[str, ...] = _vp.RECORD_SCRIPT
+REPRO_TEXTS: dict[str, tuple[dict[str, str], ...]] = _vp.REPRO_TEXTS
+SCRIPT_CHARS_PER_SEC: float = _vp.SCRIPT_CHARS_PER_SEC
 
 
 # ---------------- 小工具 ----------------
@@ -210,15 +161,17 @@ def _parse_dur_tag(tag: str) -> float | None:
 
 
 def _char_count(text: str) -> int:
-    """去标点空白后的字数。口径与 `tools/voice_qc.py::_char_count` 一致。"""
-    punct = set("，。！？；：、·…—“”‘’（）《》〈〉【】,.!?;:()[]{}<>\"'`~@#$%^&*_+=/\\|- \t\r\n")
-    return sum(1 for ch in text if ch not in punct)
+    """去标点空白后的字数。**实现与唯一真相源都在 `m2_server/voicepreserve.py`**
+    （口径与 `tools/voice_qc.py::_char_count` 一致）。这里只是转发，
+    不保留第二份实现 —— 两处各写一份会漂移，而字数漂了会直接改变时长档的容量判断。"""
+    return _vp.char_count(text)
 
 
 def _script_capacity_s(script: list[str] | None = None) -> float:
     """参考脚本念完大约多少秒 —— 用来判断某个时长档能不能被脚本覆盖。"""
-    chars = sum(_char_count(s) for s in (script or REFERENCE_SCRIPT))
-    return chars / SCRIPT_CHARS_PER_SEC
+    if script is None:
+        return _vp.script_capacity_s()
+    return sum(_char_count(s) for s in script) / SCRIPT_CHARS_PER_SEC
 
 
 def _median(vals: list[float]) -> float | None:

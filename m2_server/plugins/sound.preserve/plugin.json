@@ -1,0 +1,29 @@
+{
+  "id": "sound.preserve",
+  "name": "声音保存",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 155,
+  "summary": "在声音还清晰时录一段、本机克隆保存，日后以自己的声音输出；面向教师等职业用嗓人群",
+  "requires": [],
+  "routers": ["voicepreserve_api"],
+  "hooks": [],
+  "routes": [
+    {
+      "path": "/preserve",
+      "module": "Preserve",
+      "export": "PreserveRoute",
+      "nav": { "label": "声音保存", "icon": "ShieldCheck", "group": "voices", "order": 40 }
+    }
+  ],
+  "legacy_routes": [],
+  "extras": {
+    "python": [],
+    "external": [],
+    "models": []
+  },
+  "health": null,
+  "disable": {
+    "note": "关闭后「声音保存」页消失（/api/preserve/* 不再挂载）。**已保存的档案不会被删除** —— 它们躺在 media/preserve/ 下，重新打开这个能力就能继续用。"
+  }
+}

@@ -37,9 +37,15 @@ _MEDIA_TYPES = {
 
 @router.get("/media/{kind}/{name:path}")
 def media(kind: str, name: str):
-    """静态音频访问。clips/voicebank 在 media/ 下，outputs 在项目根下。
-    voicebank 的参考音频在 <voice_id>/reference.wav，故 name 允许多层路径。"""
-    if kind not in ("clips", "outputs", "voicebank"):
+    """静态音频访问。clips/voicebank/preserve 在 media/ 下，outputs 在项目根下。
+    voicebank 的参考音频在 <voice_id>/reference.wav、preserve 的在 <档案 id>/refs/*.wav，
+    故 name 允许多层路径。
+
+    `preserve`（2026-10-02 加）：声音保存档案里的录音要给前端回放（试听自己录的那一档），
+    而它是**用户自己的录音** —— 不走这个白名单就得另开一条只读路由，
+    等于把同一件事（按路径读 media/ 下的音频）实现两遍。
+    """
+    if kind not in ("clips", "outputs", "voicebank", "preserve"):
         raise HTTPException(404, "invalid kind")
     base = (OUT if kind == "outputs" else cfg.MEDIA_DIR / kind).resolve()
     p = (base / name).resolve()

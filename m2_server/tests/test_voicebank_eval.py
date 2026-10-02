@@ -555,3 +555,30 @@ class TestCorpus:
         """★ cross 条件的语义是「参考音里没有的句子」。混进去就毁了泛化考察。"""
         for t in ve.REPRO_TEXTS["cross"]:
             assert t["text"] not in ve.REFERENCE_SCRIPT
+
+
+class TestCorpusIsSingleSource:
+    """★ 语料只能有一份定义。
+
+    研究测的是 A 脚本、产品却让用户念 B 脚本 → 结论对不上任何真实使用，
+    而且**两边都不会报错**。所以这里断言评测工具用的是**产品侧那一份对象本身**
+    （`is` 同一性），而不是"内容恰好相等"—— 内容相等挡不住有人复制一份出来。
+    """
+
+    def test_eval_reuses_the_product_corpus_object(self):
+        import voicepreserve as vp
+
+        assert ve.REFERENCE_SCRIPT is vp.RECORD_SCRIPT, (
+            "评测工具自己复制了一份参考脚本 —— 语料的唯一真相源在 "
+            "m2_server/voicepreserve.py，必须 import 而不是复制"
+        )
+        assert ve.REPRO_TEXTS is vp.REPRO_TEXTS, (
+            "复现文本被复制了一份 —— 同上"
+        )
+
+    def test_char_count_delegates_instead_of_reimplementing(self):
+        """字数口径也必须只有一份：漂了会直接改变时长档的容量判断。"""
+        import voicepreserve as vp
+
+        assert ve._char_count("你好，世界") == vp.char_count("你好，世界")
+        assert ve._script_capacity_s() == vp.script_capacity_s()

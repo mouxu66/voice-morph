@@ -448,6 +448,7 @@ _FROZEN_ROUTES: tuple[tuple[str, str, str], ...] = (
     ("/cover", "Cover", "CoverRoute"),  # 翻唱（3a32d43）：整首歌只换人声再合回伴奏
     ("/ytdlp", "Ytdlp", "YtdlpRoute"),  # 在线扒歌：外部 yt-dlp 桥（可关）
     ("/workshop", "Workshop", "WorkshopRoute"),
+    ("/preserve", "Preserve", "PreserveRoute"),  # 声音保存：教师等职业用嗓人群的嗓音档案
 )
 
 _FROZEN_LEGACY: tuple[tuple[str, str], ...] = (
@@ -478,6 +479,7 @@ _FROZEN_NAV: tuple[tuple[str, str, str, str, int], ...] = (
     ("/audition", "试音间", "AudioLines", "voices", 20),
     ("/workshop", "训练变声", "Mic2", "voices", 30),
     ("/pet-market", "桌宠皮肤", "PawPrint", "desktop", 10),
+    ("/preserve", "声音保存", "ShieldCheck", "voices", 40),
 )
 
 

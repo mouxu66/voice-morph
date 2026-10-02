@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom"
-import { ArrowRight, Boxes, Camera, CloudDownload, Hammer, Library, Mic2, Music4, Radio, ScanSearch, ShoppingBag, Sparkles, Volume2 } from "lucide-react"
+import { ArrowRight, Boxes, Camera, CloudDownload, Hammer, Library, Mic2, Music4, Radio, ScanSearch, ShieldCheck, ShoppingBag, Sparkles, Volume2 } from "lucide-react"
 import { Card, PageShell } from "@/components/layout/PageShell"
 import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
 import { RemoteQrCard } from "./RemoteQrCard"
@@ -43,6 +43,7 @@ export function CapabilityIndexRoute() {
     { to: "/ytdlp", name: "在线扒歌", desc: "粘一条网易云/QQ音乐/B站链接，交给外部的 yt-dlp 取回音频", icon: CloudDownload, plugin: "sound.ytdlp" },
     { to: "/workshop", name: "音色工坊", desc: "丢素材进来，自动切片质检，练专属音色", icon: Mic2, plugin: "sound.workshop" },
     { to: "/live?tab=rvc", name: "实时变声", desc: "开麦即变，游戏/会议/语音直接用", icon: Radio, plugin: "sound.rvc-live" },
+    { to: "/preserve", name: "声音保存", desc: "在声音还清晰时录一段、本机保存，日后以自己的声音说话；面向教师等长期用嗓人群", icon: ShieldCheck, plugin: "sound.preserve" },
     { to: "/voices?tab=mine", name: "我的音色", desc: "所有音色档案的管理与导出", icon: Library, plugin: null },
     { to: "/voices?tab=market", name: "音色市场", desc: "开源音色下载安装，含断点续传与回滚", icon: ShoppingBag, plugin: null },
     { to: "/pet-market", name: "桌宠与人偶市场", desc: "桌面人偶本体、皮肤市场、自定义形象", icon: Sparkles, plugin: "pet.market" },
