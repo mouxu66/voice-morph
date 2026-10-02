@@ -172,7 +172,8 @@ function backendUploadFormFields(): string[] {
   const at = txt.indexOf('@router.post("/capture/mic/upload")')
   expect(at, 'capture_api.py 里找不到上传端点 —— 抽取失效了，别让它假绿').toBeGreaterThan(-1)
   const block = txt.slice(at, at + 1500)
-  return [...block.matchAll(/(\w+)\s*:\s*[\w\[\]| ]+\s*=\s*Form\(/g)].map((m) => m[1]).sort()
+  // 字符类里的 `[` 不必转义（no-useless-escape：只有 `]` 闭合符需要）
+  return [...block.matchAll(/(\w+)\s*:\s*[\w[\]| ]+\s*=\s*Form\(/g)].map((m) => m[1]).sort()
 }
 
 /** `SendVoiceReq` 的字段名（发送语音那一步的实际契约）。 */

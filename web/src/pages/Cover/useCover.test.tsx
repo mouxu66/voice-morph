@@ -4,6 +4,7 @@ import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-li
 import { useCover } from "@/pages/Cover/useCover"
 import { CoverPage } from "@/pages/Cover/CoverPage"
 import type { CoverStatus, RvcVoice } from "@/api/client"
+import type * as clientModule from "@/api/client"
 
 /**
  * `useCover` / `CoverPage` 的**状态机易错点**守卫（2026-09-27 修的三处）。
@@ -45,7 +46,7 @@ const ONE_VOICE: RvcVoice = {
 }
 
 vi.mock("@/api/client", async () => {
-  const actual = await vi.importActual<typeof import("@/api/client")>("@/api/client")
+  const actual = await vi.importActual<typeof clientModule>("@/api/client")
   return {
     ...actual,
     listRvcVoices: vi.fn(),

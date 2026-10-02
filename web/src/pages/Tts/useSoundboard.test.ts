@@ -16,9 +16,10 @@ import { renderHook, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { useAppStore } from "@/store/useAppStore"
+import type * as clientModule from "@/api/client"
 
 vi.mock("@/api/client", async () => {
-  const actual = await vi.importActual<typeof import("@/api/client")>("@/api/client")
+  const actual = await vi.importActual<typeof clientModule>("@/api/client")
   return {
     ...actual,
     soundboardCatalog: vi.fn(),

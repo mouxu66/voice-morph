@@ -6,6 +6,7 @@ import type { ReactNode } from "react"
 import { useOfflineVc } from "@/pages/OfflineVc/useOfflineVc"
 import { offlineVcDeepLink, liveDeepLink } from "@/lib/deepLink"
 import type { OfflineVcStatus, RvcVoice } from "@/api/client"
+import type * as clientModule from "@/api/client"
 
 /**
  * 深链预选音色（`?voice=`）的**诚实性**守卫 —— 首页「录一句听听」带过来的那条路。
@@ -55,7 +56,7 @@ const IDLE: OfflineVcStatus = {
 }
 
 vi.mock("@/api/client", async () => {
-  const actual = await vi.importActual<typeof import("@/api/client")>("@/api/client")
+  const actual = await vi.importActual<typeof clientModule>("@/api/client")
   return {
     ...actual,
     listRvcVoices: vi.fn(),
