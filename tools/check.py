@@ -290,8 +290,20 @@ def _check_pytest(fast: bool) -> tuple[bool, str]:
                 extra_env={"CODEBUDDY_SAFE_DELETE_ENABLED": "0"})
 
 
+def _npm_cmd() -> list[str] | None:
+    """Windows 上 npm 是 npm.CMD，**必须用 which 取全路径**。
+
+    与 `_npx_cmd` 同一个坑（2026-10-02 实测）：直接 `["npm", "run", "lint"]` 会在
+    Windows 上以 `[WinError 2] 系统找不到指定的文件` 失败 —— `subprocess` 不会按
+    PATHEXT 补 `.CMD` 后缀，只有 `shutil.which` 会。而 CI 侧是 bash（`shell: bash`
+    跑 `npm run lint`）所以那里是好的，**本机会假红**。
+    """
+    exe = shutil.which("npm")
+    return [exe] if exe else None
+
+
 def _check_web() -> tuple[bool, str]:
-    """前端两步：`tsc -b`（类型）+ `vitest run`（用例）。
+    """前端三步：`tsc -b`（类型）+ `npm run lint`（静态）+ `vitest run`（用例）。
 
     为什么要把 vitest 也放进来（2026-09-19）：本项目**第一个**前端单测
     （`web/src/components/SetupBanner.test.tsx`）是在修“能力加载失败不提示”时加的，
@@ -300,7 +312,18 @@ def _check_web() -> tuple[bool, str]:
     加测试而不接门禁 = `docs/犯错档案-工程.md` §3.15 / §3.23 那族错误（测试存在却从不在门禁里跑 → 慢慢腐烂），
     所以“加第一个前端单测”这件事必须连同这一步一起做。
 
-    顺序：先 tsc（它管能不能构建，失败得最快），再 vitest。
+    为什么补 lint（2026-10-02，**同类错误的第二次**）：`.github/workflows/ci.yml` 的 web job
+    跑 `npm run lint`，而本函数当时只有 tsc + vitest —— 也就是说 **eslint 是全仓库唯一
+    只在 CI 跑、任何本地门禁都不跑的检查**。后果实测到了：4 个 error
+    （3 处 `typeof import()` + 1 处字符类多余转义）一路提交进主干，
+    而本机 `check.py` 全绿、`--ci-fidelity` 也报“CI 应会绿”，**只有真 CI 会红**。
+    这与 2026-09-20 那次（lint 坏了一整年没人发现，根因是配置 import 了未声明的包）
+    是同一族：**检查存在但不进门禁 = 不存在**。补这一处之后，本函数与 ci.yml 的 web job
+    逐条对齐（tsc / lint / vitest），顺序也照抄（lint 在 vitest 之前）。
+    代价：实测 eslint 约 5.2s，因此**不进 --fast**（pre-commit 预算 <5s，
+    超了人就开始 --no-verify）——它跟 tsc、vitest 一样只在本函数里，pre-push 与 CI 都会跑。
+
+    顺序：tsc（管能不能构建，失败得最快）→ lint（纯静态，快且无副作用）→ vitest。
     """
     web = ROOT / "web"
     if not (web / "package.json").exists():
@@ -311,6 +334,13 @@ def _check_web() -> tuple[bool, str]:
     if cmd is None:
         return False, "未找到 npx（需要 Node.js）"
     ok, note = _run("tsc", cmd + ["tsc", "-b", "--pretty", "false"], web)
+    if not ok:
+        return False, note
+    # 与 ci.yml 逐字相同（含 --max-warnings 0：项目不留 warning 债）
+    npm = _npm_cmd()
+    if npm is None:
+        return False, "未找到 npm（需要 Node.js）"
+    ok, note = _run("lint", npm + ["run", "lint"], web)
     if not ok:
         return False, note
     return _run("vitest", cmd + ["vitest", "run"], web)

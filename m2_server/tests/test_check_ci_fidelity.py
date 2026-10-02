@@ -376,3 +376,164 @@ def test_ini_key_owners_table_is_not_vacuous():
     把 `asyncio_mode = "auto"` 加回 pyproject，这条仍绿而上一条会红。"""
     assert "asyncio_mode" in _INI_KEY_OWNERS
     assert ini_options(), "读不到 [tool.pytest.ini_options]"
+
+
+# ---------------- 7. ci.yml 的 web job ↔ check.py 的 `_check_web` ----------------
+# 2026-10-02 实测到的洞，与 §6 同一族：**检查存在但不进门禁 = 不存在**。
+# `npm run lint` 当时是全仓库**唯一只在 CI 跑**的检查（本机 check.py 九步、
+# pre-commit --fast、pre-push 全都不含它），于是 4 个 eslint error 一路提交进主干，
+# 而本机全绿、`--ci-fidelity` 也报"CI 应会绿"——**只有真 CI 会红**。
+# 它与 2026-09-20 那次（lint 坏了一整年没人发现）的区别只是症状不同，根因是同一个：
+# 「谁跑 lint」与「谁声明要跑 lint」写在两个地方，中间隔着人的记性。
+#
+# 本节把两条清单**互相钉住**：ci.yml 的 web job 有哪条命令，`_check_web` 就必须有哪步。
+# 以后往 ci.yml 加一步（比如将来的 stylelint / prettier --check），这里立刻红。
+
+#: ci.yml 的 web job 目前跑的命令 → `_check_web` 里对应那步的步骤名。
+#: **不在表里的命令故意直接失败** —— 与 `_ADDOPTS_OWNERS` 同一手法：
+#: 强制改动者显式写一次"它在 check.py 的哪一步"，而不是默默漏掉。
+#: ⚠️ 这个表只回答"ci.yml 有 N 条 ↔ 本地叫得出 N 个名字"，**不回答**"本地真的跑了"。
+#: 后者由 `_implemented_web_steps()` 从源码现算 —— 两者缺一不可：
+#: 2026-10-02 第一版把步骤名也写死成本文件里的常量，结果把 `_check_web` 里的 lint 删掉后，
+#: 那条"真正要拦的"断言**照样绿**（它查的是手抄清单，源码根本没参与）。
+#: 手抄的清单与被检查的源码同源时，它就是一份漂亮的死尸。
+_WEB_JOB_COMMANDS: dict[str, str] = {
+    "npx tsc -b": "tsc",
+    "npm run lint": "lint",
+    "npx vitest run": "vitest",
+}
+
+
+def _implemented_web_steps() -> set[str]:
+    """从 `tools/check.py` 的 `_check_web` 函数体里**现算**它实际跑哪几步。
+
+    认 `_run("<名字>", …)` 这个形态 —— 它是 `_check_web` 唯一的执行入口，
+    所以"函数体里出现过"就等价于"这一步会被跑"。
+    """
+    src = (ROOT / "tools" / "check.py").read_text("utf-8")
+    start = src.index("def _check_web(")
+    end = src.index("\ndef ", start + 1)
+    body = src[start:end]
+    return set(re.findall(r'_run\(\s*"([^"]+)"', body))
+
+
+def _ci_web_job_commands() -> list[str]:
+    """从真实 ci.yml 的 web job 里抠出命令行（忽略注释行与空行）。
+
+    必须剥注释：`ci.yml` 里就有一段注释在解释"eslint 此前坏了多久"，
+    而这段注释里就有 `npm run lint` 这几个字 —— 直接搜会命中注释本身，
+    于是「ci.yml 里有 lint」这条断言在**删掉真正那步之后仍然为真**，
+    门禁就成了一具漂亮的死尸。
+    """
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text("utf-8")
+    lines = []
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()   # 剥行内注释与整行注释
+        if not line:
+            continue
+        if line.startswith("#"):
+            continue
+        # 只在 web job 段内收集：backend job 的 `python tools/check.py --no-web`
+        # 与 install 步骤不是"前端 job 跑的命令"。
+        lines.append(line)
+    # 简化：ci.yml 只有一个 web job 段，收集所有含 npx / npm run 的非注释行
+    out = []
+    for line in lines:
+        if line.startswith("run:") or "  " in line:
+            body = line.split("run:", 1)[-1].strip() if "run:" in line else line
+        else:
+            body = line
+        for cmd in _WEB_JOB_COMMANDS:
+            if body == cmd or body.startswith(cmd + " "):
+                out.append(cmd)
+    return sorted(set(out))
+
+
+def test_ci_web_job_command_parser_reads_real_file():
+    """解析器自检：真实 ci.yml 必须解析出全部三条（防"改了 ci.yml 结构 → 静默空集 → 全绿"）。"""
+    got = _ci_web_job_commands()
+    assert got == sorted(_WEB_JOB_COMMANDS), (
+        f"ci.yml 的 web job 只解析出 {got}，与表不符 —— "
+        "解析器或 workflow 变了，先修 _ci_web_job_commands 再说"
+    )
+
+
+def test_every_ci_web_job_command_has_a_step_in_check_web():
+    """★ 本节真正要拦的：ci.yml 跑的东西 check.py 必须**源码里真的**跑。
+
+    2026-10-02 的形状 —— `npm run lint` 长期只在 CI 跑，本机四处门禁全不覆盖，
+    4 个 error 顺利进主干，而本机全绿、`--ci-fidelity` 还报"CI 应会绿"。
+    往 ci.yml 加一步而忘了加 check.py 的步，这里立刻红。
+
+    判定读的是 `_implemented_web_steps()`（从源码现算），**不是**本文件里的清单 ——
+    这一点是被变异测试教会的：删掉 `_check_web` 里的 lint 步之后，
+    第一版这条断言仍然是绿的，因为它比的是手抄清单与手抄清单。
+    """
+    implemented = _implemented_web_steps()
+    missing = sorted(
+        cmd for cmd in _ci_web_job_commands() if _WEB_JOB_COMMANDS[cmd] not in implemented
+    )
+    assert not missing, (
+        f"ci.yml 的 web job 跑 {missing}，但 check.py 的 _check_web 没有对应步骤"
+        f"（当前实现了 {sorted(implemented)}）。"
+        "只写在 ci.yml 里 = 本机永远看不见它红（2026-10-02 的 lint 就是这样漏了）。"
+        "请在 _check_web 里补这一步，并同步本文件 _WEB_JOB_COMMANDS"
+    )
+
+
+def test_check_web_step_names_match_the_table():
+    """`_check_web` 的每一步都必须能在表里找到来由（防止有人加了个没登记的步骤）。
+
+    这里**允许**本地多跑（多跑只是慢，不会假绿），但多出来的那步必须是有意为之 ——
+    所以要求它先在 `_WEB_JOB_COMMANDS` 的值域里出现过。
+    """
+    declared_steps = set(_WEB_JOB_COMMANDS.values())
+    unnamed = sorted(_implemented_web_steps() - declared_steps)
+    assert not unnamed, (
+        f"_check_web 里的步骤 {unnamed} 没在 _WEB_JOB_COMMANDS 里登记来由 —— "
+        "要么在 ci.yml 里也加上（否则就是本机自创、CI 不认的检查），要么说明它为什么例外"
+    )
+
+
+def test_check_web_covers_every_ci_command_at_least_once():
+    """变异验证：三条断言在"删掉某一步"时**至少有一条**变红。
+
+    这条本身不检查什么，它防的是"上面几条集体失效"——
+    2026-10-02 第一版就是因为三条都只比手抄清单而集体变绿。
+    做法是真的去改源码（临时）再跑判定，最后还原。
+    """
+    src_path = ROOT / "tools" / "check.py"
+    original = src_path.read_text("utf-8")
+    for name in sorted(set(_WEB_JOB_COMMANDS.values())):
+        mutated = re.sub(rf'_run\(\s*"{name}",', "_run(\"__MUTATED__\",", original, count=1)
+        assert mutated != original, f"变异失败：源码里找不到 _run(\"{name}\"（这一步本来就不存在）"
+        try:
+            src_path.write_text(mutated, encoding="utf-8")
+            still = set(_WEB_JOB_COMMANDS.values()) - _implemented_web_steps()
+            assert still, f"删掉 {name} 步后，'ci.yml 有的本地没有'这条仍然绿 —— 门禁失效"
+        finally:
+            src_path.write_text(original, encoding="utf-8")
+    assert _implemented_web_steps() == set(_WEB_JOB_COMMANDS.values()), "还原失败"
+
+
+def test_lint_is_not_in_fast_subset(check, capsys):
+    """eslint（实测 5.2s）不能进 `--fast`。
+
+    pre-commit 的预算是 <5s（`.githooks/pre-commit` 钩子注释原话："超了人就该绕过了"）。
+    把 5.2s 的检查塞进去 = 下一个人开始用 `--no-verify`，
+    那就等于把已有的八步门禁一起作废 —— 拦住一次 5s 换掉八步，不划算。
+
+    做法是**实测** `--fast --list` 的真实名单，而不是去查 `check.py` 里的某个常量：
+    `--fast` 的过滤是内联元组（`names = [n for n in names if n not in ("web", …)]`），
+    没有任何可断言的常量可引，将来有人重构这段也不会让本测试变假红。
+    """
+    import subprocess
+
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "check.py"), "--fast", "--list"],
+        capture_output=True, encoding="utf-8", errors="replace", cwd=str(ROOT),
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, f"--fast --list 退出码 {proc.returncode}：\n{out}"
+    # 名单是逐行打印的步骤名；只要 web 出现就说明 lint 被带进了 pre-commit
+    assert "\nweb" not in "\n" + out, f"web 步被放进了 --fast 名单：\n{out}"
