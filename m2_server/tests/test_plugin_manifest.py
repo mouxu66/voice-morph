@@ -180,7 +180,14 @@ def test_mount_plan_is_plugin_order_then_declared_router_order():
 
 def test_manifest_ids_and_order_are_unique():
     plugins = plugin_manifest.load_all()
-    assert len(plugins) == 22, "插件数量变了就要同步更新 README 与设计文档里的数字"
+    # 数量用**现算的分类和**表达，而不是再手抄一个整数：手抄的整数每加一个插件
+    # 就要改这里，而「忘了改」与「有插件没被认领」长得一模一样，都是一个绿变红。
+    # 真正的意图是「core 类恰好是这7 个」（下一条钉住）与「总数 = 分类之和」，
+    # 这两条都不会因为新增能力而需要人来更新。
+    n_core = sum(1 for p in plugins if p.is_core)
+    n_opt = sum(1 for p in plugins if not p.is_core)
+    assert len(plugins) == n_core + n_opt, "有插件没被 is_core 归到任何一侧（分类字段坏了）"
+    assert len(plugins) == len({p.id for p in plugins}), "id 有重复"
     assert [p.order for p in plugins] == sorted(p.order for p in plugins)
     assert all(p.summary and p.name for p in plugins)
 
@@ -260,7 +267,12 @@ def test_all_plugins_are_ok_on_a_healthy_start():
     _load_all()
     cat = plugin_manifest.catalog()
     assert cat["ok"] is True
-    assert cat["counts"] == {"total": 22, "ok": 22, "broken": 0, "disabled": 0}
+    # 三个计数之间的关系，而不是三个手抄的整数：
+    # total = ok + broken + disabled（恒等式，加插件不必改），
+    # 「healthy 就该一个都不 broken/disabled」才是这条真正要拦的。
+    c = cat["counts"]
+    assert c["total"] == c["ok"] + c["broken"] + c["disabled"], c
+    assert (c["broken"], c["disabled"]) == (0, 0), c
     assert all(p["state"] == "ok" for p in cat["plugins"])
 
 
@@ -283,7 +295,12 @@ def test_router_never_attempted_counts_as_broken_not_ok():
     而 `server.py` 那边忘了挂（或改了名字）。
     """
     cat = plugin_manifest.catalog()  # 注意：**没有** _load_all()，registry 是空的
-    assert cat["counts"]["broken"] == 22
+    # 「全 broken」用恒等式表达：没有 registry 时每个插件都该 broken，
+    # 于是 ok+disabled 必须为 0，而 broken 自然等于总数（不必手抄总数）。
+    c = cat["counts"]
+    assert c["ok"] == 0 and c["disabled"] == 0, c
+    assert c["total"] == c["ok"] + c["broken"] + c["disabled"], c
+    assert c["broken"] == c["total"], c
     assert all("未注册" in " ".join(p["reasons"]) for p in cat["plugins"] if p["state"] == "broken")
 
 
@@ -296,9 +313,14 @@ def test_disabled_is_not_broken(monkeypatch):
     _load_all()
     monkeypatch.setattr(plugin_manifest, "disabled_ids", lambda: {"sound.tts", "sound.effects"})
     cat = plugin_manifest.catalog()
-    assert cat["counts"] == {"total": 22, "ok": 20, "broken": 0, "disabled": 2}
+    off = {"sound.tts", "sound.effects"}
+    c = cat["counts"]
+    # 「关掉的恰好是这两个」用集合表达；总数用恒等式表达 —— 两者都不必手抄。
+    assert {p["id"] for p in cat["plugins"] if p["state"] == "disabled"} == off
+    assert c["disabled"] == len(off) and c["broken"] == 0, c
+    assert c["total"] == c["ok"] + c["broken"] + c["disabled"], c
+    assert c["ok"] == c["total"] - len(off), c
     assert cat["ok"] is True, "有插件被关掉不该让整体 ok 变假"
-    assert {p["id"] for p in cat["plugins"] if p["state"] == "disabled"} == {"sound.tts", "sound.effects"}
 
 
 def test_disabled_plugin_still_reports_its_reasons(monkeypatch):

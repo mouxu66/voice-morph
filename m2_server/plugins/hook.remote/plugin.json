@@ -1,0 +1,28 @@
+{
+  "id": "hook.remote",
+  "name": "手机遥控",
+  "kind": "builtin",
+  "category": "hook",
+  "order": 230,
+  "summary": "手机浏览器当遥控器：扫码即开，实时变声 / 手机当麦 / 打字发语音",
+  "requires": ["sound.rvc-live", "hook.wechat", "pet.companion"],
+  "routers": ["remote_api"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [],
+  "extras": {
+    "python": [],
+    "external": [
+      {
+        "kind": "audio-device",
+        "label": "VB-Audio CABLE（虚拟声卡）",
+        "doc": "「实时变声」要把变声后的声音送进微信/游戏，缺虚拟声卡就只有变声没有注入。与 sound.rvc-live 声明的是同一个设备，这里再写一遍是因为「装遥控」时该看到要准备什么"
+      }
+    ],
+    "models": []
+  },
+  "health": null,
+  "disable": {
+    "note": "关闭后手机扫码入口消失（/api/remote/* 不再挂载）。它 requires 的三项不受影响 —— 关掉一个依赖者不会关掉被依赖者（反之才会：关掉被依赖者时，仍启用的依赖者会把它带回来）。所以放心关。"
+  }
+}

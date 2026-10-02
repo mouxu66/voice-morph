@@ -157,18 +157,37 @@ def test_cuda_index_url_template_is_wellformed():
 
 
 def test_disabled_plugin_drops_its_extras(monkeypatch):
-    """关掉「实时变声」→ 不再装 deepfilter-stream。这就是"省几个 GB"的落点。
+    """关掉「音效器」→ librosa 不再装（除非别人也要）。这就是"省几个 GB"的落点。
 
-    挑 `sound.rvc-live` 是因为**没人依赖它**（`sound.audiobook` → `sound.tts`、
-    `sound.ft`/`sound.mine` → `sound.workshop` 那种关系不存在）—— 否则会走到
-    下面那条"被依赖则保留"的分支，测不到"真去掉"。
+    ⚠️ **挑插件的前提是「没人依赖它」**（否则会走到下面那条"被依赖则保留"的分支，
+    测不到"真去掉"）。这里用 `sound.effects` 而不是 `sound.rvc-live`：
+    2026-10-02 新增 `hook.remote`（手机遥控）`requires` 了 `sound.rvc-live`，
+    那个前提就不再成立了 —— 测试的挑选条件必须跟着清单一起复核，
+    否则它会**因为一个正确的新依赖而失败**，然后被误当成新代码有问题。
+    `test_the_plugin_picked_for_drops_its_extras_is_still_undepended_on` 钉住这个前提。
     """
     pm = pe._manifest()
-    monkeypatch.setattr(pm, "disabled_ids", lambda: {"sound.rvc-live"})
+    monkeypatch.setattr(pm, "disabled_ids", lambda: {"sound.effects"})
     rep = pe.resolve(preset="full")
-    assert "sound.rvc-live" not in rep["enabled"]
-    assert "deepfilter-stream" in rep["python"], "离线变声也声明了它，故仍在清单里"
-    assert "sound.rvc-live" in rep["disabled_by_user"]
+    assert "sound.effects" not in rep["enabled"]
+    # 离线变声也声明了 librosa，故它仍在清单里 —— 这里验的是「归属」不是「消失」
+    assert "sound.effects" in rep["disabled_by_user"]
+    assert rep["by_plugin"].get("sound.effects") is None or not rep["by_plugin"]["sound.effects"].get("python")
+
+
+def test_the_plugin_picked_for_drops_its_extras_is_still_undepended_on():
+    """上一条挑的 `sound.effects` 必须仍无人 `requires` —— 前提本身要被钉住。
+
+    没有这条，上面那条会在某天有人给 `sound.effects` 加依赖后**因为一个正确改动而红**，
+    而红的方向极具误导性：看起来像"关掉能力不再省包"这个功能坏了。
+    """
+    pm = pe._manifest()
+    assert "sound.effects" in pm.by_id(), "能力清单里没有 sound.effects 了？先改这里再改上面那条"
+    depended = [q.id for q in pm.by_id().values() if "sound.effects" in q.requires]
+    assert not depended, (
+        f"sound.effects 现在被 {depended} 依赖了 —— 它不能再用来验"
+        "「关掉一个无人依赖的能力会真去掉它的包」，请换一个仍无人依赖的插件"
+    )
 
 
 def test_disabled_drops_a_package_no_one_else_needs(monkeypatch):
@@ -206,10 +225,15 @@ def test_disabled_but_not_enabled_at_all_is_ignored(monkeypatch):
 
 
 def test_disabled_ids_are_reported(monkeypatch):
+    """用户关掉的能力要出现在 `disabled_by_user` 里，且**只有**它。
+
+    同上：挑 `sound.effects` 因为它无人依赖（`sound.rvc-live` 自 2026-10-02 起
+    被 `hook.remote` 依赖，关它会被 `enabled_ids` 的复活闭包保留下来）。
+    """
     pm = pe._manifest()
-    monkeypatch.setattr(pm, "disabled_ids", lambda: {"sound.rvc-live"})
+    monkeypatch.setattr(pm, "disabled_ids", lambda: {"sound.effects"})
     rep = pe.resolve(preset="full")
-    assert rep["disabled_by_user"] == ["sound.rvc-live"]
+    assert rep["disabled_by_user"] == ["sound.effects"]
 
 
 # ------------------------------------------------------------------ 报告结构

@@ -65,9 +65,14 @@ def _start_tagging(name: str) -> None:
 
 @router.get("/raw_videos")
 def list_raw_videos():
+    # 目录可能根本不存在（第一次用、outputs 被清过、`VM_OUTPUTS_DIR` 指向新地方）。
+    # `iterdir()` 遇到不存在的目录抛 FileNotFoundError → 整个端点 500，
+    # 而「还没有素材」是**正常状态**不是错误（前端素材库页面此时该显示空列表）。
+    # 这个缺口是 2026-10-02 扫全部端点时抓到的：原来的探针只探 4 条手挑路径，
+    # 恰好躲开了它 —— 又一个「手抄清单比现算更安全」的实例。
     usage = _raw_video_usage()
     videos = []
-    for f in RAW_DIR.iterdir():
+    for f in RAW_DIR.iterdir() if RAW_DIR.is_dir() else ():
         if f.suffix.lower() in VIDEO_SUFFIXES:
             videos.append(
                 {

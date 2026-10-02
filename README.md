@@ -105,6 +105,7 @@
 │   ├── common.py history.py clip_qc.py speaker_sep.py loopback_capture.py quality_verdict.py ...
 │   ├── cascade.py rvc_live.py offline_vc.py seed_vc.py audiobook.py
 │   ├── effects.py wechat_voice.py finetune.py history_api.py openai_compat.py   # 各能力 APIRouter
+│   ├── remote_api.py    # 手机遥控（编排层：只报"三个标签各自能不能用"，不Own 功能）
 │   └── qwen3_tts.py qwen3_tts_service.py   # Qwen3-TTS 客户端 / 常驻 worker(:8001)
 ├── m1_workshop/          # M1 素材流水线（pipeline.py：提轨→去BGM→切 2.5~10s 片段）
 ├── tts_models/           # Qwen3-TTS 权重（qwen3-tts-1.7b-base 等）
@@ -151,13 +152,18 @@
 
 ## 后端 M2（FastAPI）
 
-`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 29 个独立 router 模块**（默认 `standard` 预设只挂 18 个，见上面「关掉一个能力」那节的说明）：
+`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 30 个独立 router 模块**（默认 `standard` 预设只挂 21 个，见上面「关掉一个能力」那节的说明）：
 
-`cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history_api`（历史）、`cover_api`（翻唱）、`ytdlp_api`（在线扒歌）、`audition_api`（试音间）、`soundboard`（特效声板）、`market_api` / `pet_market_api`（市场）、`openai_compat`（OpenAI 兼容层）。
+`cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history_api`（历史）、`cover_api`（翻唱）、`ytdlp_api`（在线扒歌）、`audition_api`（试音间）、`soundboard`（特效声板）、`market_api` / `pet_market_api`（市场）、`openai_compat`（OpenAI 兼容层）、`remote_api`（手机遥控的**能力现状查询** —— 见下）。
+
+> `remote_api` 是这套系统里第一个**不拥有功能、只拥有依赖知识**的 router：手机遥控页的
+> 三个标签分别打 `sound.rvc-live` / `hook.wechat` / `pet.companion` 的端点，
+> 遥控插件自己一个功能端点都没有，它提供的是「这三个标签现在各自能不能用、缺什么」——
+> 供手机页面在渲染前问一次，从而不必在手抄的 `capOff('...')` 字面量上维护依赖关系。
 
 原 `server.py` 内联的业务已于 2026-09-03 按域拆为独立路由模块：`system_api`（health/diagnose）、`voices_api`（音色库+音色包）、`raw_media_api`（素材库/上传）、`pipeline_api`（流水线）、`clips_api`（切片/质检/说话人分离）、`tts_api`、`mine_api`（音色挖掘）、`capture_api`（桌宠内录）、`ab_api`（盲听）、`ab_chain`（A/B 链路对比 + 自然度打分）、`audio_api`（设备配置/巡检）、`media_api`（静态音频）、`rvc_dataset_api`（训练集）；共享状态收敛在 `runtime.py`。
 
-接口清单（节选）：`GET /api/health`、`/api/diagnose`、`/api/voices`、`/api/raw_videos`、`POST /api/pipeline/run`、`/api/clips`、`POST /api/voicebank`、`POST /api/tts`、`POST /api/mine/run`、`POST /api/capture/loopback`、`POST /api/ab/run`、`/api/rvc/live/*`、`/api/wechat/*`、`/api/audio/*`。
+接口清单（节选）：`GET /api/health`、`/api/diagnose`、`/api/voices`、`/api/raw_videos`、`POST /api/pipeline/run`、`/api/clips`、`POST /api/voicebank`、`POST /api/tts`、`POST /api/mine/run`、`POST /api/capture/loopback`、`POST /api/ab/run`、`/api/rvc/live/*`、`/api/wechat/*`、`/api/audio/*`、`/api/remote/capabilities`。
 
 注册走**容错加载**（`m2_server/plugin_loader.py`）：任一模块导入失败只让它自己不可用，
 不再拖垮整个后端 —— 缺 torch / 缺权重 / 没装微信都是**正常状态**，不该表现为「软件打不开」。
@@ -322,15 +328,15 @@ powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
 
 > 这三行只是摘要。**机器可读的那份在 `m2_server/plugins/<id>/plugin.json`**：
 > 每个能力声明自己占哪些 router、需要哪些「重可选依赖」（另外几个 GB 的 Python 包与模型）、
-> 对应的前端页面与侧边栏项、以及缺了会怎样。当前共 22 个能力（7 个核心 + 15 个可选），
+> 对应的前端页面与侧边栏项、以及缺了会怎样。当前共 23 个能力（7 个核心 + 16 个可选），
 > 可用 `GET /api/plugins` 看实时状态（`ok` / `broken` / `disabled` 三态 + 开关结果 `enabled`）。
 > 改这里的表格前先看 `docs/插件化设计.md` —— 那份清单才是真相源，这张表是给人快速扫的。
 >
 > ⚠️ **默认预设是 `standard`（标准＝变身本体），只启用 3 项可选能力**
 > （`sound.offline-vc` / `sound.rvc-live` / `sound.audition`，2026-09-23 拍板）。
-> 「共 22 个能力」是**全开预设下的上限**；standard 下后端只挂 18 个 router 模块，
-> 其余 11 个（训练、微调、发掘、输字变声、有声书、效果器、桌宠、皮肤、微信、试音、素材流水线）
-> 不加载路由、不占显存 —— 那个 `M/N 个已加载` 里的 N 是当前启用集，不是 29。
+> 「共 23 个能力」是**全开预设下的上限**；standard 下后端只挂 21 个 router 模块，
+> 其余 13 个（训练、微调、发掘、输字变声、有声书、效果器、桌宠、皮肤、微信、手机遥控、翻唱、扒歌、素材流水线）
+> 不加载路由、不占显存 —— 那个 `M/N 个已加载` 里的 N 是当前启用集，不是 30。
 >
 > 想先看看"这台机器按当前启用集会装什么"：`python tools\plugin_extras.py`
 > （加 `--check` 逐项对账"装了没"，加 `--json` 给脚本消费）。

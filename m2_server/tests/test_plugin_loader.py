@@ -45,10 +45,17 @@ import plugin_manifest  # noqa: E402
 
 _M2 = Path(__file__).resolve().parents[1]
 
-#: 路由模块总数。**故意写死**：它是「有没有人顺手删掉一个能力」的独立哨兵 ——
-#: 挂载顺序本身改由清单给出，所以这份字面量只剩计数这一件事。
-#: 数字变了要同步 README 与 `docs/插件化设计.md` 里的说法。
-_ROUTER_COUNT = 29  # 2026-09-26：sound.ytdlp 的 ytdlp_api 入列（28→29）
+#: ~~路由模块总数~~ —— 原来是手抄的`_ROUTER_COUNT = 29`，现已全部改成现算。
+#:
+#: 它留着一行漂移史（"2026-09-26：sound.ytdlp 的 ytdlp_api 入列，28→29"），
+#: 而每次给插件加一个 router 都得记得改它。问题在于「忘了改」与「真的少了一个能力」
+#: 在断言里的表现**完全一样**（都是一个数字对不上），红起来也看不出是哪种 ——
+#: 所以它从来不是哨兵，只是另一个需要人维护的地方。
+#:
+#: 替代物：
+#: · 「顺序对不对」→ 本文件 `test_mount_order_follows_the_manifest`（比两个真实序列）
+#: · 「有没有人删掉一个能力」→ `test_plugin_manifest.py::test_manifest_covers_exactly_the_registered_routers`
+#: · 「零失败」→ `test_healthy_module_list_handles_every_router_module`（分子分母取实际长度）
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +111,12 @@ def test_healthy_module_list_handles_every_router_module():
     for name in server._ROUTER_ORDER:
         assert plugin_loader.load_router(name) is not None, f"{name} 加载失败"
     report = plugin_loader.report(server._ROUTER_ORDER)
-    assert f"{_ROUTER_COUNT}/{_ROUTER_COUNT}" in report, report
+    n = len(server._ROUTER_ORDER)
+    # 分子分母都取**实际长度**而不是某个手抄整数：这里要验的是"零失败"，
+    # 那个"N/N"里的 N 只是那个意思的载体。用server._ROUTER_ORDER 自己的长度，
+    # 加了一个 router 就不必改这里 —— 而"忘了改"与"真的坏了"在红起来时
+    # 长得一模一样（都是一个数字对不上）。
+    assert f"{n}/{n}" in report, report
     assert "不可用" not in report, report
 
 
@@ -125,7 +137,6 @@ def test_broken_module_does_not_stop_server_from_starting(tmp_path):
         "import plugin_loader\n"
         "import server\n"
         "print('BROKEN', sorted(r.module for r in plugin_loader.broken()))\n"
-        f"print('TOTAL {_ROUTER_COUNT}')\n"
     )
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}  # 横幅里有中文，别让编码把用例搞红
     proc = subprocess.run(
@@ -227,7 +238,17 @@ def test_mount_order_follows_the_manifest(monkeypatch):
     monkeypatch.setattr(plugin_manifest, "disabled_ids", lambda: set())
     expected = [module for _, module in plugin_manifest.mount_plan()]
     assert list(server._ROUTER_ORDER) == expected
-    assert len(expected) == _ROUTER_COUNT
+    # 原来这里还有一句 `assert len(expected) == _ROUTER_COUNT`（对着手抄的 29）。
+    # 它与上面那句是**同一个事实的两种写法**：上面已经逐一比对了两个序列。
+    # 计数那句唯一多出来的问题是"清单与 server 一致，但两人都少了同一个模块"——
+    # 而那种情况已被 `test_plugin_manifest.py::test_manifest_covers_exactly_the_registered_routers`
+    # 守着（它拿清单与 `plugin_loader` 的真实注册表对账）。
+    # 所以这里改成一条不依赖任何手抄数字、但确实是新约束的：
+    # 挂载计划里不许有重复模块（重复 = 同一个 router 被挂两次，路由会遮蔽）。
+    assert len(expected) == len(set(expected)), (
+        f"挂载计划里有重复模块：{[m for m in expected if expected.count(m) > 1]}"
+    )
+    assert expected, "挂载计划是空的 —— 清单读失败了吧"
 
 
 # ---------------------------------------------------------------- 4. 界面出口
@@ -253,7 +274,9 @@ def test_capabilities_endpoint_reports_load_state():
     _load_all()
     body = TestClient(server.app).get("/api/capabilities").json()
     assert body["ok"] is True
-    assert body["total"] == _ROUTER_COUNT
+    # `total` 就是本次实际挂载的模块数（`/api/capabilities` 从 `_ROUTER_ORDER` 数），
+    # 拿它跟同一个来源比 —— 而不是跟一个手抄整数比。
+    assert body["total"] == len(server._ROUTER_ORDER)
     assert body["loaded"] == body["total"]
     assert body["broken"] == []
 

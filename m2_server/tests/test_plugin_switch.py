@@ -93,7 +93,13 @@ def test_dependents_of_names_the_dependents():
     assert plugin_manifest.dependents_of("sound.tts") == ["sound.audiobook"]
     assert plugin_manifest.dependents_of("sound.offline-vc") == ["sound.audition"]
     assert sorted(plugin_manifest.dependents_of("sound.workshop")) == ["sound.ft", "sound.mine"]
-    assert plugin_manifest.dependents_of("pet.companion") == ["pet.market"]
+    # pet.companion 现有两个依赖方：桌宠皮肤与手机遥控（2026-10-02 加hook.remote）。
+    # 顺序按 id 升序（`dependents_of` 里sorted 的口径），别写成集合 —— 那样
+    # 顺序 regressions 就看不见了，而它恰好是前端提示文案里会用到的那一个。
+    assert plugin_manifest.dependents_of("pet.companion") == ["hook.remote", "pet.market"]
+    # 遥控依赖的三项：实时变声 / 微信发送 / 桌宠采集
+    assert plugin_manifest.dependents_of("sound.rvc-live") == ["hook.remote"]
+    assert plugin_manifest.dependents_of("hook.wechat") == ["hook.remote"]
 
 
 def test_enabled_ids_revives_transitively(monkeypatch):
@@ -659,17 +665,47 @@ _PROBE = textwrap.dedent(
     sys.path.insert(0, ".")
     import plugin_manifest as pm, server
     from fastapi.testclient import TestClient
+    from fastapi.routing import APIRoute
 
-    c = TestClient(server.app)
+    c = TestClient(server.app, raise_server_exceptions=False)
+    # ⚠️ `raise_server_exceptions=False` 是**必需**的，不是偷懒。
+    # 探针扫的是全部无参 GET 路径（现算，不手抄），只要有**一条**在当前机器上
+    # 抛了非 HTTP 异常（实测：`/api/audition/*` 会去 ffmpeg 探一个坏 wav，
+    # `Error opening input file .../reference.wav`），默认的 TestClient 会把异常
+    # 重新抛到探针里 —— 整个子进程非零退出，这条测试就以
+    # `assert proc.returncode == 0` 的形式红，而失败信息里只看得见 ffmpeg 的报错，
+    # 完全看不出「真正在测的那件事」是什么。
+    # 关掉重抛之后：坏端点老实报自己的状态码（多半 500），
+    # 探针跑完把全部结果交回来 —— A/B 比对照样成立，还顺手留下"这个端点坏了"的痕迹。
     result = {
         "modules": [m for _pid, m in pm.mount_plan()],
         "mounted": len(server._ROUTER_ORDER),
         "broken": [r.module for r in server.plugin_loader.broken()],
     }
-    # `/api/rvc/dataset` 是 `rvc_dataset_api` 的端点 —— 它 2026-09-23 从 `sound.ft`
-    # 划到 `sound.rvc-live`（服务的是 Live 页驱动的 RVC 训练流程，跟 `/ft/*` 的
-    # 「用录音继续训练 TTS 音色」是两件事）。探它 = 把新归属钉在 HTTP 层。
-    for path in ("/api/rvc/live/status", "/api/cascade/status", "/api/rvc/dataset", "/api/health"):
+
+    def api_routes(routes):
+        \"\"\"递归取出所有 APIRoute —— **不假设 app.routes 的形状**。
+
+        这版 FastAPI（0.141+）把 include_router 的结果包成 `_IncludedRouter`，
+        子路由在 `.original_router.routes` 里，第一层 `app.routes` 直接过滤
+        `APIRoute` 只能捞到 SPA 兜底那一条。写成递归是为了FastAPI 换回
+        扁平结构时也能用（那时`original_router` 不存在，routes 自己就是 APIRoute）。
+        \"\"\"
+        for r in routes:
+            if isinstance(r, APIRoute):
+                yield r
+            inner = getattr(getattr(r, "original_router", None), "routes", None)
+            if inner:
+                yield from api_routes(inner)
+
+    paths = sorted(
+        {r.path for r in api_routes(server.app.routes)
+         if "GET" in getattr(r, "methods", set()) and "{" not in r.path}
+    )
+    # 报回去让断言能验「探针真的扫到东西了」—— 抽取逻辑一失效，
+    # 下面所有 `off[path] == 404` 都会变成 KeyError 或者（更糟）空集合全过。
+    result["paths"] = paths
+    for path in paths:
         r = c.get(path)
         result[path] = [r.status_code, r.headers.get("content-type", "").split(";")[0]]
     print("RESULT " + json.dumps(result))
@@ -678,12 +714,21 @@ _PROBE = textwrap.dedent(
 
 
 def _boot_and_probe(out_dir: Path, disabled: str | None) -> dict:
-    """在独立子进程里真启动一次后端并探几个端点（挂载发生在 import 时，没得兼）。"""
+    """在独立子进程里真启动一次后端并探几个端点（挂载发生在 import 时，没得兼）。
+
+    ⚠️ **`plugins.json` 两边都显式写，让 A/B 差**只有**那一个 id**。
+    原来只写 `off` 侧、`on` 侧留空目录，正确性靠的是
+    `m2_server/conftest.py:38` 那个全局 `VM_PLUGIN_SEED=0`（没有它，
+    `ensure_state_file()` 会在空目录上按下默认套餐播种，A 侧就不是"全开"
+    而是 standard，被关掉的能力压根没挂过）。这是个**跨文件的环境变量约定** ——
+    一旦有人为别的理由把它挪掉或改成条件性的，这里会静默退化成"测不到东西"。
+    自己写 `disabled: []` 不依赖任何外部开关。
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
-    if disabled:
-        (out_dir / "plugins.json").write_text(
-            json.dumps({"disabled": [disabled]}), encoding="utf-8"
-        )
+    # 全开基线：`disabled: []` ≠ 不写文件（不写 = 让播种决定，而播种写的是 standard）
+    (out_dir / "plugins.json").write_text(
+        json.dumps({"disabled": [disabled] if disabled else []}), encoding="utf-8"
+    )
     env = {
         **os.environ,
         "PYTHONIOENCODING": "utf-8",
@@ -707,28 +752,77 @@ def _boot_and_probe(out_dir: Path, disabled: str | None) -> dict:
 
 
 def test_a_disabled_capability_endpoint_is_gone_at_the_http_level(tmp_path):
-    """A/B：同一段脚本、只差一个状态文件 —— 关掉的能力端点必须 404 + JSON。"""
+    """A/B：同一段脚本、只差一个状态文件 —— 关掉的能力端点必须 404 + JSON。
+
+    ⚠️ **挑的插件必须「无人 requires 它」**，否则 `enabled_ids` 的复活闭包会把它
+    留下来（"关掉 A 不能把还在用的 B 弄坏"），端点就永远 404 不了 ——
+    这条会以一种极不像真bug 的方式红：`off` 与 `on` 完全一样。
+    2026-10-02 加了 `hook.remote`（requires `sound.rvc-live`）之后，
+    原本挑的 `sound.rvc-live` 就失去了这个前提，改用 `sound.cover`
+    （无人依赖、有 `/api/cover/status`）。前提本身由
+    `test_the_disabled_probe_target_is_still_undepended_on` 钉住。
+    """
     on = _boot_and_probe(tmp_path / "on", None)
-    off = _boot_and_probe(tmp_path / "off", "sound.rvc-live")
+    off = _boot_and_probe(tmp_path / "off", "sound.cover")
 
     assert on["broken"] == [] and off["broken"] == []
     # A 侧：干净启动时这些模块真在挂载计划里（否则 B 侧的"消失了"是废话）
     # ⚠️ **从清单推导**，不写死模块名/个数 —— 给一个插件加一个 router 是常规操作，
     # 写死会让这条与「关了端点就没」无关的用例变红（2026-09-23 就因为多了一个
     # `rvc_dataset_api` 假红过一次）。
-    owned = set(plugin_manifest.by_id()["sound.rvc-live"].routers)
-    assert owned, "sound.rvc-live 一个 router 都没有？"
+    owned = set(plugin_manifest.by_id()["sound.cover"].routers)
+    assert owned, "sound.cover 一个 router 都没有？"
     assert owned <= set(on["modules"])
     assert not owned & set(off["modules"]), "关了却还在挂载计划里"
     assert off["mounted"] == on["mounted"] - len(owned)
 
-    assert on["/api/rvc/live/status"] == [200, "application/json"]
-    for path in ("/api/rvc/live/status", "/api/cascade/status", "/api/rvc/dataset"):
-        assert off[path] == [404, "application/json"], (
-            f"{path} 关掉后应当是 404 + JSON，实际 {off[path]} —— "
-            "如果是 200 text/html，就是被 SPA 兜底吞了（前端只会看到 `Unexpected token '<'`）"
+    # 探针扫的是**全部已挂载的无参 GET 路径**（现算，不手抄），
+    # 所以「cover 自己的路径集」可以直接从 on 的键里筛出来 ——
+    # 关掉 cover_api 后它整体消失，于是这些键在 off 里要么不存在、要么 404。
+    gone = {p for p in on if p.startswith("/api/cover/")}
+    # 这一条同时在钉**A 侧真的是"全开"**：`/api/cover/*` 只在 cover 被挂载时存在。
+    # 若 A 侧读到的是按下默认套餐播种出来的状态，cover 压根没被挂载、`gone` 为空，
+    # 本条就静默通过（后面所有 `off[path] == 404` 都成了废话）。
+    assert gone, (
+        f"探针没扫到任何 /api/cover/* 路径（扫到 {len(on['paths'])} 条）—— "
+        "要么抽取逻辑失效了，要么 A 侧不是全开（`_boot_and_probe` 必须自己写 "
+        "`disabled: []`，不能靠空目录 + 外部的 VM_PLUGIN_SEED=0）。别让它假绿"
+    )
+    assert set(off["paths"]) == set(on["paths"]) - gone, (
+        f"关掉 sound.cover 改变的路径集与预期不同：\n"
+        f"  多出/变了的: {sorted(set(off['paths']) - (set(on['paths']) - gone))}\n"
+        f"  少了的    : {sorted((set(on['paths']) - gone) - set(off['paths']))}"
+    )
+    # 关掉的路径在 off 侧要么不存在（探针扫不到），要么明确是 404+JSON。
+    # 必须是 JSON：200 text/html 意味着被 SPA 兜底吞了，
+    # 前端只会看到 `Unexpected token '<'`（这正是本节最初要拦的那个坑）。
+    for path in gone:
+        if path in off:
+            assert off[path] == [404, "application/json"], (
+                f"{path} 关掉后应当是 404 + JSON，实际 {off[path]}"
+            )
+    # 反向：**别的路径一条都不能变** —— 前面那半句只证明"关掉了"，
+    # 这一半才证明"只关掉了它"。
+    for path in set(on["paths"]) - gone:
+        assert path in off, f"探针两次扫到的路径集不同 —— on 有 {path} 而 off 没有"
+        assert off[path] == on[path], (
+            f"关掉 sound.cover 顺带改了 {path}：{on[path]} → {off[path]}"
         )
     assert on["/api/health"] == off["/api/health"] == [200, "application/json"]
+
+
+def test_the_disabled_probe_target_is_still_undepended_on():
+    """上一条关掉的是 `sound.cover` —— 它必须仍无人 `requires`，否则端点不会消失。
+
+    这条是给"换样本"这件事上的锁：清单以后加依赖时，**要换样本的是测试，
+    不是放宽断言**（放宽就会变成"关掉也能在"这种静默腐烂）。
+    """
+    depended = [p.id for p in plugin_manifest.by_id().values() if "sound.cover" in p.requires]
+    assert not depended, (
+        f"sound.cover 现在被 {depended} 依赖了 —— 关掉它时 enabled_ids 会把它复活，"
+        "test_a_disabled_capability_endpoint_is_gone_at_the_http_level 就测不到东西了。"
+        "请换一个仍无人依赖、且有 status 端点的插件"
+    )
 
 
 def test_400_goes_red_when_core_is_no_longer_protected(monkeypatch, client):

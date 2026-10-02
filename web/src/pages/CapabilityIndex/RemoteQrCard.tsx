@@ -8,19 +8,27 @@
  *
  * 数据来自 `GET /api/system/lan`（IP 判据 = RFC1918，见 system_api.py：
  * 本机跑 Mihomo TUN + Radmin VPN，"第一个非回环地址"多半是虚拟网卡的假地址）。
+ *
+ * **五态**（2026-10-02 加）：遥控本身是可��插件（`hook.remote`，默认关），
+ * 所以要分清"没找到局域网地址"与"这个能力压根没开" —— 后者给一个扫不开的二维码
+ * 是最坏的处理：用户会以为手机坏了。判定读`GET /api/plugins` 里那一项的 `state`。
  */
 import { Smartphone } from "lucide-react";
 import { renderSVG } from "uqr";
 import { useEffect, useMemo, useState } from "react";
-import { getLan } from "@/api/client";
+import { getLan, getPlugins } from "@/api/client";
 import { Card } from "@/components/layout/PageShell";
 
-/** 四态：拉取中 / 有地址 / 明确没地址 / 请求本身失败。 */
+/** 五态：拉取中 / 有地址 / 没找到地址 / 遥控能力没开 / 请求本身失败。 */
 type State =
   | { kind: "loading" }
   | { kind: "ready"; url: string; ip: string | null; tokenSet: boolean; note: string }
   | { kind: "no-lan" }
+  | { kind: "off" }
   | { kind: "error"; message: string };
+
+/** 遥控插件的 id —— 与 `m2_server/plugins/hook.remote/plugin.json` 一致。 */
+const REMOTE_PLUGIN = "hook.remote";
 
 /**
  * uqr 的 renderSVG 出**整段** `<svg>`（白底黑块，含 quiet zone）。
@@ -47,18 +55,36 @@ export function RemoteQrCard() {
 
   useEffect(() => {
     let alive = true;
-    getLan()
-      .then((lan) => {
-        if (!alive) return;
-        if (lan.url) {
-          setState({ kind: "ready", url: lan.url, ip: lan.ip, tokenSet: lan.token_set, note: lan.note });
-        } else {
-          setState({ kind: "no-lan" });
+    const set = (s: State) => {
+      if (alive) setState(s);
+    };
+    // 顺带说一句**顺序**：先问「这个能力开了吗」，再取地址。
+    // `/api/system/lan` 属 core.system（不可关），能力没开时它照样 200 ——
+    // 先取地址会把"能力没开"这一层盖掉，渲染出一个扫进去什么都点不了的码。
+    (async () => {
+      try {
+        const cat = await getPlugins();
+        const entry = (cat?.plugins || []).find((p) => p.id === REMOTE_PLUGIN);
+        // 清单里没有这一项 = 前端比后端新（后端还没这个插件）。
+        // 此时不假装"功能不存在"，继续取地址 —— 宁可多显示一个可能扫不开的码。
+        if (entry && entry.state !== "ok") {
+          set({ kind: "off" });
+          return;
         }
-      })
-      .catch((e: unknown) => {
-        if (alive) setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
-      });
+      } catch {
+        // 清单读不到（老后端没有 /api/plugins）→ 不阻塞，继续取地址
+      }
+      try {
+        const lan = await getLan();
+        set(
+          lan.url
+            ? { kind: "ready", url: lan.url, ip: lan.ip, tokenSet: lan.token_set, note: lan.note }
+            : { kind: "no-lan" }
+        );
+      } catch (e: unknown) {
+        set({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+      }
+    })();
     return () => {
       alive = false;
     };
@@ -115,6 +141,14 @@ export function RemoteQrCard() {
                 </div>
               </div>
             </div>
+          )}
+
+          {state.kind === "off" && (
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              「手机遥控」是按需安装的能力，现在没开。去「设置 → 能力管理」里开启
+              <strong className="font-medium text-foreground">手机遥控</strong>
+              （会连带开启它依赖的实时变声 / 微信发送 / 桌宠采集），重启后端后回来看这个码。
+            </p>
           )}
 
           {state.kind === "no-lan" && (
