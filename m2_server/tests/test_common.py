@@ -90,6 +90,7 @@ def test_selected_voice_missing_file_returns_empty(tmp_path, monkeypatch):
 
 
 def test_selected_voice_reads_json(tmp_path, monkeypatch):
+    # 注意：_fake_voicebank 会建出 abc/reference.wav，故这是「音色确实存在」的选中态
     vb = _fake_voicebank(tmp_path)
     (vb / "selected_voice.json").write_text(json.dumps({"voice_id": "abc"}), encoding="utf-8")
     monkeypatch.setattr(cfg, "MEDIA_DIR", vb.parent)
@@ -99,5 +100,35 @@ def test_selected_voice_reads_json(tmp_path, monkeypatch):
 def test_selected_voice_corrupt_json_returns_empty(tmp_path, monkeypatch):
     vb = _fake_voicebank(tmp_path)
     (vb / "selected_voice.json").write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(cfg, "MEDIA_DIR", vb.parent)
+    assert selected_voice() == ""
+
+
+def test_selected_voice_dangling_id_returns_empty(tmp_path, monkeypatch):
+    """★ JSON 里有值、但该音色已被删掉（目录不存在）→ 按未选中处理。
+
+    悬空 id 会被七处端点当默认音色用（tts / audiobook / wechat_voice /
+    voice_phrases / capture / openai_compat / rvc_dataset），原样返回等于让
+    这些入口一起 404。此处把期待值钉在「返回空」。
+    """
+    vb = _fake_voicebank(tmp_path)
+    (vb / "selected_voice.json").write_text(json.dumps({"voice_id": "ghost"}), encoding="utf-8")
+    monkeypatch.setattr(cfg, "MEDIA_DIR", vb.parent)
+    assert selected_voice() == ""
+
+
+def test_selected_voice_missing_reference_returns_empty(tmp_path, monkeypatch):
+    """音色目录在、但 reference.wav 缺（半删除 / 手工建目录）→ 也按未选中处理。"""
+    vb = _fake_voicebank(tmp_path)
+    (vb / "hollow").mkdir()
+    (vb / "selected_voice.json").write_text(json.dumps({"voice_id": "hollow"}), encoding="utf-8")
+    monkeypatch.setattr(cfg, "MEDIA_DIR", vb.parent)
+    assert selected_voice() == ""
+
+
+def test_selected_voice_rejects_traversal_id(tmp_path, monkeypatch):
+    """JSON 被手改成路径穿越 id → 返回空，不拼出 MEDIA_DIR 之外的路径。"""
+    vb = _fake_voicebank(tmp_path)
+    (vb / "selected_voice.json").write_text(json.dumps({"voice_id": "../abc"}), encoding="utf-8")
     monkeypatch.setattr(cfg, "MEDIA_DIR", vb.parent)
     assert selected_voice() == ""

@@ -170,19 +170,21 @@ async def _noop_await(*a, **kw):
 
 @pytest.fixture()
 def voices_client(tmp_path, monkeypatch):
-    """VOICEBANK / RVC_ROOT / MEDIA_DIR 指向临时目录，与真实环境隔离。"""
+    """VOICEBANK / RVC_ROOT / MEDIA_DIR 指向临时目录，与真实环境隔离。
+
+    ⚠ VOICEBANK 与 cfg.MEDIA_DIR/voicebank 必须是**同一个目录**：
+      · 清单里的 `selected` 来自 common.selected_voice()，它读 cfg.MEDIA_DIR/voicebank/...
+      · 且 selected_voice() 会校验 voicebank/<id>/reference.wav 是否存在
+    两者若是两个目录，测试里造的音色对校验逻辑永远「不存在」→ 断言假红。
+    """
     import config as cfg
     import server
 
-    vb = tmp_path / "voicebank"
-    vb.mkdir()
+    media = tmp_path / "media"
+    vb = media / "voicebank"
+    vb.mkdir(parents=True)
     monkeypatch.setattr(voices_api, "VOICEBANK", vb)
     monkeypatch.setattr(cfg, "RVC_ROOT", tmp_path / "rvc")
-    # ⚠ MEDIA_DIR 也必须隔离：清单里的 `selected` 来自 common.selected_voice()，
-    # 而它读的是 cfg.MEDIA_DIR/voicebank/selected_voice.json（**运行期**读，不看 voices_api.VOICEBANK）。
-    # 不管它，断言就会跟着开发机上真实的选中态跑 —— 本机有音色时这条测试时红时绿。
-    media = tmp_path / "media"
-    (media / "voicebank").mkdir(parents=True)
     monkeypatch.setattr(cfg, "MEDIA_DIR", media)
     from fastapi.testclient import TestClient
 

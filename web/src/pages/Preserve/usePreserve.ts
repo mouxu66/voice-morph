@@ -101,7 +101,7 @@ export function usePreserve() {
         setLoading(false)
       }
     })()
-  }, [refreshList])
+  }, [refreshList, fail])
 
   useEffect(() => {
     if (!selectedId) return
@@ -112,7 +112,7 @@ export function usePreserve() {
         fail("读取档案", error)
       }
     })()
-  }, [selectedId, loadProfile])
+  }, [selectedId, loadProfile, fail])
 
   useEffect(() => () => clearTimer(), [clearTimer])
 
@@ -138,7 +138,7 @@ export function usePreserve() {
         setBusy("")
       }
     },
-    [refreshList]
+    [refreshList, fail]
   )
 
   const remove = useCallback(
@@ -156,7 +156,7 @@ export function usePreserve() {
         setBusy("")
       }
     },
-    [refreshList, selectedId]
+    [refreshList, selectedId, fail]
   )
 
   // ---- 知情同意 ----
@@ -181,7 +181,7 @@ export function usePreserve() {
         setBusy("")
       }
     },
-    [guide, loadProfile, selectedId]
+    [guide, loadProfile, selectedId, fail]
   )
 
   // ---- 录音 ----
@@ -232,7 +232,7 @@ export function usePreserve() {
         fail("打开麦克风", error)
       }
     },
-    [loadProfile, selectedId]
+    [loadProfile, selectedId, fail]
   )
 
   const stopRecording = useCallback(() => {
@@ -255,7 +255,7 @@ export function usePreserve() {
     } finally {
       setBusy("")
     }
-  }, [selectedId])
+  }, [selectedId, fail])
 
   // ---- 复现 ----
 
@@ -277,7 +277,7 @@ export function usePreserve() {
     } finally {
       setBusy("")
     }
-  }, [loadProfile, selectedId])
+  }, [loadProfile, selectedId, fail])
 
   return {
     guide,

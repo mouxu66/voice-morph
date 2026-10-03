@@ -152,7 +152,7 @@
 
 ## 后端 M2（FastAPI）
 
-`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 31 个独立 router 模块**（默认 `standard` 预设只挂 16 个，见上面「关掉一个能力」那节的说明）：
+`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 32 个独立 router 模块**（默认 `standard` 预设只挂 16 个，见上面「关掉一个能力」那节的说明）：
 
 `cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history_api`（历史）、`cover_api`（翻唱）、`ytdlp_api`（在线扒歌）、`audition_api`（试音间）、`soundboard`（特效声板）、`market_api` / `pet_market_api`（市场）、`openai_compat`（OpenAI 兼容层）、`remote_api`（手机遥控的**能力现状查询** —— 见下）。
 
@@ -161,7 +161,7 @@
 > 遥控插件自己一个功能端点都没有，它提供的是「这三个标签现在各自能不能用、缺什么」——
 > 供手机页面在渲染前问一次，从而不必在手抄的 `capOff('...')` 字面量上维护依赖关系。
 
-原 `server.py` 内联的业务已于 2026-09-03 按域拆为独立路由模块：`system_api`（health/diagnose）、`voices_api`（音色库+音色包）、`raw_media_api`（素材库/上传）、`pipeline_api`（流水线）、`clips_api`（切片/质检/说话人分离）、`tts_api`、`mine_api`（音色挖掘）、`capture_api`（桌宠内录）、`ab_api`（盲听）、`ab_chain`（A/B 链路对比 + 自然度打分）、`audio_api`（设备配置/巡检）、`media_api`（静态音频）、`rvc_dataset_api`（训练集）、`voicepreserve_api.py`（声音保存档案）；共享状态收敛在 `runtime.py`。
+原 `server.py` 内联的业务已于 2026-09-03 按域拆为独立路由模块：`system_api`（health/diagnose）、`voices_api`（音色库+音色包）、`raw_media_api`（素材库/上传）、`pipeline_api`（流水线）、`clips_api`（切片/质检/说话人分离）、`tts_api`、`mine_api`（音色挖掘）、`capture_api`（桌宠内录）、`ab_api`（盲听）、`ab_chain`（A/B 链路对比 + 自然度打分）、`audio_api`（设备配置/巡检）、`media_api`（静态音频）、`rvc_dataset_api`（训练集）、`voicepreserve_api.py`（声音保存档案）、`voice_phrases.py`（短语速播）；共享状态收敛在 `runtime.py`。
 
 接口清单（节选）：`GET /api/health`、`/api/diagnose`、`/api/voices`、`/api/raw_videos`、`POST /api/pipeline/run`、`/api/clips`、`POST /api/voicebank`、`POST /api/tts`、`POST /api/mine/run`、`POST /api/capture/loopback`、`POST /api/ab/run`、`/api/rvc/live/*`、`/api/wechat/*`、`/api/audio/*`、`/api/remote/capabilities`。
 

@@ -155,12 +155,21 @@ def test_display_name_falls_back_to_id_for_unknown():
     assert fa._display_name("no_such_voice_zzz") == "no_such_voice_zzz"
 
 
-def test_voicebank_for_maps_rvc_exp_back_to_bank():
-    """RVC 实验名 → voicebank id 的反向求交（`kangaroo` ↔ `kangaroo_v2`）。"""
-    got = fa._voicebank_for("kangaroo_v2")
-    if got is None:
-        pytest.skip("本机 media/voicebank 下没有 kangaroo（裸 runner）")
-    assert got == "kangaroo"
+def test_voicebank_for_maps_rvc_exp_back_to_bank(tmp_path, monkeypatch):
+    """RVC 实验名 → voicebank id 的反向求交（`kangaroo` ↔ `kangaroo_v2`）。
+
+    ★ 自建素材，别读本机 voicebank：`m2_server/conftest.py` 在 **session 级**把
+    `cfg.MEDIA_DIR` 隔离到临时目录（防异步写入污染），所以这里读不到开发机上真实的
+    `media/voicebank` —— 原来那句「没有 kangaroo 就 skip」在隔离之后**恒跳过**，
+    用例等于没跑。改成往 tmp 造一份最小 voicebank。
+    """
+    import config as cfg
+
+    bank = tmp_path / "voicebank" / "kangaroo"
+    bank.mkdir(parents=True)
+    (bank / "reference.wav").write_bytes(b"RIFF")
+    monkeypatch.setattr(cfg, "MEDIA_DIR", tmp_path)
+    assert fa._voicebank_for("kangaroo_v2") == "kangaroo"
 
 
 def test_voicebank_for_market_voice_is_none():

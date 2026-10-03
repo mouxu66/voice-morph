@@ -5,6 +5,7 @@
 """
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -42,14 +43,30 @@ def voice_ref(voice_id: str) -> tuple[Path, str]:
 
 
 def selected_voice() -> str:
-    """读取当前选中的音色 ID（音色挖掘/保存时写入 selected_voice.json）。"""
+    """读取当前选中的音色 ID（音色挖掘/保存时写入 selected_voice.json）。
+
+    ★ 会校验音色确实存在（voicebank/<id>/reference.wav）。挑中的音色被删掉后，
+    json 会留下一个**悬空 id** —— 它被七处端点当默认音色用（tts / audiobook /
+    wechat_voice / voice_phrases / capture / openai_compat / rvc_dataset），
+    原样返回就是让这些入口一起拿不存在的 id 去 404。悬空一律按「没选」处理。
+
+    ⚠️ 前端 listVoices() 只消费 `voices`、丢掉了响应里的 `selected`，所以收紧
+    返回值不会影响界面；写入方（mine_api / voicepreserve）也不受影响。
+    """
     f = cfg.MEDIA_DIR / "voicebank" / "selected_voice.json"
-    if f.exists():
-        try:
-            return str(json.loads(f.read_text("utf-8")).get("voice_id") or "")
-        except Exception:
-            return ""
-    return ""
+    if not f.exists():
+        return ""
+    try:
+        vid = str(json.loads(f.read_text("utf-8")).get("voice_id") or "")
+    except Exception:
+        return ""
+    if not is_valid_voice_id(vid):
+        return ""
+    ref = cfg.MEDIA_DIR / "voicebank" / vid / "reference.wav"
+    if not ref.exists():
+        logging.warning("selected_voice.json 指向的音色 [%s] 已不存在，按未选中处理", vid)
+        return ""
+    return vid
 
 
 _FFMPEG_CACHE = None

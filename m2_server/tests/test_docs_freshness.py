@@ -119,7 +119,7 @@ def test_readme_router_count_matches_manifest(truth):
     """README 说「N 个独立 router」→ N 必须等于**全开预设下**的唯一 router 模块数。
 
     用全开而不是当前启用集：文档描述的是后端的**能力上限**，
-    而当前启用集会随用户开关变化（standard 预设只挂 18 个），拿它当真相源
+    而当前启用集会随用户开关变化（standard 预设只挂 16 个），拿它当真相源
     会让 README 随用户设置漂移。
     """
     text = _read(_ROOT / "README.md")
