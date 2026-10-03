@@ -2560,3 +2560,47 @@ export async function reproducePreserveProfile(
     method: "POST",
   })
 }
+
+// ---- 快捷短语板（sound.tts）----
+//
+// 课堂高频用语一键合成/重放：直播、录课时点一下就用当前音色念出来，让嗓子歇一歇。
+// 后端把产物持久缓存在 outputs/phrase_cache/（键 = 音色+文字）—— 同一句话第二次
+// 点击零等待；这与「合成结果退出即删」的会话产物是两种生命周期，见 voice_phrases.py。
+
+export type VoicePhrase = { id: string; text: string };
+
+export async function voicePhraseList(): Promise<{ ok: boolean; items: VoicePhrase[] }> {
+  return jsonFetch("/voice-phrases");
+}
+
+export async function voicePhraseCreate(text: string): Promise<{ ok: boolean; item: VoicePhrase }> {
+  return jsonFetch("/voice-phrases", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+}
+
+export async function voicePhraseUpdate(id: string, text: string): Promise<{ ok: boolean; item: VoicePhrase }> {
+  return jsonFetch(`/voice-phrases/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+}
+
+export async function voicePhraseDelete(id: string): Promise<{ ok: boolean }> {
+  return jsonFetch(`/voice-phrases/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** 点一下：用指定音色（缺省=当前选中）念这条短语；命中缓存时后端直接回磁盘上的旧产物。 */
+export async function voicePhraseSpeak(
+  id: string,
+  voiceId?: string
+): Promise<{ ok: boolean; url: string; duration_s: number; cached: boolean; voice_id: string }> {
+  return jsonFetch(`/voice-phrases/${encodeURIComponent(id)}/speak`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ voice_id: voiceId ?? "" }),
+  });
+}
