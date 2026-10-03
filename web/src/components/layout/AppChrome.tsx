@@ -3,6 +3,7 @@ import { Boxes, Layers, Menu, Settings2, X } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 import { StudioNav } from "@/components/voice-studio/StudioNav"
 import { SettingsPanel } from "@/components/layout/SettingsPanel"
+import { ModeSwitcher } from "@/components/layout/ModeSwitcher"
 import { usePluginCatalog } from "@/lib/pluginRoutes"
 import type { PluginCatalog } from "@/types"
 import { cn } from "@/lib/utils"
@@ -178,6 +179,12 @@ export function AppChrome({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-2">
         <StudioNav variant="sidebar" simpleMode={simpleMode} onNavigate={() => setDrawerOpen(false)} />
+      </div>
+
+      {/* 使用模式（2026-10-03）：三个场景套餐常驻侧栏 —— 用户反馈「套餐只在能力面板里找不到」，
+          模式是产品级入口，位置在导航下方、能力入口上方，桌面/抽屉两种形态共用 sidebarBody。 */}
+      <div className="px-3 pb-3">
+        <ModeSwitcher />
       </div>
 
       <div className="border-t border-border px-3 py-3">
