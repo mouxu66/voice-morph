@@ -39,7 +39,7 @@ export const GUIDES: Record<string, PageGuide> = {
   // /discover、/ft 已并入「音色工坊」，/market 已并入「音色库」，不再单独介绍。
   "/tts": {
     title: "语音合成",
-    lines: ["选个音色念一段话。", "长文稿切「有声书」模式，", "按句合成自动拼接。"],
+    lines: ["选个音色念一段话。", "长讲稿切「录课」模式，", "按句合成自动拼接。"],
     action: "play",
     motion: "nod",
   },

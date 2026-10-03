@@ -11,11 +11,15 @@ import { useWechatSend } from "@/pages/Tts/useWechatSend"
 import { WechatSendPage } from "@/pages/Tts/WechatSendPage"
 
 /**
- * 语音合成（合并页）：单段合成、有声书（长文本按句合成+拼接）、微信语音发送三个模式。
+ * 语音合成（合并页）：单段合成、录课/有声书（长文本按句合成+拼接）、微信语音发送三个模式。
  * 兼容旧深链：/tts?text= 自动填入单段文本框；/audiobook → ?tab=book；/wechat → ?tab=wechat。
  *
- * 「有声书」与「微信发送」两个 tab 各自对应可关能力（sound.audiobook / hook.wechat）：
+ * 「录课 / 有声书」与「微信发送」两个 tab 各自对应可关能力（sound.audiobook / hook.wechat）：
  * 按能力清单隐藏 —— 关掉后后端端点不再挂载，留着 tab 只会一路 404。
+ *
+ * ⚠️ `sound.audiobook` **不在** `plugin_manifest.BODY_IDS`，所以标准预设下是关的。
+ * 「声音保存」页有一条「去录一节课」深链直接落在这里（`?tab=book`），那边会先按
+ * 能力清单判断、关着就给一键开启 —— 两处必须一起看，别单改一边。
  *
  * 特效声板（`sound.fx-board`）挂在微信发送页内部（②③ 两处），所以它既要宿主开着，
  * 也要自己开着：`useSoundboard` 的 enabled = 两者相与（hook 调用点只在路由层这一次）。
@@ -54,7 +58,7 @@ export function TtsRoute() {
           ? [
               {
                 key: "book",
-                label: "有声书（长文本）",
+                label: "录课 / 有声书",
                 content: <AudiobookPage {...book} soundboard={soundboard} />,
               },
             ]

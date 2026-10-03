@@ -8,7 +8,7 @@ import {
   Sparkles,
   Square,
 } from "lucide-react"
-import { useRef } from "react"
+import { useMemo, useRef } from "react"
 import { Link } from "react-router-dom"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
@@ -28,6 +28,20 @@ export function AudiobookPage(
     p.voices.find((v) => v.id === p.selectedVoiceId)?.display_name ?? p.selectedVoiceId
   const finished = st && !st.running && (st.status === "done" || st.status === "error") && st.url
   const textArea = useRef<HTMLTextAreaElement | null>(null)
+
+  /**
+   * 成本预期 —— 老师最想知道的是「这一节课要等多久」。
+   *
+   * 标定来自 2026-10-03 本机实测（1428 字 → 349.1s 成品 → 210.2s 合成）：
+   * 中文语速 ≈ 4.1 字/秒，RTF ≈ 0.60。两版参考音实测 RTF 落在 0.53–0.65，
+   * 取 0.60 是**偏保守**的中间值 —— 宁可让人等得比说好的短，不要反过来。
+   * 40 分钟的一节课 ⇒ 成品 40 分钟、合成约 24 分钟。
+   */
+  const cjkChars = useMemo(() => (p.text.match(/[\u4e00-\u9fff]/g) ?? []).length, [p.text])
+  const estAudioMin = cjkChars / 4.1 / 60
+  const estSynthMin = estAudioMin * 0.6
+  /** 字数太小时不给预期（一句两句没什么可估的，报了反而像噪音）。 */
+  const showEstimate = cjkChars >= 150
 
   /**
    * 点「插音效」时把 `[爆炸]` 插进长文，并把光标停到片段之后。
@@ -62,10 +76,11 @@ export function AudiobookPage(
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
       <header className="border-b border-border bg-card/30 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
         <div className="mx-auto max-w-7xl">
-          <p className="text-xs font-medium text-primary">有声书</p>
-          <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">有声书工作台</h2>
+          <p className="text-xs font-medium text-primary">录课 · 长文朗读</p>
+          <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">录课工作台</h2>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-            粘贴长文或导入 SRT 字幕，选一个音色逐句合成并自动拼接成完整音频；SRT 会按时间轴保留原节奏，支持逐句试听。
+            把一节课的讲稿粘贴进来（或导入 SRT 字幕），选一个音色逐句合成并自动拼接成完整音频；SRT 会按时间轴保留原节奏，支持逐句试听。
+            想用自己的声音：先在「声音保存」录一段，回来在这里选它即可。
           </p>
         </div>
       </header>
@@ -76,7 +91,7 @@ export function AudiobookPage(
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-medium text-primary">任务输入</p>
-                <h3 className="mt-2 text-lg font-semibold text-card-foreground">长文 / SRT → 有声书</h3>
+                <h3 className="mt-2 text-lg font-semibold text-card-foreground">讲稿 / SRT → 整段音频</h3>
               </div>
               {p.text.trim() && (
                 <span className={`rounded-full px-2.5 py-0.5 text-xs ${p.isSrt ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"}`}>
@@ -134,7 +149,12 @@ export function AudiobookPage(
                   onChange={(e) => { p.loadFile(e.target.files?.[0]); e.target.value = "" }}
                 />
               </label>
-              <span className="font-mono text-xs text-muted-foreground">{p.text.length} 字</span>
+              <span className="font-mono text-xs text-muted-foreground">
+                {p.text.length} 字
+                {showEstimate
+                  ? ` · 预计成品约 ${Math.round(estAudioMin)} 分钟，合成约 ${Math.round(estSynthMin)} 分钟`
+                  : ""}
+              </span>
             </div>
 
             {!p.isSrt && (
@@ -162,10 +182,10 @@ export function AudiobookPage(
               </div>
             )}
             {p.errorMessage && (
-              <ErrorPanel title="有声书任务失败" detail={p.errorMessage} />
+              <ErrorPanel title="录课任务失败" detail={p.errorMessage} />
             )}
             {st?.error && (
-              <ErrorPanel title="有声书合成异常" detail={st.error} />
+              <ErrorPanel title="录课合成异常" detail={st.error} />
             )}
 
             {st?.running && (
@@ -207,7 +227,10 @@ export function AudiobookPage(
             </div>
             {p.running && (
               <p className="mt-3 text-xs leading-5 text-muted-foreground">
-                合成期间可离开本页，任务在后台进行；回来后进度自动恢复。每句约需十几秒，全书请耐心等待。
+                合成期间可离开本页，任务在后台进行；回来后进度自动恢复。
+                {showEstimate
+                  ? `本篇约 ${Math.round(estAudioMin)} 分钟音频，预计合成需 ${Math.round(estSynthMin)} 分钟左右（本机实测：1 分钟音频约 36 秒）。`
+                  : "每句约需十几秒。"}
               </p>
             )}
           </div>
@@ -227,7 +250,7 @@ export function AudiobookPage(
                   <Download className="h-4 w-4" />下载完整音频
                 </a>
               </div>
-              <StudioAudioPlayer src={mediaUrl(st.url)} label="播放有声书" className="mt-4" />
+              <StudioAudioPlayer src={mediaUrl(st.url)} label="播放录课音频" className="mt-4" />
             </div>
           )}
         </section>

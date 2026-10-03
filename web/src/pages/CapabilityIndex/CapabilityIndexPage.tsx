@@ -37,7 +37,7 @@ export function CapabilityIndexRoute() {
     { to: "/audition", name: "试音间", desc: "多个音色挂上麦克风逐个点着试，比单听样本准", icon: Sparkles, plugin: "sound.audition" },
     { to: "/tts?tab=single", name: "输字变声", desc: "打字它就说，还能在中间插音效（写 [爆炸]）", icon: Volume2, plugin: "sound.tts" },
     { to: "/tts?tab=wechat", name: "微信发送", desc: "合成好的语音一键发进微信 PC 版", icon: Camera, plugin: "hook.wechat" },
-    { to: "/tts?tab=book", name: "有声书", desc: "整本书长文一次性合成，自动分段", icon: Library, plugin: "sound.audiobook" },
+    { to: "/tts?tab=book", name: "录课 / 有声书", desc: "粘贴讲稿或长文，按句合成自动拼接成一整段音频", icon: Library, plugin: "sound.audiobook" },
     { to: "/offlinevc", name: "离线变声", desc: "把录好的整段音频一次性变成目标音色", icon: Hammer, plugin: "sound.offline-vc" },
     { to: "/cover", name: "翻唱", desc: "整首歌拆开，只换人声的音色，再和原伴奏合回去", icon: Music4, plugin: "sound.cover" },
     { to: "/ytdlp", name: "在线扒歌", desc: "粘一条网易云/QQ音乐/B站链接，交给外部的 yt-dlp 取回音频", icon: CloudDownload, plugin: "sound.ytdlp" },

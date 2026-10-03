@@ -2,6 +2,7 @@ import { useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   AudioLines,
+  BookOpen,
   CheckCircle2,
   CircleAlert,
   CircleDashed,
@@ -14,6 +15,8 @@ import {
   UserRoundPlus,
 } from "lucide-react"
 import type { usePreserve } from "@/pages/Preserve/usePreserve"
+import { setPluginEnabled } from "@/api/client"
+import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
 import { cn } from "@/lib/utils"
 import { ErrorPanel } from "@/components/ErrorPanel"
 
@@ -84,8 +87,26 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
   const [showScript, setShowScript] = useState(false)
   const navigate = useNavigate()
 
+  /**
+   * 「录课」（`sound.audiobook`）是**可关能力**，默认预设下是关着的。
+   *
+   * 为什么这一页要读它：老师保存声音的**目的**是把一节课的讲稿念出来，而
+   * 「去复现」的落点 `_tts` 只做单段合成 —— 长讲稿得走「录课」那个 tab。
+   * 若那个 tab 因为能力关着而不存在，老师就会停在输字页对着单段输入框发呆
+   * （闭环断在最后一跳）。所以这里按能力清单决定给「去录一节课」还是
+   * 「开启「录课」」—— catalog 没拿到时 `pluginVisible` 按可见处理，不误伤旧后端。
+   */
+  const { state: catalogState, reload: reloadCatalog } = usePluginCatalog()
+  const catalog = catalogState.status === "ready" ? catalogState.catalog : null
+  const bookOn = pluginVisible(catalog, "sound.audiobook")
+  const [lessonBusy, setLessonBusy] = useState(false)
+  const [enablingBook, setEnablingBook] = useState(false)
+  const [bookErr, setBookErr] = useState("")
+
   const hasConsent = Boolean(p.profile?.consent)
-  const refs = p.profile?.refs ?? []
+  // `refs` 必须在 useMemo 里定型：写成 `p.profile?.refs ?? []` 的话，每次渲染
+  // 都是新数组 → 下面 `refTags` 的 useMemo 每帧失效（react-hooks/exhaustive-deps）。
+  const refs = useMemo(() => p.profile?.refs ?? [], [p.profile])
   const refTags = useMemo(() => new Set(refs.map((r) => r.tag)), [refs])
 
   /** 「去复现」：注册成音色库音色（后端同时设为当前选中），成功即跳输字页。
@@ -95,6 +116,35 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
   const goReproduce = async () => {
     const rep = await p.reproduce()
     if (rep) navigate("/tts")
+  }
+
+  /** 「去录一节课」：同一个注册动作（都要先成为音色库音色），只是落点换成
+   *  「录课」tab —— 老师要的是把整篇讲稿念完，不是合成一句话。
+   *  ⚠️ 别把 `goReproduce` 改成带参数的跳转：那条路径的落点 `_tts` 被
+   *  `PreservePage.reproduce.test.tsx` 逐字钉住，是另一条闭环的语义。 */
+  const goRecordLesson = async () => {
+    setLessonBusy(true)
+    setBookErr("")
+    try {
+      const rep = await p.reproduce()
+      if (rep) navigate("/tts?tab=book")
+    } finally {
+      setLessonBusy(false)
+    }
+  }
+
+  /** 「录课」关着时的一键开启（用户显式点击才会改配置，不静默动）。 */
+  const enableBook = async () => {
+    setEnablingBook(true)
+    setBookErr("")
+    try {
+      await setPluginEnabled("sound.audiobook", true)
+      reloadCatalog()
+    } catch (e) {
+      setBookErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setEnablingBook(false)
+    }
   }
 
   if (p.loading) {
@@ -359,17 +409,50 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                   {canReproduce ? (
                     <button
                       onClick={() => void goReproduce()}
-                      disabled={Boolean(p.busy)}
+                      disabled={Boolean(p.busy) || lessonBusy}
                       title="把最长档参考音注册成音色库音色并选中，然后跳到「输字变声」直接输字合成。重录过的话再点一次就会刷新。"
                       className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
                     >
-                      {p.busy === "reproduce" ? (
+                      {p.busy === "reproduce" && !lessonBusy ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       ) : (
                         <AudioLines className="h-3.5 w-3.5" />
                       )}
                       去复现 · 让它说话
                     </button>
+                  ) : null}
+                  {/* 老师的主线落点：保存声音的目的多半是「把一节课的讲稿念完」，
+                      而不是合成一句话。有声书能力关着时给一键开启（用户显式点击）。 */}
+                  {canReproduce ? (
+                    bookOn ? (
+                      <button
+                        onClick={() => void goRecordLesson()}
+                        disabled={Boolean(p.busy) || lessonBusy}
+                        title="注册成音色库音色后跳到「录课」—— 粘贴一节课的讲稿，按句合成并自动拼接成一整段音频。"
+                        className="flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-3 py-1.5 text-sm text-primary disabled:opacity-50"
+                      >
+                        {lessonBusy ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <BookOpen className="h-3.5 w-3.5" />
+                        )}
+                        去录一节课
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => void enableBook()}
+                        disabled={enablingBook}
+                        title="「录课」能力现在是关闭的。点一下打开，之后就能把一节课的讲稿一次跑完。"
+                        className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50"
+                      >
+                        {enablingBook ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <BookOpen className="h-3.5 w-3.5" />
+                        )}
+                        开启「录课」
+                      </button>
+                    )
                   ) : null}
                   {p.gate ? (
                     <span
@@ -387,6 +470,10 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                     </span>
                   ) : null}
                 </div>
+
+                {bookErr ? (
+                  <p className="mt-2 text-xs text-red-500">开启「录课」失败：{bookErr}</p>
+                ) : null}
 
                 {p.gate ? (
                   <div className="mt-3 space-y-3">
