@@ -16,14 +16,19 @@
  */
 import { useCallback, useEffect, useState } from "react"
 import { useNavigate } from "react-router"
-import { ArrowRight, Check } from "lucide-react"
+import { ArrowRight, Check, Loader2 } from "lucide-react"
 import { applyPluginPreset } from "@/api/client"
+import { restartBackend } from "@/lib/electron"
 import { usePluginCatalog } from "@/lib/pluginRoutes"
 import { hasBeenAsked } from "@/lib/useProfile"
 import { cn } from "@/lib/utils"
 import { SCENE_META } from "@/components/layout/ModeSwitcher"
 
 const DONT_ASK_KEY = "vm.modechooser.dontask"
+/** 模式切换要**重启后端**才生效（路由/插件集在启动时挂载）——重载后由本组件消费、跳到目标页。 */
+const PENDING_ENTRY_KEY = "vm.pendingEntry"
+/** 重载后一次性不弹选择页（刚选完模式再弹一次等于骚扰）。sessionStorage：关掉应用就失效。 */
+const SUPPRESS_KEY = "vm.modechooser.suppress-once"
 
 export function shouldShowModeChooser(): boolean {
   try {
@@ -43,34 +48,76 @@ const MODE_ENTRY: Record<string, string> = {
 export function ModeChooser() {
   const [open, setOpen] = useState(shouldShowModeChooser)
   const [dontAsk, setDontAsk] = useState(false)
+  const [switching, setSwitching] = useState<string | null>(null)
   const { state: catalogState } = usePluginCatalog()
   const navigate = useNavigate()
+
+  // 整页重载后本组件重新挂载，按序消费两件遗留：
+  // ① 待进入页面（pick 换模式时存下）→ 跳过去，不再弹选择页
+  // ② 一次性抑制标记（选完模式的重载）→ 只是不弹
+  useEffect(() => {
+    const pending = localStorage.getItem(PENDING_ENTRY_KEY)
+    if (pending) {
+      localStorage.removeItem(PENDING_ENTRY_KEY)
+      navigate(pending)
+      setOpen(false)
+      return
+    }
+    if (sessionStorage.getItem(SUPPRESS_KEY) === "1") {
+      sessionStorage.removeItem(SUPPRESS_KEY)
+      setOpen(false)
+    }
+  }, [navigate])
 
   const finish = useCallback(() => {
     if (dontAsk) localStorage.setItem(DONT_ASK_KEY, "1")
     setOpen(false)
   }, [dontAsk])
 
+  /**
+   * 2026-10-03 修 bug：原先「发射后不管」地套套餐就跳页，但插件集与路由是
+   * **后端启动时挂载的** —— 没重启，目标页路由根本不存在（被 `*` 兜底弹回首页），
+   * catalog 缓存也没刷新（侧栏/顶栏还显示旧模式）。现在换成：
+   * 套套餐 → 记下目标页 → 重启后端 → 整页重载（catalog 全新、路由齐全）→ 落到目标页。
+   * 已是当前模式则不折腾，直接跳页。
+   */
   const pick = useCallback(
-    (id: string) => {
+    async (id: string) => {
       const cat = catalogState.status === "ready" ? catalogState.catalog : null
-      // 套餐不匹配才套用；失败不拦跳页 —— 模式切换可以之后在侧栏补做
-      if (cat && cat.preset !== id) applyPluginPreset(id).catch(() => {})
-      finish()
-      navigate(MODE_ENTRY[id] ?? "/home")
+      const entry = MODE_ENTRY[id] ?? "/home"
+      if (!cat || cat.preset === id) {
+        if (dontAsk) localStorage.setItem(DONT_ASK_KEY, "1")
+        setOpen(false)
+        navigate(entry)
+        return
+      }
+      setSwitching(id)
+      try {
+        await applyPluginPreset(id)
+      } catch {
+        /* 失败也继续重启：重载后以清单为准，套没套上界面上看得到（侧栏高亮不骗人） */
+      }
+      localStorage.setItem(PENDING_ENTRY_KEY, entry)
+      sessionStorage.setItem(SUPPRESS_KEY, "1")
+      try {
+        await restartBackend()
+      } catch {
+        /* 纯网页调试没有重启通道 —— 重载后模式可能没换上，可从侧栏再切 */
+      }
+      location.reload()
     },
-    [catalogState, finish, navigate],
+    [catalogState, dontAsk, navigate],
   )
 
-  // Esc = 直接进入（与 UseCasePicker 同款键盘出口约定）
+  // Esc = 直接进入（与 UseCasePicker 同款键盘出口约定）；切换中不给 Esc 出口
   useEffect(() => {
-    if (!open) return
+    if (!open || switching) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") finish()
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [open, finish])
+  }, [open, switching, finish])
 
   if (!open) return null
 
@@ -102,10 +149,11 @@ export function ModeChooser() {
               <button
                 key={id}
                 type="button"
-                onClick={() => pick(id)}
+                disabled={switching !== null}
+                onClick={() => void pick(id)}
                 title={`启用 ${plugins.length} 项能力，进入「${meta.label}」`}
                 className={cn(
-                  "group flex flex-col items-center gap-3 rounded-3xl border bg-card px-6 py-8 text-center transition hover:-translate-y-1 hover:border-primary hover:shadow-xl",
+                  "group flex flex-col items-center gap-3 rounded-3xl border bg-card px-6 py-8 text-center transition hover:-translate-y-1 hover:border-primary hover:shadow-xl disabled:opacity-60",
                   active ? "border-primary/60 ring-1 ring-primary/40" : "border-border",
                 )}
               >
@@ -134,11 +182,19 @@ export function ModeChooser() {
           ) : null}
         </div>
 
+        {switching ? (
+          <p className="mt-6 flex items-center justify-center gap-2 text-sm text-primary" role="status">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            正在切换到「{SCENE_META[switching].label}」并重启服务，马上就好…
+          </p>
+        ) : null}
+
         <div className="mt-10 flex flex-wrap items-center justify-center gap-6">
           <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
             <input
               type="checkbox"
               checked={dontAsk}
+              disabled={switching !== null}
               onChange={(e) => setDontAsk(e.target.checked)}
               className="h-3.5 w-3.5 accent-[var(--primary)]"
             />
@@ -147,7 +203,8 @@ export function ModeChooser() {
           <button
             type="button"
             onClick={finish}
-            className="rounded-md border border-border px-4 py-1.5 text-xs text-muted-foreground transition hover:border-primary hover:text-primary"
+            disabled={switching !== null}
+            className="rounded-md border border-border px-4 py-1.5 text-xs text-muted-foreground transition hover:border-primary hover:text-primary disabled:opacity-50"
           >
             直接进入
           </button>
