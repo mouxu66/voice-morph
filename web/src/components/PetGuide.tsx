@@ -24,6 +24,23 @@ const MOTIONS = ["pop", "wave", "lean", "nod", "sway", "jump", "twirl",
   "shake", "float", "wiggle", "flip", "bounce", "dance", "ear", "work"]
 
 /**
+ * 页面内导览桌宠：**展开态是文档流里的一条顶部横幅，收起态才 fixed 到右下角**。
+ *
+ * 位置不是随手定的，是被 2026-10-03 的遮挡实测逼出来的（详见 `docs/犯错档案-工程.md`）：
+ * 之前两种摆法都错。
+ *
+ * ① 一直 `fixed` 贴在主内容区右上 —— 必然遮挡。`PageShell` 是 `max-w-[1240px]` 居中，
+ *    1440px 视口下右侧只剩 16px 空隙，而展开态要占 ~400px（气泡 260 + 间距 12 +
+ *    立绘 96 + 右边距 32）。实测盖住三页右侧栏的小节标题，最高 92%。
+ * ② 改成给 `<main>` 加 `padding-right: 400px` 让位 —— 遮挡确实归零，但**每行文字
+ *    都重新换行**，「我的音色」页从 6.7 屏涨到 8 屏。横向重排比遮挡本身更伤。
+ *
+ * 所以展开态干脆**不浮了**：回到文档流顶部，横幅自己占一行，把内容整体**往下**推。
+ * 纵向位移不会让任何一行文字重新折行，右侧栏的小节标题也就永远不可能被压住。
+ * 收起后横幅卸载、右下角只剩 64px 头像（那个尺寸实测无遮挡）。
+ */
+
+/**
  * 页面内导览桌宠：固定在主内容区右上角，切页时主动蹦出来介绍当前页，
  * 讲完后缩成一个小头像，点一下可重播。
  */
@@ -102,11 +119,14 @@ export function PetGuide({ page, enabled }: { page: string; enabled: boolean }) 
   }, [])
 
   const guide: PageGuide | undefined = GUIDES[page]
-  if (!visible || !guide) return null
+  const shown = visible && !!guide
+
+  if (!shown || !guide) return null
 
   const anim = SPRITE_ANIM[guide.action] ?? SPRITE_ANIM.idle
-  // 收起时按钮只有 64px，精灵图也缩到 64px，配合 overflow-hidden 避免角色穿出圆形头像
-  const spriteSize = expanded ? 96 : 64
+  // 两种状态都用 64px：展开横幅里 96px 会把横幅撑得太高（内容被推得更下面），
+  // 收起态本来就只有 64px。统一后 `spriteStyle` 只需算一次。
+  const spriteSize = 64
   const spriteStyle: React.CSSProperties = {
     backgroundImage: `url("${SPRITES[guide.action] ?? SPRITES.idle}")`,
     backgroundRepeat: "no-repeat",
@@ -119,32 +139,49 @@ export function PetGuide({ page, enabled }: { page: string; enabled: boolean }) 
     animation: `pet-steps ${anim.dur}s steps(${anim.frames}) infinite`,
   }
 
-  return (
-    <div
-      className={cn(
-        // 展开讲页时贴主内容区顶部右侧（习惯位置）；讲完收起后挪到屏幕右下角，
-        // 完全脱离任何按钮区，避免挡住右上角的搜索/设置/筛选等高频操作。
-        "fixed z-30 flex items-end gap-3 transition-all duration-500 ease-out",
-        expanded
-          ? "right-4 top-24 lg:right-8 translate-x-0 opacity-100"
-          : "right-4 bottom-4 lg:right-8 translate-x-0 opacity-90",
-      )}
+  const avatar = (
+    <button
+      type="button"
+      onClick={() => setExpanded(true)}
+      className="relative shrink-0 overflow-hidden rounded-full border border-border bg-card shadow-lg transition hover:shadow-xl"
+      style={{ width: spriteSize, height: spriteSize }}
+      title="导览小助手"
     >
-      {expanded && (
-        <div className="group relative max-w-[260px] rounded-2xl border border-border bg-card/95 p-4 shadow-xl backdrop-blur-md">
-          <button
-            type="button"
-            onClick={() => setExpanded(false)}
-            className="absolute right-2 top-1 text-[10px] text-muted-foreground opacity-0 transition hover:text-foreground group-hover:opacity-100"
-            aria-label="收起"
-          >
-            收起
-          </button>
-          <p className="pr-5 text-sm font-semibold text-foreground">{guide.title}</p>
-          <p className="mt-1 min-h-[1.5em] text-sm leading-relaxed text-card-foreground">
-            {displayText}
-          </p>
-          <div className="mt-3 flex items-center justify-between">
+      <div
+        className={cn(
+          "absolute inset-0 m-auto transition-transform",
+          guide.motion && MOTIONS.includes(guide.motion) ? `m-${guide.motion}` : ""
+        )}
+        style={spriteStyle}
+      />
+    </button>
+  )
+
+  // 展开态：文档流里的顶部横幅。宽度对齐 PageShell（`max-w-[1240px] mx-auto lg:px-10`），
+  // 这样横幅和页面内容左右边缘齐平，不会显得外挂。
+  //
+  // `pt-[calc(...)]` 里的 `--tab-bar-h` 是 `MergedPageTabs` 写出来的吸顶标签栏厚度。
+  // 必须让开它：这个组件是 `fixed top-16`，而横幅在文档流里 —— 两者不在同一个定位
+  // 体系，横幅会从吸顶栏**下面**穿过去被盖住（实测标签栏 100% 被压）。
+  // 变量没设（页面没有合并标签栏）时回退 0px，横幅贴顶不留空。
+  if (expanded) {
+    return (
+      <div
+        data-testid="pet-guide"
+        className="mx-auto w-full max-w-[1240px] px-6 lg:px-10 pt-[calc(0.75rem+var(--tab-bar-h,0px))]"
+      >
+        <div
+          data-testid="pet-guide-body"
+          className="flex items-center gap-4 rounded-2xl border border-primary/30 bg-primary/[0.07] p-4"
+        >
+          {avatar}
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-foreground">{guide.title}</p>
+            <p className="mt-1 min-h-[1.5em] text-sm leading-relaxed text-card-foreground">
+              {displayText}
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-col items-end gap-2">
             <div className="flex gap-1.5">
               {lines.map((_, idx) => (
                 <span
@@ -163,31 +200,20 @@ export function PetGuide({ page, enabled }: { page: string; enabled: boolean }) 
                 timers.current.forEach(clearTimeout)
                 timers.current = []
               }}
-              className="text-[10px] text-muted-foreground transition hover:text-foreground"
+              className="text-[11px] text-muted-foreground transition hover:text-foreground"
             >
               跳过
             </button>
           </div>
         </div>
-      )}
+      </div>
+    )
+  }
 
-      <button
-        type="button"
-        onClick={() => setExpanded(true)}
-        className={cn(
-          "relative shrink-0 overflow-hidden rounded-full border border-border bg-card shadow-lg transition hover:shadow-xl",
-          expanded ? "h-24 w-24" : "h-16 w-16"
-        )}
-        title="导览小助手"
-      >
-        <div
-          className={cn(
-            "absolute inset-0 m-auto transition-transform",
-            guide.motion && MOTIONS.includes(guide.motion) ? `m-${guide.motion}` : ""
-          )}
-          style={spriteStyle}
-        />
-      </button>
+  // 收起态：右下角 64px 头像。固定在角落、完全脱离内容区，实测无遮挡。
+  return (
+    <div data-testid="pet-guide" className="fixed bottom-4 right-4 z-30 opacity-90 lg:right-8">
+      {avatar}
     </div>
   )
 }

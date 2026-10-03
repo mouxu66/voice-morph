@@ -175,8 +175,15 @@ export default function App() {
         canCheckUpdate={canCheckUpdate}
       />
 
-      {/* 窄屏 56px 顶栏 + 44px 横向导航，桌面端让开侧栏 */}
+      {/* 窄屏 56px 顶栏 + 44px 横向导航，桌面端让开侧栏。 */}
       <main className="relative min-h-[100dvh] pt-[100px] lg:pl-[var(--sidebar-w)] lg:pt-14">
+        {/* 页面内导览桌宠：**展开态必须挂在 <main> 里**（文档流顶部横幅）——
+            它 2026-10-03 起不再 fixed 浮在右上角，因为浮层会压住右侧栏的小节标题，
+            而「给 main 加 padding-right 让位」又会让整页文字横向重排（6.7 屏 → 8 屏）。
+            放回文档流后内容只被**向下推**，不换行、不遮挡。
+            收起态它自己 `fixed` 到右下角，位置在哪渲染都不影响。 */}
+        <PetGuide page={location.pathname} enabled={petGuideEnabled} />
+
         {/* 三态：清单读取失败 / 一条路由都没有 / 正常渲染。
             前两态**不渲染 <Routes>** —— 否则 `*` 兜底会把人往一个不存在的首页上引。 */}
         {routePlan === null ? (
@@ -234,8 +241,6 @@ export default function App() {
         initialCheck={autoUpdate}
       />
 
-      {/* 页面内导览桌宠：随路由切换介绍当前页 */}
-      <PetGuide page={location.pathname} enabled={petGuideEnabled} />
       {/* 首次启动的**两个问答**，串行弹、绝不重叠：
           ① UseCasePicker —— 问「你用它干嘛」（场景维度，落盘、影响首屏裁剪）
           ② FirstLaunchGuide —— 问「你想先干什么」（意图维度，选完就跳页）

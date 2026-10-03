@@ -44,7 +44,8 @@ describe("VoicesPage 里的可关能力面板按清单显隐", () => {
 
   it("作品库挂在 core.history 上", () => {
     expect(pageSrc).toContain('pluginVisible(catalog, "core.history")')
-    expect(pageSrc).toContain("{historyOn && p.backendUp && <WorksLibrary")
+    expect(pageSrc).toContain("{historyOn && p.backendUp && <AdvancedSection")
+    expect(pageSrc).toContain("<WorksLibrary voices={p.voices} />")
   })
 
   it("★ 反例：这三个组件不许再出现无条件渲染", () => {
@@ -54,6 +55,10 @@ describe("VoicesPage 里的可关能力面板按清单显隐", () => {
     // 测试恒红（自己踩过一次）。所以锚点从「渲染表达式开头」整段取。
     expect(pageSrc).not.toContain("{p.voices.length >= 2 && <AbCompareCard")
     expect(pageSrc).not.toContain("{p.voices.length >= 1 && <AbChainCard")
+    // 作品库 2026-10-03 起外面裹了一层 `<AdvancedSection>`（首屏体量治理，见
+    // `index.density.test.ts`），所以门控锚点是 `historyOn && p.backendUp && <AdvancedSection`；
+    // 门控本身没松 —— 折叠只改「默认展开与否」，不改「有没有权限渲染」。
+    expect(pageSrc).not.toContain("{p.backendUp && <AdvancedSection")
     expect(pageSrc).not.toContain("{p.backendUp && <WorksLibrary")
     // AuditionEntry 原本没有 `{` 前缀（直接是 JSX 子节点），所以否定串要取「前面不是 &&」的形态：
     // 门控后是 `{auditionOn && <AuditionEntry hint=...`，用 `> <AuditionEntry` 这种
