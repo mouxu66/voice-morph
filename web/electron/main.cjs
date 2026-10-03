@@ -124,6 +124,7 @@ app.whenReady().then(async () => {
   sfxWindow.registerSfxIpc();
   backend.registerBackendIpc();
   registerCascadeHotkey();
+  registerPhraseHotkeys();
   registerUpdateIpc();
   // 启动 12s 后静默检查一次更新，有新版才弹更新页（失败全程静默）
   scheduleStartupUpdateCheck(win);
@@ -162,6 +163,32 @@ function registerCascadeHotkey() {
     void toggleCascadeHotkey();
   });
   if (!OK) console.error("[hotkey] Ctrl+Alt+V 注册失败（可能被其它程序占用）");
+}
+
+/** 全局热键 Alt+1 ~ Alt+5：快捷短语板第 N 条「直接播进虚拟声卡」。
+ *  场景：PPT 放映 / 钉钉直播全屏时按一下，克隆音色替老师念那句课堂高频语，
+ *  不用切回本应用 —— 所以播放必须在后端（POST /voice-phrases/{id}/play，
+ *  走声板常驻播放器进 CABLE），浏览器 <audio> 跟着窗口焦点走，指望不上。
+ *  每次触发现取 /api/voice-phrases（本地毫秒级，**不缓存**：面板里改了/删了/
+ *  调了顺序，热键立即跟上，绝不念出已删除的旧短语）。不足 N 条时静默 no-op。
+ *  冷态首次合成可能超过 httpJson 的 8s 超时：超时只是热键侧拿不到响应，
+ *  后端仍会把合成播完 —— 第二次按就是零等待，可接受（面板里先点一次预热更好）。
+ */
+async function playPhraseByHotkey(n) {
+  const r = await backend.httpJson("GET", "/api/voice-phrases");
+  const items = r && r.json && Array.isArray(r.json.items) ? r.json.items : [];
+  const item = items[n - 1];
+  if (!item || !item.id) return;
+  await backend.httpJson("POST", `/api/voice-phrases/${encodeURIComponent(item.id)}/play`, {});
+}
+
+function registerPhraseHotkeys() {
+  for (let n = 1; n <= 5; n++) {
+    const ok = globalShortcut.register(`Alt+${n}`, () => {
+      void playPhraseByHotkey(n);
+    });
+    if (!ok) console.error(`[hotkey] Alt+${n} 注册失败（可能被其它程序占用）`);
+  }
 }
 
 
