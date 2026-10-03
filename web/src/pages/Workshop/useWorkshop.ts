@@ -24,6 +24,9 @@ const IDLE_PIPELINE: PipelineStatus = {
   running: false, status: "idle", step: "", message: "", percent: 0, clips: 0, error: "", verdict: null,
 }
 
+/** 切片卡分批渲染的每批条数。首屏 30 张 ≈ 1 屏多一点，够看清又不会撑爆 DOM。 */
+const CLIP_PAGE = 30
+
 /** 素材切片前缀：新切片用完整素材名（去文件系统非法字符，≤80 字符），旧切片用 stem[:12]。 */
 function materialPrefixes(file: string): Set<string> {
   const stem = file.replace(/\.[^./\\]+$/, "")
@@ -51,6 +54,18 @@ export function useWorkshop() {
   // 切片质检（P1-1）：等级筛选 + 按分排序
   const [gradeFilter, setGradeFilter] = useState<"全部" | "合格" | "A" | "B" | "C" | "D">("全部")
   const [qcBusy, setQcBusy] = useState(false)
+
+  // 分批渲染：一次只挂 CLIP_PAGE 张卡，"再显示一批"往下续。
+  //
+  // 为什么必须分批（2026-10-03 实测）：切片走完流水线会有几百条（本机 487 条），
+  // 而每张卡都含一个 `<StudioAudioPlayer>`（内部一个 <audio>）。全量渲染 = 一次
+  // 挂 487 个媒体元素，页面被撑到 **38 屏**（1440px）/ **126 屏**（360px）。
+  // 注意瓶颈**不在后端**：`/api/clips` 只要 0.24s / 132KB，播放器是懒加载 src
+  // （实测 media 请求数 0）。所以这是纯粹的 DOM 规模问题，改后端分页没用。
+  //
+  // 关键：**只截断渲染，不改 visibleClips 本身**。批量采纳/驳回、精审 A/R 快捷键、
+  // 自动优选全都读 visibleClips —— 分页只是"先看前 N 条"，不是"数据只有 N 条"。
+  const [clipLimit, setClipLimit] = useState(CLIP_PAGE)
   const [qcFor, setQcFor] = useState<string>("")
   // 当前"活动"素材：最近一次质检/说话人分离的对象，供全局自动优选限定范围
   const [activeMaterial, setActiveMaterial] = useState<string>("")
@@ -318,6 +333,17 @@ export function useWorkshop() {
     })
   }, [clips, decisions, qualityFilter, reviewMode, speakerFilter, diar, clipSpk, gradeFilter])
 
+  // 渲染用的分页切片。注意 visibleClips **没被截断** —— 批量操作和快捷键都读它。
+  const shownClips = useMemo(() => visibleClips.slice(0, clipLimit), [visibleClips, clipLimit])
+  const hasMoreClips = visibleClips.length > clipLimit
+  const showMoreClips = useCallback(() => setClipLimit((n) => n + CLIP_PAGE), [])
+
+  // 换筛选条件时回到第一批：否则"响度偏低"筛出 8 条时，用户的 limit 还停在 150，
+  // 切回"全部"会突然铺出 150 张卡（这正是分批要避免的事）。
+  useEffect(() => {
+    setClipLimit(CLIP_PAGE)
+  }, [qualityFilter, gradeFilter, speakerFilter, reviewMode])
+
   // 精审快捷键：A 采纳 / R 驳回
   const setDecision = useCallback((clipName: string, decision: "采纳" | "驳回") => {
     setDecisions((current) => ({ ...current, [clipName]: decision }))
@@ -345,7 +371,8 @@ export function useWorkshop() {
   }, [feedback])
 
   return {
-    backendUp, videos, clips, visibleClips, loading, errorMessage, feedback, qualityFilter, setQualityFilter,
+    backendUp, videos, clips, visibleClips, shownClips, hasMoreClips, showMoreClips,
+    loading, errorMessage, feedback, qualityFilter, setQualityFilter,
     reviewMode, setReviewMode, selectedClips, selectedItems, selectedDuration, decisions,
     pipeline, startPipeline, stopPipeline, resetPipeline,
     verdict, dismissVerdict: () => setVerdict(null),
