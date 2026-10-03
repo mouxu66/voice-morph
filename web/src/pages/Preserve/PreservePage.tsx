@@ -121,7 +121,11 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
           <span>
             录音与生成结果<b>全部保存在本机</b>，不会上传到任何服务器；也只有您本人确认同意后，档案才能用来生成声音。
           </span>
-          {p.storeDir ? <span className="truncate font-mono text-[11px]">{p.storeDir}</span> : null}
+          {p.storeDir ? (
+            <span className="truncate font-mono text-[11px]" title={p.storeDir}>
+              存放位置：{p.storeDir}
+            </span>
+          ) : null}
         </p>
       </header>
 
