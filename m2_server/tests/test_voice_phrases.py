@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import soundfile as sf  # noqa: F401 —— 保证依赖在（speak 会用它读时长）
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -167,6 +169,75 @@ def test_speak_uses_store_lock_not_deadlock(monkeypatch):
     assert c.put(f"/api/voice-phrases/{pid}", json={"text": "锁真的不重入。"}).status_code == 200
     assert c.post(f"/api/voice-phrases/{pid}/speak", json={"voice_id": "v"}).status_code == 200
     assert c.delete(f"/api/voice-phrases/{pid}").status_code == 200
+
+
+# ---------------- play：热键链路（播进虚拟声卡） ----------------
+
+
+def test_play_sends_cached_wav_to_soundboard_player(monkeypatch):
+    calls: list[tuple[str, str]] = []
+    _fake_synth(monkeypatch, calls)
+    sent: list[dict] = []
+
+    def _fake_command(payload: dict) -> dict:
+        sent.append(payload)
+        return {"type": "playing", "duration_s": 0.2}
+
+    monkeypatch.setattr("soundboard._command", _fake_command)
+    c = _client()
+    pid = c.post("/api/voice-phrases", json={"text": "看黑板。"}).json()["item"]["id"]
+
+    r = c.post(f"/api/voice-phrases/{pid}/play", json={"voice_id": "wang"})
+    assert r.status_code == 200
+    b = r.json()
+    assert b["playing"] is True and b["cached"] is False and b["duration_s"] == 0.2
+    # 下发给播放器的 wav 就是持久缓存产物本身（在 phrase_cache 下、真实存在）
+    assert len(sent) == 1
+    wav = Path(sent[0]["wav"])
+    assert wav.is_file() and wav.parent == vp._cache_dir()
+    assert sent[0]["id"].startswith("phrase_")
+    assert sent[0]["gain"] == 1.0  # 整条语音是唯一内容，不叠人声 → 满增益
+
+    # 第二次：不再合成（缓存命中），但播放命令照样下发（按一下响一次）
+    r2 = c.post(f"/api/voice-phrases/{pid}/play", json={"voice_id": "wang"}).json()
+    assert r2["cached"] is True
+    assert len(sent) == 2
+    assert len(calls) == 1
+
+
+def test_play_maps_player_failure_to_503(monkeypatch):
+    calls: list[tuple[str, str]] = []
+    _fake_synth(monkeypatch, calls)
+    monkeypatch.setattr(
+        "soundboard._command", lambda payload: (_ for _ in ()).throw(RuntimeError("device_not_found:CABLE"))
+    )
+    c = _client()
+    pid = c.post("/api/voice-phrases", json={"text": "下课。"}).json()["item"]["id"]
+    r = c.post(f"/api/voice-phrases/{pid}/play", json={"voice_id": "v"})
+    assert r.status_code == 503 and "device_not_found" in r.json()["detail"]
+
+
+def test_play_requires_voice_and_existing_id(monkeypatch):
+    monkeypatch.setattr("soundboard._command", lambda payload: {"type": "playing"})
+    c = _client()
+    assert c.post("/api/voice-phrases/nope/play", json={"voice_id": "v"}).status_code == 404
+    pid = c.post("/api/voice-phrases", json={"text": "上课。"}).json()["item"]["id"]
+    # 没选音色（默认 _selected_voice()==""）→ 400，播放器根本不该被碰
+    r = c.post(f"/api/voice-phrases/{pid}/play", json={})
+    assert r.status_code == 400 and "音色" in r.json()["detail"]
+
+
+def test_url_to_path_rejects_escape_and_keeps_session_fallback():
+    assert vp._url_to_path("/api/media/outputs/../../secret.wav") is None
+    assert vp._url_to_path("/api/media/outputs//x.wav") is None
+    assert vp._url_to_path("/other/x.wav") is None
+    assert vp._url_to_path("/api/media/outputs/phrase_cache/abc.wav") == (
+        cfg.OUTPUTS_DIR / "phrase_cache" / "abc.wav"
+    )
+    # speak() 的 OSError 兜底产物在 .session 下 —— 点开头但不是 ".."，放行
+    assert vp._url_to_path("/api/media/outputs/.session/tts_1.wav") == (
+        cfg.OUTPUTS_DIR / ".session" / "tts_1.wav"
+    )
 
 
 # ---------------- 缓存淘汰 ----------------

@@ -76,6 +76,25 @@ def _cache_key(voice_id: str, text: str) -> str:
     return hashlib.sha1(f"{voice_id}|{text}".encode("utf-8")).hexdigest()[:20]
 
 
+#: speak() 返回的产物 URL 前缀（/play 换算真实文件用；与 media 静态路由同源）
+_MEDIA_OUTPUTS_PREFIX = "/api/media/outputs/"
+
+
+def _url_to_path(url: str) -> Path | None:
+    """speak() 产物 URL → outputs/ 下的真实文件路径（播进声卡前必须拿到实体）。
+
+    只认本模块自己拼出的前缀；带 `..` / 空段的成分一律拒掉 —— 与
+    `soundboard._outputs_wav` 同一警惕：换算结果不许逃出 outputs/。
+    （`.session` 这种点开头的目录是 speak() 的合法兜底产物，放行。）
+    """
+    if not url.startswith(_MEDIA_OUTPUTS_PREFIX):
+        return None
+    parts = url[len(_MEDIA_OUTPUTS_PREFIX) :].split("/")
+    if not parts or any(p in ("", ".", "..") for p in parts):
+        return None
+    return cfg.OUTPUTS_DIR.joinpath(*parts)
+
+
 def _write(items: list[dict]) -> None:
     """落盘（调用方必须已持 `_STORE_LOCK`）。"""
     f = _state_file()
@@ -245,6 +264,46 @@ def speak_phrase(pid: str, body: SpeakBody):
         raise HTTPException(status_code=400, detail="请先选择音色")
     r = speak(phrase["text"], voice_id)
     return {"ok": True, **r}
+
+
+@router.post("/voice-phrases/{pid}/play")
+def play_phrase(pid: str, body: SpeakBody):
+    """全局热键链路（Alt+1~5）：念这条短语并**直接播进虚拟声卡**。
+
+    与 /speak 的分工：speak 只产出 URL（前端浏览器播，走本机扬声器，窗口藏着
+    就听不见）；play 复用同一条持久缓存（speak() 命中即零合成），再借声板的
+    常驻播放器把 wav 写进 CABLE 渲染端 —— PPT 放映/钉钉直播里按热键，
+    钉钉/录屏那头才收得到。**立即返回**（one-shot 语义，与声板 /play 一致）；
+    连按 = 抢占重播（worker 内部先 sd.stop()），不排队。
+
+    环境不支持时 503（VM_SOUNDBOARD=0 / 找不到播放设备）：热键侧静默，
+    与级联热键对后端离线的处理同一口径。
+    """
+    with _STORE_LOCK:
+        phrase = _find(_read_unlocked(), pid)
+    voice_id = body.voice_id or _selected_voice()
+    if not voice_id:
+        raise HTTPException(status_code=400, detail="请先选择音色")
+    r = speak(phrase["text"], voice_id)
+    wav = _url_to_path(r["url"])
+    if wav is None or not wav.is_file():
+        raise HTTPException(status_code=500, detail="合成产物不存在，请重试")
+    try:
+        from soundboard import _command  # 延迟导入：声板是独立功能域，不建模块级依赖
+
+        msg = _command(
+            {
+                "wav": str(wav),
+                # worker 按这个 id 记解码缓存：同音色同文的短语重播零 IO
+                "id": f"phrase_{_cache_key(voice_id, phrase['text'])}",
+                # 1.0：这条语音就是此刻的全部内容（不像音效要与人声叠加留余量）
+                "gain": 1.0,
+            }
+        )
+    except (RuntimeError, OSError) as e:
+        # 与声板 /play 同口径：Popen 失败与"设备找不到"都是"现在播不了"→ 503
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    return {"ok": True, "playing": True, "duration_s": msg.get("duration_s"), "cached": r["cached"]}
 
 
 def _selected_voice() -> str:
