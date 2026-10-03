@@ -203,6 +203,56 @@ def test_default_preset_is_the_voice_morph_body():
     assert {"/offlinevc", "/live", "/audition"} <= routes, sorted(routes)
 
 
+# 2026-10-03 用户拍板：三个**场景模式**——按「用户是谁」分组（打游戏的不装微信、
+# 录课老师不用实时变声）。同样钉成字面量：改这三个套餐必须来改这里，
+# 并且回答"这个场景为什么多了/少了一项"。套餐只是起点，套用后仍可逐项开关。
+
+def test_scene_presets_are_pinned_literals():
+    """三个场景套餐的**起点集**钉死：微信变身 / 声音保存（护嗓）/ 游戏变身。"""
+    assert plugin_manifest.PRESETS["wechat"] == [
+        "sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board"]
+    assert plugin_manifest.PRESETS["preserve"] == [
+        "sound.preserve", "sound.tts", "sound.audiobook"]
+    # 游戏变身 = 变声本体本身（实时变声走虚拟声卡进游戏/直播/会议）
+    assert plugin_manifest.PRESETS["game"] == list(plugin_manifest.BODY_IDS)
+    # 标签直接说场景 —— 设置页那一排按钮是用户唯一看得见套餐含义的地方
+    for name in ("wechat", "preserve", "game"):
+        assert plugin_manifest.PRESET_LABELS[name], f"{name} 缺中文标签"
+
+
+def test_scene_presets_expand_to_right_scopes():
+    """展开后的作用域各归各的场景：带什么、**不带什么**都要点名。"""
+    wechat = plugin_manifest.preset_ids("wechat")
+    preserve = plugin_manifest.preset_ids("preserve")
+    game = plugin_manifest.preset_ids("game")
+    # 微信：tab 宿主页（输字变声，/tts?tab=wechat）+ 发送 + 特效声板必须在；
+    # 实时变声 / 声音保存不该混进来
+    assert {"sound.tts", "hook.wechat", "sound.fx-board", "sound.offline-vc"} <= wechat
+    assert "sound.rvc-live" not in wechat and "sound.preserve" not in wechat
+    # 保存：三件套齐（有声书靠 requires 闭包带上 tts）；不碰微信 / 实时
+    assert {"sound.preserve", "sound.tts", "sound.audiobook"} <= preserve
+    assert "hook.wechat" not in preserve and "sound.rvc-live" not in preserve
+    # 游戏 = 标准（同一套展开结果，只是叫用户听得懂的名字）
+    assert game == plugin_manifest.preset_ids("standard")
+
+
+def test_scene_presets_have_pages():
+    """每个场景至少有一张自己的入口页 —— 套完模式进去是空首页就是事故。"""
+    for name, expected in (
+        # 微信发送页没有独立路由 —— 它是输字变声页的 tab（/tts?tab=wechat），
+        # 所以入口页判 /tts；preserve 的建档页、游戏的实时页都有独立路由
+        ("wechat", "/tts"),
+        ("preserve", "/preserve"),
+        ("game", "/live"),
+    ):
+        routes = {
+            r["path"]
+            for p in plugin_manifest.load_all()
+            if p.id in plugin_manifest.preset_ids(name) for r in p.routes
+        }
+        assert expected in routes, f"{name} 模式没有入口页 {expected}（现有：{sorted(routes)}）"
+
+
 def test_first_run_seeds_the_default_preset_once(monkeypatch):
     """首次运行写一份**显式**状态，之后永不覆盖用户的选择。
 
