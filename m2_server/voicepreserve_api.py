@@ -173,6 +173,28 @@ def preserve_events(pid: str, limit: int = 200) -> dict:
     return {"events": vp.read_events(pid, limit=max(1, min(int(limit), 2000)))}
 
 
+# ---------------- 复现桥 ----------------
+
+@router.post("/preserve/profiles/{pid}/reproduce")
+def preserve_reproduce(pid: str) -> dict:
+    """「去复现」：把档案的最长档参考音注册成音色库音色并设为当前选中。
+
+    前端随后跳「输字变声」页即可直接合成 —— 注册成音色 = 一次接入
+    TTS / 有声书 / OpenAI 兼容层所有现有链路，本插件依然不实现合成。
+
+    **同意门禁在这里**：没有知情同意一律 400 —— 注册成音色就是交给克隆链路，
+    这是「仅克隆本人或已授权声音」在 HTTP 层的落点（语义同 `gate`，但**不跑
+    客观指标** —— 复现不需要体检数字，别让人为一次点击多等 1 秒）。
+    幂等：重录参考音后再点一次，音色库里的 reference / ref_text 会刷新。
+    """
+    pid = _pid_or_400(pid)
+    _profile_or_404(pid)
+    rep = vp.register_as_voice(pid)
+    if rep.get("error"):
+        raise HTTPException(400, rep["error"])
+    return {"ok": True, **rep}
+
+
 # ---------------- 录音上传 ----------------
 
 async def _save_upload(file: UploadFile) -> Path:

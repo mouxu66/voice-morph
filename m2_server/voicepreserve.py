@@ -547,6 +547,81 @@ def reference_path(pid: str, duration_s: float | None = None) -> Path | None:
     return path if path.exists() else None
 
 
+# ---------------- 复现桥（注册为音色库音色） ----------------
+
+#: 复现桥生成的音色 id 前缀。`preserve_` + 档案 id：档案 id 本身受
+#: `_PROFILE_ID_RE` 约束（小写字母数字），拼上固定前缀后仍满足
+#: `common._VOICE_ID_RE`（`[A-Za-z0-9_-]+`）—— 音色 id 会拼路径，形状先堵死穿越。
+VOICE_ID_PREFIX = "preserve_"
+
+
+def _ref_text_for(duration_s: float) -> str:
+    """某档参考音对应的文字稿 = 引导脚本的前缀。
+
+    ★ 这**不是猜的**：时长档的定义就是「按顺序念脚本、取前 N 秒」
+    （见 `RECORD_SCRIPT` 的注释），所以第 N 档的文字稿就是脚本按估算语速
+    截到该时长的前缀。ref_text 有内容 Qwen3-TTS 才走 ICL 语气克隆
+    （`tts_api.synth_wav`：ref_text 为空会静默回退纯声纹模式，语气会丢）。
+    """
+    budget = float(duration_s) * SCRIPT_CHARS_PER_SEC
+    used = 0
+    out: list[str] = []
+    for s in RECORD_SCRIPT:
+        out.append(s)
+        used += char_count(s)
+        if used >= budget:
+            break
+    return "".join(out)
+
+
+def register_as_voice(pid: str) -> dict:
+    """把档案的**最长档**参考音注册成音色库音色（「去复现」桥）。
+
+    为什么落点是音色库而不是在本模块里合成：TTS / 有声书 / OpenAI 兼容层
+    整条复现链路的入口都是 `voice_id`（`common.voice_ref`），注册成音色 =
+    一次接入所有现有链路，本模块依然一行合成代码都不用写。
+
+    语义（都有测试钉住，`test_voicepreserve.py::TestReproduce`）：
+      - **知情同意是硬门禁**：没有 consent 这一步必须失败 —— 注册成音色就是
+        交给克隆链路，这里是「仅克隆本人或已授权声音」的落点。
+      - **幂等**：重复调用 = 用当前最长档刷新 reference / ref_text ——
+        重录之后点一次「去复现」就同步过去。
+      - **注册后设为当前选中音色**：前端跳到输字页即可直接合成。
+      - **档案仍是唯一真相源**：音色库里这个音色被删不影响档案；
+        被手工改坏了也以档案为准（再点一次就刷新回来）。
+
+    失败返回 `{"error": ..., "error_stage": ...}`，不抛。
+    """
+    p = get_profile(pid)
+    if p is None:
+        return {"error": f"档案不存在: {pid}", "error_stage": "读取档案"}
+    if not p.get("consent"):
+        # 与 gate() 的结构性判定同口径，但不跑指标（复现不需要体检数字，别让人多等 1 秒）
+        return {"error": "还没有记录知情同意 —— 复现前必须先确认授权", "error_stage": "同意门禁"}
+    ref = reference_path(pid)
+    if ref is None:
+        return {"error": "还没有参考音 —— 先按引导录至少一档", "error_stage": "参考音"}
+    rec = next((r for r in (p.get("refs") or []) if r.get("file") == ref.name), {})
+    voice_id = VOICE_ID_PREFIX + str(pid)
+    d = Path(cfg.MEDIA_DIR) / "voicebank" / voice_id
+    d.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ref, d / "reference.wav")
+    (d / "ref_text.txt").write_text(
+        _ref_text_for(float(rec.get("duration_s") or 0)), encoding="utf-8")
+    # meta 带档案回链：音色库里看到这个音色时，能查到它出自哪份档案、哪版同意书
+    (d / "meta.json").write_text(json.dumps({
+        "display_name": p.get("label") or voice_id,
+        "source": "preserve",
+        "preserve_profile": pid,
+        "consent_version": (p.get("consent") or {}).get("version", ""),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    (Path(cfg.MEDIA_DIR) / "voicebank" / "selected_voice.json").write_text(
+        json.dumps({"voice_id": voice_id}), encoding="utf-8")
+    log_event(pid, "reproduce", voice_id=voice_id, ref=ref.name)
+    return {"voice_id": voice_id, "label": p.get("label", ""), "ref": ref.name,
+            "duration_s": rec.get("duration_s")}
+
+
 # ---------------- 操作日志 ----------------
 
 def events_path(pid: str) -> Path:

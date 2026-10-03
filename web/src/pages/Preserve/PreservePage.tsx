@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import {
+  AudioLines,
   CheckCircle2,
   CircleAlert,
   CircleDashed,
@@ -72,10 +74,20 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
   const [label, setLabel] = useState("")
   const [operator, setOperator] = useState("")
   const [showScript, setShowScript] = useState(false)
+  const navigate = useNavigate()
 
   const hasConsent = Boolean(p.profile?.consent)
   const refs = p.profile?.refs ?? []
   const refTags = useMemo(() => new Set(refs.map((r) => r.tag)), [refs])
+
+  /** 「去复现」：注册成音色库音色（后端同时设为当前选中），成功即跳输字页。
+   *  显示条件（同意 + 至少一档参考音）只是引导；真正的门禁在后端 ——
+   *  就算被拦，错误也会原样显示在这里。 */
+  const canReproduce = hasConsent && refs.length > 0
+  const goReproduce = async () => {
+    const rep = await p.reproduce()
+    if (rep) navigate("/tts")
+  }
 
   if (p.loading) {
     return (
@@ -300,9 +312,9 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                 ) : null}
               </Card>
 
-              {/* ③ 门禁 */}
-              <Card title="体检与门禁" step={3} done={p.gate?.verdict === "ready"}>
-                <div className="flex items-center gap-2">
+              {/* ③ 体检与复现 */}
+              <Card title="体检与复现" step={3} done={p.gate?.verdict === "ready"}>
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     onClick={() => void p.runGate()}
                     disabled={p.busy === "gate"}
@@ -316,6 +328,21 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                       "体检这份档案"
                     )}
                   </button>
+                  {canReproduce ? (
+                    <button
+                      onClick={() => void goReproduce()}
+                      disabled={Boolean(p.busy)}
+                      title="把最长档参考音注册成音色库音色并选中，然后跳到「输字变声」直接输字合成。重录过的话再点一次就会刷新。"
+                      className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+                    >
+                      {p.busy === "reproduce" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <AudioLines className="h-3.5 w-3.5" />
+                      )}
+                      去复现 · 让它说话
+                    </button>
+                  ) : null}
                   {p.gate ? (
                     <span
                       className={cn(

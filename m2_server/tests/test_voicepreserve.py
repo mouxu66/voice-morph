@@ -21,6 +21,7 @@
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -500,7 +501,107 @@ class TestGuide:
         assert vp.guide()["script"] == list(vp.RECORD_SCRIPT)
 
 
-# ---------------- 9. HTTP 层 ----------------
+# ---------------- 9. 复现桥（注册为音色库音色） ----------------
+
+class TestReproduce:
+    """「去复现」桥：档案 → voicebank 音色（`register_as_voice`）。
+
+    ★ 守的还是那条主线：**同意先于克隆**。注册成音色 = 交给克隆链路，
+    没有同意这一步必须失败 —— 写反了就是一个能克隆任何人的工具。
+    """
+
+    def _ready_profile(self, iso_media, monkeypatch, label="王老师"):
+        _stub_convert(monkeypatch)
+        p = vp.create_profile(label)
+        vp.record_consent(p["id"], scope="self", statement="x", operator="t")
+        vp.add_reference(p["id"], _wav(iso_media / "ref.wav", 1.0), 10.0)
+        return p
+
+    def test_without_consent_it_must_fail(self, iso_media, monkeypatch):
+        _stub_convert(monkeypatch)
+        p = vp.create_profile("没同意的人")
+        vp.add_reference(p["id"], _wav(iso_media / "a.wav"), 3.0)
+        rep = vp.register_as_voice(p["id"])
+        assert rep.get("error") and rep["error_stage"] == "同意门禁"
+        # 一个字节的克隆产物都不能有
+        assert not (iso_media / "voicebank").exists()
+
+    def test_without_reference_it_must_fail(self, iso_media, monkeypatch):
+        _stub_convert(monkeypatch)
+        p = vp.create_profile("只有同意")
+        vp.record_consent(p["id"], scope="self", statement="x")
+        rep = vp.register_as_voice(p["id"])
+        assert rep.get("error") and rep["error_stage"] == "参考音"
+
+    def test_registers_voicebank_voice_and_selects_it(self, iso_media, monkeypatch):
+        p = self._ready_profile(iso_media, monkeypatch)
+        rep = vp.register_as_voice(p["id"])
+        assert rep.get("error") is None, rep
+        vb = iso_media / "voicebank" / rep["voice_id"]
+        assert (vb / "reference.wav").exists()
+        # 音色 id 满足 voicebank 白名单（它会被 common.voice_ref 按形状校验）
+        assert re.match(r"^[A-Za-z0-9_-]+$", rep["voice_id"])
+        # 文字稿非空 —— ref_text 有内容才走 ICL 语气克隆，空了静默回退纯声纹
+        assert (vb / "ref_text.txt").read_text(encoding="utf-8")
+        # meta 带档案回链：音色库里能查到它出自哪份档案
+        meta = json.loads((vb / "meta.json").read_text(encoding="utf-8"))
+        assert meta["preserve_profile"] == p["id"]
+        assert meta["source"] == "preserve"
+        assert meta["display_name"] == "王老师"
+        # 注册即选中 —— 前端跳输字页直接可用
+        sel = json.loads(
+            (iso_media / "voicebank" / "selected_voice.json").read_text(encoding="utf-8"))
+        assert sel["voice_id"] == rep["voice_id"]
+        # 操作日志记了这一笔（可审计）
+        assert any(e["kind"] == "reproduce" for e in vp.read_events(p["id"]))
+
+    def test_uses_longest_tier(self, iso_media, monkeypatch):
+        p = self._ready_profile(iso_media, monkeypatch)
+        vp.add_reference(p["id"], _wav(iso_media / "long.wav", 2.0), 30.0)
+        rep = vp.register_as_voice(p["id"])
+        assert rep.get("error") is None, rep
+        assert rep["ref"] == "30s.wav"
+
+    def test_rerun_refreshes_after_rerecording(self, iso_media, monkeypatch):
+        """幂等：重录后再次注册 = 用新的最长档刷新 reference（档案是唯一真相源）。"""
+        p = self._ready_profile(iso_media, monkeypatch)
+        assert vp.register_as_voice(p["id"]).get("error") is None
+        vb_ref = (iso_media / "voicebank" / (vp.VOICE_ID_PREFIX + p["id"])
+                  / "reference.wav")
+        first = vb_ref.read_bytes()
+        vp.add_reference(p["id"], _wav(iso_media / "new.wav", 2.0), 30.0)
+        rep2 = vp.register_as_voice(p["id"])
+        assert rep2.get("error") is None and rep2["ref"] == "30s.wav"
+        assert vb_ref.read_bytes() != first
+
+    def test_ref_text_is_the_script_prefix_for_the_tier(self, iso_media):
+        """ref_text 不是猜的：10s 档 = 脚本按估算语速截到 10s 的前缀。"""
+        text = vp._ref_text_for(10.0)
+        full = "".join(vp.RECORD_SCRIPT)
+        assert text and full.startswith(text) and len(text) < len(full)
+        # 循环是「先加句再判够」，所以字数必然达到预算（整句粒度，只会多不会少）
+        assert vp.char_count(text) >= 10.0 * vp.SCRIPT_CHARS_PER_SEC
+
+    def test_api_reproduce_gate_and_roundtrip(self, client, iso_media, monkeypatch):
+        """HTTP 层：没同意 400 且点名同意门禁；齐备 200；不存在 404。"""
+        _stub_convert(monkeypatch)
+        pid = client.post(
+            "/api/preserve/profiles", json={"label": "刘老师"}).json()["profile"]["id"]
+        r0 = client.post(f"/api/preserve/profiles/{pid}/reproduce")
+        assert r0.status_code == 400
+        assert "知情同意" in r0.json()["detail"]
+        vp.record_consent(pid, scope="self", statement="x")
+        vp.add_reference(pid, _wav(iso_media / "r.wav"), 10.0)
+        r1 = client.post(f"/api/preserve/profiles/{pid}/reproduce")
+        assert r1.status_code == 200
+        body = r1.json()
+        assert body["ok"] and body["voice_id"] == vp.VOICE_ID_PREFIX + pid
+        # 档案不存在（id 形状合法）→ 404，不是 500
+        fake = "p" + "1" * 10 + "aaaaaa"
+        assert client.post(f"/api/preserve/profiles/{fake}/reproduce").status_code == 404
+
+
+# ---------------- 10. HTTP 层 ----------------
 
 class TestApi:
     def test_guide(self, client):

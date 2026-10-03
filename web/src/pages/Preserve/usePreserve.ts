@@ -7,6 +7,7 @@ import {
   getPreserveProfile,
   listPreserveProfiles,
   recordPreserveConsent,
+  reproducePreserveProfile,
   runPreserveGate,
   uploadPreserveReference,
   type PreserveEvent,
@@ -256,6 +257,28 @@ export function usePreserve() {
     }
   }, [selectedId])
 
+  // ---- 复现 ----
+
+  /** 「去复现」：把最长档参考音注册成音色库音色并选中。成功返回 voice_id，
+   *  调用方随后跳「输字变声」页；失败返回 null（错误已写进 error 状态）。
+   *  后端会再拦一次没同意的情况 —— 前端按钮的显示条件只是引导，门禁在后端。 */
+  const reproduce = useCallback(async () => {
+    if (!selectedId) return null
+    setBusy("reproduce")
+    setError(null)
+    try {
+      const rep = await reproducePreserveProfile(selectedId)
+      await loadProfile(selectedId)
+      setEvents((await getPreserveEvents(selectedId)).events)
+      return rep
+    } catch (error) {
+      fail("注册音色（去复现）", error)
+      return null
+    } finally {
+      setBusy("")
+    }
+  }, [loadProfile, selectedId])
+
   return {
     guide,
     profiles,
@@ -279,5 +302,6 @@ export function usePreserve() {
     startRecording,
     stopRecording,
     runGate,
+    reproduce,
   }
 }

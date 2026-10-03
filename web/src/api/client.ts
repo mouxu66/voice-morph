@@ -2550,3 +2550,13 @@ export async function getPreserveReference(
   const q = durationS == null ? "" : "?duration_s=" + durationS
   return jsonFetch("/preserve/profiles/" + encodeURIComponent(id) + "/reference" + q)
 }
+
+/** 「去复现」：把档案的最长档参考音注册成音色库音色并设为当前选中。
+ *  没有知情同意时后端返回 400（同意先于克隆）。幂等：重录后再调会刷新参考音。 */
+export async function reproducePreserveProfile(
+  id: string
+): Promise<{ ok: boolean; voice_id: string; label: string; ref: string; duration_s: number | null }> {
+  return jsonFetch("/preserve/profiles/" + encodeURIComponent(id) + "/reproduce", {
+    method: "POST",
+  })
+}
