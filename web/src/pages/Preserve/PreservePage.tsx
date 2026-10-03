@@ -21,17 +21,17 @@ const VERDICT_TEXT: Record<string, { label: string; tone: string; hint: string }
   ready: {
     label: "可以复现",
     tone: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600",
-    hint: "知情同意已记录，参考音齐备，客观指标算得出来。",
+    hint: "同意已确认、录音已就绪，三项客观指标也都正常 —— 随时可以使用。",
   },
   partial: {
     label: "部分可用",
     tone: "border-amber-500/40 bg-amber-500/10 text-amber-600",
-    hint: "结构上齐了，但客观指标没算出来（多半是 parselmouth 不可用）—— 不影响保存，只是体检少一栏。",
+    hint: "录音齐全，可以正常保存和使用；只是客观指标这次没算出来（这台电脑缺分析组件）—— 不影响任何功能。",
   },
   not_ready: {
     label: "还不能用",
     tone: "border-red-500/40 bg-red-500/10 text-red-600",
-    hint: "下面的原因逐条列了出来，照着补就行。",
+    hint: "还差几步就绪 —— 下面把原因逐条列了出来，照着补就行。",
   },
 }
 
@@ -39,6 +39,14 @@ const LAMP_DOT: Record<string, string> = {
   green: "bg-emerald-500",
   yellow: "bg-amber-500",
   red: "bg-red-500",
+}
+
+/** 时长档位的人话解释 —— 「3s/10s」对老师是密码，翻成用途才看得懂选哪个。 */
+const TIER_HINTS: Record<string, string> = {
+  "3s": "快速试试",
+  "10s": "推荐 · 日常够用",
+  "30s": "更稳",
+  "60s": "最完整",
 }
 
 function Card({
@@ -102,16 +110,16 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
       <header className="space-y-1">
         <h1 className="flex items-center gap-2 text-lg font-medium">
           <ShieldCheck className="h-5 w-5 text-primary" />
-          声音保存
+          声音保存 —— 给嗓子留一份「备份」
         </h1>
         <p className="text-sm text-muted-foreground">
-          在声音还清晰的时候录一段，本机克隆保存，日后以自己的声音输出。
-          面向教师等长期用嗓人群 —— 长期高强度用嗓是嗓音问题的高发因素，提前留一份声音是有意义的准备。
+          在嗓子还好的时候录一段您自己的声音，存在这台电脑里。以后打字，就能让这个声音替您讲课、读书 ——
+          咽炎、声带小结的高发原因就是长期高强度用嗓，提前留一份是有意义的准备。
         </p>
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Info className="h-3.5 w-3.5 shrink-0" />
           <span>
-            录音与克隆结果<b>全部保存在本机</b>，不会上传到任何服务器。
+            录音与生成结果<b>全部保存在本机</b>，不会上传到任何服务器；也只有您本人确认同意后，档案才能用来生成声音。
           </span>
           {p.storeDir ? <span className="truncate font-mono text-[11px]">{p.storeDir}</span> : null}
         </p>
@@ -210,6 +218,10 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                   </p>
                 ) : (
                   <div className="space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      这一步只需要确认一件事：要保存的声音是<b>您本人</b>的（或您已获得授权）。
+                      确认之后，这份档案才能用来生成声音 —— 这是对声音主人权利的保护。
+                    </p>
                     <p className="rounded-md bg-muted/50 p-3 text-xs leading-relaxed">
                       {p.guide?.consent.statement}
                     </p>
@@ -229,7 +241,7 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                       </button>
                     </div>
                     <p className="text-[11px] text-muted-foreground">
-                      没有这一步，档案不能用于复现 —— 这是「只保存本人或已授权声音」这条约束的落点。
+                      没有这一步，档案不能用于生成 —— 点上面的「我确认」即可，之后不会再打扰您。
                     </p>
                   </div>
                 )}
@@ -238,39 +250,44 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
               {/* ② 录音 */}
               <Card title="按引导录音" step={2} done={refs.length > 0}>
                 <p className="mb-3 text-xs text-muted-foreground">
-                  参考音越长，复现质量越好但收益会饱和。先录 3s 档试试，再逐档加长。
+                  建议先录 <b>10 秒</b>档：日常讲课够用，一分钟内就能录完。想效果更好再录更长的档 ——
+                  录得越久效果越稳，但收益会慢慢饱和。
                   {p.guide ? ` 完整脚本约 ${p.guide.script_capacity_s} 秒。` : ""}
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {(p.guide?.durations ?? []).map((d) => (
-                    <button
-                      key={d.tag}
-                      onClick={() =>
-                        p.recordingFor === d.duration_s
-                          ? p.stopRecording()
-                          : void p.startRecording(d.duration_s)
-                      }
-                      disabled={!d.covered || Boolean(p.busy) || (p.recordingFor > 0 && p.recordingFor !== d.duration_s)}
-                      title={d.covered ? `念前约 ${d.sentences} 句` : "参考脚本不够长，录不满这一档"}
-                      className={cn(
-                        "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm disabled:opacity-40",
-                        refTags.has(d.tag) ? "border-emerald-500/40 bg-emerald-500/10" : "border-border bg-card",
-                        p.recordingFor === d.duration_s && "border-red-500/50 bg-red-500/10"
-                      )}
-                    >
-                      {p.recordingFor === d.duration_s ? (
-                        <>
-                          <Square className="h-3.5 w-3.5" /> 停止（{p.recordSeconds}s）
-                        </>
-                      ) : (
-                        <>
-                          <Mic className="h-3.5 w-3.5" />
-                          {d.tag}
-                          {refTags.has(d.tag) ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : null}
-                        </>
-                      )}
-                    </button>
-                  ))}
+                  {(p.guide?.durations ?? []).map((d) => {
+                    const hint = TIER_HINTS[d.tag] ?? ""
+                    return (
+                      <button
+                        key={d.tag}
+                        onClick={() =>
+                          p.recordingFor === d.duration_s
+                            ? p.stopRecording()
+                            : void p.startRecording(d.duration_s)
+                        }
+                        disabled={!d.covered || Boolean(p.busy) || (p.recordingFor > 0 && p.recordingFor !== d.duration_s)}
+                        title={d.covered ? `照着脚本念前约 ${d.sentences} 句` : "参考脚本不够长，录不满这一档"}
+                        className={cn(
+                          "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm disabled:opacity-40",
+                          refTags.has(d.tag) ? "border-emerald-500/40 bg-emerald-500/10" : "border-border bg-card",
+                          p.recordingFor === d.duration_s && "border-red-500/50 bg-red-500/10"
+                        )}
+                      >
+                        {p.recordingFor === d.duration_s ? (
+                          <>
+                            <Square className="h-3.5 w-3.5" /> 停止（已录 {p.recordSeconds}s）
+                          </>
+                        ) : (
+                          <>
+                            <Mic className="h-3.5 w-3.5" />
+                            {d.tag}
+                            {hint ? <span className="text-[11px] opacity-70">{hint}</span> : null}
+                            {refTags.has(d.tag) ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : null}
+                          </>
+                        )}
+                      </button>
+                    )
+                  })}
                   {p.busy === "upload" ? (
                     <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" /> 正在保存并转成 wav…
@@ -279,26 +296,27 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                 </div>
 
                 {p.recordingFor > 0 ? (
-                  <p className="mt-3 rounded-md bg-muted/50 p-3 text-xs">
+                  <p className="mt-3 rounded-md bg-red-500/10 p-3 text-xs">
                     正在录 <b>{p.guide?.durations.find((d) => d.duration_s === p.recordingFor)?.tag}</b> 档，
-                    请照着下面的脚本念，念够时长后点「停止」。
-                    已录 {p.recordSeconds}s。
+                    请照着下面的脚本念，念够时长后点「停止」。已录 {p.recordSeconds}s。
                   </p>
                 ) : null}
 
-                <button
-                  onClick={() => setShowScript((v) => !v)}
-                  className="mt-3 text-xs text-primary hover:underline"
-                >
-                  {showScript ? "收起录音脚本" : "展开录音脚本（按顺序念）"}
-                </button>
-                {showScript ? (
+                {/* 录音时脚本自动展开 —— 老师不该在录音中途还要去找「展开脚本」按钮 */}
+                {showScript || p.recordingFor > 0 ? (
                   <ol className="mt-2 max-h-52 list-decimal space-y-1 overflow-auto rounded-md bg-muted/40 p-3 pl-8 text-xs leading-relaxed">
                     {(p.guide?.script ?? []).map((s, i) => (
                       <li key={i}>{s}</li>
                     ))}
                   </ol>
-                ) : null}
+                ) : (
+                  <button
+                    onClick={() => setShowScript(true)}
+                    className="mt-3 text-xs text-primary hover:underline"
+                  >
+                    展开录音脚本（照着念就行）
+                  </button>
+                )}
 
                 {refs.length > 0 ? (
                   <ul className="mt-3 space-y-1 text-[11px] text-muted-foreground">
@@ -314,10 +332,16 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
 
               {/* ③ 体检与复现 */}
               <Card title="体检与复现" step={3} done={p.gate?.verdict === "ready"}>
+                {canReproduce && !p.gate ? (
+                  <p className="mb-3 text-xs text-muted-foreground">
+                    录音已经就绪 —— 现在就可以点 <b>去复现</b> 直接使用；体检是可选项，帮您确认录音质量。
+                  </p>
+                ) : null}
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     onClick={() => void p.runGate()}
                     disabled={p.busy === "gate"}
+                    title="客观指标（HNR / 音高抖动 / 音强抖动）给录音质量一个参考分，不影响能否使用"
                     className="rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50"
                   >
                     {p.busy === "gate" ? (
@@ -325,7 +349,7 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                         <Loader2 className="h-3.5 w-3.5 animate-spin" /> 正在体检…
                       </span>
                     ) : (
-                      "体检这份档案"
+                      "给声音做个体检（可选）"
                     )}
                   </button>
                   {canReproduce ? (
@@ -375,13 +399,16 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                     ) : null}
 
                     {p.gate.metrics ? (
-                      <div className="grid grid-cols-2 gap-1.5 text-[11px] sm:grid-cols-3">
-                        {Object.entries(p.gate.metrics).map(([k, v]) => (
-                          <div key={k} className="rounded-md bg-muted/40 px-2 py-1.5">
-                            <span className="block text-muted-foreground">{k}</span>
-                            <span className="font-mono">{v == null ? "—" : v}</span>
-                          </div>
-                        ))}
+                      <div className="space-y-1">
+                        <p className="text-[11px] text-muted-foreground">客观指标（数值仅供参考，看三灯结论就行）：</p>
+                        <div className="grid grid-cols-2 gap-1.5 text-[11px] sm:grid-cols-3">
+                          {Object.entries(p.gate.metrics).map(([k, v]) => (
+                            <div key={k} className="rounded-md bg-muted/40 px-2 py-1.5">
+                              <span className="block text-muted-foreground">{k}</span>
+                              <span className="font-mono">{v == null ? "—" : v}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ) : null}
 

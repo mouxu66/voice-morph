@@ -140,5 +140,16 @@ describe("PreservePage 去复现", () => {
     })
     expect(navigate).not.toHaveBeenCalled()
   })
+
+  it("录完音还没体检 → 显示「录音已就绪」引导（老师最常见的卡点：不知道下一步）", () => {
+    render(<PreservePage p={fakeP()} />)
+    expect(screen.getByText(/录音已经就绪/)).toBeTruthy()
+  })
+
+  it("录音中 → 脚本自动展开，不用再找「展开脚本」按钮", () => {
+    render(<PreservePage p={fakeP({ recordingFor: 10, recordSeconds: 3 })} />)
+    expect(screen.getByText(/第一句，今天我们讲声音/)).toBeTruthy()
+    expect(screen.queryByRole("button", { name: /展开录音脚本/ })).toBeNull()
+  })
 })
 
