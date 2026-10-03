@@ -295,6 +295,28 @@ def test_voices_marks_self_trained_and_meta_name(voices_client):
     assert v2["source"] == ""
 
 
+def test_voices_marks_preserve_source_from_meta(voices_client):
+    """声音保存的复现音色：voicebank meta.json 带 source=preserve → 透传给前端。
+
+    为什么不能指望 logs/<id>/source.json：那是**市场安装**的落点，preserve 音色
+    不在市场体系里，不透传就会错标成「自训」（voiceLabel.voiceSourceTag 按此显示
+    「声音保存」）。市场标记仍优先：万一撞名，市场语义（带许可溯源）更重。"""
+    c, vb = voices_client
+    _write_ref(vb, "preserve_p1791002487fak8zm")
+    (vb / "preserve_p1791002487fak8zm" / "meta.json").write_text(
+        json.dumps({"display_name": "王老师", "source": "preserve"}), encoding="utf-8")
+    v = c.get("/api/voices").json()["voices"][0]
+    assert v["source"] == "preserve"
+    assert v["display_name"] == "王老师"
+
+    # 撞名时市场标记赢（voicebank 条目 + logs/<id>/source.json 同时存在）
+    _make_rvc_exp("preserve_dup", source="market")
+    _write_ref(vb, "preserve_dup")
+    (vb / "preserve_dup" / "meta.json").write_text('{"source": "preserve"}', encoding="utf-8")
+    dup = [x for x in c.get("/api/voices").json()["voices"] if x["id"] == "preserve_dup"][0]
+    assert dup["source"] == "market"
+
+
 def test_rvc_voices_also_marks_source(voices_client):
     """/rvc/voices（实时变声入口）同样带中文名与来源标记。"""
     c, _ = voices_client

@@ -8,11 +8,15 @@ export type VoiceLike = {
 }
 
 /**
- * 音色来源标签：市场安装 → 市场；其余（自己训练 / 本地导入）→ 自训。
- * 判定依据为后端 source 字段（市场安装落 logs/<id>/source.json）。
+ * 音色来源标签：市场安装 → 市场；声音保存的复现音色 → 声音保存；
+ * 其余（自己训练 / 本地导入 / 挖掘）→ 自训。
+ * 判定依据为后端 source 字段（市场安装落 logs/<id>/source.json；
+ * 声音保存的复现音色由档案 meta.json 带 source="preserve"）。
  */
-export function voiceSourceTag(v: { source?: string }): "市场" | "自训" {
-  return v.source === "market" ? "市场" : "自训"
+export function voiceSourceTag(v: { source?: string }): "市场" | "自训" | "声音保存" {
+  if (v.source === "market") return "市场"
+  if (v.source === "preserve") return "声音保存"
+  return "自训"
 }
 
 /**

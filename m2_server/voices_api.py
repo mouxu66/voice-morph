@@ -68,7 +68,10 @@ def list_voices():
             "duration_s": round(len(AudioSegment.from_wav(str(ref))) / 1000, 1),
             "kind": meta.get("kind") or "clone",
             "has_reference": True,
-            "source": exp_source(d.name),
+            # 来源标记：市场安装落 logs/<id>/source.json（市场标记优先）；
+            # 没有市场标记时退回档案 meta.json 自带的 source —— 声音保存的复现音色
+            # 带 source="preserve"，前端据此显示「声音保存」标签而不是「自训」。
+            "source": exp_source(d.name) or str(meta.get("source") or ""),
             **exp_license(d.name),
             **exp_snapshot(d.name),
         }

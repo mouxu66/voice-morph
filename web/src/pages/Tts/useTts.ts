@@ -38,6 +38,9 @@ export function useTts() {
   const [styleRefVoice, setStyleRefVoice] = useState("")
   const [synthesizing, setSynthesizing] = useState(false)
   const [slowHint, setSlowHint] = useState("")
+  // 链路自检结果声明在 generate 之前：generate 判「worker 冷态→提示立即出现」要读它
+  //（useCallback 的依赖数组在渲染期求值，声明在使用之后会 TDZ ReferenceError）
+  const [chain, setChain] = useState<TtsChainInfo | null>(null)
   const [errorMessage, setErrorMessage] = useState("")
   const [saveMessage, setSaveMessage] = useState("")
   const [ttsHistory, setTtsHistory] = useState<TtsHistoryItem[]>([])
@@ -80,7 +83,14 @@ export function useTts() {
     setErrorMessage("")
     setSaveMessage("")
     setSlowHint("")
-    const slowTimer = window.setTimeout(() => setSlowHint("正在合成…首次使用需加载语音模型，可能要等一两分钟"), SLOW_HINT_MS)
+    // 冷启动提示的延迟分两档：链路自检已报「语音引擎进程未加载」→ 提示**立即**出现
+    //（演示现场 30~120s 的冷加载不提示会被当成卡死）；热态才等 8 秒（多半是长文慢，
+    // 一上来就说"要加载模型"反而是误导）。
+    const workerCold = Boolean(chain?.items?.some((i) => i.key === "tts_worker" && i.ok === false))
+    const slowTimer = window.setTimeout(
+      () => setSlowHint("正在合成…首次使用需加载语音模型，可能要等一两分钟"),
+      workerCold ? 0 : SLOW_HINT_MS,
+    )
     try {
       const result = await sendTts(trimmed, textLanguage, selectedVoiceId,
                                    styleRefVoice || undefined,
@@ -104,7 +114,7 @@ export function useTts() {
       setSlowHint("")
       setSynthesizing(false)
     }
-  }, [text, textLanguage, backendUp, synthesizing, selectedVoiceId, styleRefVoice])
+  }, [text, textLanguage, backendUp, synthesizing, selectedVoiceId, styleRefVoice, chain])
 
   /** 把某条会话产物存进作品库（复制到 outputs 根 + 登记历史）。幂等。 */
   const saveItem = useCallback(async (id: string) => {
@@ -156,7 +166,7 @@ export function useTts() {
   // ---- 输字变声链路自检（进页面自动跑一遍）----
   // 首页 STEP 0 首推就是这条链路，但此前没有任何自检兜底 —— 用户被推荐去的那条路，
   // 反而是故障时最没指引的那条。这里对齐实时变声页的 SEND CHAIN 形态。
-  const [chain, setChain] = useState<TtsChainInfo | null>(null)
+  // （chain 状态本体声明在文件开头的状态区，generate 要读它。）
   const [chainLoading, setChainLoading] = useState(false)
 
   const runChainCheck = useCallback(async () => {
