@@ -16,11 +16,12 @@ import { restartBackend } from "@/lib/electron"
 import { cn } from "@/lib/utils"
 
 /** 场景套餐的本地配置：图标 + 一句话说明（标签以后端为准）。
- *  不在表里的套餐（light/full/…）不进侧栏 —— 侧栏只留「按用户是谁」分的三个场景。 */
-const SCENE_META: Record<string, { icon: typeof Gamepad2; hint: string }> = {
-  wechat: { icon: MessageCircle, hint: "聊天变声 · 微信发送" },
-  preserve: { icon: GraduationCap, hint: "录下声音 · 护嗓讲课" },
-  game: { icon: Gamepad2, hint: "游戏直播 · 实时变声" },
+ *  不在表里的套餐（light/full/…）不进侧栏 —— 侧栏只留「按用户是谁」分的三个场景。
+ *  `label` 是本地兜底：顶栏徽章（AppChrome）在卡片点击后立即显示，等不及后端清单刷新。 */
+export const SCENE_META: Record<string, { icon: typeof Gamepad2; label: string; hint: string }> = {
+  wechat: { icon: MessageCircle, label: "微信变身", hint: "聊天变声 · 微信发送" },
+  preserve: { icon: GraduationCap, label: "声音保存", hint: "录下声音 · 护嗓讲课" },
+  game: { icon: Gamepad2, label: "游戏变身", hint: "游戏直播 · 实时变声" },
 }
 
 type Catalog = Awaited<ReturnType<typeof getPlugins>>

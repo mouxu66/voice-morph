@@ -18,6 +18,7 @@ import { useAppStore } from "@/store/useAppStore"
 import { getStoredSimpleMode, setStoredSimpleMode } from "@/theme"
 import { FirstLaunchGuide } from "@/components/FirstLaunchGuide"
 import { UseCasePicker } from "@/components/UseCasePicker"
+import { ModeChooser } from "@/components/ModeChooser"
 import { hasBeenAsked } from "@/lib/useProfile"
 
 /** 桌宠换装首启引导载荷：首次启动由桌宠开口介绍"可以换样子"，设置里也可手动重播 */
@@ -248,6 +249,8 @@ export default function App() {
           而 ① 关掉后 ② 才挂载，所以不会出现两个模态框叠在一起。 */}
       <FirstLaunchGuide ready={useCaseAnswered} />
       <UseCasePicker onPicked={() => setUseCaseAnswered(true)} />
+      {/* 每次启动的全屏「使用方式」选择（首次启动让位给上面两个问答，见 ModeChooser 头注释） */}
+      <ModeChooser />
       {/* 全局错误通知：任何未捕获异常 / 用户操作失败都会在此弹窗（见 lib/notify.tsx） */}
       <ToastViewport />
     </div>

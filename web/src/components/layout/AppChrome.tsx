@@ -3,7 +3,7 @@ import { Boxes, Layers, Menu, Settings2, X } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
 import { StudioNav } from "@/components/voice-studio/StudioNav"
 import { SettingsPanel } from "@/components/layout/SettingsPanel"
-import { ModeSwitcher } from "@/components/layout/ModeSwitcher"
+import { ModeSwitcher, SCENE_META } from "@/components/layout/ModeSwitcher"
 import { usePluginCatalog } from "@/lib/pluginRoutes"
 import type { PluginCatalog } from "@/types"
 import { cn } from "@/lib/utils"
@@ -280,6 +280,20 @@ export function AppChrome({
               </span>
             </Link>
             <h1 className="truncate text-sm font-semibold text-foreground">{pageTitle}</h1>
+            {/* 当前使用模式徽章：三个场景套餐之一在生效时显示（custom/light 等不占顶栏）。
+                与侧栏「使用模式」块同源（catalog.preset），这里只读展示，点击路径走侧栏。 */}
+            {catalogState.status === "ready" && SCENE_META[catalogState.catalog.preset] ? (
+              <span
+                title={`当前使用模式：${SCENE_META[catalogState.catalog.preset].label} · 左侧「使用模式」可切换`}
+                className="hidden items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] text-primary sm:flex"
+              >
+                {(() => {
+                  const Icon = SCENE_META[catalogState.catalog.preset].icon
+                  return <Icon className="h-3 w-3" />
+                })()}
+                {SCENE_META[catalogState.catalog.preset].label}
+              </span>
+            ) : null}
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
