@@ -77,23 +77,23 @@ export function ModeChooser() {
   const ready = catalogState.status === "ready"
   const scenes = ready ? catalogState.catalog.presets.filter((p) => p.id in SCENE_META) : []
 
+  // 全屏**页面**而不是弹窗：不透明背景直接盖住侧栏/顶栏（用户要求「只保留三个模式卡片」，
+  // 背后透出半截外壳反而像加载出错的残影）。z-50 与首启问答同层。
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-xl"
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background p-6"
       role="dialog"
       aria-modal="true"
       aria-label="选择使用方式"
     >
-      <div className="w-full max-w-3xl overflow-hidden rounded-3xl border border-border bg-card/95 shadow-2xl">
-        <div className="px-8 pb-5 pt-8">
-          <p className="font-mono text-xs uppercase tracking-widest text-primary">今天怎么用？</p>
-          <h2 className="mt-2 text-2xl font-semibold text-foreground">选择一个使用方式</h2>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            选完直接进入对应页面，能力会按场景自动启用；选错了随时能在左侧「使用模式」里改。
-          </p>
-        </div>
+      <div className="w-full max-w-4xl text-center">
+        <p className="font-mono text-xs uppercase tracking-widest text-primary">今天怎么用？</p>
+        <h2 className="mt-3 text-3xl font-semibold text-foreground">选择一个使用方式</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          选完直接进入对应页面，能力会按场景自动启用；选错了随时能在左侧「使用模式」里改。
+        </p>
 
-        <div className="grid gap-3 px-8 py-4 sm:grid-cols-3">
+        <div className="mt-10 grid gap-4 sm:grid-cols-3">
           {scenes.map(({ id, plugins }) => {
             const meta = SCENE_META[id]
             const Icon = meta.icon
@@ -105,24 +105,24 @@ export function ModeChooser() {
                 onClick={() => pick(id)}
                 title={`启用 ${plugins.length} 项能力，进入「${meta.label}」`}
                 className={cn(
-                  "group flex flex-col items-start gap-2 rounded-2xl border bg-background/60 p-4 text-left transition hover:-translate-y-0.5 hover:border-primary hover:shadow-md",
-                  active ? "border-primary/60" : "border-border",
+                  "group flex flex-col items-center gap-3 rounded-3xl border bg-card px-6 py-8 text-center transition hover:-translate-y-1 hover:border-primary hover:shadow-xl",
+                  active ? "border-primary/60 ring-1 ring-primary/40" : "border-border",
                 )}
               >
-                <span className="flex w-full items-center justify-between">
-                  <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary/40 bg-primary/10 text-primary">
-                    <Icon className="h-5 w-5" />
-                  </span>
+                <span className="flex h-14 w-14 items-center justify-center rounded-2xl border border-primary/40 bg-primary/10 text-primary">
+                  <Icon className="h-7 w-7" />
+                </span>
+                <span className="flex items-center gap-1.5 text-base font-semibold text-card-foreground">
+                  {meta.label}
                   {active ? (
-                    <span className="flex items-center gap-1 text-[11px] text-primary">
+                    <span className="flex items-center gap-0.5 text-[11px] font-normal text-primary">
                       <Check className="h-3.5 w-3.5" /> 当前
                     </span>
                   ) : null}
                 </span>
-                <span className="text-sm font-semibold text-card-foreground">{meta.label}</span>
                 <span className="text-xs leading-5 text-muted-foreground">{meta.hint}</span>
-                <span className="mt-auto flex items-center gap-1 text-xs text-primary">
-                  进入 <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+                <span className="mt-2 flex items-center gap-1 text-sm text-primary">
+                  进入 <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
                 </span>
               </button>
             )
@@ -134,7 +134,7 @@ export function ModeChooser() {
           ) : null}
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-8 py-4">
+        <div className="mt-10 flex flex-wrap items-center justify-center gap-6">
           <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
             <input
               type="checkbox"
@@ -147,7 +147,7 @@ export function ModeChooser() {
           <button
             type="button"
             onClick={finish}
-            className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition hover:border-primary hover:text-primary"
+            className="rounded-md border border-border px-4 py-1.5 text-xs text-muted-foreground transition hover:border-primary hover:text-primary"
           >
             直接进入
           </button>
