@@ -8,6 +8,7 @@ import {
   listPreserveProfiles,
   recordPreserveConsent,
   reproducePreserveProfile,
+  exportPreserveProfile,
   runPreserveGate,
   uploadPreserveReference,
   uploadPreserveReferenceBatch,
@@ -336,6 +337,38 @@ export function usePreserve() {
     }
   }, [loadProfile, selectedId, fail])
 
+  // ---- 导出评测实验（产品 → 研究的桥） ----
+
+  /** 「导出评测实验」：把档案的四档参考音 + truth 按评测引擎的目录约定落盘。
+   *
+   *  ★ 为什么要有这个按钮：档案存 `media/preserve/<pid>/`，而评测引擎读
+   *  `outputs/voicebank/<exp>/` —— 两套约定对不上，中间原本只能手工拷文件。
+   *  手工拷漏一档不报错（analyze 会报"数据不足以判定"，把错因指向统计），
+   *  拷错档更不报错（自变量标签直接错）。这里按结构拷、由后端现读档位名。
+   *
+   *  后端会再拦一次没同意的情况 —— 前端按钮的显示条件只是引导，门禁在后端。 */
+  const exportExperiment = useCallback(async (exp = "") => {
+    if (!selectedId) return null
+    setBusy("export")
+    setError(null)
+    setNotice("")
+    try {
+      const res = await exportPreserveProfile(selectedId, exp)
+      setEvents((await getPreserveEvents(selectedId)).events)
+      const miss = res.missing.length
+      setNotice(
+        `已导出评测实验 ${res.exp}：${res.n_refs} 档参考音 + ${res.n_truth} 条真值录音` +
+          (miss ? `；缺 ${miss} 件（详见实验目录里的 README-导出.md）` : "，无缺件。"),
+      )
+      return res
+    } catch (error) {
+      fail("导出评测实验", error)
+      return null
+    } finally {
+      setBusy("")
+    }
+  }, [selectedId, fail])
+
   return {
     guide,
     profiles,
@@ -361,5 +394,6 @@ export function usePreserve() {
     stopRecording,
     runGate,
     reproduce,
+    exportExperiment,
   }
 }

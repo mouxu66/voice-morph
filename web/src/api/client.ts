@@ -2629,6 +2629,33 @@ export async function reproducePreserveProfile(
   })
 }
 
+/** 导出成评测实验目录（产品层 → 研究层的桥）。
+ *
+ *  为什么必须有它：档案存 media/preserve/<pid>/，而评测引擎读
+ *  outputs/voicebank/<exp>/ —— 两边目录约定对不上，中间原本只能手工拷文件，
+ *  而手工拷漏一档/拷错档**都不报错**（前者让 analyze 报"数据不足以判定"，
+ *  后者直接把自变量标错）。这里按结构拷，档位名从档案记录现读。
+ *
+ *  没有知情同意时后端返回 400（数据离开档案库之前必须有授权）。幂等。 */
+export async function exportPreserveProfile(
+  id: string,
+  exp = ""
+): Promise<{
+  ok: boolean
+  exp: string
+  root: string
+  n_refs: number
+  n_truth: number
+  missing: string[]
+  measure_hint: string
+}> {
+  return jsonFetch("/preserve/profiles/" + encodeURIComponent(id) + "/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ exp }),
+  })
+}
+
 // ---- 快捷短语板（sound.tts）----
 //
 // 课堂高频用语一键合成/重放：直播、录课时点一下就用当前音色念出来，让嗓子歇一歇。

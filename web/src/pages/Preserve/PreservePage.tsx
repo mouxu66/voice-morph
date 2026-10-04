@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CircleAlert,
   CircleDashed,
+  FileDown,
   Info,
   Loader2,
   Mic,
@@ -159,6 +160,21 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
     } finally {
       setEnablingBook(false)
     }
+  }
+
+  /** 「导出评测实验」：把录音按评测引擎的目录约定落盘（产品 → 研究的桥）。
+   *
+   *  与研究的关系：档案里的录音是**采集结果**，评测实验目录是**分析输入**，
+   *  两者之间原本靠手工拷文件 —— 而拷漏一档不报错（`analyze` 会报
+   *  "数据不足以判定"，把错因指向统计），拷错档更不报错（自变量标签直接错）。
+   *  这里让后端按结构拷、档位名现读。
+   *
+   *  导出成功后把路径显示出来 —— 用户要拿它去跑 measure/analyze。 */
+  const [exportPath, setExportPath] = useState("")
+  const doExport = async () => {
+    setExportPath("")
+    const res = await p.exportExperiment()
+    if (res) setExportPath(res.root)
   }
 
   if (p.loading) {
@@ -502,6 +518,25 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                       </button>
                     )
                   ) : null}
+                  {/* 研究落点：把录音导出成评测引擎能直接读的实验目录。
+                      老师/学生做「大创」研究时，这一步原本要手工拷文件 ——
+                      而拷漏一档不报错（analyze 会报"数据不足以判定"，
+                      把错因指向统计），拷错档更不报错（自变量标签直接错）。 */}
+                  {canReproduce ? (
+                    <button
+                      onClick={() => void doExport()}
+                      disabled={Boolean(p.busy) || lessonBusy}
+                      title="把这份档案的四档参考音与真值录音，按评测引擎的目录约定导出到 outputs/voicebank/。导出后即可跑 measure / analyze。需要先确认知情同意。"
+                      className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50"
+                    >
+                      {p.busy === "export" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <FileDown className="h-3.5 w-3.5" />
+                      )}
+                      导出评测实验
+                    </button>
+                  ) : null}
                   {p.gate ? (
                     <span
                       className={cn(
@@ -521,6 +556,14 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
 
                 {bookErr ? (
                   <p className="mt-2 text-xs text-red-500">开启「录课」失败：{bookErr}</p>
+                ) : null}
+
+                {exportPath ? (
+                  <p className="mt-2 break-all text-xs text-muted-foreground">
+                    已导出到 <code className="rounded bg-muted px-1">{exportPath}</code>
+                    ，可直接跑 <code className="rounded bg-muted px-1">measure</code> /{" "}
+                    <code className="rounded bg-muted px-1">analyze</code>。
+                  </p>
                 ) : null}
 
                 {p.gate ? (
