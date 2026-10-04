@@ -11,6 +11,7 @@
     POST   /api/preserve/profiles/{pid}/gate            质量门禁（**会算指标**，故 POST）
     GET    /api/preserve/profiles/{pid}/events          操作日志
     POST   /api/preserve/profiles/{pid}/references      上传一档参考音
+    POST   /api/preserve/profiles/{pid}/references/batch 上传一条完整录音 → 自动切全部档位 ★协议形态
     POST   /api/preserve/profiles/{pid}/truth           上传一段真实录音（听测对照）
     GET    /api/preserve/profiles/{pid}/reference       取参考音（**给现有 TTS 链路用**）
 
@@ -219,6 +220,33 @@ async def _save_upload(file: UploadFile) -> Path:
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(data)
         return Path(tmp.name)
+
+
+@router.post("/preserve/profiles/{pid}/references/batch")
+async def preserve_add_reference_batch(
+    pid: str,
+    file: UploadFile = File(...),
+):
+    """上传**一条完整录音**，后端按前缀自动切出全部时长档（3/10/30/60s）。
+
+    ★ 与 `.../references`（单档）的区别在**研究语义**，不只是省几次请求：
+      评测协议把四档定义为「**同一段录音的前缀截取**」，控制变量含"同一条 take"。
+      逐个上传四档 = 四条不同的 take（嗓子状态/坐姿/距离都会变），
+      于是"时长"这个自变量被"这次录得好不好"混淆，RQ1 的归因就不成立了。
+      这条走的是"录一条、切四档"，与协议一致。
+
+    录音不足最高档（60s）时返回 **400**，并且**不留下半套数据**。
+    """
+    pid = _pid_or_400(pid)
+    _profile_or_404(pid)
+    src = await _save_upload(file)
+    try:
+        res = vp.add_reference_batch(pid, src)
+    finally:
+        src.unlink(missing_ok=True)
+    if res.get("error"):
+        raise HTTPException(400, res["error"])
+    return {"ok": True, **res}
 
 
 @router.post("/preserve/profiles/{pid}/references")

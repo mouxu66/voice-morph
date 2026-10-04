@@ -479,6 +479,105 @@ def add_reference(pid: str, src: Path, duration_s: float) -> dict:
     return rec
 
 
+def add_reference_batch(pid: str, src: Path,
+                        durations: tuple[float, ...] | None = None) -> dict:
+    """**一次录音 → 前缀切四档**。返回 `{"refs": [...], "total_s": ...}` 或 `{"error": ...}`。
+
+    ★ 为什么需要它（这是评测协议能不能落地的关键）：
+      `docs/嗓音保存评测协议.md` §3.1 把四档定义为「**同一段录音的前缀截取**」，
+      控制变量是"同一人 / 同一麦 / 同一房间 / **同一条 take**"。
+      而逐个调 `add_reference` 的做法要求用户**录四次**（前端本来就是"先选档再录"），
+      四次就是**四条不同的 take** —— 录到第 60s 时嗓子状态、坐姿、距离都可能变了，
+      于是"时长"这个自变量被"这次录得好不好"混淆，**结论归因不成立**。
+
+      这个函数把协议要求的那一步补上：录一条，后端切前 N 秒。
+
+    ⚠️ 总时长不足最大档时**直接报错**，不做"能切多少切多少" ——
+      静默产生半套数据比报错危险得多（缺一档的矩阵在 `analyze` 里会变成
+      "数据不足以判定"，而用户以为自己录完了）。
+
+    ⚠️ 同样**不检查 consent**（与 `add_reference` 保持一致）：录制本身不是克隆。
+    """
+    p = get_profile(pid)
+    if p is None:
+        return {"error": f"档案不存在: {pid}", "error_stage": "读取档案"}
+    src = Path(src)
+    if not src.exists() or src.stat().st_size == 0:
+        return {"error": "录音为空", "error_stage": "参数"}
+
+    durs = tuple(float(d) for d in (durations or REF_DURATIONS))
+    if not durs:
+        return {"error": "没有时长档", "error_stage": "参数"}
+
+    refs_dir = profile_dir(pid) / "refs"
+    refs_dir.mkdir(parents=True, exist_ok=True)
+
+    # 先整体转一次 wav，再在本地切 —— 只转一次，四次切片不重复解码。
+    full = refs_dir / f"_source_{_now().replace(':', '').replace('-', '')}.wav"
+    ok, why = _to_wav(src, full)
+    if not ok:
+        return {"error": why, "error_stage": "音频转换"}
+
+    total = _wav_seconds(full)
+    if total is None:
+        return {"error": "读不出录音时长（文件可能损坏）", "error_stage": "探测时长"}
+
+    need = max(durs)
+    if total + 1e-6 < need:
+        # 明确说清差多少、该怎么补 —— 只报"失败了"用户不知道下一步做什么。
+        return {
+            "error": (f"录音 {total:.1f}s，不足最高档 {_dur_tag(need)}"
+                      f"（差 {need - total:.1f}s）。请把引导脚本念完再录一次；"
+                      f"脚本容量约 {script_capacity_s():.0f}s。"),
+            "error_stage": "时长不足",
+            "total_s": total,
+            "needed_s": need,
+        }
+
+    from common import find_ffmpeg
+
+    out: list[dict] = []
+    for d in sorted(durs):
+        tag = _dur_tag(d)
+        dest = refs_dir / f"{tag}.wav"
+        r = subprocess.run(
+            [find_ffmpeg(), "-y", "-loglevel", "error", "-i", str(full),
+             "-t", f"{d:.3f}", "-ac", "1", "-c:a", "pcm_s16le", str(dest)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=300)
+        if r.returncode != 0 or not dest.exists():
+            tail = (r.stderr or "").strip().splitlines()[-2:]
+            return {"error": "切片失败: " + " | ".join(tail)[:300],
+                    "error_stage": "切片", "tag": tag}
+        actual = _wav_seconds(dest)
+        rec = {
+            "duration_s": d,
+            "tag": tag,
+            "file": dest.name,
+            "actual_s": actual,
+            "bytes": dest.stat().st_size,
+            "recorded_at": _now(),
+            "from_batch": True,
+        }
+        # 与 add_reference 同一套"同档替换"语义：重录就是替换，不是追加。
+        refs = [x for x in (p.get("refs") or []) if x.get("tag") != tag]
+        refs.append(rec)
+        refs.sort(key=lambda x: float(x.get("duration_s") or 0))
+        p["refs"] = refs
+        out.append(rec)
+
+    p["updated_at"] = _now()
+    _write_json(profile_dir(pid) / "profile.json", p)
+    # 源文件只在切片期间存在，切完就删 —— 不留一份未切分的冗余录音（体积翻倍且易混淆）。
+    try:
+        full.unlink()
+    except Exception:
+        pass
+    log_event(pid, "add_reference_batch", total_s=total,
+              tags=[r["tag"] for r in out], source=src.name)
+    return {"refs": out, "total_s": total, "tags": [r["tag"] for r in out]}
+
+
 def _wav_seconds(path: Path) -> float | None:
     """读 wav 实际时长。读不出来给 None —— 不编一个"标称时长"顶上去。
 

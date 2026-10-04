@@ -323,6 +323,78 @@ class TestReferences:
         assert vp.add_truth(p["id"], "cross", src).get("error") is None
 
 
+# ---------------- 4b. 一次录音 → 前缀切四档（★ 评测协议的关键前提） ----------------
+
+class TestBatchReferenceSlicing:
+    """★ 守的是**评测协议能不能落地**这件事。
+
+    `docs/嗓音保存评测协议.md` §3.1 把四档定义为「**同一段录音的前缀截取**」，
+    控制变量含"同一条 take"。若让用户录四次，四次是不同的 take ——
+    自变量（时长）就被"这次录得好不好"混淆，RQ1 归因不成立。
+    `add_reference_batch` 就是补这一步。
+    """
+
+    def test_one_recording_yields_all_four_tiers(self, iso_media, monkeypatch):
+        """★ 核心用例：录一条 → refs 下恰好四个档，且每档实际时长贴合标称值。"""
+        _stub_convert(monkeypatch)
+        p = vp.create_profile("甲")
+        # 录 65s（最高档 60s），一次切完
+        res = vp.add_reference_batch(p["id"], _wav(iso_media / "rec.wav", 65.0))
+        assert res.get("error") is None, res
+        assert res["tags"] == ["3s", "10s", "30s", "60s"]
+        refs = vp.get_profile(p["id"])["refs"]
+        assert len(refs) == 4
+        for r in refs:
+            # 切出来的片段实际时长应贴合标称档（前缀截取，误差来自 wav 帧对齐）
+            assert r["actual_s"] == pytest.approx(r["duration_s"], abs=0.05)
+
+    def test_insufficient_length_is_a_structured_error(self, iso_media, monkeypatch):
+        """★ 录音不足最高档必须**报错**，不能只切出前三档。
+
+        静默产生"缺一档的矩阵"最危险：`analyze` 会报"数据不足以判定"，
+        而用户以为自己录完了 —— 错因指向统计，实际在采集。
+        """
+        _stub_convert(monkeypatch)
+        p = vp.create_profile("甲")
+        res = vp.add_reference_batch(p["id"], _wav(iso_media / "short.wav", 20.0))
+        assert res.get("error") and res["error_stage"] == "时长不足"
+        assert res["total_s"] == pytest.approx(20.0, abs=0.1)
+        assert res["needed_s"] == 60.0
+        # 且**不能**留下半套数据
+        assert vp.get_profile(p["id"])["refs"] == []
+
+    def test_batch_replaces_same_tag_not_appends(self, iso_media, monkeypatch):
+        """重录一次 = 四档全部替换，不产生 8 条 refs。"""
+        _stub_convert(monkeypatch)
+        p = vp.create_profile("甲")
+        vp.add_reference_batch(p["id"], _wav(iso_media / "r1.wav", 65.0))
+        vp.add_reference_batch(p["id"], _wav(iso_media / "r2.wav", 70.0))
+        refs = vp.get_profile(p["id"])["refs"]
+        assert len(refs) == 4
+        assert all(r.get("from_batch") is True for r in refs)
+
+    def test_missing_profile_and_empty_source_are_reported(self, iso_media, monkeypatch):
+        _stub_convert(monkeypatch)
+        # 非法 id 由 `profile_dir` 抛 ValueError（既有约定，见 TestProfileIdSafety），
+        # 这里测的是「**合法形状但不存在**」的 id → 走结构化错误分支。
+        assert vp.add_reference_batch("p0000000000abcdef",
+                                     _wav(iso_media / "a.wav", 65.0)).get("error")
+        p = vp.create_profile("甲")
+        empty = iso_media / "empty.wav"
+        empty.parent.mkdir(parents=True, exist_ok=True)
+        empty.write_bytes(b"")
+        res = vp.add_reference_batch(p["id"], empty)
+        assert res.get("error") and res["error_stage"] == "参数"
+
+    def test_batch_records_an_audit_event(self, iso_media, monkeypatch):
+        """一次切四档要留一条审计日志 —— 声音档案是"谁在什么时候动过"的追溯基础。"""
+        _stub_convert(monkeypatch)
+        p = vp.create_profile("甲")
+        vp.add_reference_batch(p["id"], _wav(iso_media / "rec.wav", 65.0))
+        kinds = [e["kind"] for e in vp.read_events(p["id"])]
+        assert "add_reference_batch" in kinds
+
+
 # ---------------- 5. ffmpeg 归一（★ 真跑 ffmpeg） ----------------
 
 class TestFfmpegNormalisation:
@@ -690,6 +762,28 @@ class TestApi:
                         files={"file": ("a.wav", b"", "audio/wav")},
                         data={"duration_s": "10"})
         assert r.status_code == 400
+
+    def test_upload_batch_slices_all_tiers_in_one_request(self, client, iso_media, monkeypatch):
+        """★ 录一条 → 一次请求切四档（评测协议要求的采集形态）。"""
+        _stub_convert(monkeypatch)
+        pid = client.post("/api/preserve/profiles", json={"label": "甲"}).json()["profile"]["id"]
+        wav = _wav(iso_media / "rec.wav", 65.0)
+        with open(wav, "rb") as f:
+            r = client.post(f"/api/preserve/profiles/{pid}/references/batch",
+                            files={"file": ("rec.wav", f, "audio/wav")})
+        assert r.status_code == 200, r.text
+        assert r.json()["tags"] == ["3s", "10s", "30s", "60s"]
+
+    def test_upload_batch_short_recording_is_400(self, client, iso_media, monkeypatch):
+        """录音不足最高档 → 400，且明确说差多少（不是 500、不是静默切一半）。"""
+        _stub_convert(monkeypatch)
+        pid = client.post("/api/preserve/profiles", json={"label": "甲"}).json()["profile"]["id"]
+        wav = _wav(iso_media / "short.wav", 20.0)
+        with open(wav, "rb") as f:
+            r = client.post(f"/api/preserve/profiles/{pid}/references/batch",
+                            files={"file": ("short.wav", f, "audio/wav")})
+        assert r.status_code == 400
+        assert "60s" in r.json()["detail"]
 
     def test_upload_truth_rejects_unknown_condition(self, client, iso_media, monkeypatch):
         _stub_convert(monkeypatch)

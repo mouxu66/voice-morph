@@ -10,6 +10,7 @@ import {
   reproducePreserveProfile,
   runPreserveGate,
   uploadPreserveReference,
+  uploadPreserveReferenceBatch,
   type PreserveEvent,
   type PreserveGate,
   type PreserveGuide,
@@ -242,6 +243,62 @@ export function usePreserve() {
     clearTimer()
   }, [clearTimer])
 
+  /**
+   * ★ 一次录到最高档（60s），后端自动切全部档位。
+   *
+   * 为什么要有这条（与 `startRecording` 的区别是**研究语义**）：
+   *   评测协议把四档定义为「**同一段录音的前缀截取**」，控制变量含"同一条 take"。
+   *   逐档录四次 = 四条不同 take（嗓子状态/坐姿/距离都会变），
+   *   "时长"这个自变量就被"这次录得好不好"混淆，RQ1 归因不成立。
+   *
+   * 引导语料容量约 91s，所以按提示念完不会卡在 60s 上。
+   */
+  const startFullRecording = useCallback(async () => {
+    setError(null)
+    setNotice("")
+    if (!selectedId) {
+      fail("先建一份档案再录音")
+      return
+    }
+    const longest = Math.max(...((guide?.durations ?? []).map((d) => d.duration_s) || [60]))
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/webm"
+      const rec = new MediaRecorder(stream, { mimeType: mime })
+      chunks.current = []
+      rec.ondataavailable = (e) => {
+        if (e.data.size) chunks.current.push(e.data)
+      }
+      rec.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop())
+        void (async () => {
+          const blob = new Blob(chunks.current, { type: mime })
+          const file = new File([blob], "reference-full.webm", { type: mime })
+          setBusy("upload")
+          try {
+            const out = await uploadPreserveReferenceBatch(selectedId, file)
+            await loadProfile(selectedId)
+            setEvents((await getPreserveEvents(selectedId)).events)
+            setNotice(`已按前缀切出 ${out.tags.length} 档（共 ${out.total_s.toFixed(1)}s）。`)
+          } catch (error) {
+            fail("保存整段录音", error)
+          } finally {
+            setBusy("")
+          }
+        })()
+      }
+      rec.start()
+      recorder.current = rec
+      setRecordingFor(longest)
+      setRecordSeconds(0)
+      tick.current = window.setInterval(() => setRecordSeconds((s) => s + 1), 1000)
+    } catch (error) {
+      fail("打开麦克风", error)
+    }
+  }, [guide, loadProfile, selectedId, fail])
+
   // ---- 门禁 ----
 
   const runGate = useCallback(async () => {
@@ -300,6 +357,7 @@ export function usePreserve() {
     remove,
     consent,
     startRecording,
+    startFullRecording,
     stopRecording,
     runGate,
     reproduce,

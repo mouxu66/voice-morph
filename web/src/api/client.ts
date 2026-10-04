@@ -2545,6 +2545,46 @@ export async function uploadPreserveReference(
   return res.json() as Promise<{ ok: boolean; reference: PreserveRef }>
 }
 
+/**
+ * 上传**一条完整录音**，后端按前缀自动切出全部时长档（3/10/30/60s）。
+ *
+ * ★ 与 `uploadPreserveReference`（单档）的区别是**研究语义**，不只是省请求：
+ *   评测协议把四档定义为「同一段录音的前缀截取」，控制变量要求"同一条 take"。
+ *   逐档上传 = 四条不同 take（嗓子/坐姿/距离都会变），
+ *   自变量"时长"就被"这次录得好不好"混淆 → RQ1 归因不成立。
+ *
+ * 录音不足最高档（60s）时后端返回 400 并说明差多少，且不留下半套数据。
+ */
+export async function uploadPreserveReferenceBatch(
+  id: string,
+  file: File
+): Promise<{ ok: boolean; tags: string[]; total_s: number; refs: PreserveRef[] }> {
+  const form = new FormData()
+  form.append("file", file)
+  // ⚠️ 同 `uploadPreserveReference`：**必须内联 `fetch(BASE + 字面量)`** ——
+  //   `tools/audit_endpoint_ownership.py` 靠 AST 从调用点抽 URL 字面量判断端点归属。
+  const res = await fetch(
+    BASE + "/preserve/profiles/" + encodeURIComponent(id) + "/references/batch",
+    { method: "POST", body: form }
+  )
+  if (!res.ok) {
+    let detail = res.statusText
+    try {
+      const body = await res.json()
+      if (body?.detail) detail = body.detail
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail)
+  }
+  return res.json() as Promise<{
+    ok: boolean
+    tags: string[]
+    total_s: number
+    refs: PreserveRef[]
+  }>
+}
+
 export async function uploadPreserveTruth(
   id: string,
   file: File,

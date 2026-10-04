@@ -109,6 +109,20 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
   const refs = useMemo(() => p.profile?.refs ?? [], [p.profile])
   const refTags = useMemo(() => new Set(refs.map((r) => r.tag)), [refs])
 
+  // 最高档（用于「一次录满」）：从后端现算的 durations 里取最大，不写死 60 ——
+  // 档位口径是研究自变量，只能有一份定义（`voicepreserve.REF_DURATIONS`）。
+  const durations = useMemo(() => p.guide?.durations ?? [], [p.guide])
+  const longest = useMemo(
+    () => durations.reduce<(typeof durations)[number] | null>(
+      (acc, d) => (acc === null || d.duration_s > acc.duration_s ? d : acc),
+      null
+    ),
+    [durations]
+  )
+  const longestS = longest?.duration_s ?? 60
+  const longestTag = longest?.tag ?? "60s"
+  const longestSentences = longest?.sentences ?? 20
+
   /** 「去复现」：注册成音色库音色（后端同时设为当前选中），成功即跳输字页。
    *  显示条件（同意 + 至少一档参考音）只是引导；真正的门禁在后端 ——
    *  就算被拦，错误也会原样显示在这里。 */
@@ -308,6 +322,40 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                   录得越久效果越稳，但收益会慢慢饱和。
                   {p.guide ? ` 完整脚本约 ${p.guide.script_capacity_s} 秒。` : ""}
                 </p>
+                {/* ★ 推荐路径：一次录满，后端按前缀切全部档 —— 这是评测协议要求的采集形态。
+                    逐档录四次 = 四条不同 take，「时长」自变量会被"这次录得好不好"混淆。 */}
+                <div className="mb-3 rounded-md border border-primary/30 bg-primary/5 p-3">
+                  <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+                    推荐：一次录满，自动切出四档
+                  </div>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    按脚本念到 <b>{longestTag}</b>（约 {longestSentences} 句），停止后系统自动按
+                    前 3/10/30/60 秒切档。<b>四档来自同一条录音</b>，这才是研究要求的采集方式。
+                  </p>
+                  <button
+                    onClick={() =>
+                      p.recordingFor > 0 ? p.stopRecording() : void p.startFullRecording()
+                    }
+                    disabled={Boolean(p.busy) || (p.recordingFor > 0 && p.recordingFor !== longestS)}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm disabled:opacity-40",
+                      p.recordingFor === longestS
+                        ? "border-red-500/50 bg-red-500/10"
+                        : "border-primary/40 bg-card"
+                    )}
+                  >
+                    {p.recordingFor === longestS ? (
+                      <>
+                        <Square className="h-3.5 w-3.5" /> 停止（已录 {p.recordSeconds}s）
+                      </>
+                    ) : (
+                      <>
+                        <Mic className="h-3.5 w-3.5" /> 开始录整段
+                      </>
+                    )}
+                  </button>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {(p.guide?.durations ?? []).map((d) => {
                     const hint = TIER_HINTS[d.tag] ?? ""

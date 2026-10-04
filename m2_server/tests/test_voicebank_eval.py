@@ -582,3 +582,20 @@ class TestCorpusIsSingleSource:
 
         assert ve._char_count("你好，世界") == vp.char_count("你好，世界")
         assert ve._script_capacity_s() == vp.script_capacity_s()
+
+    def test_duration_ladder_matches_the_product_side(self):
+        """★ 档位口径也必须只有一份 —— 这是**研究自变量**。
+
+        评测工具与产品两侧各自定义一份档位，一旦漂移（例如方案文档里曾写成含
+        300s 的五档），"同一段录音切四档"的矩阵就会与产品实际能录出的档位不符，
+        而**两边都不会报错** —— 只会得到一组对不上任何真实录音的结论。
+        文档 `docs/嗓音保存评测协议.md` §3.1 是同一口径。
+        """
+        import voicepreserve as vp
+
+        assert ve.DURATION_LADDER == vp.REF_DURATIONS, (
+            "评测工具的档位与产品侧不一致 —— 改档位必须三处同改："
+            "m2_server/voicepreserve.py::REF_DURATIONS / "
+            "tools/voicebank_eval.py::DURATION_LADDER / docs/嗓音保存评测协议.md §3.1"
+        )
+        assert ve.DURATION_LADDER == (3.0, 10.0, 30.0, 60.0)
