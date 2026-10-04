@@ -1,6 +1,6 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Navigate, Route, Routes, useLocation } from "react-router-dom"
-import { getHealth, listVoices } from "@/api/client"
+import { getHealth, listVoicesWithSelected } from "@/api/client"
 import { AppChrome } from "@/components/layout/AppChrome"
 import { EnvHealth } from "@/components/EnvHealth"
 import { ModelSetupPanel, SetupBanner } from "@/components/ModelSetupPanel"
@@ -34,7 +34,7 @@ function onboardingGuide(): PetGuidePayload {
 }
 
 export default function App() {
-  const { setHealth, setVoices } = useAppStore()
+  const { setHealth, setVoices, syncSelectedVoice } = useAppStore()
   const location = useLocation()
   const [petGuideEnabled, setPetGuideEnabled] = useState(true)
   const [simpleMode, setSimpleMode] = useState(getStoredSimpleMode())
@@ -62,10 +62,17 @@ export default function App() {
     let alive = true
     const poll = async () => {
       try {
-        const [healthInfo, voiceItems] = await Promise.all([getHealth(), listVoices()])
+        const [healthInfo, voiceData] = await Promise.all([getHealth(), listVoicesWithSelected()])
         if (!alive) return
         setHealth(healthInfo)
-        setVoices(voiceItems)
+        setVoices(voiceData.voices)
+        // ★ 把后端的「已选音色」同步进 store。少了这一句，`selectedVoiceId`
+        // 永远是初值 null：快捷短语板的橙色提示常亮（hasVoice 恒 false）、
+        // 录课页「开始合成」永久变灰。syncSelectedVoice 只在「还没选」时
+        // 生效，不会覆盖用户的手动选择（详见 store 里的注释）。
+        // ⚠️ 它**不影响短语板能否发声**：play() 的守卫只看 backendUp，
+        // 后端会用自己选中的音色兜底。
+        syncSelectedVoice(voiceData.selected)
       } catch {
         if (alive) setHealth(null)
       }
@@ -73,7 +80,7 @@ export default function App() {
     void poll()
     const timer = window.setInterval(() => void poll(), 5000)
     return () => { alive = false; window.clearInterval(timer) }
-  }, [setHealth, setVoices])
+  }, [setHealth, setVoices, syncSelectedVoice])
 
   // 当前版本号（设置里显示）；非桌面端为 null
   useEffect(() => {

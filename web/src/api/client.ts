@@ -196,6 +196,34 @@ export async function listVoices(): Promise<VoiceInfo[]> {
   return data.voices;
 }
 
+/**
+ * 音色清单 + **主界面当前选中的音色**（`/voices` 响应里的 `selected`）。
+ *
+ * ★ 为什么单独开一个函数而不改 `listVoices`：清单本身有 3 个消费方
+ * （素材流水线 / 级联 / 种子音色）只要数组，改成返回对象会连带改它们，
+ * 收益为零。而 `selected` 只有启动同步那一处要。
+ *
+ * ★ 为什么必须带上它：`selectedVoiceId` 是**后端**的状态（写在
+ * `media/voicebank/selected_voice.json`，音色挖掘/声音保存时落盘），前端 store
+ * 的初值是 `null` 且**只在用户手动下拉选择时**才被写入 —— 不在这里同步回来，
+ * 那么「后端明明有选中音色，前端却认为一个都没选」，表现是：
+ *   1. 快捷短语板底部那句橙色提示「先在上方选择音色…」**常亮**（`hasVoice` 恒 false）；
+ *   2. 录课页「开始合成」按钮永久变灰。
+ *
+ * ⚠️ 但它**不会**让短语板播不出声 —— `usePhraseBoard.play()` 的守卫只看 `backendUp`，
+ * 照样发请求，后端 `voice_id = body.voice_id or _selected_voice()` 会兜住。
+ * （2026-10-04 我一度把「Alt+1 无声」错判成这条的后果，实际根因是菜单栏抢 Alt。）
+ *
+ * `selected` 为空串 = 后端也没选（或选中的音色已被删除，后端会按未选中处理）。
+ */
+export async function listVoicesWithSelected(): Promise<{
+  voices: VoiceInfo[];
+  selected: string;
+}> {
+  const data = await jsonFetch<{ voices: VoiceInfo[]; selected?: string }>("/voices");
+  return { voices: data.voices ?? [], selected: data.selected ?? "" };
+}
+
 // ---- M1 素材流水线（后端需提供以下端点） ----
 
 export async function listRawVideos(): Promise<VideoItem[]> {

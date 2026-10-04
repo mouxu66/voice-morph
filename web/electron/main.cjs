@@ -165,7 +165,25 @@ function registerCascadeHotkey() {
   if (!OK) console.error("[hotkey] Ctrl+Alt+V 注册失败（可能被其它程序占用）");
 }
 
-/** 全局热键 Alt+1 ~ Alt+5：快捷短语板第 N 条「直接播进虚拟声卡」。
+/**
+ * 快捷短语板的热键前缀：`Ctrl+Alt+1` ~ `Ctrl+Alt+5`。
+ *
+ * ★★ 为什么**不能**用裸 `Alt+N`（2026-10-04 实机定位，两个独立的坑同时踩）：
+ *
+ *   1. **菜单栏吃掉 Alt**：窗口是 `autoHideMenuBar: true`（第 29 行）—— 菜单栏
+ *      只是「隐藏」而不是「不存在」，按 `Alt` 会先把菜单栏激活再谈别的。
+ *      现场表现：按 Alt+1 弹出的是「File / Edit / View / Window / Help」那一栏，
+ *      而 `globalShortcut` 根本没机会拿到这个组合。**这条是用户报障的直接原因。**
+ *   2. **与微信「按住说话」冲突**：微信 PC 的说话键就是 Alt（见
+ *      `sfx-window.cjs:38-44` 与 `:107` 的同一条铁律：「裸 Alt 或 Alt+X 会打架，
+ *      Ctrl+Alt+X / Shift+Alt+X 不会」）。老师按住 Alt 说话时再按 1，两头都乱。
+ *
+ * 换成 `Ctrl+Alt+N` 后：有 Ctrl 修饰 → 菜单栏不抢；不是单 Alt → 微信不抢。
+ * 与既有热键 `Ctrl+Alt+V`（级联）、`Ctrl+Alt+S`（声板）同一命名族，好记。
+ */
+const PHRASE_HOTKEY_PREFIX = "Control+Alt";
+
+/** 全局热键 Ctrl+Alt+1 ~ Ctrl+Alt+5：快捷短语板第 N 条「直接播进虚拟声卡」。
  *  场景：PPT 放映 / 钉钉直播全屏时按一下，克隆音色替老师念那句课堂高频语，
  *  不用切回本应用 —— 所以播放必须在后端（POST /voice-phrases/{id}/play，
  *  走声板常驻播放器进 CABLE），浏览器 <audio> 跟着窗口焦点走，指望不上。
@@ -184,10 +202,10 @@ async function playPhraseByHotkey(n) {
 
 function registerPhraseHotkeys() {
   for (let n = 1; n <= 5; n++) {
-    const ok = globalShortcut.register(`Alt+${n}`, () => {
+    const ok = globalShortcut.register(`${PHRASE_HOTKEY_PREFIX}+${n}`, () => {
       void playPhraseByHotkey(n);
     });
-    if (!ok) console.error(`[hotkey] Alt+${n} 注册失败（可能被其它程序占用）`);
+    if (!ok) console.error(`[hotkey] ${PHRASE_HOTKEY_PREFIX}+${n} 注册失败（可能被其它程序占用）`);
   }
 }
 

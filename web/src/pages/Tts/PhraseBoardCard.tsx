@@ -42,7 +42,7 @@ export function PhraseBoardCard() {
             快捷短语
           </h3>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            点一下就用当前音色念出来（本机试听）。直播/放映中用全局热键 Alt+1~5
+            点一下就用当前音色念出来（本机试听）。直播/放映中用全局热键 Ctrl+Alt+1~5
             触发前 5 条，声音直接进虚拟声卡 —— 钉钉、录屏那头听得到，不用切回本应用。
           </p>
         </div>
@@ -95,13 +95,15 @@ export function PhraseBoardCard() {
               >
                 {active ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               </button>
-              {/* 前 5 条 = 热键目标（Alt+N 全局触发、播进虚拟声卡），角标要一眼可见 */}
+              {/* 前 5 条 = 热键目标（Ctrl+Alt+N 全局触发、播进虚拟声卡），角标要一眼可见。
+                  ⚠️ 别用裸 Alt+N：菜单栏会抢（autoHideMenuBar 下按 Alt 只激活菜单），
+                  且与微信「按住说话」的 Alt 打架 —— 详见 main.cjs 的 PHRASE_HOTKEY_PREFIX。 */}
               {idx < 5 && (
                 <kbd
-                  title={`全局热键 Alt+${idx + 1}：任意界面按下即播这条（进虚拟声卡）`}
+                  title={`全局热键 Ctrl+Alt+${idx + 1}：任意界面按下即播这条（进虚拟声卡）`}
                   className="hidden shrink-0 rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] leading-4 text-muted-foreground sm:inline-block"
                 >
-                  Alt+{idx + 1}
+                  Ctrl+Alt+{idx + 1}
                 </kbd>
               )}
               {editing ? (

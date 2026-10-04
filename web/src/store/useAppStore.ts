@@ -20,6 +20,21 @@ interface AppState {
   selectedVoiceId: string | null;
   setVoices: (v: VoiceInfo[]) => void;
   selectVoice: (id: string) => void;
+  /**
+   * 用后端返回的「已选音色」补齐前端初值。
+   *
+   * ★ 语义与 `selectVoice` 的区别：这是**同步**（用户没表过态，接受后端的），
+   * 不是**选择**（用户刚点的）。而两者的判定条件都是「当前还没选」——
+   * 一旦用户手动选过（下拉/音色卡），`selectedVoiceId` 非空，这里就**整个让路**，
+   * 否则启动轮询（5s 一次）会把用户的选择每 5 秒打回后端那个旧值。
+   *
+   * ⚠️ 空串一律忽略：后端返回空 = 没选 / 选中的音色已被删，
+   * 不能拿它覆盖掉用户已经选好的音色。
+   *
+   * ⚠️ 它只影响**界面状态**（橙色提示 / 合成按钮的可用性），不影响后端逻辑：
+   * `/voice-phrases/*` 与 `/tts` 都会用后端自己的选中音色兜底。
+   */
+  syncSelectedVoice: (id: string) => void;
 
   // 片段选择（勾选状态）
   clips: ClipItem[];
@@ -53,6 +68,8 @@ export const useAppStore = create<AppState>((set) => ({
   selectedVoiceId: null,
   setVoices: (v) => set({ voices: v }),
   selectVoice: (id) => set({ selectedVoiceId: id }),
+  syncSelectedVoice: (id) =>
+    set((s) => (s.selectedVoiceId || !id ? {} : { selectedVoiceId: id })),
 
   clips: [],
   selectedClips: new Set(),

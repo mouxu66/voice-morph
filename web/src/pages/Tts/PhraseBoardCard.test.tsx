@@ -1,12 +1,15 @@
 /**
- * 快捷短语板卡片的「热键角标」（2026-10-03，二期）。
+ * 快捷短语板卡片的「热键角标」（2026-10-03，二期；2026-10-04 改键位）。
  *
- * 前 5 条短语是全局热键 Alt+1~5 的目标（直播/放映中按下、播进虚拟声卡）。
+ * 前 5 条短语是全局热键 Ctrl+Alt+1~5 的目标（直播/放映中按下、播进虚拟声卡）。
  * 角标是这个能力唯一的界面提示 —— 漏渲染或标错序号，老师就不知道该按哪个。
- * 守两条：
- *  1. 前 5 条各带 Alt+1..Alt+5，**序号 = 列表顺序**（热键侧就是按清单序取的，
+ * 守三条：
+ *  1. 前 5 条各带 Ctrl+Alt+1..5，**序号 = 列表顺序**（热键侧就是按清单序取的，
  *     见 main.cjs playPhraseByHotkey —— 两边必须同序）；
- *  2. 第 6 条起不再有角标（热键只绑 5 条）。
+ *  2. 第 6 条起不再有角标（热键只绑 5 条）；
+ *  3. ★ 文案里**不许再出现裸 `Alt+N`**：那是 2026-10-04 的线上故障，
+ *     菜单栏抢 Alt、微信「按住说话」也占 Alt（详见 main.cjs 的 PHRASE_HOTKEY_PREFIX）。
+ *     界面若还写着 Alt+N，老师照着按必然没反应 —— 所以这条要盯住。
  */
 import { render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -33,21 +36,29 @@ beforeEach(() => {
 })
 
 describe("PhraseBoardCard · 热键角标", () => {
-  it("前 5 条各带 Alt+1~Alt+5 角标", () => {
+  it("前 5 条各带 Ctrl+Alt+1~5 角标", () => {
     render(<PhraseBoardCard />)
     for (let n = 1; n <= 5; n++) {
-      expect(screen.getByText(`Alt+${n}`)).toBeTruthy()
+      expect(screen.getByText(`Ctrl+Alt+${n}`)).toBeTruthy()
     }
   })
 
   it("第 6 条起没有角标（热键只绑前 5 条）", () => {
     render(<PhraseBoardCard />)
-    expect(screen.queryByText("Alt+6")).toBeNull()
+    expect(screen.queryByText("Ctrl+Alt+6")).toBeNull()
   })
 
   it("提示文案点明全局热键与虚拟声卡的分工", () => {
     render(<PhraseBoardCard />)
-    expect(screen.getByText(/Alt\+1~5/)).toBeTruthy()
+    expect(screen.getByText(/Ctrl\+Alt\+1~5/)).toBeTruthy()
     expect(screen.getByText(/虚拟声卡/)).toBeTruthy()
+  })
+
+  it("★ 界面里不许再出现裸 Alt+N（改键位后的回归守卫）", () => {
+    const { container } = render(<PhraseBoardCard />)
+    const text = container.textContent ?? ""
+    // 抓「不是紧跟在 Ctrl+ 后面的 Alt+数字」
+    const bare = text.match(/(?<!Ctrl\+)Alt\+\d/g) ?? []
+    expect(bare).toEqual([])
   })
 })

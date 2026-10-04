@@ -149,3 +149,62 @@ describe("usePhraseBoard · 播放", () => {
     expect(result.current.activeId).toBe("")
   })
 })
+
+/**
+ * ★ 回归守卫（2026-10-04）：`selectedVoiceId` 为空时的行为。
+ *
+ * ⚠️ 先把一个容易想错的地方钉住（我第一版就写错过）：
+ * **`play()` 的守卫只看 `backendUp`，它照样会发请求。** 这是**故意的**——
+ * 后端 `/voice-phrases/{id}/speak` 里 `body.voice_id or _selected_voice()` 会
+ * 兜到后端自己的选中音色，所以"前端没选"不等于"播不了"。
+ * 因此这里断言的是「发了请求、且 `voice_id` 传 undefined（让后端兜底）」，
+ * **不是**「不发请求」。
+ *
+ * 那 `hasVoice` 是干嘛的？—— 只用来点亮面板底部那句橙色提示
+ * 「先在上方选择音色…」。它在 2026-10-04 之前**恒为 true 的反面**（store 的
+ * `selectedVoiceId` 从没被同步过），于是提示常亮、而用户照着提示也找不到
+ * 到底该在哪选（后端明明已经有选中音色）。同步那一半由
+ * `src/store/useAppStore.test.ts` 守着。
+ *
+ * ⚠️ 也别再只靠 `beforeEach` 里手工 `setState({selectedVoiceId})` 来测本文件 ——
+ * 那恰好绕开了「音色是怎么进 store 的」这一环，bug 就是这么藏住的。
+ */
+describe("usePhraseBoard · 没选音色时（回归守卫）", () => {
+  it("hasVoice=false 点亮提示；play 仍会调后端（voice_id 留空让后端兜底）", async () => {
+    voicePhraseSpeak.mockResolvedValue({
+      ok: true,
+      url: "/api/media/outputs/phrase_cache/x.wav",
+      duration_s: 1,
+      cached: true,
+      voice_id: "kangaroo",
+    })
+    useAppStore.setState({ selectedVoiceId: null })
+    const { result } = renderHook(() => usePhraseBoard())
+    await waitFor(() => expect(result.current.items).toHaveLength(2))
+
+    expect(result.current.hasVoice).toBe(false)
+
+    await result.current.play("a1")
+
+    expect(voicePhraseSpeak).toHaveBeenCalledWith("a1", undefined)
+    await waitFor(() => expect(result.current.activeId).toBe("a1"))
+    expect(result.current.error).toBe("")
+  })
+
+  it("有音色时 hasVoice=true，且把音色显式传给后端", async () => {
+    voicePhraseSpeak.mockResolvedValue({
+      ok: true,
+      url: "/api/media/outputs/phrase_cache/x.wav",
+      duration_s: 1,
+      cached: true,
+      voice_id: "wang",
+    })
+    const { result } = renderHook(() => usePhraseBoard())
+    await waitFor(() => expect(result.current.items).toHaveLength(2))
+
+    expect(result.current.hasVoice).toBe(true)
+
+    await result.current.play("a1")
+    expect(voicePhraseSpeak).toHaveBeenCalledWith("a1", "wang")
+  })
+})
