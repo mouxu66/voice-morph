@@ -39,13 +39,19 @@
     truth/<说话人>/<条件>.wav               复现文本的真实录音（ABX 对照，人工录制）
     samples/<说话人>/<时长档>/<条件>.wav     待测合成样本
     results.json / results.csv             客观测量结果（measure 产出）
+    listen/key.csv                         盲号 → sample_id（揭盲用，**不外发**）
+    listen/sheet.csv                       盲号 + 空 mos/abx 列（**发给听者**）
+    listen/playlist.txt                    随机化播放顺序（种子落盘）
+    subjective.csv                         多人评分合并结果（merge-listen 产出）
     report.json / report.md                统计与相关性（analyze 产出）
 
 用法
     python tools/voicebank_eval.py plan    --exp vb01 --speakers spk01,spk02
     python tools/voicebank_eval.py split   --exp vb01 --speakers spk01 --source rec.wav
     python tools/voicebank_eval.py measure --exp vb01 [--with-emb] [--with-asr]
-    python tools/voicebank_eval.py analyze --exp vb01 [--subjective scores.csv]
+    python tools/voicebank_eval.py listen  --exp vb01              # 生成盲听材料
+    python tools/voicebank_eval.py merge-listen --exp vb01 --sheets a.csv,b.csv
+    python tools/voicebank_eval.py analyze --exp vb01 [--subjective subjective.csv]
     python tools/voicebank_eval.py corpus                # 打印录音脚本与四类复现文本
 """
 
@@ -54,6 +60,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import random
 import subprocess
 import sys
 from datetime import datetime
@@ -140,6 +147,33 @@ ADAPT_FALLBACK_DBS = (-30.0, -27.0, -24.0, -21.0, -18.0)
 
 #: 放宽到序列末尾还没探到任何静音 → 判定这个源不适合"对齐句末"（如实报，不硬凑）。
 MIN_SILENCES_FOR_ALIGN = 1
+
+# ---------------- 盲听（listen 子命令） ----------------
+
+#: 盲号前缀。听者看到的只有 `S-0007` 这种编号 —— **不含说话人/档位/条件任何线索**。
+#:
+#: ★ 为什么必须不带线索：RQ3 要问的是「客观指标能不能替代人耳」，而人耳一旦知道
+#:   "这条是 60s 档"，评分就会被先验预期污染（长参考音应该更好 —— 这个预期本身
+#:   就是要检验的对象）。带线索的评分表等于把结论写进实验条件里。
+LISTEN_ID_PREFIX = "S-"
+
+#: 盲听评分表的列。★ 必须与 `_read_subjective` 认的列名**逐字一致**
+#: （`sample_id` / `mos` / `abx`），否则 analyze --subjective 会静默丢掉全部行
+#: —— 那正是"跑通了但出不来数"的典型症状。
+LISTEN_CSV_COLUMNS = ("blind_id", "mos", "abx", "note")
+
+#: 揭盲表文件名。**与评分表分开存**是硬要求：评分表是要发给听者的，
+#: 揭盲表是研究者自己留的。放同一个文件里 = 把答案随试卷一起发出去。
+LISTEN_KEY_FILE = "listen/key.csv"
+LISTEN_SHEET_FILE = "listen/sheet.csv"
+LISTEN_DIR = "listen"
+
+#: mos 的合法区间。超出就是填错了（5 档量表），**不夹紧、不忽略** —— 报错让听者重填。
+#: 悄悄夹到 5 会让一条填错的数据混进相关性分析里。
+MOS_MIN, MOS_MAX = 1.0, 5.0
+
+#: ABX 的合法取值：0 = 选错（听起来不像），1 = 选对（听起来像）。
+ABX_VALUES = (0.0, 1.0)
 
 # ---------------- 语料（★ 唯一真相源在 m2_server/voicepreserve.py） ----------------
 #
@@ -1003,6 +1037,308 @@ def _sat_text(sat: dict | None) -> str:
     return "数据不足以判定"
 
 
+# ---------------- 盲听材料（RQ3 的输入端） ----------------
+#
+# 为什么要有这一段：`analyze --subjective` 的 RQ3 分支**从来没在真数据上跑过**，
+# 而卡住它的不是分析代码，是**没有任何东西能产出听测数据** —— 没有配对、
+# 没有盲化、没有评分表。研究者只能手工拼文件名、手工遮住条件名，而手工遮
+# 会留下线索（文件名、目录结构、播放顺序都是线索）。
+#
+# 本段只做「生成材料 + 汇总分数」，**不播放音频**：听测由人在播放器里做，
+# 我们不假装能替人听。
+
+def _blind_pairs(samples: list[dict]) -> tuple[list[dict], list[dict]]:
+    """把样本摊成盲听条目：每条 = 一个待评音频 + 它的真值身份。
+
+    返回 `(items, unpaired)`：`unpaired` 是**有合成样本但缺 truth** 的条目
+    —— ABX 对照不了，只能做绝对 MOS。**如实上报，不悄悄丢**：丢了会让
+    "24 名听者 × 全部样本" 的预期与实际悄悄对不上。
+
+    ★ 顺序：先按 sample_id 排序**再**编号，保证同一批样本在任何机器上
+    得到同一组盲号（盲号可复现，随机顺序也才是唯一的不确定来源）。
+    """
+    items: list[dict] = []
+    unpaired: list[dict] = []
+    for s in sorted(samples, key=lambda r: str(r.get("sample_id"))):
+        sid = str(s.get("sample_id") or "")
+        if not sid:
+            continue
+        sp, tag, cond = str(s.get("speaker")), str(s.get("duration_tag")), str(s.get("condition"))
+        items.append({
+            "sample_id": sid,
+            "speaker": sp,
+            "duration_tag": tag,
+            "condition": cond,
+            "sample": str(s.get("path") or s.get("sample") or ""),
+            "truth": s.get("truth") or f"truth/{sp}/{cond}.wav",
+        })
+    return items, unpaired
+
+
+def listen(exp: str, *, root: Path | None = None, seed: int = 20261005,
+           base_dir: Path | None = None) -> dict:
+    """生成盲听材料：盲号映射（揭盲用）+ 评分表（发给听者）+ 播放清单。
+
+    落在 `<root>/<exp>/listen/` 下：
+        key.csv      盲号 → sample_id（**研究者留存，不可发给听者**）
+        sheet.csv    盲号 → 空的 mos / abx 列（**这张才是发出去的**）
+        playlist.txt 按随机顺序排好的音频路径（照着放，别自己翻目录）
+
+    ★ 三个设计约束，都是"踩了才会发现"的：
+      1. **评分表不含身份**：sheet.csv 只有盲号与空列。谁要是为了"方便"
+         把 sample_id 列塞进 sheet，整轮听测就废了 —— 所以有单测钉住。
+      2. **随机顺序 + 种子落盘**：听者的疲劳会随时序累积（后听的打低分），
+         固定顺序 = 把"位置效应"混进"条件效应"。种子落盘才能复现同一顺序。
+      3. **缺 truth 的样本单独列**：ABX 需要对照，没对照就只能打 MOS。
+         混合统计时要能一眼看出哪些样本只有 MOS（否则 n 对不上会以为丢数据）。
+    """
+    base = (Path(root) if root else _default_root()) / exp
+    out_dir = (Path(base_dir) if base_dir else base / LISTEN_DIR)
+    res: dict = {"exp": exp, "root": str(base), "out": str(out_dir),
+                 "error": None, "error_stage": None, "notes": [], "warnings": []}
+
+    rf = base / "results.json"
+    if not rf.exists():
+        res["error"] = f"没有测量结果: {rf}（先跑 measure）"
+        res["error_stage"] = "测量结果"
+        return res
+    try:
+        data = json.loads(rf.read_text(encoding="utf-8"))
+    except Exception as e:
+        res["error"] = f"results.json 读不动: {type(e).__name__}: {e}"
+        res["error_stage"] = "测量结果"
+        return res
+
+    samples = data.get("samples") or []
+    if not samples:
+        res["error"] = "results.json 里没有样本（先跑 measure）"
+        res["error_stage"] = "样本"
+        return res
+
+    items, _ = _blind_pairs(samples)
+
+    # 缺 truth 的样本：ABX 做不了，只能打 MOS —— 明写出来
+    missing_truth = [it for it in items
+                     if not (base / str(it["truth"])).exists()]
+    paired = [it for it in items if it not in missing_truth]
+
+    # 缺合成音频的样本：列出来了但播不出来，剔除并警告
+    # （不生成一张放不出来的清单 —— 听者按下播放键却什么都没有，
+    #  他会以为是自己操作错了，而不是来报"文件不存在"）
+    #
+    # ★ 空路径必须算"缺"：`Path("")` 会静默变成 `"."` 而 `"."` 是**存在的**，
+    #   于是"没有路径"会被判成"文件在" —— 这正是本轮实测踩到的坑
+    #   （`_row` 里 path 为空串，`Path("").exists()` 返回 True）。
+    def _audio_ok(p) -> bool:
+        s = str(p or "").strip()
+        if not s:
+            return False
+        return (base / s).exists() or Path(s).exists()
+
+    missing_audio = [it for it in items if not _audio_ok(it["sample"])]
+    if missing_audio:
+        res["warnings"].append(
+            f"{len(missing_audio)} 个样本的音频文件不存在（如 "
+            f"{missing_audio[0]['sample_id']}）—— 已从评分表里剔除，"
+            f"请先确认合成是否跑完")
+
+    playable = [it for it in items if it not in missing_audio]
+
+    # 随机顺序（种子可复现）
+    order = list(range(len(playable)))
+    rnd = random.Random(seed)
+    rnd.shuffle(order)
+
+    rows: list[dict] = []
+    for pos, idx in enumerate(order, 1):
+        it = playable[idx]
+        bid = f"{LISTEN_ID_PREFIX}{pos:04d}"
+        rows.append({"blind_id": bid, "pos": pos, **{k: it[k] for k in
+                    ("sample_id", "speaker", "duration_tag", "condition",
+                     "sample", "truth")}})
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- key.csv：盲号 → 真身份（研究者留存） ----
+    with open(out_dir / "key.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=["blind_id", "pos", "sample_id",
+                                          "speaker", "duration_tag", "condition",
+                                          "sample", "truth"])
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+    # ---- sheet.csv：★ 只有盲号 + 空列，不含任何身份 ----
+    with open(out_dir / "sheet.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(list(LISTEN_CSV_COLUMNS))
+        for r in rows:
+            w.writerow([r["blind_id"], "", "", ""])
+
+    # ---- playlist.txt：照着放 ----
+    lines = [f"# 盲听播放清单 · 实验 {exp}",
+             f"# 盲号 {LISTEN_ID_PREFIX}0001..{LISTEN_ID_PREFIX}{len(rows):04d}，"
+             f"共 {len(rows)} 条",
+             "# ★ 按下面的顺序播放，别自己翻目录（顺序已随机化，种子可复现）",
+             f"# 评分表：{out_dir / 'sheet.csv'}（只有盲号，填 mos / abx）",
+             ""]
+    for r in rows:
+        p = base / str(r["sample"])
+        lines.append(f"{r['blind_id']}\t{p}")
+    (out_dir / "playlist.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    res.update(
+        seed=seed,
+        n_items=len(rows),
+        n_paired=len(paired),
+        n_missing_truth=len(missing_truth),
+        missing_truth=[{"sample_id": it["sample_id"], "truth": it["truth"]}
+                       for it in missing_truth],
+        n_dropped=len(missing_audio),
+        dropped=[it["sample_id"] for it in missing_audio],
+        key=str(out_dir / "key.csv"),
+        sheet=str(out_dir / "sheet.csv"),
+        playlist=str(out_dir / "playlist.txt"),
+    )
+    if missing_truth:
+        res["warnings"].append(
+            f"{len(missing_truth)} 个样本缺 truth 对照 → 只能评 MOS，ABX 无法评；"
+            f"汇总时这些样本的 abx 会是空值")
+    _write_json(out_dir / "listen.json", res)
+    return res
+
+
+def merge_listen(exp: str, sheets: list[Path], *, root: Path | None = None) -> dict:
+    """把多名听者的评分表合并成 `analyze --subjective` 能直接吃的 CSV。
+
+    ★ 合并口径（做了三个决定，都不是随意的）：
+      1. **先算每个人的分，再对人数平均**（等权听者）。直接对所有行求平均会让
+         "评得多的听者"权重更大 —— 而评得多往往是因为他没跳题，与评分松紧无关，
+         那属于**噪音权重**，不是信息权重。
+      2. **n 一并输出**：`analyze` 只认 sample_id/mos/abx 三列，但研究者需要看到
+         每个样本被几个人评过。多出来的 `n` 列 analyze 会忽略（`_read_subjective`
+         只挑它认识的键），所以**多给一列是安全的、且必要的**。
+      3. **对不上的行单独报**：盲号在 key.csv 里查不到 → 记进 `unmapped`，
+         不静默丢。丢了会让"24 人 × 64 样本"的预期悄悄少一块。
+    """
+    base = (Path(root) if root else _default_root()) / exp
+    res: dict = {"exp": exp, "root": str(base), "error": None, "error_stage": None,
+                 "notes": [], "warnings": [], "sheets_read": 0, "rows_read": 0,
+                 "unmapped": [], "invalid": []}
+
+    key_path = base / LISTEN_DIR / "key.csv"
+    if not key_path.exists():
+        res["error"] = f"没有揭盲表: {key_path}（先跑 listen）"
+        res["error_stage"] = "揭盲表"
+        return res
+    blind2sid: dict[str, str] = {}
+    with open(key_path, newline="", encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            bid = (r.get("blind_id") or "").strip()
+            sid = (r.get("sample_id") or "").strip()
+            if bid and sid:
+                blind2sid[bid] = sid
+    if not blind2sid:
+        res["error"] = f"揭盲表为空: {key_path}"
+        res["error_stage"] = "揭盲表"
+        return res
+
+    per_listener: list[dict[str, dict]] = []
+    for sp in sheets:
+        sp = Path(sp)
+        if not sp.exists():
+            res["notes"].append(f"评分表不存在，跳过: {sp}")
+            continue
+        res["sheets_read"] += 1
+        lmap: dict[str, dict] = {}
+        with open(sp, newline="", encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f):
+                bid = (r.get("blind_id") or r.get("sample_id") or "").strip()
+                if not bid:
+                    continue
+                res["rows_read"] += 1
+                sid = blind2sid.get(bid)
+                if not sid:
+                    res["unmapped"].append({"sheet": sp.name, "blind_id": bid})
+                    continue
+                rec: dict = {}
+                for k in ("mos", "abx"):
+                    v = (r.get(k) or "").strip()
+                    if not v:
+                        continue
+                    try:
+                        fv = float(v)
+                    except ValueError:
+                        res["invalid"].append(
+                            {"sheet": sp.name, "blind_id": bid, "field": k, "value": v})
+                        continue
+                    if k == "mos" and not (MOS_MIN <= fv <= MOS_MAX):
+                        res["invalid"].append(
+                            {"sheet": sp.name, "blind_id": bid, "field": "mos",
+                             "value": v, "why": f"超出 {MOS_MIN:.0f}–{MOS_MAX:.0f}"})
+                        continue
+                    if k == "abx" and fv not in ABX_VALUES:
+                        res["invalid"].append(
+                            {"sheet": sp.name, "blind_id": bid, "field": "abx",
+                             "value": v, "why": "只能是 0 或 1"})
+                        continue
+                    rec[k] = fv
+                if rec:
+                    lmap[sid] = rec
+        per_listener.append(lmap)
+
+    if not per_listener:
+        res["error"] = "没有读到任何评分表"
+        res["error_stage"] = "评分表"
+        return res
+
+    ids = sorted({sid for m in per_listener for sid in m})
+    out_rows: list[dict] = []
+    for sid in ids:
+        mos_v = [m[sid]["mos"] for m in per_listener if sid in m and "mos" in m[sid]]
+        abx_v = [m[sid]["abx"] for m in per_listener if sid in m and "abx" in m[sid]]
+        if not mos_v and not abx_v:
+            continue
+        row = {"sample_id": sid, "mos": "", "abx": "",
+               "n_mos": len(mos_v), "n_abx": len(abx_v)}
+        if mos_v:
+            row["mos"] = round(sum(mos_v) / len(mos_v), 4)
+        if abx_v:
+            row["abx"] = round(sum(abx_v) / len(abx_v), 4)
+        out_rows.append(row)
+
+    # ★ 排序后写：同一批输入在任何机器上产出同一个文件（便于 diff 与复现）
+    out_rows.sort(key=lambda r: r["sample_id"])
+    dest = base / "subjective.csv"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=["sample_id", "mos", "abx", "n_mos", "n_abx"])
+        w.writeheader()
+        for r in out_rows:
+            w.writerow(r)
+
+    res.update(
+        n_samples=len(out_rows),
+        n_listeners=len(per_listener),
+        out=str(dest),
+        analyze_hint=(f"python tools/voicebank_eval.py analyze --exp {exp} "
+                      f"--subjective {dest}"),
+    )
+    if res["unmapped"]:
+        res["warnings"].append(
+            f"{len(res['unmapped'])} 行盲号在揭盲表里查不到（如 "
+            f"{res['unmapped'][0]['blind_id']}）—— 可能拿错了实验的评分表")
+    if res["invalid"]:
+        res["warnings"].append(
+            f"{len(res['invalid'])} 行取值非法（如 mos={res['invalid'][0].get('value')}）"
+            f"—— 已剔除，请让听者重填该行")
+    if len(per_listener) < 2:
+        res["warnings"].append(
+            "只有 1 名听者 —— RQ3 的相关系数在单人评分上意义有限（听者间一致性无法估计）")
+    return res
+
+
+
 def _render_md(res: dict) -> str:
     """把报告渲染成人类可读的 Markdown。数字原样带出，不做二次加工。"""
     L = [f"# 嗓音保存复现质量评测 · {res.get('exp')}", "",
@@ -1103,6 +1439,18 @@ def main():
     pa.add_argument("--root")
     pa.add_argument("--subjective", help="主观听测 CSV（列：sample_id, mos, abx）")
 
+    pl = sub.add_parser("listen", help="生成盲听材料（盲号 + 评分表 + 播放清单）")
+    pl.add_argument("--exp", required=True)
+    pl.add_argument("--root")
+    pl.add_argument("--seed", type=int, default=20261005,
+                    help="随机顺序种子（默认 20261005；同一实验复现同一顺序）")
+
+    pmg = sub.add_parser("merge-listen", help="合并多名听者的评分表 → subjective.csv")
+    pmg.add_argument("--exp", required=True)
+    pmg.add_argument("--root")
+    pmg.add_argument("--sheets", required=True,
+                     help="评分表路径，逗号分隔（每人一份）")
+
     sub.add_parser("corpus", help="打印录音脚本与四类复现文本")
 
     args = p.parse_args()
@@ -1110,7 +1458,8 @@ def main():
         _print_corpus()
         return
     if not args.cmd:
-        p.error("请指定子命令：plan / split / measure / analyze / corpus")
+        p.error("请指定子命令：plan / split / measure / analyze / listen / "
+                "merge-listen / corpus")
 
     root = Path(args.root) if getattr(args, "root", None) else None
 
@@ -1172,6 +1521,38 @@ def main():
             print(f"[analyze] 注意: {n}")
         print(_render_md(res))
         print(f"[analyze] 落盘: {res['root']}/report.json 与 report.md")
+
+    elif args.cmd == "listen":
+        res = listen(args.exp, root=root, seed=args.seed)
+        if res.get("error"):
+            print(f"[listen] 失败（{res.get('error_stage')}）: {res['error']}")
+            sys.exit(1)
+        for n in res.get("notes", []):
+            print(f"[listen] 注意: {n}")
+        for w in res.get("warnings", []):
+            print(f"[listen] 警告: {w}")
+        print(f"[listen] {res['n_items']} 条（其中 {res['n_paired']} 条有 truth 对照，"
+              f"{res['n_missing_truth']} 条只能评 MOS）；顺序种子 {res['seed']}")
+        print(f"[listen] 揭盲表（★ 自己留着，别发）: {res['key']}")
+        print(f"[listen] 评分表（发给听者）      : {res['sheet']}")
+        print(f"[listen] 播放清单                 : {res['playlist']}")
+        print(f"[listen] 收齐后: python tools/voicebank_eval.py merge-listen "
+              f"--exp {args.exp} --sheets 甲.csv,乙.csv")
+
+    elif args.cmd == "merge-listen":
+        sheets = [Path(x.strip()) for x in args.sheets.split(",") if x.strip()]
+        res = merge_listen(args.exp, sheets, root=root)
+        if res.get("error"):
+            print(f"[merge-listen] 失败（{res.get('error_stage')}）: {res['error']}")
+            sys.exit(1)
+        for n in res.get("notes", []):
+            print(f"[merge-listen] 注意: {n}")
+        for w in res.get("warnings", []):
+            print(f"[merge-listen] 警告: {w}")
+        print(f"[merge-listen] 读入 {res['sheets_read']} 份评分表 / {res['rows_read']} 行；"
+              f"{res['n_listeners']} 名听者 → {res['n_samples']} 个样本")
+        print(f"[merge-listen] 落盘: {res['out']}")
+        print(f"[merge-listen] 下一步: {res['analyze_hint']}")
 
 
 if __name__ == "__main__":

@@ -756,3 +756,293 @@ class TestSplitCommand:
         _sil, db, trials = ve.detect_silences(src, noise_db=-34.0)
         assert db == -34.0
         assert len(trials) == 1
+
+
+# ---------------- 盲听材料（listen / merge-listen） ----------------
+
+def _listen_results(root: Path, exp: str, n_speakers: int = 1) -> Path:
+    """造一个带 truth 与合成音频的测量结果：每说话人 4 档 × 4 条件。
+
+    ★ `path` 必须是**真实存在**的文件：`listen` 会把"找不到音频"的样本从
+      评分表里剔掉，所以造数据时不能只填 `sample_id`。
+    """
+    rows = []
+    base = root / exp
+    for i in range(n_speakers):
+        sp = f"sp{i}"
+        for tag in ("3s", "10s", "30s", "60s"):
+            for cond in ve.CONDITIONS:
+                sdir = base / "samples" / sp / tag
+                sdir.mkdir(parents=True, exist_ok=True)
+                sfile = sdir / f"{cond}.wav"
+                sfile.write_bytes(b"RIFF")
+                tdir = base / "truth" / sp
+                tdir.mkdir(parents=True, exist_ok=True)
+                (tdir / f"{cond}.wav").write_bytes(b"RIFF")
+                r = _row(sp, tag, cond, emb_sim=0.9, hnr=15.0)
+                r["path"] = str(sfile)
+                r["truth"] = f"truth/{sp}/{cond}.wav"
+                rows.append(r)
+    _write_results(root, exp, rows)
+    return base
+
+
+def _read_csv(path) -> list[dict]:
+    """读 CSV。**用 with 打开** —— `DictReader(open(...))` 会把文件句柄漏掉
+    （ruff SIM115 会抓，Windows 上还可能因占用而删不掉临时文件）。"""
+    import csv as _csv
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        return list(_csv.DictReader(f))
+
+
+class TestListenMaterials:
+    def test_missing_results_is_error_not_crash(self, tmp_path):
+        res = ve.listen("nope", root=tmp_path)
+        assert res["error"] and res["error_stage"] == "测量结果"
+
+    def test_sheet_carries_no_identity(self, tmp_path):
+        """★ 最要紧的一条：发给听者的评分表**不能**泄露说话人/档位/条件。
+
+        泄露了就不是盲听 —— 听者会按「60s 应该更好」的先验打分，
+        而这正是 RQ3 要检验的东西。
+        """
+        _listen_results(tmp_path, "vb01")
+        res = ve.listen("vb01", root=tmp_path)
+        sheet = Path(res["sheet"]).read_text(encoding="utf-8-sig")
+        header = sheet.splitlines()[0]
+        assert header.strip() == "blind_id,mos,abx,note", header
+        # 表头与正文都不该出现身份线索
+        for token in ("sp0", "/", "3s", "10s", "30s", "60s",
+                      "same", "cross", "emotion", "long", ".wav"):
+            assert token not in sheet, f"评分表泄露了 {token!r} —— 盲听失效"
+
+    def test_key_map_is_complete_and_one_to_one(self, tmp_path):
+        _listen_results(tmp_path, "vb01")
+        res = ve.listen("vb01", root=tmp_path)
+        key = Path(res["key"]).read_text(encoding="utf-8-sig").splitlines()
+        body = [ln for ln in key[1:] if ln.strip()]
+        assert len(body) == res["n_items"] == 16
+        blinds = [ln.split(",")[0] for ln in body]
+        sids = [ln.split(",")[2] for ln in body]
+        assert len(set(blinds)) == len(blinds), "盲号必须唯一"
+        assert len(set(sids)) == len(sids), "一个样本只能有一个盲号"
+
+    def test_playlist_order_matches_key_and_is_seeded(self, tmp_path):
+        """播放清单顺序 = key 里的顺序，且同种子可复现。"""
+        _listen_results(tmp_path, "vb01")
+        r1 = ve.listen("vb01", root=tmp_path, seed=42)
+        p1 = [ln.split("\t")[0] for ln in
+              Path(r1["playlist"]).read_text(encoding="utf-8").splitlines()
+              if ln and not ln.startswith("#")]
+        k1 = [ln.split(",")[0] for ln in
+              Path(r1["key"]).read_text(encoding="utf-8-sig").splitlines()[1:]
+              if ln.strip()]
+        assert p1 == k1, "播放清单与揭盲表的盲号顺序必须一致"
+
+        r2 = ve.listen("vb01", root=tmp_path, seed=42)
+        p2 = [ln.split("\t")[0] for ln in
+              Path(r2["playlist"]).read_text(encoding="utf-8").splitlines()
+              if ln and not ln.startswith("#")]
+        assert p1 == p2, "同种子必须复现同一顺序"
+
+    def test_order_is_not_identity_order(self, tmp_path):
+        """随机化真的生效：顺序不等于按 sample_id 排序的结果。
+
+        ★ 断言「不等」而不是「是某个特定排列」—— 只要种子固定，
+        具体排列是实现细节，钉死它会让测试变成变更检测器。
+        """
+        _listen_results(tmp_path, "vb01")
+        res = ve.listen("vb01", root=tmp_path, seed=20261005)
+        key = [ln.split(",") for ln in
+               Path(res["key"]).read_text(encoding="utf-8-sig").splitlines()[1:]
+               if ln.strip()]
+        sids = [k[2] for k in key]
+        assert sids != sorted(sids), "顺序没被随机化（位置效应会混进条件效应）"
+
+    def test_missing_truth_is_reported_not_faked(self, tmp_path):
+        """缺 truth 的样本只能评 MOS —— 上报，不静默少给。"""
+        base = _listen_results(tmp_path, "vb01")
+        for cond in ("emotion", "long"):
+            (base / "truth" / "sp0" / f"{cond}.wav").unlink()
+        res = ve.listen("vb01", root=tmp_path)
+        assert res["n_missing_truth"] == 8  # 2 条件 × 4 档
+        assert res["n_paired"] == res["n_items"] - 8
+        assert any("truth" in w for w in res["warnings"])
+
+    def test_missing_audio_is_dropped_with_warning(self, tmp_path):
+        """合成音频不存在 → 从评分表剔除并警告（不能生成一张放不出来的清单）。"""
+        base = _listen_results(tmp_path, "vb01")
+        # 删掉 sp0 的 3s 档四个音频 → 这 4 条要消失，其余 12 条留下
+        for cond in ve.CONDITIONS:
+            (base / "samples" / "sp0" / "3s" / f"{cond}.wav").unlink()
+        res = ve.listen("vb01", root=tmp_path)
+        assert res["n_dropped"] == 4
+        assert res["n_items"] == 12
+        assert any("音频文件不存在" in w for w in res["warnings"])
+
+    def test_blank_path_counts_as_missing(self, tmp_path):
+        """★ 空路径必须算「缺」。
+
+        `Path("")` 会静默变成 `"."`，而 `"."` 是**存在**的 —— 于是"没有路径"
+        会被判成"文件在"。本轮实测踩到这个坑（`_row` 的 path 是空串，
+        `Path("").exists()` 返回 True），所以专门钉一条。
+        """
+        base = _listen_results(tmp_path, "vb01")
+        data = json.loads((base / "results.json").read_text(encoding="utf-8"))
+        for s in data["samples"]:
+            s["path"] = ""
+        (base / "results.json").write_text(json.dumps(data), encoding="utf-8")
+        res = ve.listen("vb01", root=tmp_path)
+        assert res["n_dropped"] == 16, "空路径被判成「文件存在」了"
+        assert res["n_items"] == 0
+
+    def test_empty_samples_is_error(self, tmp_path):
+        """results.json 里没有 samples 字段 → 报「样本」阶段，不崩。"""
+        base = _listen_results(tmp_path, "vb01")
+        data = json.loads((base / "results.json").read_text(encoding="utf-8"))
+        data.pop("samples", None)
+        (base / "results.json").write_text(json.dumps(data), encoding="utf-8")
+        res = ve.listen("vb01", root=tmp_path)
+        assert res["error"] and res["error_stage"] == "样本"
+
+
+class TestMergeListen:
+    def _mk_sheets(self, tmp_path, res, n=2):
+        """按揭盲表编号造 n 份评分表。"""
+        import csv as _csv
+        key = _read_csv(res["key"])
+        out = []
+        for i in range(n):
+            p = tmp_path / f"listener{i}.csv"
+            with open(p, "w", newline="", encoding="utf-8-sig") as f:
+                w = _csv.DictWriter(f, fieldnames=["blind_id", "mos", "abx", "note"])
+                w.writeheader()
+                for j, r in enumerate(key):
+                    w.writerow({"blind_id": r["blind_id"],
+                                "mos": 3.0 + (j % 3) * 0.5 + i * 0.2,
+                                "abx": 1 if j % 2 == 0 else 0,
+                                "note": ""})
+            out.append(p)
+        return out
+
+    def test_missing_key_is_error(self, tmp_path):
+        res = ve.merge_listen("nope", [tmp_path / "a.csv"], root=tmp_path)
+        assert res["error"] and res["error_stage"] == "揭盲表"
+
+    def test_merge_produces_analyze_ready_csv(self, tmp_path):
+        """★ 合并产出的 CSV 必须能被 analyze --subjective 直接吃。"""
+        _listen_results(tmp_path, "vb01")
+        res = ve.listen("vb01", root=tmp_path)
+        sheets = self._mk_sheets(tmp_path, res)
+        m = ve.merge_listen("vb01", sheets, root=tmp_path)
+        assert m["error"] is None
+        assert m["n_samples"] == 16 and m["n_listeners"] == 2
+
+        # 用真 analyze 跑一遍：RQ3 必须出系数（而不是「主观评分行数 0」）
+        out = ve.analyze("vb01", root=tmp_path, subjective=Path(m["out"]))
+        assert out["rq3"]["subjective_rows"] == 16
+        assert out["rq3"]["matched"] == 16
+        assert out["rq3"]["correlations"].get("mos"), (
+            "合并后的评分表没能让 RQ3 出系数 —— 列名契约断了")
+
+    def test_listener_weight_is_equal_not_row_weight(self, tmp_path):
+        """评得多的听者不该有更大权重。
+
+        甲评了 2 条、乙评了 1 条同一批样本：均值应是 (甲均值 + 乙均值)/2，
+        而不是把 3 个数字平摊。
+        """
+        import csv as _csv
+        _listen_results(tmp_path, "vb01")
+        res = ve.listen("vb01", root=tmp_path)
+        key = _read_csv(res["key"])
+        b1, b2 = key[0]["blind_id"], key[1]["blind_id"]
+
+        a = tmp_path / "a.csv"
+        with open(a, "w", newline="", encoding="utf-8-sig") as f:
+            w = _csv.writer(f)
+            w.writerow(["blind_id", "mos", "abx"])
+            w.writerow([b1, 5.0, 1])
+            w.writerow([b2, 1.0, 0])
+        b = tmp_path / "b.csv"
+        with open(b, "w", newline="", encoding="utf-8-sig") as f:
+            w = _csv.writer(f)
+            w.writerow(["blind_id", "mos", "abx"])
+            w.writerow([b1, 1.0, 0])
+
+        m = ve.merge_listen("vb01", [a, b], root=tmp_path)
+        rows = {r["sample_id"]: r for r in _read_csv(m["out"])}
+        sid1 = key[0]["sample_id"]
+        # 甲给 5.0、乙给 1.0 → 等权听者 = 3.0（按行平摊会得到 3.67）
+        assert float(rows[sid1]["mos"]) == pytest.approx(3.0, abs=0.01), (
+            f"听者权重不对：{rows[sid1]['mos']}（等权应为 3.0）")
+
+    def test_unmapped_blind_id_is_reported(self, tmp_path):
+        import csv as _csv
+        _listen_results(tmp_path, "vb01")
+        ve.listen("vb01", root=tmp_path)
+        p = tmp_path / "wrong.csv"
+        with open(p, "w", newline="", encoding="utf-8-sig") as f:
+            w = _csv.writer(f)
+            w.writerow(["blind_id", "mos", "abx"])
+            w.writerow(["S-9999", 4.0, 1])
+        m = ve.merge_listen("vb01", [p], root=tmp_path)
+        assert len(m["unmapped"]) == 1
+        assert any("查不到" in w for w in m["warnings"])
+
+    def test_invalid_values_are_dropped_not_clamped(self, tmp_path):
+        """非法 mos（如 9 或 abc）剔除并报告 —— **不夹到 5**。
+
+        悄悄夹紧会让一条填错的数据混进相关性分析，而且看不出来。
+
+        ★ 字段是**各自独立**校验的：mos 非法但 abx 合法时，该行仍以 abx 存活。
+        这不是宽容，是正确的 —— 丢掉整行等于把听者一条有效判断也删了。
+        所以这里断言的是「非法 mos **没有**进入输出」，而不是「整行消失」。
+        """
+        import csv as _csv
+        _listen_results(tmp_path, "vb01")
+        res = ve.listen("vb01", root=tmp_path)
+        key = _read_csv(res["key"])
+        p = tmp_path / "bad.csv"
+        with open(p, "w", newline="", encoding="utf-8-sig") as f:
+            w = _csv.writer(f)
+            w.writerow(["blind_id", "mos", "abx"])
+            w.writerow([key[0]["blind_id"], 9.0, 1])      # mos 超上限，abx 合法
+            w.writerow([key[1]["blind_id"], "abc", ""])   # mos 非数字，abx 空 → 整行无有效值
+            w.writerow([key[2]["blind_id"], 4.0, 7])      # abx 非 0/1，mos 合法
+        m = ve.merge_listen("vb01", [p], root=tmp_path)
+        assert len(m["invalid"]) == 3, m["invalid"]
+        rows = {r["sample_id"]: r for r in _read_csv(m["out"])}
+        # 整行无有效值的样本不该出现
+        assert key[1]["sample_id"] not in rows
+        # 非法 mos 不得被夹成 5.0 混进来
+        assert rows[key[0]["sample_id"]]["mos"] == ""
+        assert float(rows[key[0]["sample_id"]]["abx"]) == pytest.approx(1.0)
+        # mos 合法、abx 非法 → mos 保留、abx 留空
+        assert float(rows[key[2]["sample_id"]]["mos"]) == pytest.approx(4.0)
+        assert rows[key[2]["sample_id"]]["abx"] == ""
+
+    def test_single_listener_warns_about_consistency(self, tmp_path):
+        _listen_results(tmp_path, "vb01")
+        res = ve.listen("vb01", root=tmp_path)
+        sheets = self._mk_sheets(tmp_path, res, n=1)
+        m = ve.merge_listen("vb01", sheets, root=tmp_path)
+        assert any("只有 1 名听者" in w for w in m["warnings"])
+
+    def test_output_is_sorted_for_diffability(self, tmp_path):
+        """排序后落盘：同输入 → 同文件，diff 才有意义。"""
+        _listen_results(tmp_path, "vb01")
+        res = ve.listen("vb01", root=tmp_path)
+        sheets = self._mk_sheets(tmp_path, res)
+        m1 = ve.merge_listen("vb01", sheets, root=tmp_path)
+        first = Path(m1["out"]).read_text(encoding="utf-8-sig")
+        m2 = ve.merge_listen("vb01", list(reversed(sheets)), root=tmp_path)
+        assert Path(m2["out"]).read_text(encoding="utf-8-sig") == first, (
+            "评分表顺序变了输出就变 —— 落盘前排序失效")
+
+    def test_missing_sheet_is_noted_not_crashed(self, tmp_path):
+        _listen_results(tmp_path, "vb01")
+        res = ve.listen("vb01", root=tmp_path)
+        sheets = self._mk_sheets(tmp_path, res, n=1)
+        m = ve.merge_listen("vb01", sheets + [tmp_path / "ghost.csv"], root=tmp_path)
+        assert m["error"] is None
+        assert any("不存在" in n for n in m["notes"])
