@@ -36,9 +36,7 @@ for _p in (_ROOT / "tools", _ROOT / "m2_server"):
 
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
-
 import voicebank_eval as ve  # noqa: E402
-
 
 # ---------------- 合成音频 ----------------
 
@@ -599,3 +597,162 @@ class TestCorpusIsSingleSource:
             "tools/voicebank_eval.py::DURATION_LADDER / docs/嗓音保存评测协议.md §3.1"
         )
         assert ve.DURATION_LADDER == (3.0, 10.0, 30.0, 60.0)
+
+
+# ---------------- split：一条录音 → 前缀四档 ----------------
+
+def _write_speech_like(path: Path, segments: int = 5, seg_s: float = 4.0,
+                       gap_s: float = 0.6, sr: int = 22050, f0: float = 150.0):
+    """写一段「有明确句末停顿」的合成录音，句末位置可预测。
+
+    ★ 为什么需要它而不是 `_write_wav`：切分逻辑测的是**句末在哪里**，
+      而 `_write_wav` 是一整段连续元音、**一个停顿都没有** →
+      `detect_silences` 探到 0 段，对齐路径永远走不到，测了等于没测。
+    """
+    import soundfile as sf
+
+    parts = []
+    for _ in range(segments):
+        t = np.arange(int(sr * seg_s)) / sr
+        y = np.zeros_like(t)
+        for k in range(1, 20):
+            if k * f0 > sr / 2:
+                break
+            y += 10 ** (-6.0 * (k - 1) / 20.0) * np.sin(2 * np.pi * k * f0 * t)
+        peak = float(np.abs(y).max())
+        parts.append((y / peak * 0.5).astype(np.float32) if peak > 0 else y)
+        parts.append(np.zeros(int(sr * gap_s), dtype=np.float32))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(path), np.concatenate(parts), sr)
+    return path
+
+
+class TestCutPoints:
+    """切点选择是**协议 §4.3 的落点**，它错了自变量就错了。
+
+    两条规则必须同时成立（只满足一条都是错的）：
+      ① 有合适的句末 → 对齐到句末（别切在半句上）；
+      ② 句末离标称太远 → **宁可硬切**（无上限的对齐会把 60s 档切成 35s，
+         比硬切危险得多，见 `ve.ALIGN_MAX_DEVIATION`）。
+    """
+
+    def test_no_silence_falls_back_to_hard_cut(self):
+        got = ve.cut_points([3.0, 10.0], [], total_s=60.0)
+        assert got[3.0]["cut"] == 3.0 and got[3.0]["aligned"] is False
+        assert got[10.0]["cut"] == 10.0 and got[10.0]["aligned"] is False
+
+    def test_aligns_to_the_nearest_sentence_end(self):
+        """句末必须在**目标之前**（前缀截取不能往前伸）。
+
+        静音起点 2.8 / 9.5：都在 25% 容差内 → 都要对齐。
+        ⚠️ 别把句末放在目标之后（比如给 3s 档一个 3.5s 的句末）——
+        那不是"前缀截取 3 秒"了，与协议 §3.1 的定义矛盾。
+        """
+        sil = [(2.8, 3.3), (9.5, 10.1)]
+        got = ve.cut_points([3.0, 10.0], sil, total_s=12.0)
+        assert got[3.0]["cut"] == 2.8 and got[3.0]["aligned"] is True
+        assert got[10.0]["cut"] == 9.5 and got[10.0]["aligned"] is True
+
+    def test_far_sentence_end_is_rejected_in_favour_of_hard_cut(self):
+        """★ 这条守的是实测踩到的真坑：句末 35.4s 对 60s 档（偏离 41%）。
+
+        若接受它，60s 档实际只有 35.4s，而 `analyze` 按标称 `duration_s`
+        分组 → "60s"那一列装的是 35 秒的音频，整张 RQ1 表都错位。
+        """
+        got = ve.cut_points([60.0], [(35.4, 35.6)], total_s=65.0)
+        assert got[60.0]["cut"] == 60.0
+        assert got[60.0]["aligned"] is False
+        assert "偏离" in got[60.0]["reason"]
+
+    def test_deviation_boundary_is_inclusive(self):
+        """正好卡在容差边界上（25%）应当**算对齐** —— 边界值要有确定行为。"""
+        got = ve.cut_points([10.0], [(7.5, 7.9)], total_s=20.0)
+        assert got[10.0]["cut"] == 7.5 and got[10.0]["aligned"] is True
+
+    def test_target_longer_than_recording_uses_whole_thing(self):
+        got = ve.cut_points([60.0], [], total_s=20.0)
+        assert got[60.0]["cut"] == 20.0 and got[60.0]["aligned"] is False
+
+
+class TestSplitCommand:
+    def test_one_recording_yields_the_four_tiers(self, tmp_path):
+        """★ 核心契约：**一条录音** → 四档，且每档实际秒数**不偏离标称超过容差**。
+
+        ⚠️ 断言写的是"在容差内"而**不是"精确等于标称"** —— 对齐到句末
+        （协议 §4.3）本就会让实际值略小于标称，例如 30s 档对齐到 27.5s。
+        要求精确等于标称等于要求引擎**放弃对齐**，那是把协议要求测反了。
+        真正要守的是 `ALIGN_MAX_DEVIATION` 那条线。
+        """
+        src = _write_speech_like(tmp_path / "rec.wav", segments=20, seg_s=3.0, gap_s=0.5)
+        res = ve.split("e1", ["me"], src, root=tmp_path, durations=[3.0, 10.0, 30.0, 60.0])
+        assert res.get("error") is None, res
+        tags = [t["tag"] for t in res["tiers"]]
+        assert tags == ["3s", "10s", "30s", "60s"]
+        for t in res["tiers"]:
+            assert t["actual_s"] is not None
+            dev = abs(t["actual_s"] - t["duration_s"]) / t["duration_s"]
+            assert dev <= ve.ALIGN_MAX_DEVIATION + 1e-6, t
+            assert t["bytes"] > 0
+
+    def test_refuses_more_than_one_speaker(self, tmp_path):
+        """★ 一条录音只能属于一个人 —— 写多个人就是复制同一份音频当多个被试。"""
+        src = _write_speech_like(tmp_path / "rec.wav")
+        res = ve.split("e1", ["a", "b"], src, root=tmp_path)
+        assert res["error"] and res["error_stage"] == "参数"
+
+    def test_short_recording_is_reported_with_the_shortfall(self, tmp_path):
+        src = _write_speech_like(tmp_path / "rec.wav", segments=2, seg_s=2.0, gap_s=0.3)
+        res = ve.split("e1", ["me"], src, root=tmp_path)
+        assert res["error_stage"] == "时长不足"
+        assert res["needed_s"] == 60.0 and res["total_s"] < 60.0
+
+    def test_missing_source_is_reported_not_thrown(self, tmp_path):
+        res = ve.split("e1", ["me"], tmp_path / "nope.wav", root=tmp_path)
+        assert res["error"] and res["error_stage"] == "读取录音"
+
+    def test_actual_seconds_are_recorded_per_tier(self, tmp_path):
+        """协议 §4.3：**标称与实际必须分开记** —— 报结论要用实际值。"""
+        src = _write_speech_like(tmp_path / "rec.wav", segments=20, seg_s=3.0, gap_s=0.5)
+        res = ve.split("e1", ["me"], src, root=tmp_path, durations=[10.0])
+        t = res["tiers"][0]
+        assert t["duration_s"] == 10.0          # 标称
+        assert isinstance(t["actual_s"], float)  # 实际（读回来的）
+        assert t["deviation_s"] is not None
+
+    def test_split_json_records_what_was_actually_used(self, tmp_path):
+        """切点与门限必须留档 —— 换了门限结果就变，报结论时要能追溯。"""
+        src = _write_speech_like(tmp_path / "rec.wav", segments=20, seg_s=3.0, gap_s=0.5)
+        res = ve.split("e1", ["me"], src, root=tmp_path)
+        doc = json.loads((Path(res["root"]) / "split.json").read_text(encoding="utf-8"))
+        assert doc["noise_db"] is not None
+        assert doc["speaker"] == "me"
+        assert len(doc["tiers"]) == 4
+        assert "silence_spans" in doc
+
+    def test_noisy_source_relaxes_threshold_until_it_finds_silences(self, tmp_path):
+        """★ 自适应必须**能放宽** —— 单一门限会落在检出边缘，探不到就静默退化成硬切。
+
+        这里给录音叠一层噪声：门限收在 RMS-15dB 时探不到，放宽后才能探到。
+        """
+        import soundfile as sf
+
+        src = _write_speech_like(tmp_path / "rec.wav", segments=20, seg_s=3.0, gap_s=0.5)
+        y, sr = sf.read(str(src))
+        rng = np.random.default_rng(0)
+        y = (y + rng.normal(0, 0.004, size=len(y))).astype(np.float32)
+        noisy = tmp_path / "noisy.wav"
+        sf.write(str(noisy), y, sr)
+
+        sil, db, trials = ve.detect_silences(noisy)
+        assert trials, "至少要试过一次"
+        assert len(sil) >= ve.MIN_SILENCES_FOR_ALIGN, (
+            f"自适应门限放宽到 {db}dB 仍探不到静音 —— 切点会全部退化成硬切，"
+            f"而这只会在 warnings 里留一句话"
+        )
+
+    def test_explicit_threshold_is_not_relaxed(self, tmp_path):
+        """显式给了门限就**不再放宽** —— 否则结果不可复现。"""
+        src = _write_speech_like(tmp_path / "rec.wav", segments=20, seg_s=3.0, gap_s=0.5)
+        _sil, db, trials = ve.detect_silences(src, noise_db=-34.0)
+        assert db == -34.0
+        assert len(trials) == 1

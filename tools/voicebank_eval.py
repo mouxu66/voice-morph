@@ -43,6 +43,7 @@
 
 用法
     python tools/voicebank_eval.py plan    --exp vb01 --speakers spk01,spk02
+    python tools/voicebank_eval.py split   --exp vb01 --speakers spk01 --source rec.wav
     python tools/voicebank_eval.py measure --exp vb01 [--with-emb] [--with-asr]
     python tools/voicebank_eval.py analyze --exp vb01 [--subjective scores.csv]
     python tools/voicebank_eval.py corpus                # 打印录音脚本与四类复现文本
@@ -53,6 +54,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -116,6 +118,28 @@ SATURATION_GAIN_RATIO = 0.10
 
 # 相关系数的最小样本数。低于它返回 None（不编造数字）。
 MIN_CORR_N = 3
+
+# `silencedetect` 的默认噪声门限（dB）。**别只看这一个值** ——
+# 它是绝对门限，而录音的底噪水平差得很远（自录在静音房 vs 从视频里分离的人声轨，
+# 后者底噪可能高 15dB）。实测：同一段采访人声轨在 -35dB 下探测到 **0** 段静音，
+# 在 -20dB 下才探到 34 段 —— 用固定门限会在后一种源上静默退化成"全硬切"。
+DEFAULT_NOISE_DB = -35.0
+
+#: 自适应时，门限取「整段 RMS - 这个余量(dB)」。
+#: 15dB 的含义：比背景高 15dB 就算"在说话"，是语音活动检测的常见经验间隔。
+ADAPT_MARGIN_DB = 15.0
+
+#: 自适应没探到足够静音时，门限逐级**放宽**（+2dB 一档）的序列。
+#:
+#: ★ 为什么要这个：单一自适应值会落在检出边缘上，脆得很 —— 实测同一个人声源
+#:   在 `RMS-15dB = -34.8dB` 下探到 **0 段**静音，放宽到 `-20dB` 才探到 34 段。
+#:   而"探不到静音"的后果不是报错，是**切点全部退化成硬切**（只在 warnings 里留一句），
+#:   于是协议 §4.3 的"对齐句末"就悄悄失效了 —— 这正是最该防的那种失败。
+#:   逐级放宽 = 宁可门限宽松一点（多切几刀在噪声上），也不要静默退化成硬切。
+ADAPT_FALLBACK_DBS = (-30.0, -27.0, -24.0, -21.0, -18.0)
+
+#: 放宽到序列末尾还没探到任何静音 → 判定这个源不适合"对齐句末"（如实报，不硬凑）。
+MIN_SILENCES_FOR_ALIGN = 1
 
 # ---------------- 语料（★ 唯一真相源在 m2_server/voicepreserve.py） ----------------
 #
@@ -385,6 +409,281 @@ def plan(exp: str, speakers: list[str], *,
     })
     res.update(payload)
     return res
+
+
+# ---------------- split：一条录音 → 前缀四档 ----------------
+
+def _rms_db(path: Path) -> float | None:
+    """整段音频的 RMS（dBFS）。读不出来给 None（不猜）。"""
+    try:
+        import numpy as np
+        import soundfile as sf
+
+        a, _sr = sf.read(str(path), dtype="float32")
+        if a.ndim > 1:
+            a = a.mean(axis=1)
+        if a.size == 0:
+            return None
+        rms = float(np.sqrt((a.astype("float64") ** 2).mean()))
+        return float(20.0 * np.log10(max(rms, 1e-9)))
+    except Exception:
+        return None
+
+
+def detect_silences(path: Path, *, noise_db: float | None = None,
+                    min_silence_s: float = 0.15,
+                    allow_relax: bool = True) -> tuple[list[tuple[float, float]], float, list]:
+    """用 ffmpeg `silencedetect` 找静音段。
+
+    返回 `([(起, 止)], 实用门限dB, 尝试记录)`。
+
+    `noise_db=None` 时走**自适应**：先用「整段 RMS - `ADAPT_MARGIN_DB`」，
+    探不到静音就按 `ADAPT_FALLBACK_DBS` 逐级放宽 —— 详见那两个常量的注释
+    （单一自适应值会落在检出边缘，探不到就静默退化成硬切）。
+
+    显式给了 `noise_db` 就**只用它**（不再放宽）：调用方明确要那个门限时，
+    替他偷偷改掉会让结果不可复现。
+
+    找不到 ffmpeg / 探测失败 → 返回 `([], 门限, [])`（调用方退化为硬切，不是崩）。
+
+    为什么用 ffmpeg 而不是自己算能量包络：ffmpeg 已是项目硬依赖
+    （`common.find_ffmpeg`），再写一套就是**第二份会漂移的实现**。
+    """
+    from common import find_ffmpeg
+
+    def _run(db: float) -> list[tuple[float, float]]:
+        r = subprocess.run(
+            [find_ffmpeg(), "-hide_banner", "-nostats", "-i", str(path),
+             "-af", f"silencedetect=noise={db:.1f}dB:d={min_silence_s}",
+             "-f", "null", "-"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=600)
+        found: list[tuple[float, float]] = []
+        start: float | None = None
+        for line in (r.stderr or "").splitlines():
+            if "silence_start:" in line:
+                try:
+                    start = float(line.rsplit("silence_start:", 1)[1].strip().split()[0])
+                except (ValueError, IndexError):
+                    start = None
+            elif "silence_end:" in line:
+                try:
+                    end = float(line.rsplit("silence_end:", 1)[1].strip().split()[0])
+                except (ValueError, IndexError):
+                    continue
+                found.append((start if start is not None else 0.0, end))
+                start = None
+        return found
+
+    trials: list[dict] = []
+    if noise_db is not None:
+        db = float(noise_db)
+        found = _run(db)
+        trials.append({"db": round(db, 1), "n": len(found), "adaptive": False})
+        return found, db, trials
+
+    rms = _rms_db(path)
+    first = DEFAULT_NOISE_DB
+    if rms is not None:
+        # 两侧都要夹，而且**别夹错方向**（这里写反过一次，实测暴露）：
+        #   上界 -18dB：抬太高会让轻声说话也被判成静音；
+        #   下界 -50dB：真静音房的门限不该低到 -55，否则呼吸声都算"在说话"。
+        first = min(max(rms - ADAPT_MARGIN_DB, -50.0), -18.0)
+    candidates = [first, *(d for d in ADAPT_FALLBACK_DBS if d > first)]
+
+    best: list[tuple[float, float]] = []
+    best_db = first
+    for i, db in enumerate(candidates):
+        found = _run(db)
+        trials.append({"db": round(db, 1), "n": len(found), "adaptive": True})
+        if found:
+            best, best_db = found, db
+            break
+        if i == len(candidates) - 1:
+            best_db = db
+    if not allow_relax and trials:
+        # 只要能跑一次的场景（测试）—— 用首个候选的结果，别做多轮
+        best_db = trials[0]["db"]
+    return best, best_db, trials
+
+
+#: 对齐句末时，切点相对标称档的**最大允许偏差**（占比）。
+#:
+#: ★ 为什么必须有这条守卫（实测暴露的真问题）：
+#:   协议 §4.3 要求"对齐句末"。但把它**无条件**应用会走向反面 ——
+#:   实测一段连续采访人声，静音点只有 35.40s 和 64.62s 两处，
+#:   于是 60s 档"对齐"到了 **35.40s**，比 30s 档只多 5 秒，标称与实际差 **-24.6s**。
+#:   这不是"更严谨"，这是**把自变量破坏了**：`analyze` 会用 `duration_s`（标称值）
+#:   分组，于是"60s 档"这一列装的是 35 秒的音频，结论整个错位。
+#:
+#:   两种错的取舍：切在半句上 → 可听出来、写进 `aligned=False` 就能追溯；
+#:   标称与实际差一半 → 看不出来，且会安静污染所有按档位的统计。
+#:   所以**宁可硬切，也不要大幅偏离标称**。25% 是工程阈值，结论里要一起报。
+ALIGN_MAX_DEVIATION = 0.25
+
+
+def cut_points(targets: list[float], silences: list[tuple[float, float]],
+               total_s: float,
+               max_deviation: float = ALIGN_MAX_DEVIATION) -> dict[float, dict]:
+    """为每个目标时长挑切点。返回 `{目标秒: {"cut": 秒, "aligned": bool, "reason": str}}`。
+
+    ★ 协议 §4.3 要求**对齐到句末**（别在句子中间硬切）—— 半句话会同时
+      劣化自然度与可懂度，把「时长」这个自变量污染掉。
+      句末 ≈ 静音的**起点**（人说完最后一个字才开始静），所以候选集是
+      `silence_start`，不是静音中点。
+
+    ★ 但**对齐有上限**：对齐后的切点若偏离标称超过 `max_deviation`，
+      就退化为硬切 target。理由见 `ALIGN_MAX_DEVIATION` 的注释 ——
+      无上限的对齐会把 60s 档切成 35s，比硬切危险得多。
+
+    三档结果分开记，因为报结论时要能区分"这个量到底是多少"：
+      aligned=True     对齐到句末，且偏差在容差内
+      aligned=False    硬切在你要求的秒数上（没有合适的句末，或对齐会偏太远）
+    """
+    starts = sorted(s for s, _e in silences if 0 < s <= total_s)
+    out: dict[float, dict] = {}
+    for t in sorted(targets):
+        if t >= total_s:
+            out[t] = {"cut": total_s, "aligned": False,
+                      "reason": "录音比该档还短，取整段"}
+            continue
+        ok = [s for s in starts if s <= t]
+        if not ok:
+            out[t] = {"cut": float(t), "aligned": False,
+                      "reason": "该档之前没有句末，硬切"}
+            continue
+        cand = max(ok)
+        dev = abs(t - cand) / t
+        if dev > max_deviation:
+            out[t] = {"cut": float(t), "aligned": False,
+                      "reason": (f"最近句末 {cand:.2f}s 偏离标称 {dev:.0%}"
+                                 f"（上限 {max_deviation:.0%}），改为硬切")}
+            continue
+        out[t] = {"cut": float(cand), "aligned": True, "reason": ""}
+    return out
+
+
+def split(exp: str, speakers: list[str], source: Path, *,
+          durations: list[float] | None = None,
+          root: Path | None = None, noise_db: float | None = None,
+          min_silence_s: float = 0.15) -> dict:
+    """**一条录音 → 前缀切四档**，直接落成 `refs/<说话人>/<档>.wav`。
+
+    这一步补的是协议 §4.3 自己承认的缺口（「切分目前是手工/脚本完成，
+    `voicebank_eval.py` 不含 `split` 子命令」）。补它的理由是**它必须与研究
+    设计同源**：切点规则（对齐句末 / 前缀截取 / 记录实际秒数）是协议的一部分，
+    放在临时脚本里就会漂 —— 而漂了的切点会让「时长」这个自变量不再是它声称的量。
+
+    ⚠️ `speakers` 只接受**一个**说话人：一条录音只能属于一个人，
+      写多个人就是复制同一份音频当成"多个被试"，那是数据造假。
+    """
+    base = (Path(root) if root else _default_root()) / exp
+    durs = [float(d) for d in (durations or DURATION_LADDER)]
+    sps = [str(s) for s in speakers if str(s).strip()]
+    res: dict = {"exp": exp, "root": str(base), "error": None, "error_stage": None,
+                 "tiers": [], "warnings": []}
+
+    if len(sps) != 1:
+        res["error"] = f"split 只接受 1 个说话人（一条录音属于一个人），实际 {len(sps)} 个"
+        res["error_stage"] = "参数"
+        return res
+    speaker = sps[0]
+    src = Path(source)
+    if not src.exists() or src.stat().st_size == 0:
+        res["error"] = f"录音不存在或为空: {src}"
+        res["error_stage"] = "读取录音"
+        return res
+
+    info = _wav_info(src)
+    if info is None:
+        res["error"] = f"读不出录音时长（可能需要先转成 wav）: {src}"
+        res["error_stage"] = "探测时长"
+        return res
+    total = info["seconds"]
+
+    need = max(durs)
+    if total + 1e-6 < need:
+        res["error"] = (f"录音 {total:.2f}s，不足最高档 {_dur_tag(need)}"
+                        f"（差 {need - total:.2f}s）")
+        res["error_stage"] = "时长不足"
+        res["total_s"] = total
+        res["needed_s"] = need
+        return res
+
+    silences, used_db, trials = detect_silences(src, noise_db=noise_db,
+                                                min_silence_s=min_silence_s)
+    res["noise_db"] = round(float(used_db), 1)
+    res["adaptive_noise"] = noise_db is None
+    res["noise_trials"] = trials
+    if not silences:
+        res["warnings"].append(
+            f"没探测到静音段（放宽到 {used_db:.1f}dB 仍无）—— 切点退化为硬切，"
+            f"可能切在半句上。这段录音要么本身是连续朗读没有停顿，"
+            f"要么底噪太高；显式指定 --noise-db 可再试")
+    cuts = cut_points(durs, silences, total)
+
+    refs_dir = base / "refs" / speaker
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    from common import find_ffmpeg
+
+    for d in sorted(durs):
+        tag = _dur_tag(d)
+        cp = cuts[d]
+        sec = float(cp["cut"])
+        if sec <= 0:
+            res["error"] = f"{tag} 档切点算出 0 秒（录音开头就是静音？）"
+            res["error_stage"] = "切点"
+            return res
+        dest = refs_dir / f"{tag}.wav"
+        r = subprocess.run(
+            [find_ffmpeg(), "-y", "-loglevel", "error", "-i", str(src),
+             "-t", f"{sec:.3f}", "-ac", "1", "-c:a", "pcm_s16le", str(dest)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=600)
+        if r.returncode != 0 or not dest.exists():
+            tail = (r.stderr or "").strip().splitlines()[-2:]
+            res["error"] = "切片失败: " + " | ".join(tail)[:300]
+            res["error_stage"] = "切片"
+            return res
+        after = _wav_info(dest)
+        actual = (after or {}).get("seconds")
+        res["tiers"].append({
+            "tag": tag,
+            "duration_s": float(d),                 # 标称档
+            "cut_s": round(sec, 3),                 # 切点（= 实际时长）
+            "actual_s": actual,                     # 读回来的实际时长
+            # ★ 标称 vs 实际必须分开记（协议 §4.3）：报结论要用实际值
+            "aligned": bool(cp["aligned"]),
+            "cut_reason": cp["reason"],
+            # 偏差直接给出 —— 报结论时要能一眼看出哪一档"名不副实"
+            "deviation_s": (None if actual is None else round(actual - float(d), 3)),
+            "bytes": dest.stat().st_size,
+        })
+        if cp["reason"]:
+            res["warnings"].append(f"{tag} 档：{cp['reason']}")
+
+    res["total_s"] = total
+    res["silences"] = len(silences)
+    res["speaker"] = speaker
+    res["source"] = str(src)
+    # 静音段本身也留档：切点是派生的，但探测结果是一次性的观测量，
+    # 换了门限就变了 —— 报结论时要能追溯"当时看到的静音在哪"。
+    res["silence_spans"] = [[round(s, 3), round(e, 3)] for s, e in silences]
+    # 切完把「实际用了什么切点」落盘 —— 复现结论时要能查到自变量到底是多少
+    _write_json(base / "split.json", dict(res))
+    return res
+
+
+def _wav_info(path: Path) -> dict | None:
+    """读 wav 的时长/采样率/声道。读不出来给 None（不猜）。"""
+    try:
+        import soundfile as sf
+
+        i = sf.info(str(path))
+        return {"seconds": round(float(i.frames) / float(i.samplerate), 4),
+                "samplerate": int(i.samplerate), "channels": int(i.channels)}
+    except Exception:
+        return None
 
 
 # ---------------- measure：客观测量 ----------------
@@ -782,6 +1081,17 @@ def main():
     pp.add_argument("--conditions", help="条件，逗号分隔（默认 same,cross,emotion,long）")
     pp.add_argument("--root", help="落盘根（默认 outputs/voicebank）")
 
+    ps = sub.add_parser("split", help="一条录音 → 前缀切四档（对齐句末）")
+    ps.add_argument("--exp", required=True)
+    ps.add_argument("--speakers", required=True, help="**只接受 1 个**说话人 id")
+    ps.add_argument("--source", required=True, help="一条连续录音（wav；其他格式先转）")
+    ps.add_argument("--durations", help="时长档秒数，逗号分隔（默认 3,10,30,60）")
+    ps.add_argument("--root")
+    ps.add_argument("--noise-db", type=float, default=None,
+                    help="silencedetect 噪声门限 dB（默认自适应：整段 RMS - 15dB）")
+    ps.add_argument("--min-silence", type=float, default=0.15,
+                    help="最短静音时长秒（默认 0.15）")
+
     pm = sub.add_parser("measure", help="对 samples/ 跑客观指标")
     pm.add_argument("--exp", required=True)
     pm.add_argument("--root")
@@ -800,7 +1110,7 @@ def main():
         _print_corpus()
         return
     if not args.cmd:
-        p.error("请指定子命令：plan / measure / analyze / corpus")
+        p.error("请指定子命令：plan / split / measure / analyze / corpus")
 
     root = Path(args.root) if getattr(args, "root", None) else None
 
@@ -821,6 +1131,26 @@ def main():
         print(f"[plan] 落盘: {res['root']}")
         print("[plan] 下一步：按 corpus 录制 refs/<说话人>/<档>.wav 与 truth/<说话人>/<条件>.wav，"
               "合成样本放进 samples/<说话人>/<档>/<条件>.wav")
+
+    elif args.cmd == "split":
+        durs = ([float(x) for x in args.durations.split(",") if x.strip()]
+                if args.durations else None)
+        sps = [x.strip() for x in args.speakers.split(",") if x.strip()]
+        res = split(args.exp, sps, Path(args.source), durations=durs, root=root,
+                    noise_db=args.noise_db, min_silence_s=args.min_silence)
+        if res.get("error"):
+            print(f"[split] 失败（{res.get('error_stage')}）: {res['error']}")
+            sys.exit(1)
+        for w in res.get("warnings", []):
+            print(f"[split] 警告: {w}")
+        print(f"[split] 源 {res['total_s']:.2f}s，探测到 {res['silences']} 段静音"
+              f"（门限 {res['noise_db']}dB{' 自适应' if res.get('adaptive_noise') else ''}）")
+        for t in res["tiers"]:
+            flag = "对齐句末" if t["aligned"] else "★硬切(未对齐)"
+            print(f"[split] {t['tag']:>4s} 档 → 实际 {t['actual_s']:6.2f}s  "
+                  f"（切点 {t['cut_s']:6.2f}s，{flag}）  {t['bytes']//1024}KB")
+        print(f"[split] 落盘: {res['root']}/refs/{res['speaker']}/  "
+              f"＋ split.json（切点留档）")
 
     elif args.cmd == "measure":
         res = measure(args.exp, root=root, with_emb=args.with_emb, with_asr=args.with_asr)
