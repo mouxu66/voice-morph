@@ -646,6 +646,150 @@ def reference_path(pid: str, duration_s: float | None = None) -> Path | None:
     return path if path.exists() else None
 
 
+# ---------------- 评测桥（档案 → 实验目录） ----------------
+
+#: 导出实验的目录名前缀。实验名一律带上它，避免与人工建的实验（`vb01` / `pilotB`）
+#: 混在同一个 `outputs/voicebank/` 下 —— 人工实验是"临时脚本拼的"，导出实验是
+#: "从档案直接落的"，两者的可信度不同，目录上就该看得出来。
+EXPORT_EXP_PREFIX = "pres_"
+
+#: 实验名允许的字符。**由本模块生成**（`export_experiment` 里拼），不接受外部输入 ——
+#: 与档案 id 同一个理由：它会拼进路径，形状先堵死穿越。
+_EXP_NAME_RE = re.compile(r"^[a-z0-9_]{1,60}$")
+
+
+def eval_root() -> Path:
+    """评测实验根目录（与 `tools/voicebank_eval.py::_default_root` 同口径）。"""
+    return Path(cfg.OUTPUTS_DIR) / "voicebank"
+
+
+def export_experiment(pid: str, exp: str = "",
+                      durations: tuple[float, ...] | None = None) -> dict:
+    """把档案导出成一个**评测实验目录**，供 `tools/voicebank_eval.py` 直接 measure。
+
+    ★ 为什么需要它（这是产品与研究之间缺的那座桥）：
+      档案把录音存在 `media/preserve/<pid>/{refs,truth}/`，而评测引擎读的是
+      `outputs/voicebank/<exp>/{refs/<spk>/<档>.wav, truth/<spk>/<条件>.wav}`。
+      两套目录约定之间原本**没有任何桥** —— 录完音只能手工把文件拷过去，
+      而手工拷贝会带来两个安静的错：拷漏一档（矩阵缺格 → `analyze` 报
+      "数据不足以判定"，错因指向统计而实际在采集）、或拷错档（把 10s 的文件
+      命名成 30s，于是自变量标签是错的）。两者都不报错。
+      所以这里**按结构拷**：档位名从档案记录里现读，不靠人记。
+
+    语义：
+      - `exp` 省略时按档案 id 生成（`pres_<pid>`），**幂等**：同一档案重复导出
+        只是覆盖同一目录，不会越导越多。
+      - 说话人 id 固定 `profile`（实验内该档案就是唯一说话人；`matrix.json`
+        里的 `speaker` 字段是给"多说话人对比"用的，单档案导出不需要区分）。
+      - 只拷档案里**真的有**的档与 truth；缺什么在 `missing` 里如实列出 ——
+        不凭空补文件（补出来的空文件会让矩阵"看起来是满的"）。
+
+    返回 `{"exp", "root", "refs": [...], "truth": [...], "missing": [...], "matrix_hint"}`；
+    失败返回 `{"error": ..., "error_stage": ...}`，不抛。
+    """
+    try:
+        p = get_profile(pid)
+    except ValueError as e:
+        return {"error": str(e), "error_stage": "参数"}
+    if p is None:
+        return {"error": f"档案不存在: {pid}", "error_stage": "读取档案"}
+
+    name = str(exp or f"{EXPORT_EXP_PREFIX}{pid}").strip()
+    if not _EXP_NAME_RE.match(name):
+        return {"error": f"实验名非法（只允许小写字母/数字/下划线）: {name!r}",
+                "error_stage": "参数"}
+
+    want_durs = tuple(float(d) for d in (durations or REF_DURATIONS))
+    base = eval_root() / name
+    speaker = "profile"
+
+    # 档案里的 refs 按档索引（tag -> 记录），避免"信调用方传的档位顺序"
+    have = {str(r.get("tag")): r for r in (p.get("refs") or [])}
+    have_truth = {str(r.get("condition")): r for r in (p.get("truth") or [])}
+
+    refs_out: list[dict] = []
+    missing: list[str] = []
+    for d in sorted(want_durs):
+        tag = _dur_tag(d)
+        rec = have.get(tag)
+        src = profile_dir(pid) / "refs" / str((rec or {}).get("file") or "")
+        if rec is None or not src.exists():
+            missing.append(f"refs/{speaker}/{tag}.wav（档案里没有 {tag} 档）")
+            continue
+        dest = base / "refs" / speaker / f"{tag}.wav"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+        refs_out.append({"tag": tag, "duration_s": d, "actual_s": rec.get("actual_s"),
+                         "bytes": dest.stat().st_size, "from": src.name})
+
+    truth_out: list[dict] = []
+    for cond in REPRO_CONDITIONS:
+        rec = have_truth.get(cond)
+        src = profile_dir(pid) / "truth" / str((rec or {}).get("file") or "")
+        if rec is None or not src.exists():
+            missing.append(f"truth/{speaker}/{cond}.wav（档案里没有 {cond} 的真值录音）")
+            continue
+        dest = base / "truth" / speaker / f"{cond}.wav"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+        truth_out.append({"condition": cond, "bytes": dest.stat().st_size,
+                          "from": src.name})
+
+    for sub in ("samples",):
+        (base / sub / speaker).mkdir(parents=True, exist_ok=True)
+
+    # 导出一个「交接说明」，让下一个打开这个目录的人（或 agent）知道它是什么、
+    # 缺什么、下一步该跑哪条命令 —— 否则 `missing` 只活在这次 HTTP 响应里。
+    (base / "README-导出.md").write_text(_export_readme(p, name, refs_out, truth_out,
+                                                       missing), encoding="utf-8")
+    log_event(pid, "export_experiment", exp=name, refs=len(refs_out),
+              truth=len(truth_out), missing=len(missing))
+    return {
+        "exp": name,
+        "root": str(base),
+        "speaker": speaker,
+        "refs": refs_out,
+        "truth": truth_out,
+        "missing": missing,
+        "n_refs": len(refs_out),
+        "n_truth": len(truth_out),
+        # 下一步该跑什么，直接给出来（前端显示 / agent 接手都用它）
+        "matrix_hint": (f"python tools/voicebank_eval.py plan --exp {name} "
+                        f"--speakers {speaker}"),
+        "measure_hint": (f"python tools/voicebank_eval.py measure --exp {name} "
+                         f"--with-emb --with-asr"),
+    }
+
+
+def _export_readme(p: dict, exp: str, refs: list[dict], truth: list[dict],
+                   missing: list[str]) -> str:
+    """导出目录的交接说明。**它不会被 measure/analyze 读取** —— 纯给人看的。"""
+    L = [f"# 评测实验 `{exp}`（从声音档案导出）", "",
+         f"- 档案：`{p.get('label', '')}`（`{p.get('id', '')}`）",
+         f"- 导出时间：{_now()}",
+         f"- 知情同意：{'已记录 ' + str((p.get('consent') or {}).get('version', '')) if p.get('consent') else '**未记录**'}",
+         "", "## 已导出", ""]
+    if refs:
+        L.append("| 档位 | 标称 | 实际 | 字节 |")
+        L.append("|---|---|---|---|")
+        for r in refs:
+            L.append(f"| {r['tag']} | {r['duration_s']}s | {r['actual_s']}s | {r['bytes']} |")
+    else:
+        L.append("（无参考音）")
+    L += ["", f"- truth：{', '.join(t['condition'] for t in truth) or '（无）'}", ""]
+    if missing:
+        L += ["## ⚠️ 缺件（矩阵会缺格，`analyze` 会报「数据不足以判定」）", ""]
+        L += [f"- {m}" for m in missing]
+        L += [""]
+    L += ["## 下一步", "",
+          "```bash",
+          f"python tools/voicebank_eval.py measure --exp {exp} --with-emb --with-asr",
+          f"python tools/voicebank_eval.py analyze --exp {exp}",
+          "```", "",
+          "★ 合成样本要放进 `samples/<说话人>/<档位>/<条件>.wav`（引擎按这个形状扫）。", ""]
+    return "\n".join(L)
+
+
 # ---------------- 复现桥（注册为音色库音色） ----------------
 
 #: 复现桥生成的音色 id 前缀。`preserve_` + 档案 id：档案 id 本身受

@@ -32,12 +32,10 @@ for _p in (_ROOT / "tools", _ROOT / "m2_server"):
 
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
-from fastapi import FastAPI  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-
 import voicepreserve as vp  # noqa: E402
 import voicepreserve_api as vp_api  # noqa: E402
-
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
 # ---------------- 夹具 ----------------
 
@@ -50,6 +48,17 @@ def iso_media(tmp_path, monkeypatch):
     """
     monkeypatch.setattr(vp.cfg, "MEDIA_DIR", tmp_path / "media")
     return tmp_path / "media"
+
+
+@pytest.fixture(autouse=True)
+def iso_outputs(tmp_path, monkeypatch):
+    """把 `OUTPUTS_DIR` 也指到 tmp（导出桥会往 `outputs/voicebank/` 写）。
+
+    与 `iso_media` 同一理由：导出是**写文件**的操作，指错根就会污染用户目录。
+    autouse 是为了让"新建的导出用例忘了隔离"这件事不可能发生。
+    """
+    monkeypatch.setattr(vp.cfg, "OUTPUTS_DIR", str(tmp_path / "outputs"))
+    return tmp_path / "outputs"
 
 
 def _wav(path: Path, seconds: float = 1.0, sr: int = 22050, f0: float = 150.0) -> Path:
@@ -81,6 +90,20 @@ def _stub_convert(monkeypatch, ok: bool = True):
         return (ok, "" if ok else "音频转换失败: 打桩失败")
 
     monkeypatch.setattr(vp, "_to_wav", _fake)
+
+
+def _profile_with_all_refs(iso_media, monkeypatch, label: str = "王老师") -> str:
+    """建一个四档参考音齐备的档案，返回 pid。
+
+    ★ 刻意做成**模块级函数而不是类里的方法**：pytest 会把类体内任何方法
+      都当候选夹具收集，一个下划线开头的方法会被报
+      `Fixture "..." called directly`（实测踩到）。
+    """
+    _stub_convert(monkeypatch)
+    pid = vp.create_profile(label)["id"]
+    for d in vp.REF_DURATIONS:
+        vp.add_reference(pid, _wav(iso_media / f"r{d}.wav", seconds=1.0), d)
+    return pid
 
 
 @pytest.fixture
@@ -671,6 +694,140 @@ class TestReproduce:
         # 档案不存在（id 形状合法）→ 404，不是 500
         fake = "p" + "1" * 10 + "aaaaaa"
         assert client.post(f"/api/preserve/profiles/{fake}/reproduce").status_code == 404
+
+
+# ---------------- 9.5 评测桥（档案 → 实验目录） ----------------
+
+class TestExportExperiment:
+    """导出桥守的是「产品与研究两套目录约定之间的转换不失真」。
+
+    ★ 为什么这个转换值得单测：它是**纯拷贝**，而纯拷贝的失败是安静的 ——
+      拷漏一档 → 实验矩阵缺格 → `analyze` 报"数据不足以判定"（错因指向统计）；
+      拷错档（把 10s 的文件命名成 30s）→ 自变量标签是错的，而**没有任何一处会报错**。
+      所以每条断言都对着"档位与文件名是否真的一致"。
+    """
+
+    def test_exports_every_tier_with_matching_filenames(self, iso_media, iso_outputs,
+                                                        monkeypatch):
+        """四档都导出，且文件名 == 档案里的档位（拷错档是安静的致命错）。"""
+        pid = _profile_with_all_refs(iso_media, monkeypatch)
+        res = vp.export_experiment(pid)
+        assert res.get("error") is None, res
+        assert res["exp"] == vp.EXPORT_EXP_PREFIX + pid
+        base = Path(res["root"])
+        got = sorted(p.name for p in (base / "refs" / res["speaker"]).glob("*.wav"))
+        assert got == ["10s.wav", "30s.wav", "3s.wav", "60s.wav"]
+        # 内容必须真拷过去，不是建了空文件
+        for r in res["refs"]:
+            p = base / "refs" / res["speaker"] / f"{r['tag']}.wav"
+            assert p.exists() and p.stat().st_size > 0
+            assert r["bytes"] == p.stat().st_size
+
+    def test_missing_tiers_are_reported_not_faked(self, iso_media, iso_outputs, monkeypatch):
+        """只录了一档 → 导出如实说缺三档，**不补空文件充数**。
+
+        ★ 补空文件的危害：矩阵"看起来是满的"，`measure` 对空文件报指标算不出，
+        最后结论变成"这个档位质量差" —— 而真相是"这一档根本没录"。
+        """
+        _stub_convert(monkeypatch)
+        pid = vp.create_profile("只录一档")["id"]
+        vp.add_reference(pid, _wav(iso_media / "r.wav"), 10.0)
+        res = vp.export_experiment(pid)
+        assert res.get("error") is None, res
+        assert res["n_refs"] == 1
+        # 缺 3 档参考音 + 4 条 truth（4 + 3 = 7）—— **每一件都点名**，
+        # 不是只说"缺了点东西"
+        assert len(res["missing"]) == 3 + len(vp.REPRO_CONDITIONS)
+        assert any("3s" in m for m in res["missing"])
+        assert any("emotion" in m for m in res["missing"])
+        # 缺的档不许有文件
+        base = Path(res["root"]) / "refs" / res["speaker"]
+        assert not (base / "3s.wav").exists()
+
+    def test_truth_files_are_exported_under_their_condition(self, iso_media,
+                                                            iso_outputs, monkeypatch):
+        _stub_convert(monkeypatch)
+        pid = vp.create_profile("有真值")["id"]
+        vp.add_reference(pid, _wav(iso_media / "r.wav"), 10.0)
+        for cond in ("same", "long"):
+            vp.add_truth(pid, cond, _wav(iso_media / f"t_{cond}.wav"))
+        res = vp.export_experiment(pid)
+        base = Path(res["root"]) / "truth" / res["speaker"]
+        assert sorted(p.name for p in base.glob("*.wav")) == ["long.wav", "same.wav"]
+        assert res["n_truth"] == 2
+
+    def test_export_is_idempotent(self, iso_media, iso_outputs, monkeypatch):
+        """同一档案导出两次 → 同一目录、文件数不翻倍（幂等）。
+
+        ★ 不幂等的后果：第二次导出会留下上一次的残留（比如删过一档之后，
+        旧文件还在），于是"目录里有什么"与"档案里有什么"对不上。
+        """
+        pid = _profile_with_all_refs(iso_media, monkeypatch)
+        r1 = vp.export_experiment(pid)
+        r2 = vp.export_experiment(pid)
+        assert r1["root"] == r2["root"]
+        base = Path(r1["root"]) / "refs" / r1["speaker"]
+        assert len(list(base.glob("*.wav"))) == 4
+
+    def test_custom_exp_name_and_illegal_name_rejected(self, iso_media, iso_outputs,
+                                                       monkeypatch):
+        pid = _profile_with_all_refs(iso_media, monkeypatch)
+        ok = vp.export_experiment(pid, "my_study_01")
+        assert ok.get("error") is None and ok["exp"] == "my_study_01"
+        # 实验名会拼进路径 → 形状先堵死（与档案 id 同一个理由）
+        bad = vp.export_experiment(pid, "../escape")
+        assert bad["error"] and bad["error_stage"] == "参数"
+
+    def test_readme_records_what_is_missing(self, iso_media, iso_outputs, monkeypatch):
+        """交接说明必须把缺件写进去 —— `missing` 只活在这次响应里，
+        下一个打开目录的人（或 agent）看不到它。"""
+        _stub_convert(monkeypatch)
+        pid = vp.create_profile("缺件")["id"]
+        vp.add_reference(pid, _wav(iso_media / "r.wav"), 3.0)
+        res = vp.export_experiment(pid)
+        text = (Path(res["root"]) / "README-导出.md").read_text(encoding="utf-8")
+        assert "缺件" in text and "10s" in text
+        assert "measure --exp" in text          # 下一步命令要能直接照抄
+
+    def test_audit_event_is_logged(self, iso_media, iso_outputs, monkeypatch):
+        pid = _profile_with_all_refs(iso_media, monkeypatch)
+        vp.export_experiment(pid)
+        kinds = [e["kind"] for e in vp.read_events(pid, limit=0)]
+        assert "export_experiment" in kinds
+
+
+class TestExportApi:
+    def test_export_requires_consent(self, client, iso_media, iso_outputs, monkeypatch):
+        """★ 同意门禁：数据离开档案库之前就必须有授权。
+
+        与 `reproduce` 同口径，但比它更靠前 —— 复现只是在档案里读一段参考音，
+        导出是把它**复制到档案库之外**，约束的落点必须在这之前。
+        """
+        _stub_convert(monkeypatch)
+        pid = client.post(
+            "/api/preserve/profiles", json={"label": "未同意"}).json()["profile"]["id"]
+        vp.add_reference(pid, _wav(iso_media / "r.wav"), 10.0)
+        r = client.post(f"/api/preserve/profiles/{pid}/export")
+        assert r.status_code == 400
+        assert "知情同意" in r.json()["detail"]
+
+    def test_export_roundtrip(self, client, iso_media, iso_outputs, monkeypatch):
+        _stub_convert(monkeypatch)
+        pid = client.post(
+            "/api/preserve/profiles", json={"label": "已同意"}).json()["profile"]["id"]
+        vp.record_consent(pid, scope="self", statement="x")
+        for d in vp.REF_DURATIONS:
+            vp.add_reference(pid, _wav(iso_media / f"r{d}.wav"), d)
+        r = client.post(f"/api/preserve/profiles/{pid}/export", json={"exp": ""})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] and body["n_refs"] == 4
+        assert body["exp"] == vp.EXPORT_EXP_PREFIX + pid
+        assert "measure --exp" in body["measure_hint"]
+
+    def test_export_missing_profile_is_404(self, client, iso_outputs):
+        fake = "p" + "1" * 10 + "aaaaaa"
+        assert client.post(f"/api/preserve/profiles/{fake}/export").status_code == 404
 
 
 # ---------------- 10. HTTP 层 ----------------

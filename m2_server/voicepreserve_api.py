@@ -14,6 +14,7 @@
     POST   /api/preserve/profiles/{pid}/references/batch 上传一条完整录音 → 自动切全部档位 ★协议形态
     POST   /api/preserve/profiles/{pid}/truth           上传一段真实录音（听测对照）
     GET    /api/preserve/profiles/{pid}/reference       取参考音（**给现有 TTS 链路用**）
+    POST   /api/preserve/profiles/{pid}/export          导出成评测实验目录 ★产品→研究的桥
 
 ★ 本模块**不实现合成**
 ------------------------
@@ -53,6 +54,10 @@ class ConsentReq(BaseModel):
     scope: str = "self"
     statement: str = ""
     operator: str = ""
+
+
+class ExportReq(BaseModel):
+    exp: str = ""
 
 
 # ---------------- 小工具 ----------------
@@ -292,6 +297,34 @@ async def preserve_add_truth(
     if rec.get("error"):
         raise HTTPException(400, rec["error"])
     return {"ok": True, "truth": rec}
+
+
+# ---------------- 评测桥：导出成实验目录 ----------------
+
+@router.post("/preserve/profiles/{pid}/export")
+def preserve_export(pid: str, req: ExportReq | None = None) -> dict:
+    """把档案导出成一个**评测实验目录**（`outputs/voicebank/<exp>/`）。
+
+    ★ 这是产品层与研究层之间那座桥。原本两边的目录约定对不上：
+      档案存 `media/preserve/<pid>/{refs,truth}/`，评测引擎读
+      `outputs/voicebank/<exp>/{refs/<spk>/<档>.wav, truth/<spk>/<条件>.wav}`，
+      中间没有转换 —— 录完音只能手工拷文件，而手工拷漏一档/拷错档**都不报错**
+      （前者让 `analyze` 报"数据不足以判定"把错因指向统计，后者直接把自变量标错）。
+
+    **同意门禁在这里**：没有知情同意一律 400 —— 导出是为了做研究分析，
+    而"仅保存/复现本人或已授权声音"这条约束的落点必须在数据离开档案之前
+    （与 `reproduce` 同口径；比它更靠前，因为导出会复制出档案库之外的数据）。
+
+    幂等：同一档案重复导出覆盖同一目录；默认实验名 `pres_<pid>`。
+    """
+    pid = _pid_or_400(pid)
+    p = _profile_or_404(pid)
+    if not p.get("consent"):
+        raise HTTPException(400, "还没有记录知情同意 —— 导出评测数据前必须先确认授权")
+    res = vp.export_experiment(pid, (req.exp if req else "") or "")
+    if res.get("error"):
+        raise HTTPException(400, res["error"])
+    return {"ok": True, **res}
 
 
 # ---------------- 取参考音（给现有 TTS 链路用） ----------------
