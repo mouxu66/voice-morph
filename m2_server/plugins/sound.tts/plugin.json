@@ -6,7 +6,7 @@
   "order": 110,
   "summary": "Qwen3-TTS 文字转语音，含模型预热与常驻 worker",
   "requires": ["core.voices"],
-  "routers": ["tts_api", "voice_phrases"],
+  "routers": ["tts_api", "voice_phrases", "passthrough"],
   "hooks": [{ "module": "warmup", "attr": "start_background", "when": "import" }],
   "routes": [
     {

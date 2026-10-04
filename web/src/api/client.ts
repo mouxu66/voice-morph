@@ -2632,3 +2632,46 @@ export async function voicePhraseSpeak(
     body: JSON.stringify({ voice_id: voiceId ?? "" }),
   });
 }
+
+// ---- 真声直讲（真声原样灌进虚拟声卡，2026-10-04） ----
+//
+// 场景：老师用电脑播 PPT + 电脑麦克风讲课，**平时是本人真声**，讲累了按热键
+// 插一句 AI 音 —— 学生那头听到连续混音，不切换、不打断。
+//
+// ★ 用户在**外部软件**里还要做一步（界面必须提示，否则会被当成坏了）：
+//   把 QQ / 微信 / 钉钉的**麦克风**设为 `CABLE Output (VB-Audio Virtual Cable)`。
+
+/** 真声直讲的状态。`device` 是声音正送往哪（CABLE 渲染端），`inputDevice` 是真麦。 */
+export interface PassthroughStatus {
+  ok: boolean;
+  running: boolean;
+  device: string;
+  input_device: string;
+}
+
+export async function passthroughStatus(): Promise<PassthroughStatus> {
+  const d = await jsonFetch<{ ok: boolean; running: boolean; device?: string; input_device?: string }>(
+    "/passthrough/status"
+  );
+  return { ok: d.ok, running: d.running, device: d.device ?? "", input_device: d.input_device ?? "" };
+}
+
+/**
+ * 开启真声直讲。与实时变声 / 级联**互斥** —— 三者都占虚拟声卡出口，
+ * 冲突时后端返回 409（调用方按普通错误提示即可）。
+ */
+export async function passthroughStart(): Promise<{ ok: boolean; running: boolean; device: string }> {
+  const d = await jsonFetch<{ ok: boolean; running?: boolean; device?: string }>(
+    "/passthrough/start",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
+  );
+  return { ok: d.ok, running: d.running ?? true, device: d.device ?? "" };
+}
+
+/** 关闭真声直讲（worker 退出时自动关流、释放设备）。 */
+export async function passthroughStop(): Promise<{ ok: boolean; running: boolean }> {
+  const d = await jsonFetch<{ ok: boolean; running?: boolean }>("/passthrough/stop", {
+    method: "POST",
+  });
+  return { ok: d.ok, running: d.running ?? false };
+}

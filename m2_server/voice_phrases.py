@@ -268,16 +268,22 @@ def speak_phrase(pid: str, body: SpeakBody):
 
 @router.post("/voice-phrases/{pid}/play")
 def play_phrase(pid: str, body: SpeakBody):
-    """全局热键链路（Alt+1~5）：念这条短语并**直接播进虚拟声卡**。
+    """全局热键链路（Ctrl+Alt+1~5）：念这条短语并**直接播进虚拟声卡**。
 
     与 /speak 的分工：speak 只产出 URL（前端浏览器播，走本机扬声器，窗口藏着
-    就听不见）；play 复用同一条持久缓存（speak() 命中即零合成），再借声板的
-    常驻播放器把 wav 写进 CABLE 渲染端 —— PPT 放映/钉钉直播里按热键，
-    钉钉/录屏那头才收得到。**立即返回**（one-shot 语义，与声板 /play 一致）；
-    连按 = 抢占重播（worker 内部先 sd.stop()），不排队。
+    就听不见）；play 复用同一条持久缓存（speak() 命中即零合成），再把 wav 写进
+    CABLE 渲染端 —— PPT 放映/直播/视频通话里按热键，对面那头才收得到。
+    **立即返回**（one-shot 语义，与声板 /play 一致）；连按 = 抢占重播，不排队。
 
-    环境不支持时 503（VM_SOUNDBOARD=0 / 找不到播放设备）：热键侧静默，
-    与级联热键对后端离线的处理同一口径。
+    ★ 出口按**真声直讲是否在跑**分流（2026-10-04）：
+      - 直讲开着 → `passthrough.play_overlay`：把这条短语**叠加**到老师的真声上，
+        **不打断讲课**（两个流各走各的，CABLE 里混音）。这是"老师真声讲课 +
+        偶尔插一句 AI 音"场景的正解。
+      - 直讲没开 → `soundboard._command`：维持原行为（`sd.play` 独占播放）。
+        **零行为变化** —— 不开直讲的用户完全感知不到这次改动。
+
+    环境不支持时 503（VM_SOUNDBOARD=0 / VM_PASSTHROUGH=0 / 找不到播放设备）：
+    热键侧静默，与级联热键对后端离线的处理同一口径。
     """
     with _STORE_LOCK:
         phrase = _find(_read_unlocked(), pid)
@@ -288,15 +294,30 @@ def play_phrase(pid: str, body: SpeakBody):
     wav = _url_to_path(r["url"])
     if wav is None or not wav.is_file():
         raise HTTPException(status_code=500, detail="合成产物不存在，请重试")
+
+    # worker 按这个 id 记解码缓存：同音色同文的短语重播零 IO
+    clip_id = f"phrase_{_cache_key(voice_id, phrase['text'])}"
     try:
+        # 延迟导入：passthrough 是独立功能域（与 soundboard 同理，不建模块级依赖）
+        import passthrough
+
+        if passthrough.is_running():
+            # 叠加：gain 留余量（真声也在里面，给两路相加留空间防削波）
+            msg = passthrough.play_overlay(str(wav), clip_id, gain=0.9)
+            return {
+                "ok": True,
+                "playing": True,
+                "mixed": True,
+                "duration_s": msg.get("duration_s"),
+                "cached": r["cached"],
+            }
         from soundboard import _command  # 延迟导入：声板是独立功能域，不建模块级依赖
 
         msg = _command(
             {
                 "wav": str(wav),
-                # worker 按这个 id 记解码缓存：同音色同文的短语重播零 IO
-                "id": f"phrase_{_cache_key(voice_id, phrase['text'])}",
-                # 1.0：这条语音就是此刻的全部内容（不像音效要与人声叠加留余量）
+                "id": clip_id,
+                # 1.0：走这条时这条语音就是此刻的全部内容（不像音效要与人声叠加留余量）
                 "gain": 1.0,
             }
         )

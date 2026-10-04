@@ -101,6 +101,7 @@
 │   ├── tts_api.py mine_api.py capture_api.py ab_api.py ab_chain.py audio_api.py
 │   ├── media_api.py rvc_dataset_api.py market_api.py pet_market_api.py
 │   ├── cover_api.py ytdlp_api.py audition_api.py soundboard.py   # 翻唱/扒歌/试音/声板
+│   ├── voice_phrases.py passthrough.py   # 短语速播 / 真声直讲（真麦直通 + AI 音叠加）
 │   ├── config.py         # 路径/端口/鉴权/模型目录（环境变量可覆盖）
 │   ├── common.py history.py clip_qc.py speaker_sep.py loopback_capture.py quality_verdict.py ...
 │   ├── cascade.py rvc_live.py offline_vc.py seed_vc.py audiobook.py
@@ -152,7 +153,7 @@
 
 ## 后端 M2（FastAPI）
 
-`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 32 个独立 router 模块**（默认 `standard` 预设只挂 16 个，见上面「关掉一个能力」那节的说明）：
+`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 33 个独立 router 模块**（默认 `standard` 预设只挂 16 个，见上面「关掉一个能力」那节的说明）：
 
 `cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history_api`（历史）、`cover_api`（翻唱）、`ytdlp_api`（在线扒歌）、`audition_api`（试音间）、`soundboard`（特效声板）、`market_api` / `pet_market_api`（市场）、`openai_compat`（OpenAI 兼容层）、`remote_api`（手机遥控的**能力现状查询** —— 见下）。
 

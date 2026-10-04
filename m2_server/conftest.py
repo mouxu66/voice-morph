@@ -43,6 +43,14 @@ os.environ["VM_PLUGIN_SEED"] = "0"
 # 免得用例把声音放到用户的虚拟声卡上（那会被正在录音的微信录进去）。
 os.environ.setdefault("VM_SOUNDBOARD", "0")
 
+# 测试环境禁止真开「真声直讲」：`passthrough._spawn_worker()` 会起 RVC venv 里的
+# 常驻直通 worker，把**真实麦克风**原样灌进 CABLE（`VM_PASSTHROUGH=0` 时直接拒启）。
+# 与上面 `VM_SOUNDBOARD` 同套理由，但后果更重：声板只是往虚拟声卡丢一声爆炸，
+# 直通是**把老师的真声持续送出去** —— 万一测试机上正开着通话，那是直播事故。
+# 要跑通"启动成功"路径的用例 monkeypatch `passthrough._spawn_worker`（假 worker），
+# 而不是把这个开关打开。
+os.environ.setdefault("VM_PASSTHROUGH", "0")
+
 # ★ 数据目录（outputs/ 与 media/）必须在**任何 m2_server 模块被导入之前**切到临时目录
 # （2026-09-22）。
 #

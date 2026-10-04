@@ -227,6 +227,84 @@ def test_play_requires_voice_and_existing_id(monkeypatch):
     assert r.status_code == 400 and "音色" in r.json()["detail"]
 
 
+# ---------------- play：按「真声直讲」状态分流（2026-10-04） ----------------
+#
+# 这两条守的是**老师上课的主场景**：真声直讲开着时，热键必须把短语**叠加**到
+# 正在直通的真声上，而不是走 `sd.play` 那条独占通路 —— 后者的全局 stop 会把
+# 老师讲到一半的真声**整个掐断**（学生那头突然静音）。所以：
+#   · 直讲开着 → 走 passthrough.play_overlay，**且不许碰 soundboard**；
+#   · 直讲没开 → 走 soundboard（原行为），**且不许碰 passthrough**。
+# 两条都断言"另一侧一次都没被调"，因为只断言"选对了"不足以发现"两边都调了"。
+
+
+def test_play_routes_to_passthrough_when_live_is_on(monkeypatch):
+    calls: list[tuple[str, str]] = []
+    _fake_synth(monkeypatch, calls)
+    mixed: list[tuple] = []
+    stockboard_called: list[dict] = []
+
+    import passthrough
+
+    monkeypatch.setattr(passthrough, "is_running", lambda: True)
+    monkeypatch.setattr(
+        passthrough, "play_overlay",
+        lambda wav, clip_id, gain=0.9: mixed.append((wav, clip_id, gain)) or {"type": "playing", "duration_s": 0.2},
+    )
+    monkeypatch.setattr("soundboard._command", lambda payload: stockboard_called.append(payload) or {"type": "playing"})
+
+    c = _client()
+    pid = c.post("/api/voice-phrases", json={"text": "看黑板。"}).json()["item"]["id"]
+    b = c.post(f"/api/voice-phrases/{pid}/play", json={"voice_id": "wang"}).json()
+
+    assert b["playing"] is True and b["mixed"] is True
+    assert len(mixed) == 1, "直讲开着时没有走叠加通路"
+    wav, clip_id, gain = mixed[0]
+    assert Path(wav).is_file() and Path(wav).parent == vp._cache_dir()
+    assert clip_id.startswith("phrase_")
+    assert gain == 0.9, "叠加要给两路相加留余量（满增益会削波）"
+    assert stockboard_called == [], "★ 直讲开着时绝不能走声板 —— 那会掐断老师的真声"
+
+
+def test_play_falls_back_to_soundboard_when_live_is_off(monkeypatch):
+    """直讲没开 → 行为**零变化**（不许因为新增了分流就把老路径换掉）。"""
+    calls: list[tuple[str, str]] = []
+    _fake_synth(monkeypatch, calls)
+    sent: list[dict] = []
+    mixed: list[tuple] = []
+
+    import passthrough
+
+    monkeypatch.setattr(passthrough, "is_running", lambda: False)
+    monkeypatch.setattr(passthrough, "play_overlay", lambda *a, **k: mixed.append(a) or {"type": "playing"})
+    monkeypatch.setattr("soundboard._command", lambda payload: sent.append(payload) or {"type": "playing", "duration_s": 0.2})
+
+    c = _client()
+    pid = c.post("/api/voice-phrases", json={"text": "下课。"}).json()["item"]["id"]
+    b = c.post(f"/api/voice-phrases/{pid}/play", json={"voice_id": "wang"}).json()
+
+    assert b["playing"] is True and b.get("mixed") is None
+    assert len(sent) == 1 and sent[0]["gain"] == 1.0
+    assert mixed == [], "直讲没开时不该走叠加通路"
+
+
+def test_play_surfaces_passthrough_failure_as_503(monkeypatch):
+    """叠加通路失败（worker 崩了/管道关了）→ 503，与声板那条同口径。"""
+    calls: list[tuple[str, str]] = []
+    _fake_synth(monkeypatch, calls)
+
+    import passthrough
+
+    monkeypatch.setattr(passthrough, "is_running", lambda: True)
+    monkeypatch.setattr(
+        passthrough, "play_overlay",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("真声直通 worker 已退出（管道关闭）")),
+    )
+    c = _client()
+    pid = c.post("/api/voice-phrases", json={"text": "上课。"}).json()["item"]["id"]
+    r = c.post(f"/api/voice-phrases/{pid}/play", json={"voice_id": "v"})
+    assert r.status_code == 503 and "管道关闭" in r.json()["detail"]
+
+
 def test_url_to_path_rejects_escape_and_keeps_session_fallback():
     assert vp._url_to_path("/api/media/outputs/../../secret.wav") is None
     assert vp._url_to_path("/api/media/outputs//x.wav") is None
