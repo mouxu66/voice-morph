@@ -23,6 +23,7 @@
 import json
 import re
 import sys
+import types
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -962,3 +963,228 @@ class TestApi:
         指向一个错路径比不显示更糟。"""
         body = client.get("/api/preserve/summary").json()
         assert body["dir"].endswith(vp.STORE_NAME)
+
+
+# ---------------- 11. 纵向随访 ----------------
+
+_LAMPS_FIXTURE = {
+    "lamps": [
+        {"label": "相似度", "lamp": None, "detail": "未测"},
+        {"label": "自然度", "lamp": "green", "detail": "HNR 够高"},
+        {"label": "发声负荷", "lamp": "yellow", "detail": "H1-H2 偏高"},
+    ],
+    "verdict": "部分可用",
+    "tested_count": 2,
+}
+
+
+def _stub_metrics(monkeypatch, ok: bool = True):
+    """把指标计算打桩（真跑 parselmouth 是 1s/次的慢调用，逻辑用例不需要它）。"""
+    def _fake(wav):
+        if ok:
+            return {
+                "metrics": {"hnr": 18.0, "h1_h2": 4.0, "spectral_tilt": -3.0,
+                            "jitter_local": 0.01, "shimmer_local": 0.05,
+                            "f0_median": 160.0, "voiced_ratio": 0.8,
+                            "duration_s": 12.0},
+                "lamps": json.loads(json.dumps(_LAMPS_FIXTURE)),
+                "error": "",
+            }
+        return {"metrics": None, "lamps": None, "error": "读不出浊音段"}
+
+    monkeypatch.setattr(vp, "_metrics_for", _fake)
+
+
+class TestFollowups:
+    """纵向随访（声音档案从「一次保存」到「长期跟随」）。
+
+    ★ 守四条容易写错的语义：
+      1. **追加不替换** —— 随访的意义就在「不同时间的多次」；「同档替换」
+         只属于参考音。写反了趋势图只剩最后一个点，功能等于白做。
+      2. **指标算不出来不是失败** —— 录音照样入库、metrics 记 None（与 gate()
+         的 partial 同哲学）；编一个数字顶上去比留白危险得多。
+      3. **相似度是加分项** —— worker 没跑 / 没基线 → None，绝不阻塞主流程。
+      4. **措辞红线** —— 趋势是「发声状态趋势参考」，不是医疗诊断。
+    """
+
+    def test_records_point_appends_not_replaces(self, iso_media, monkeypatch):
+        _stub_convert(monkeypatch)
+        _stub_metrics(monkeypatch)
+        pid = vp.create_profile("王老师")["id"]
+        r1 = vp.add_followup(pid, _wav(iso_media / "f1.wav"))
+        r2 = vp.add_followup(pid, _wav(iso_media / "f2.wav"))
+        assert r1.get("error") is None and r2.get("error") is None, (r1, r2)
+        pts = vp.read_followups(pid)
+        assert len(pts) == 2, "随访必须追加 —— 参考音的「同档替换」语义不能搬过来"
+        assert pts[0]["file"] != pts[1]["file"]
+        assert pts[0]["metrics"]["hnr"] == 18.0
+        assert pts[0]["lamps"]["lamps"][1]["lamp"] == "green"
+        assert pts[0]["metrics_error"] == ""
+        # wav 真的落盘（不是只记了一行索引）
+        assert (vp.followups_dir(pid) / pts[0]["file"]).exists()
+        # 审计日志记了这一笔
+        assert any(e["kind"] == "followup" for e in vp.read_events(pid))
+
+    def test_points_are_chronological_even_if_written_out_of_order(self, iso_media):
+        """时序写入：读出来必须按 at_ms 升序 —— 哪怕写入顺序乱了（崩溃恢复 /
+        手工补录都会造成乱序）。趋势图的横轴靠它。"""
+        pid = vp.create_profile("甲")["id"]
+        idx = vp._followups_index(pid)
+        idx.parent.mkdir(parents=True, exist_ok=True)
+
+        def rec(ms, tag):
+            return {"at": "t", "at_ms": ms, "file": f"{tag}.wav"}
+
+        with open(idx, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec(3000, "late")) + "\n")
+            f.write(json.dumps(rec(1000, "early")) + "\n")
+            f.write(json.dumps(rec(2000, "mid")) + "\n")
+        assert [p["file"] for p in vp.read_followups(pid)] == \
+            ["early.wav", "mid.wav", "late.wav"]
+
+    def test_broken_lines_are_skipped(self, iso_media):
+        """一行脏数据毁掉整条曲线 = 趋势图整个消失 —— 不行（同 read_events 先例）。"""
+        pid = vp.create_profile("甲")["id"]
+        idx = vp._followups_index(pid)
+        idx.parent.mkdir(parents=True, exist_ok=True)
+        with open(idx, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"at": "t", "at_ms": 1, "file": "a.wav"}) + "\n")
+            f.write("不是 json\n")
+            f.write(json.dumps({"at": "t", "at_ms": 2, "file": "b.wav"}) + "\n")
+        assert [p["file"] for p in vp.read_followups(pid)] == ["a.wav", "b.wav"]
+
+    def test_single_point_trend_is_valid(self, iso_media, monkeypatch):
+        """单点基线：只有一次随访也返回合法结构（前端画点不画线）。"""
+        _stub_convert(monkeypatch)
+        _stub_metrics(monkeypatch)
+        pid = vp.create_profile("甲")["id"]
+        vp.add_followup(pid, _wav(iso_media / "f.wav"))
+        t = vp.trend(pid)
+        assert t["n"] == 1 and len(t["points"]) == 1
+
+    def test_empty_trend_is_a_valid_structure_not_a_crash(self, iso_media):
+        t = vp.trend(vp.create_profile("甲")["id"])
+        assert t["n"] == 0 and t["points"] == [] and t["hint"]
+
+    def test_metrics_failure_degrades_not_dies(self, iso_media, monkeypatch):
+        """★ 指标算不出来 ≠ 随访失败：录音入库、metrics 记 None 并留原因 ——
+        与 gate() 的 partial 同一哲学（如实降级，不编数字）。"""
+        _stub_convert(monkeypatch)
+        _stub_metrics(monkeypatch, ok=False)
+        pid = vp.create_profile("甲")["id"]
+        rec = vp.add_followup(pid, _wav(iso_media / "f.wav"), note="感冒了")
+        assert rec.get("error") is None, rec
+        assert rec["metrics"] is None and rec["lamps"] is None
+        assert "浊音" in rec["metrics_error"]
+        assert rec["note"] == "感冒了"
+        assert vp.trend(pid)["n"] == 1, "数据点必须还在 —— 趋势曲线不该断"
+
+    def test_missing_profile_and_empty_source_are_structured_errors(self, iso_media,
+                                                                    monkeypatch):
+        _stub_convert(monkeypatch)
+        _stub_metrics(monkeypatch)
+        assert vp.add_followup("p" + "1" * 10 + "aaaaaa",
+                               _wav(iso_media / "f.wav")).get("error")
+        pid = vp.create_profile("甲")["id"]
+        assert vp.add_followup(pid, iso_media / "nope.wav").get("error") == "录音为空"
+
+    def test_no_baseline_emb_sim_is_none(self, iso_media, monkeypatch):
+        """档案还没有参考音 = 没有基线可比 → 相似度 None，不是报错。"""
+        _stub_convert(monkeypatch)
+        _stub_metrics(monkeypatch)
+        pid = vp.create_profile("甲")["id"]
+        rec = vp.add_followup(pid, _wav(iso_media / "f.wav"))
+        assert rec.get("error") is None
+        assert rec["emb_sim"] is None
+
+    def test_worker_down_degrades_to_none_without_calling_it(self, iso_media,
+                                                             monkeypatch):
+        """★ worker 没跑 → 相似度 None，且**绝不把 worker 拉起来**
+        （post 一旦被调用就炸 —— 加分项不许阻塞主流程）。"""
+        _stub_convert(monkeypatch)
+        _stub_metrics(monkeypatch)
+        pid = vp.create_profile("甲")["id"]
+        vp.add_reference(pid, _wav(iso_media / "ref.wav"), 10.0)
+
+        def _must_not_call(*a, **k):
+            raise AssertionError("worker 不该被调用")
+
+        fake = types.SimpleNamespace(worker_alive=lambda: False, post=_must_not_call)
+        monkeypatch.setitem(sys.modules, "qwen3_tts", fake)
+        rec = vp.add_followup(pid, _wav(iso_media / "f.wav"))
+        assert rec.get("error") is None
+        assert rec["emb_sim"] is None
+
+    def test_emb_sim_computed_when_worker_up_and_lamps_gain_similarity(self,
+                                                                       iso_media,
+                                                                       monkeypatch):
+        """worker 在跑 + 有基线 → 算出余弦，且三灯重算后「相似度」灯有值
+        （阈值函数仍是 voice_report 那一份，不存在第二套标准）。"""
+        _stub_convert(monkeypatch)
+        _stub_metrics(monkeypatch)
+        pid = vp.create_profile("甲")["id"]
+        vp.add_reference(pid, _wav(iso_media / "ref.wav"), 10.0)
+
+        calls = {"n": 0}
+
+        def fake_post(path, payload, timeout=0):
+            calls["n"] += 1
+            emb = [1.0, 0.0, 0.0] if calls["n"] == 1 else [0.8, 0.6, 0.0]
+            return json.dumps({"emb": emb}).encode()
+
+        fake = types.SimpleNamespace(worker_alive=lambda: True, post=fake_post)
+        monkeypatch.setitem(sys.modules, "qwen3_tts", fake)
+        rec = vp.add_followup(pid, _wav(iso_media / "f.wav"))
+        assert rec["emb_sim"] == pytest.approx(0.8, abs=1e-3)
+        sim_lamp = next(l for l in rec["lamps"]["lamps"] if "相似" in l["label"])
+        assert sim_lamp["lamp"] is not None
+
+    def test_no_medical_wording_in_trend_payload(self, iso_media, monkeypatch):
+        """★ 措辞红线（后端侧）：trend 吐给界面的文案不得出现
+        「诊断 / 健康监测 / 疗效」。守卫咬的是真实下发文案（hint 必须存在，
+        不许空转）；末尾的变异验证确认这套检查真的会咬人。"""
+        _stub_convert(monkeypatch)
+        _stub_metrics(monkeypatch)
+        pid = vp.create_profile("甲")["id"]
+        vp.add_followup(pid, _wav(iso_media / "f.wav"))
+        t = vp.trend(pid)
+        assert t["hint"], "hint 必须存在 —— 守卫的对象是真实文案，不是空集"
+        blob = json.dumps(t, ensure_ascii=False)
+        for bad in ("诊断", "健康监测", "疗效"):
+            assert bad not in blob, f"趋势文案出现了违禁词：{bad}"
+        # 变异验证：注入一个真违规，同一套检查必须能抓到
+        bad_blob = json.dumps({**t, "hint": "本功能可用于嗓音疾病诊断"},
+                              ensure_ascii=False)
+        assert any(bad in bad_blob for bad in ("诊断", "健康监测", "疗效"))
+
+    # ---- HTTP 层 ----
+
+    def test_api_followup_and_trend_roundtrip(self, client, iso_media, monkeypatch):
+        _stub_convert(monkeypatch)
+        _stub_metrics(monkeypatch)
+        pid = client.post("/api/preserve/profiles",
+                          json={"label": "甲"}).json()["profile"]["id"]
+        wav = _wav(iso_media / "f.wav")
+        with open(wav, "rb") as f:
+            r = client.post(f"/api/preserve/profiles/{pid}/followup",
+                            files={"file": ("f.wav", f, "audio/wav")},
+                            data={"note": "开学第一周"})
+        assert r.status_code == 200, r.text
+        body = r.json()["followup"]
+        assert body["note"] == "开学第一周"
+        t = client.get(f"/api/preserve/profiles/{pid}/trend").json()
+        assert t["n"] == 1
+        assert t["points"][0]["url"].startswith("/api/media/preserve/")
+        # 档案不存在（id 形状合法）→ 404
+        fake = "p" + "1" * 10 + "aaaaaa"
+        assert client.get(f"/api/preserve/profiles/{fake}/trend").status_code == 404
+
+    def test_api_followup_bad_id_is_400(self, client):
+        assert client.get("/api/preserve/profiles/abc/trend").status_code == 400
+
+    def test_api_followup_empty_file_is_400(self, client):
+        pid = client.post("/api/preserve/profiles",
+                          json={"label": "甲"}).json()["profile"]["id"]
+        r = client.post(f"/api/preserve/profiles/{pid}/followup",
+                        files={"file": ("a.wav", b"", "audio/wav")})
+        assert r.status_code == 400

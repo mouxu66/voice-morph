@@ -2656,6 +2656,64 @@ export async function exportPreserveProfile(
   })
 }
 
+/** 一次「声音随访」的趋势点（后端 `voicepreserve.add_followup` 落库的那行记录）。 */
+export type PreserveFollowupPoint = {
+  at: string
+  at_ms: number
+  file: string
+  /** 可回听 URL（后端补的；补不上是空串）。 */
+  url?: string
+  actual_s: number | null
+  bytes: number
+  note: string
+  /** 指标算不出来时是 null（如实降级，不是数据坏了 —— 与 gate 的 partial 同哲学）。 */
+  metrics: Record<string, number | null> | null
+  lamps: { lamps: PreserveLamp[]; verdict: string } | null
+  /** 与基线参考音的声纹余弦。worker 没跑 / 没基线时是 null（相似度灯显示未测）。 */
+  emb_sim: number | null
+  metrics_error?: string
+}
+
+export type PreserveTrend = {
+  n: number
+  points: PreserveFollowupPoint[]
+  /** 措辞红线的落点：这句文案前后端同守「不出现诊断 / 健康监测 / 疗效」。 */
+  hint: string
+}
+
+/** 追加一次「声音随访」（后端会算指标，约 1 秒，所以是 POST）。追加不替换。 */
+export async function uploadPreserveFollowup(
+  id: string,
+  file: File,
+  note = ""
+): Promise<{ ok: boolean; followup: PreserveFollowupPoint }> {
+  const form = new FormData()
+  form.append("file", file)
+  if (note) form.append("note", note)
+  // ⚠️ 同 `uploadPreserveReference`：**必须内联 `fetch(BASE + 字面量)`** ——
+  //   `tools/audit_endpoint_ownership.py` 靠 AST 从调用点抽 URL 字面量判断端点归属。
+  const res = await fetch(BASE + "/preserve/profiles/" + encodeURIComponent(id) + "/followup", {
+    method: "POST",
+    body: form,
+  })
+  if (!res.ok) {
+    let detail = res.statusText
+    try {
+      const body = await res.json()
+      if (body?.detail) detail = body.detail
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail)
+  }
+  return res.json() as Promise<{ ok: boolean; followup: PreserveFollowupPoint }>
+}
+
+/** 三灯趋势（只读，不重算）。口径是「发声状态趋势参考」，不是医疗诊断。 */
+export async function getPreserveTrend(id: string): Promise<PreserveTrend> {
+  return jsonFetch("/preserve/profiles/" + encodeURIComponent(id) + "/trend")
+}
+
 // ---- 快捷短语板（sound.tts）----
 //
 // 课堂高频用语一键合成/重放：直播、录课时点一下就用当前音色念出来，让嗓子歇一歇。

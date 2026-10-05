@@ -906,7 +906,201 @@ def read_events(pid: str, limit: int = 200) -> list[dict]:
     return out[-limit:] if limit > 0 else out
 
 
+# ---------------- 纵向随访 ----------------
+#
+# 「一次保存」是快照，「纵向随访」是曲线：隔一段时间复录一小段，
+# 每次都现算一遍门禁指标，按时间追加成序列 —— 前端把它画成三灯趋势小图。
+#
+# ★ 措辞红线（申报书与界面同守）：这是「发声状态趋势参考」，**不是**医疗诊断。
+#   「诊断 / 健康监测 / 疗效」这类词不许出现在任何面向用户的文案里
+#   （pytest 与 vitest 各有一条守卫钉住这件事）。
+
+#: 随访备注上限。
+_MAX_FOLLOWUP_NOTE = 200
+
+#: 趋势口径的一句话说明（接口随 trend 下发，前端直接显示）。
+#: ★ 措辞红线的落点之一 —— 守卫测试咬的就是这段真实文案。
+FOLLOWUP_HINT = "发声状态趋势参考：给自己看变化用的，数值不构成任何医疗建议。"
+
+
+def followups_dir(pid: str) -> Path:
+    """随访目录：`media/preserve/<pid>/followups/`（wav 与 index.jsonl 都在这里）。"""
+    return profile_dir(pid) / "followups"
+
+
+def _followups_index(pid: str) -> Path:
+    """随访索引（JSONL，**只追加**）。与 events.jsonl 同一形态：历史不可改 ——
+    随访点的价值在「当时测出来是多少」，事后能改就什么都不是了。"""
+    return followups_dir(pid) / "index.jsonl"
+
+
+def _metrics_for(wav: Path) -> dict:
+    """对一段录音跑一遍「门禁指标 + 三灯」。
+
+    返回 `{metrics, lamps, error}`：算不出时 error 非空、另两项为 None ——
+    与 gate() 同一哲学（如实降级，不编数字顶上去）。指标集合用 `METRIC_KEYS`，
+    与体检页同一份定义。
+    """
+    import voice_metrics
+    import voice_report
+
+    m = voice_metrics.extract(wav)
+    if m.get("error"):
+        return {"metrics": None, "lamps": None, "error": str(m["error"])}
+    metrics = {k: m.get(k) for k in METRIC_KEYS}
+    lamps = voice_report.three_lamps(
+        emb_sim=None, hnr=m.get("hnr"), h1_h2=m.get("h1_h2"),
+        spectral_tilt=m.get("spectral_tilt"))
+    return {"metrics": metrics, "lamps": lamps, "error": ""}
+
+
+def _emb_sim_vs_baseline(pid: str, wav: Path, timeout_s: int = 60) -> float | None:
+    """随访音 vs 基线参考音（当前最长档）的声纹余弦相似度。
+
+    ★ **尽力而为**，任何一步走不通都返回 None，绝不抛、绝不阻塞随访主流程：
+      - 档案还没有参考音（没有基线可比）→ None
+      - TTS worker（qwen3_tts，独立环境）没在跑 → None —— 绝不为了一个加分项
+        把 GPU 服务拉起来；那是用户在「输字变声」页才需要的东西
+      - 提取失败 / 超时 → None
+    与 `tools/voicebank_eval.py measure --with-emb` 的降级约定同口径：
+    emb_sim=None 只意味着「这一项没测」，不是数据坏了（灯显示「未测」）。
+    """
+    try:
+        ref = reference_path(pid)
+        if ref is None:
+            return None
+        import numpy as np
+        import qwen3_tts
+
+        if not qwen3_tts.worker_alive():
+            return None
+        v1 = np.asarray(json.loads(
+            qwen3_tts.post("/emb", {"path": str(wav)}, timeout=timeout_s))["emb"],
+            dtype=float)
+        v2 = np.asarray(json.loads(
+            qwen3_tts.post("/emb", {"path": str(ref)}, timeout=timeout_s))["emb"],
+            dtype=float)
+        denom = float(np.linalg.norm(v1) * np.linalg.norm(v2))
+        if denom <= 0:
+            return None
+        return round(float(np.dot(v1, v2)) / denom, 4)
+    except Exception:
+        return None
+
+
+def add_followup(pid: str, src: Path, note: str = "") -> dict:
+    """追加一次「声音随访」：录音 → wav 归一 → 现算门禁指标 → 按时间入库。
+
+    与参考音的关键区别（都有测试钉住，`test_voicepreserve.py::TestFollowups`）：
+      - **追加，不替换**：随访的意义就在「不同时间的多次」，每次都是一条新记录；
+        「同档替换」只属于参考音。
+      - **不检查 consent**：与 `add_reference` 同一语义 —— 录制与给自己建档不是克隆。
+      - **指标算不出来不是失败**（与 gate() 的 partial 同哲学）：录音照样入库，
+        metrics / lamps 记 None 并留 error 说明 —— 编一个数字顶上去比留白危险得多。
+      - **相似度是加分项**：worker 没跑 / 没有基线都降级 None（见 `_emb_sim_vs_baseline`）。
+
+    返回记录 dict；失败返回 `{"error": ..., "error_stage": ...}`，不抛。
+    """
+    p = get_profile(pid)
+    if p is None:
+        return {"error": f"档案不存在: {pid}", "error_stage": "读取档案"}
+    src = Path(src)
+    if not src.exists() or src.stat().st_size == 0:
+        return {"error": "录音为空", "error_stage": "参数"}
+
+    # 文件名带秒级时间戳 + 4 位随机：同一秒录两次也不互相覆盖（同 new_profile_id 的理由）。
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    rnd = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    dest = followups_dir(pid) / f"fu_{stamp}_{rnd}.wav"
+    ok, why = _to_wav(src, dest)
+    if not ok:
+        return {"error": why, "error_stage": "音频转换"}
+
+    calc = _metrics_for(dest)
+    emb_sim = _emb_sim_vs_baseline(pid, dest)
+    lamps = calc.get("lamps")
+    if emb_sim is not None and calc.get("metrics"):
+        # 相似度拿到了就把三灯重算一遍，让「相似度」灯从「未测」变成有值。
+        # 阈值函数还是 voice_report 那一份 —— 不存在第二套标准。
+        try:
+            import voice_report
+
+            m = calc["metrics"]
+            lamps = voice_report.three_lamps(
+                emb_sim=emb_sim, hnr=m.get("hnr"), h1_h2=m.get("h1_h2"),
+                spectral_tilt=m.get("spectral_tilt"))
+        except Exception:
+            pass
+
+    rec = {
+        "at": _now(),
+        "at_ms": int(time.time() * 1000),
+        "file": dest.name,
+        "actual_s": _wav_seconds(dest),
+        "bytes": dest.stat().st_size,
+        "note": _clip(note, _MAX_FOLLOWUP_NOTE),
+        "metrics": calc.get("metrics"),
+        "lamps": lamps,
+        "emb_sim": emb_sim,
+        "metrics_error": calc.get("error") or "",
+    }
+    try:
+        with open(_followups_index(pid), "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:
+        # 索引写不进去 = 这条随访点查无实据 —— wav 也不该留（不留对不上的半套数据）。
+        try:
+            dest.unlink()
+        except Exception:
+            pass
+        return {"error": f"随访记录写入失败（{type(e).__name__}）", "error_stage": "写入"}
+    log_event(pid, "followup", file=rec["file"], has_metrics=rec["metrics"] is not None)
+    return rec
+
+
+def read_followups(pid: str) -> list[dict]:
+    """读全部随访点，按 `at_ms` 升序。行坏了跳过 —— 不让一行脏数据毁掉整条曲线。"""
+    f = _followups_index(pid)
+    if not f.exists():
+        return []
+    out: list[dict] = []
+    try:
+        for line in f.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                continue
+    except Exception:
+        return []
+    out.sort(key=lambda r: (int(r.get("at_ms") or 0), str(r.get("at") or "")))
+    return out
+
+
+def trend(pid: str) -> dict:
+    """三灯趋势（**发声状态趋势参考**）。只读、不重算 —— 重算是 POST followup 的事，
+    与「GET 只读 / POST 现算」约定一致。
+
+    非法 id / 空档案返回 n=0 的合法结构，不抛 —— 趋势是辅助信息，
+    它坏了不该拖垮详情页。
+    """
+    try:
+        pts = read_followups(pid)
+    except Exception:
+        pts = []
+    return {"n": len(pts), "points": pts, "hint": FOLLOWUP_HINT}
+
+
 # ---------------- 质量门禁 ----------------
+
+#: 客观指标集合。**gate() 与随访（add_followup）共用这一份** ——
+#: 两处各写一份必漂移（漂移的后果：趋势图与体检页的指标口径对不上）。
+METRIC_KEYS = ("hnr", "h1_h2", "spectral_tilt",
+               "jitter_local", "shimmer_local",
+               "f0_median", "voiced_ratio", "duration_s")
+
 
 def gate(pid: str) -> dict:
     """这份档案现在能不能用来复现？
@@ -956,10 +1150,7 @@ def gate(pid: str) -> dict:
             if m.get("error"):
                 reasons.append(f"参考音的客观指标算不出来（{m['error']}）")
             else:
-                metrics = {k: m.get(k) for k in
-                           ("hnr", "h1_h2", "spectral_tilt",
-                            "jitter_local", "shimmer_local",
-                            "f0_median", "voiced_ratio", "duration_s")}
+                metrics = {k: m.get(k) for k in METRIC_KEYS}
                 lamps = voice_report.three_lamps(
                     emb_sim=None, hnr=m.get("hnr"), h1_h2=m.get("h1_h2"),
                     spectral_tilt=m.get("spectral_tilt"))

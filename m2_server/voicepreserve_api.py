@@ -15,6 +15,8 @@
     POST   /api/preserve/profiles/{pid}/truth           上传一段真实录音（听测对照）
     GET    /api/preserve/profiles/{pid}/reference       取参考音（**给现有 TTS 链路用**）
     POST   /api/preserve/profiles/{pid}/export          导出成评测实验目录 ★产品→研究的桥
+    POST   /api/preserve/profiles/{pid}/followup        追加一次「声音随访」（会算指标）
+    GET    /api/preserve/profiles/{pid}/trend           三灯趋势（只读，发声状态趋势参考）
 
 ★ 本模块**不实现合成**
 ------------------------
@@ -325,6 +327,58 @@ def preserve_export(pid: str, req: ExportReq | None = None) -> dict:
     if res.get("error"):
         raise HTTPException(400, res["error"])
     return {"ok": True, **res}
+
+
+# ---------------- 纵向随访 ----------------
+
+def _with_media_url(pid: str, rec: dict) -> dict:
+    """给随访记录补一个可回听的 URL（`core.media` 静态白名单已含 `preserve`）。
+    补不上就给空串 —— 播放是加分项，不影响数据本体。"""
+    out = dict(rec)
+    f = str(rec.get("file") or "")
+    out["url"] = _media_url(vp.followups_dir(pid) / f) if f else ""
+    return out
+
+
+@router.post("/preserve/profiles/{pid}/followup")
+async def preserve_add_followup(
+    pid: str,
+    file: UploadFile = File(...),
+    note: str = Form(""),
+):
+    """追加一次「声音随访」：隔一段时间复录一段，得到一个带时间的趋势点。
+
+    **会算指标**（单个文件约 1 秒），所以是 POST。与参考音的关键区别是
+    **追加不替换** —— 随访的意义就在「不同时间的多次」。相似度一灯需要
+    TTS worker 在跑，没跑时自动降级（灯显示未测），不影响其余两灯。
+
+    口径是**发声状态趋势参考**，不是医疗诊断 —— 前后端文案与申报书同守这条红线。
+    """
+    pid = _pid_or_400(pid)
+    _profile_or_404(pid)
+    src = await _save_upload(file)
+    try:
+        rec = vp.add_followup(pid, src, note=note)
+    finally:
+        src.unlink(missing_ok=True)
+    if rec.get("error"):
+        raise HTTPException(400, rec["error"])
+    return {"ok": True, "followup": _with_media_url(pid, rec)}
+
+
+@router.get("/preserve/profiles/{pid}/trend")
+def preserve_trend(pid: str) -> dict:
+    """三灯趋势（只读）：历次随访的时间序列，给前端画趋势小图。
+
+    只读、不重算 —— 与「GET 只读 / POST 现算」约定一致。
+    措辞红线：趋势**参考**，不是诊断；这条红线有测试钉住
+    （`test_voicepreserve.py::TestFollowups` 与前端 vitest 各一条）。
+    """
+    pid = _pid_or_400(pid)
+    _profile_or_404(pid)
+    t = vp.trend(pid)
+    t["points"] = [_with_media_url(pid, r) for r in t["points"]]
+    return t
 
 
 # ---------------- 取参考音（给现有 TTS 链路用） ----------------

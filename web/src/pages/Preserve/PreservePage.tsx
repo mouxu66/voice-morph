@@ -60,25 +60,101 @@ function Card({
   children,
 }: {
   title: string
-  step: number
-  done: boolean
+  /** 步骤号。可选 —— 「声音随访」这类附属能力不属于主线步骤，不占步骤号。 */
+  step?: number
+  done?: boolean
   children: React.ReactNode
 }) {
   return (
     <section className="rounded-xl border border-border bg-card p-4">
       <header className="mb-3 flex items-center gap-2">
-        <span
-          className={cn(
-            "flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-medium",
-            done ? "bg-emerald-500/15 text-emerald-600" : "bg-muted text-muted-foreground"
-          )}
-        >
-          {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : step}
-        </span>
+        {step != null ? (
+          <span
+            className={cn(
+              "flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-medium",
+              done ? "bg-emerald-500/15 text-emerald-600" : "bg-muted text-muted-foreground"
+            )}
+          >
+            {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : step}
+          </span>
+        ) : null}
         <h3 className="text-sm font-medium">{title}</h3>
       </header>
       {children}
     </section>
+  )
+}
+
+/**
+ * 三灯趋势小图（内联 SVG，不引图表库 —— 符合最小依赖约定）。
+ *
+ * 线 = 数值走势（min–max 归一到图高）；圆点 = 一次随访，颜色取**三灯判定色**
+ * （green/yellow/red，与体检页同一套 LAMP_DOT）。缺值点如实跳过 ——
+ * 指标算不出来的那次本就不该在图上冒出一个假高度。
+ *
+ * lampIdx：`voice_report.three_lamps` 固定按「相似度 / 自然度 / 发声负荷」的
+ * 顺序构造 lamps 数组 —— 按位置取对应灯，不是按文案匹配。
+ */
+function Sparkline({
+  title,
+  unit,
+  points,
+  lampIdx,
+}: {
+  title: string
+  unit: string
+  points: NonNullable<ReturnType<typeof usePreserve>["trend"]>["points"]
+  lampIdx: number
+}) {
+  const W = 260
+  const H = 56
+  const PAD_X = 6
+  const PAD_TOP = 8
+  const PAD_BOTTOM = 16
+  const vals = points
+    .map((pt) => ({ pt, v: lampIdx === 0 ? pt.emb_sim : pt.metrics?.[lampIdx === 1 ? "hnr" : "h1_h2"] ?? null }))
+    .filter((d): d is { pt: (typeof points)[number]; v: number } => d.v != null)
+  const xs = (i: number) =>
+    vals.length <= 1 ? W / 2 : PAD_X + (i * (W - 2 * PAD_X)) / (vals.length - 1)
+  const min = vals.length ? Math.min(...vals.map((d) => d.v)) : 0
+  const max = vals.length ? Math.max(...vals.map((d) => d.v)) : 0
+  const span = max - min
+  const ys = (v: number) =>
+    span <= 0
+      ? PAD_TOP + (H - PAD_TOP - PAD_BOTTOM) / 2
+      : PAD_TOP + (1 - (v - min) / span) * (H - PAD_TOP - PAD_BOTTOM)
+  const lampColor = (d: (typeof vals)[number]) => {
+    const lamp = d.pt.lamps?.lamps?.[lampIdx]?.lamp
+    return lamp ? LAMP_DOT[lamp] : "bg-muted-foreground/40"
+  }
+  return (
+    <div className="rounded-md border border-border/60 bg-muted/20 p-2">
+      <p className="mb-1 text-[11px] text-muted-foreground">
+        {title}
+        <span className="ml-1 font-mono text-[10px] opacity-70">{unit}</span>
+      </p>
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-14 w-full" role="img" aria-label={title}>
+        {vals.length > 1 ? (
+          <polyline
+            points={vals.map((d, i) => `${xs(i)},${ys(d.v)}`).join(" ")}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            className="text-primary/50"
+          />
+        ) : null}
+        {vals.map((d, i) => (
+          <circle key={i} cx={xs(i)} cy={ys(d.v)} r="3.5" className={lampColor(d)}>
+            <title>{`${d.pt.at}：${d.v}${unit}`}</title>
+          </circle>
+        ))}
+        {vals.length === 0 ? (
+          <text x={W / 2} y={H / 2} textAnchor="middle" className="fill-muted-foreground text-[9px]">
+            暂无数值
+          </text>
+        ) : null}
+      </svg>
+    </div>
   )
 }
 
@@ -353,7 +429,8 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                     onClick={() =>
                       p.recordingFor > 0 ? p.stopRecording() : void p.startFullRecording()
                     }
-                    disabled={Boolean(p.busy) || (p.recordingFor > 0 && p.recordingFor !== longestS)}
+                    disabled={Boolean(p.busy) || p.recordingFollowup ||
+                      (p.recordingFor > 0 && p.recordingFor !== longestS)}
                     className={cn(
                       "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm disabled:opacity-40",
                       p.recordingFor === longestS
@@ -383,7 +460,8 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                             ? p.stopRecording()
                             : void p.startRecording(d.duration_s)
                         }
-                        disabled={!d.covered || Boolean(p.busy) || (p.recordingFor > 0 && p.recordingFor !== d.duration_s)}
+                        disabled={!d.covered || Boolean(p.busy) || p.recordingFollowup ||
+                          (p.recordingFor > 0 && p.recordingFor !== d.duration_s)}
                         title={d.covered ? `照着脚本念前约 ${d.sentences} 句` : "参考脚本不够长，录不满这一档"}
                         className={cn(
                           "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm disabled:opacity-40",
@@ -420,8 +498,9 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                   </p>
                 ) : null}
 
-                {/* 录音时脚本自动展开 —— 老师不该在录音中途还要去找「展开脚本」按钮 */}
-                {showScript || p.recordingFor > 0 ? (
+                {/* 录音时脚本自动展开 —— 老师不该在录音中途还要去找「展开脚本」按钮。
+                    随访录音也一样：随访要念「同样的句子」才有可比性。 */}
+                {showScript || p.recordingFor > 0 || p.recordingFollowup ? (
                   <ol className="mt-2 max-h-52 list-decimal space-y-1 overflow-auto rounded-md bg-muted/40 p-3 pl-8 text-xs leading-relaxed">
                     {(p.guide?.script ?? []).map((s, i) => (
                       <li key={i}>{s}</li>
@@ -616,6 +695,58 @@ export function PreservePage({ p }: { p: ReturnType<typeof usePreserve> }) {
                     ) : null}
                   </div>
                 ) : null}
+              </Card>
+
+              {/* ⑤ 声音随访：一次保存是快照，随访是曲线 —— 隔段时间复录一次，
+                  三灯指标连成趋势（纵向随访）。措辞红线：这是「发声状态趋势参考」，
+                  不是医疗诊断 —— 不出现「诊断 / 健康监测 / 疗效」（vitest 守卫钉住）。 */}
+              <Card title="声音随访">
+                <p className="mb-2 text-xs text-muted-foreground">
+                  隔一段时间（比如每周）录一小段，这里会把每次的指标连成趋势，
+                  帮您观察这份声音随时间的变化。建议照着「按引导录音」里的脚本念 ——
+                  念同样的句子，趋势才有可比性。
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => (p.recordingFollowup ? p.stopRecording() : void p.startFollowupRecording())}
+                    disabled={Boolean(p.busy) || p.recordingFor > 0}
+                    title="录约 20 秒：念与之前同样的引导脚本。后端会算指标并追加一条趋势点（之前的记录不会被覆盖）。"
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm disabled:opacity-40",
+                      p.recordingFollowup ? "border-red-500/50 bg-red-500/10" : "border-border bg-card"
+                    )}
+                  >
+                    {p.recordingFollowup ? (
+                      <>
+                        <Square className="h-3.5 w-3.5" /> 停止（已录 {p.recordSeconds}s）
+                      </>
+                    ) : (
+                      <>
+                        <Mic className="h-3.5 w-3.5" /> 录一次随访
+                      </>
+                    )}
+                  </button>
+                  {p.busy === "followup-upload" ? (
+                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> 正在保存并算指标…
+                    </span>
+                  ) : null}
+                </div>
+
+                {p.trend && p.trend.n > 0 ? (
+                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                    <Sparkline title="相似度（与档案参考音）" unit="" points={p.trend.points} lampIdx={0} />
+                    <Sparkline title="自然度（HNR）" unit=" dB" points={p.trend.points} lampIdx={1} />
+                    <Sparkline title="发声平稳度（H1-H2）" unit=" dB" points={p.trend.points} lampIdx={2} />
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    还没有随访记录 —— 录第一次后，这里会出现趋势小图。
+                  </p>
+                )}
+                <p className="mt-2 text-[11px] text-muted-foreground">
+                  {p.trend?.hint ?? "这些数值只是发声状态的趋势参考，请结合当时的用嗓情况理解。"}
+                </p>
               </Card>
 
               {/* ④ 操作日志 */}

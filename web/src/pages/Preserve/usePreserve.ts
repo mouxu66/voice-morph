@@ -5,11 +5,13 @@ import {
   getPreserveEvents,
   getPreserveGuide,
   getPreserveProfile,
+  getPreserveTrend,
   listPreserveProfiles,
   recordPreserveConsent,
   reproducePreserveProfile,
   exportPreserveProfile,
   runPreserveGate,
+  uploadPreserveFollowup,
   uploadPreserveReference,
   uploadPreserveReferenceBatch,
   type PreserveEvent,
@@ -17,6 +19,7 @@ import {
   type PreserveGuide,
   type PreserveProfile,
   type PreserveProfileSummary,
+  type PreserveTrend,
 } from "@/api/client"
 import { friendlyError } from "@/lib/errors"
 
@@ -41,6 +44,8 @@ export function usePreserve() {
   const [profile, setProfile] = useState<PreserveProfile | null>(null)
   const [events, setEvents] = useState<PreserveEvent[]>([])
   const [gate, setGate] = useState<PreserveGate | null>(null)
+  /** 声音随访的趋势点（只读数据；拉取失败静默为 null —— 它是辅助信息，不打扰主流程）。 */
+  const [trend, setTrend] = useState<PreserveTrend | null>(null)
 
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState("")
@@ -51,6 +56,8 @@ export function usePreserve() {
 
   /** 正在录的目标档（秒）。0 = 没在录。 */
   const [recordingFor, setRecordingFor] = useState(0)
+  /** 正在录「声音随访」（与参考音录音互斥 —— 同一支麦克风同一时间只该有一头）。 */
+  const [recordingFollowup, setRecordingFollowup] = useState(false)
   const [recordSeconds, setRecordSeconds] = useState(0)
 
   const fail = useCallback((title: string, err?: unknown) => {
@@ -83,12 +90,20 @@ export function usePreserve() {
       setProfile(null)
       setEvents([])
       setGate(null)
+      setTrend(null)
       return
     }
     const detail = await getPreserveProfile(id)
     setProfile(detail.profile)
     setEvents(detail.events)
     setGate(null)
+    // 趋势只读且轻（一次 jsonl 读），随档案一起拉；失败静默置空 ——
+    // 趋势图空着用户顶多少看一张图，不该为一个辅助信息弹错误面板。
+    try {
+      setTrend(await getPreserveTrend(id))
+    } catch {
+      setTrend(null)
+    }
   }, [])
 
   useEffect(() => {
@@ -188,14 +203,15 @@ export function usePreserve() {
 
   // ---- 录音 ----
 
-  const startRecording = useCallback(
-    async (durationS: number) => {
-      setError(null)
-      setNotice("")
-      if (!selectedId) {
-        fail("先建一份档案再录音")
-        return
-      }
+  /**
+   * 共用录音样板：开麦 → MediaRecorder(webm/opus) → 停止后组装 File 交给 upload。
+   *
+   * 三条录音链（单档参考音 / 整段切四档 / 声音随访）只有「文件名 + 上传动作」不同 ——
+   * 样板写三份必漂移（漂移的后果：某条链悄悄漏了停麦、或忘了交给后端归一）。
+   * 后端会用 ffmpeg 归一成单声道 wav —— 前端不改后缀（改了就是「后缀对、内容错」）。
+   */
+  const recordTo = useCallback(
+    async (filename: string, upload: (file: File) => Promise<void>) => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
         const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
@@ -210,37 +226,60 @@ export function usePreserve() {
           stream.getTracks().forEach((t) => t.stop())
           void (async () => {
             const blob = new Blob(chunks.current, { type: mime })
-            const file = new File([blob], "reference.webm", { type: mime })
-            setBusy("upload")
-            try {
-              // 后端会用 ffmpeg 归一成单声道 wav —— 前端不改后缀（改了就是「后缀对、内容错」）
-              await uploadPreserveReference(selectedId, file, durationS)
-              await loadProfile(selectedId)
-              setEvents((await getPreserveEvents(selectedId)).events)
-              setNotice("这一档已保存。可以接着录更长的一档，或点「体检」。")
-            } catch (error) {
-              fail("保存参考音", error)
-            } finally {
-              setBusy("")
-            }
+            const file = new File([blob], filename, { type: mime })
+            await upload(file)
           })()
         }
         rec.start()
         recorder.current = rec
-        setRecordingFor(durationS)
-        setRecordSeconds(0)
-        tick.current = window.setInterval(() => setRecordSeconds((s) => s + 1), 1000)
       } catch (error) {
         fail("打开麦克风", error)
       }
     },
-    [loadProfile, selectedId, fail]
+    [fail]
+  )
+
+  /** 录完后的公共收尾：刷新档案、事件与趋势（调用方各自先设置 busy/notice）。 */
+  const refreshAfterUpload = useCallback(
+    async (id: string) => {
+      await loadProfile(id)
+      setEvents((await getPreserveEvents(id)).events)
+    },
+    [loadProfile]
+  )
+
+  const startRecording = useCallback(
+    async (durationS: number) => {
+      setError(null)
+      setNotice("")
+      if (!selectedId) {
+        fail("先建一份档案再录音")
+        return
+      }
+      await recordTo("reference.webm", async (file) => {
+        setBusy("upload")
+        try {
+          await uploadPreserveReference(selectedId, file, durationS)
+          await refreshAfterUpload(selectedId)
+          setNotice("这一档已保存。可以接着录更长的一档，或点「体检」。")
+        } catch (error) {
+          fail("保存参考音", error)
+        } finally {
+          setBusy("")
+        }
+      })
+      setRecordingFor(durationS)
+      setRecordSeconds(0)
+      tick.current = window.setInterval(() => setRecordSeconds((s) => s + 1), 1000)
+    },
+    [recordTo, refreshAfterUpload, selectedId, fail]
   )
 
   const stopRecording = useCallback(() => {
     recorder.current?.stop()
     recorder.current = null
     setRecordingFor(0)
+    setRecordingFollowup(false)
     clearTimer()
   }, [clearTimer])
 
@@ -262,43 +301,55 @@ export function usePreserve() {
       return
     }
     const longest = Math.max(...((guide?.durations ?? []).map((d) => d.duration_s) || [60]))
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm"
-      const rec = new MediaRecorder(stream, { mimeType: mime })
-      chunks.current = []
-      rec.ondataavailable = (e) => {
-        if (e.data.size) chunks.current.push(e.data)
+    await recordTo("reference-full.webm", async (file) => {
+      setBusy("upload")
+      try {
+        const out = await uploadPreserveReferenceBatch(selectedId, file)
+        await refreshAfterUpload(selectedId)
+        setNotice(`已按前缀切出 ${out.tags.length} 档（共 ${out.total_s.toFixed(1)}s）。`)
+      } catch (error) {
+        fail("保存整段录音", error)
+      } finally {
+        setBusy("")
       }
-      rec.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop())
-        void (async () => {
-          const blob = new Blob(chunks.current, { type: mime })
-          const file = new File([blob], "reference-full.webm", { type: mime })
-          setBusy("upload")
-          try {
-            const out = await uploadPreserveReferenceBatch(selectedId, file)
-            await loadProfile(selectedId)
-            setEvents((await getPreserveEvents(selectedId)).events)
-            setNotice(`已按前缀切出 ${out.tags.length} 档（共 ${out.total_s.toFixed(1)}s）。`)
-          } catch (error) {
-            fail("保存整段录音", error)
-          } finally {
-            setBusy("")
-          }
-        })()
-      }
-      rec.start()
-      recorder.current = rec
-      setRecordingFor(longest)
-      setRecordSeconds(0)
-      tick.current = window.setInterval(() => setRecordSeconds((s) => s + 1), 1000)
-    } catch (error) {
-      fail("打开麦克风", error)
+    })
+    setRecordingFor(longest)
+    setRecordSeconds(0)
+    tick.current = window.setInterval(() => setRecordSeconds((s) => s + 1), 1000)
+  }, [guide, recordTo, refreshAfterUpload, selectedId, fail])
+
+  // ---- 声音随访 ----
+
+  /**
+   * 「声音随访」：隔一段时间复录一小段，后端现算指标落成趋势点（追加不替换）。
+   *
+   * 与参考音录音的区别是**时间轴**：参考音追求「最好的那一条」（同档替换），
+   * 随访记录「今天的状态」（每次追加）—— 所以这里不选档、不追求录满，
+   * 建议照着引导脚本念约 20 秒（念同样的句子，趋势才有可比性）。
+   */
+  const startFollowupRecording = useCallback(async () => {
+    setError(null)
+    setNotice("")
+    if (!selectedId) {
+      fail("先建一份档案再录随访")
+      return
     }
-  }, [guide, loadProfile, selectedId, fail])
+    await recordTo("followup.webm", async (file) => {
+      setBusy("followup-upload")
+      try {
+        await uploadPreserveFollowup(selectedId, file)
+        await refreshAfterUpload(selectedId)
+        setNotice("随访已记录。隔一段时间再来录一次，趋势图就有形状了。")
+      } catch (error) {
+        fail("保存随访录音", error)
+      } finally {
+        setBusy("")
+      }
+    })
+    setRecordingFollowup(true)
+    setRecordSeconds(0)
+    tick.current = window.setInterval(() => setRecordSeconds((s) => s + 1), 1000)
+  }, [recordTo, refreshAfterUpload, selectedId, fail])
 
   // ---- 门禁 ----
 
@@ -378,6 +429,7 @@ export function usePreserve() {
     profile,
     events,
     gate,
+    trend,
     loading,
     busy,
     error,
@@ -385,12 +437,14 @@ export function usePreserve() {
     setError,
     setNotice,
     recordingFor,
+    recordingFollowup,
     recordSeconds,
     create,
     remove,
     consent,
     startRecording,
     startFullRecording,
+    startFollowupRecording,
     stopRecording,
     runGate,
     reproduce,
