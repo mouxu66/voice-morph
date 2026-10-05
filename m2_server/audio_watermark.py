@@ -50,7 +50,9 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import threading
+import time
 from pathlib import Path
 
 import config as cfg
@@ -213,6 +215,11 @@ def start_download() -> dict:
     from market_download import MarketError, get_manager
 
     mgr = get_manager()
+    # 下载完成 ≠ 可用：产物还躺在 outputs/market/，先补一次搬运（覆盖"上次下完了
+    # 但服务重启，安装线程没赶上"的场景），再起监听线程跟住本次下载。
+    install_from_downloads(mgr)
+    if installed():
+        return {"status": "done", "installed": True}
     jobs = [
         ("audioseal_generator", GENERATOR_FILE, GENERATOR_SHA256, GENERATOR_BYTES),
         ("audioseal_detector", DETECTOR_FILE, DETECTOR_SHA256, DETECTOR_BYTES),
@@ -233,7 +240,94 @@ def start_download() -> dict:
             )
         except MarketError as e:  # 同名任务在下 → 如实回报
             states[name] = mgr.task_status(name) or {"status": "downloading", "error": str(e)}
+    _start_installer(mgr)
     return {"status": "downloading", "tasks": states}
+
+
+_INSTALL_LOCK = threading.Lock()
+_INSTALLER: dict = {}
+
+
+def install_from_downloads(mgr=None) -> dict:
+    """把下载器落在 `outputs/market/` 的权重搬进 `models_dir()`。
+
+    ★ 为什么必须有这一步（2026-10-05 隔离实例实测抓到，修前必错）：
+      `market_download.DownloadManager` 的产物**恒定**落在它的 `download_dir`
+      （= `cfg.OUTPUTS_DIR/market`）—— `start()` 没有 dest 参数，它不知道调用方
+      想把文件放哪。而本模块的 `installed()` / `_load_models()` 只看 `models_dir()`
+      （= `tts_models/audioseal`）。
+      少了搬运，「下载完成」与「可用」之间就永远差一步：两个 .pth 都 `done`、
+      sha256 与文件头校验都过了，`POST /api/watermark/embed` 仍一律 **409
+      「水印模型还没下载」**；页面上那个按钮只能反复重下 —— 用户侧的观感就是
+      "下载了但装不上"。修复前的实测证据：`outputs/market/{generator,detector}_base.pth`
+      在位（58.8MB + 34.7MB），`tts_models/audioseal/` 连目录都不存在。
+
+    幂等：已在位 / 目标已存在 → 不搬不覆盖；只搬状态为 `done` 的任务。
+    `mgr` 可注入（测试不必真起下载器）。
+    """
+    with _INSTALL_LOCK:
+        if installed():
+            return {"installed": True, "moved": []}
+        if mgr is None:
+            from market_download import get_manager
+
+            mgr = get_manager()
+        d = models_dir()
+        moved: list[str] = []
+        for name, fn in (
+            ("audioseal_generator", GENERATOR_FILE),
+            ("audioseal_detector", DETECTOR_FILE),
+        ):
+            dest = d / fn
+            if dest.is_file():
+                continue
+            st = mgr.task_status(name) or {}
+            if st.get("status") != "done":
+                continue
+            src = Path(st.get("dest") or (Path(mgr.download_dir) / fn))
+            if not src.is_file():
+                continue
+            d.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
+            moved.append(fn)
+        return {"installed": installed(), "moved": moved}
+
+
+def _start_installer(mgr, timeout_s: int = 1800) -> None:
+    """后台盯住两个下载任务，能装就装（下载可能经历镜像回退 + 断点续传，慢）。
+
+    只在 `start_download()` 里起，且**去重** —— 页面按钮可以反复点，但不能攒出
+    一堆轮询线程。线程是 daemon：进程退出不等它。
+
+    ★ `mgr` 由调用方**捕获后传进来**，线程内不再重新 `get_manager()`：
+      否则测试里 monkeypatch 掉的假下载器会在 monkeypatch 撤销后"复活"成真下载器，
+      而真下载器会去读 `outputs/market/` 的历史完成态 —— 那意味着一个测试能偷偷
+      把权重搬进真目录。捕获实例同时也让「测试用假件、运行用真件」这条边界是硬的。
+    """
+    with _INSTALL_LOCK:
+        th = _INSTALLER.get("thread")
+        if th is not None and th.is_alive():
+            return
+        th = threading.Thread(
+            target=_install_when_ready, args=(mgr, timeout_s), name="wm-installer", daemon=True
+        )
+        _INSTALLER["thread"] = th
+    th.start()
+
+
+def _install_when_ready(mgr, timeout_s: int = 1800) -> None:
+    """轮询到「装好」为止；两个任务都不再活跃时提前收工（失败/取消就没什么可等的）。"""
+    names = ("audioseal_generator", "audioseal_detector")
+    end = time.time() + timeout_s
+    while time.time() < end:
+        if install_from_downloads(mgr).get("installed"):
+            return
+        active = any(
+            (mgr.task_status(n) or {}).get("status") in ("downloading", "idle") for n in names
+        )
+        if not active:
+            return
+        time.sleep(2)
 
 
 # ---------------------------------------------------------------- 模型单例

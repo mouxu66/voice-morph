@@ -92,11 +92,33 @@ class _StubManager:
         return {"name": name, "status": "downloading"}
 
 
+class _DoneManager:
+    """已下完的假下载器：产物躺在 download_dir，task_status 报 done + dest。
+
+    专门用来钉「下载完成 ≠ 可用」那道搬运步骤 —— 真实 bug 就是缺它。
+    """
+
+    def __init__(self, download_dir, files):
+        self.download_dir = download_dir
+        self._files = files
+
+    def start(self, name, **kw):  # pragma: no cover - 本组不触发下载
+        raise AssertionError("已 done 的任务不该再 start")
+
+    def task_status(self, name):
+        fn = self._files.get(name)
+        if fn is None:
+            return {"name": name, "status": "failed"}
+        p = self.download_dir / fn
+        return {"name": name, "status": "done", "dest": str(p)}
+
+
 def test_start_download_starts_two_jobs(monkeypatch):
     stub = _StubManager()
     import market_download
 
     monkeypatch.setattr(market_download, "get_manager", lambda: stub)
+    monkeypatch.setattr(wm, "_start_installer", lambda *a, **k: None)  # 本用例不测监听线程
     res = wm.start_download()
     assert res["status"] == "downloading" and set(res["tasks"]) == {
         "audioseal_generator", "audioseal_detector"}
@@ -108,6 +130,66 @@ def test_start_download_starts_two_jobs(monkeypatch):
         assert kw["expected_size"] and kw["expected_size"] > 1_000_000
         assert kw["filename"] in (wm.GENERATOR_FILE, wm.DETECTOR_FILE)
         assert kw["mirror_url"].startswith("https://hf-mirror.com/"), "镜像兜底必须带上"
+
+
+def test_install_from_downloads_moves_weights(tmp_path):
+    """★ 回归：下完的权重必须被搬进 models_dir，否则 embed 永远 409。"""
+    dl = tmp_path / "market"
+    dl.mkdir()
+    (dl / wm.GENERATOR_FILE).write_bytes(b"gen")
+    (dl / wm.DETECTOR_FILE).write_bytes(b"det")
+    mgr = _DoneManager(dl, {
+        "audioseal_generator": wm.GENERATOR_FILE,
+        "audioseal_detector": wm.DETECTOR_FILE,
+    })
+
+    assert wm.installed() is False, "前置：模型目录还是空的"
+    res = wm.install_from_downloads(mgr)
+    assert res["installed"] is True
+    assert sorted(res["moved"]) == sorted([wm.GENERATOR_FILE, wm.DETECTOR_FILE])
+    assert wm.installed() is True
+    assert not (dl / wm.GENERATOR_FILE).exists(), "搬走（move），不是拷贝"
+    assert (wm.models_dir() / wm.DETECTOR_FILE).read_bytes() == b"det"
+
+    # 幂等：第二次什么都不搬，也不覆盖
+    again = wm.install_from_downloads(mgr)
+    assert again == {"installed": True, "moved": []}
+
+
+def test_install_from_downloads_skips_unfinished(tmp_path):
+    """没下完（failed / downloading）一律不搬 —— 半个文件搬过去只会换来一个假的"已安装"。"""
+    dl = tmp_path / "market"
+    dl.mkdir()
+    (dl / wm.GENERATOR_FILE).write_bytes(b"gen")
+    (dl / wm.DETECTOR_FILE).write_bytes(b"det")
+    mgr = _DoneManager(dl, {"audioseal_generator": wm.GENERATOR_FILE})  # detector 报 failed
+    res = wm.install_from_downloads(mgr)
+    assert res["installed"] is False
+    assert res["moved"] == [wm.GENERATOR_FILE], "只搬 done 的那一个"
+
+
+def test_installer_loop_installs_then_exits(tmp_path):
+    """监听线程的循环体：装好就返回（用同步调用验，不起线程）。"""
+    dl = tmp_path / "market"
+    dl.mkdir()
+    (dl / wm.GENERATOR_FILE).write_bytes(b"gen")
+    (dl / wm.DETECTOR_FILE).write_bytes(b"det")
+    mgr = _DoneManager(dl, {
+        "audioseal_generator": wm.GENERATOR_FILE,
+        "audioseal_detector": wm.DETECTOR_FILE,
+    })
+    wm._install_when_ready(mgr, timeout_s=5)
+    assert wm.installed() is True
+
+
+def test_installer_loop_gives_up_when_nothing_active(tmp_path):
+    """两个任务都不活跃且没装成 → 立刻收工，不空转到超时。"""
+    dl = tmp_path / "market"
+    dl.mkdir()
+    mgr = _DoneManager(dl, {})  # 全部 failed
+    t0 = __import__("time").time()
+    wm._install_when_ready(mgr, timeout_s=30)
+    assert __import__("time").time() - t0 < 3, "不该等到超时"
 
 
 def test_start_download_idempotent_when_installed():

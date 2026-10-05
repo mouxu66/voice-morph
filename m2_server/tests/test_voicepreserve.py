@@ -1188,3 +1188,58 @@ class TestFollowups:
         r = client.post(f"/api/preserve/profiles/{pid}/followup",
                         files={"file": ("a.wav", b"", "audio/wav")})
         assert r.status_code == 400
+
+
+class TestToolsPathBootstrap:
+    """★ 回归：`voice_metrics` / `voice_report` 住在 `tools/`，不在 `m2_server/`。
+
+    2026-10-05 隔离实例实测到的真 bug：`_metrics_for()` 直接 `import voice_metrics`，
+    少了把 `tools/` 接进 `sys.path` 这一步 →
+    `POST /api/preserve/profiles/{pid}/followup` 一律 **500 ModuleNotFoundError**
+    （随访整条不可用），`gate()` 带参考音时同样炸。
+
+    为什么此前 200 个用例一个都没抓到：本文件的 `_stub_metrics` 把 `_metrics_for`
+    **打桩顶掉了** —— 真 import 路径从来没被执行过。所以这一组**故意不打桩**，
+    并且先把 tools 从 sys.path 摘掉、把模块从 sys.modules 清掉，模拟"干净进程"。
+    """
+
+    def test_ensure_tools_path_is_idempotent_and_real(self):
+        first = vp.ensure_tools_path()
+        assert vp.ensure_tools_path() == first, "幂等"
+        assert str(first) in sys.path
+        assert (first / "voice_metrics.py").is_file(), "tools 下必须真有这个模块"
+        assert (first / "voice_report.py").is_file()
+
+    def test_metrics_for_bootstraps_tools_path(self, tmp_path, monkeypatch):
+        tools = vp.ensure_tools_path()
+        stripped = [p for p in sys.path if p != str(tools)]
+        monkeypatch.setattr(sys, "path", stripped)
+        monkeypatch.delitem(sys.modules, "voice_metrics", raising=False)
+        monkeypatch.delitem(sys.modules, "voice_report", raising=False)
+
+        wav = _wav(tmp_path / "f.wav", seconds=0.4)
+        res = vp._metrics_for(wav)  # ← 不打桩：走真 import
+
+        assert isinstance(res, dict) and "error" in res, "必须结构化返回，不裸崩"
+        assert "ModuleNotFoundError" not in str(res.get("error") or ""), (
+            "真 import 失败就是 followup 500 的根因，必须已被 ensure_tools_path 兜住"
+        )
+        assert str(tools) in sys.path, "调用后 tools 必须已回到 sys.path"
+
+    def test_gate_with_reference_bootstraps_tools_path(self, tmp_path, monkeypatch):
+        """gate 的第二个导入点（带参考音那条分支）同样必须兜住。"""
+        monkeypatch.setattr(vp.cfg, "MEDIA_DIR", str(tmp_path / "media"))
+        monkeypatch.setattr(vp.cfg, "OUTPUTS_DIR", str(tmp_path / "outputs"))
+        pid = vp.create_profile("甲")["id"]
+        vp.add_reference(pid, _wav(tmp_path / "r.wav", seconds=0.5), 3.0)
+
+        tools = vp.ensure_tools_path()
+        monkeypatch.setattr(sys, "path", [p for p in sys.path if p != str(tools)])
+        monkeypatch.delitem(sys.modules, "voice_metrics", raising=False)
+        monkeypatch.delitem(sys.modules, "voice_report", raising=False)
+
+        rep = vp.gate(pid)  # ← 不打桩
+        assert isinstance(rep, dict) and rep.get("verdict")
+        joined = " ".join(rep.get("reasons") or [])
+        assert "ModuleNotFoundError" not in joined, f"gate 撞 import 失败：{joined}"
+        assert "未安装" not in joined, f"gate 撞依赖缺失：{joined}"

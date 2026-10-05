@@ -68,6 +68,32 @@ _MAX_LABEL = 40
 _MAX_NOTE = 500
 
 
+def ensure_tools_path() -> Path:
+    """把 `tools/` 接进 `sys.path` —— `voice_metrics` / `voice_report` 住在那里。
+
+    ★ 为什么必须显式接（2026-10-05 隔离实例实测）：`_metrics_for()` 里是
+      `import voice_metrics`，而它在 `tools/` 下、**不在** `m2_server/` 的 import 根里。
+      不接 → `ModuleNotFoundError: No module named 'voice_metrics'` →
+      `POST /api/preserve/profiles/{pid}/followup` 直接 500（随访整条不可用），
+      `gate()` 带参考音时同样炸。
+      同目录的 `clips_api.py`（第 273 行）与 `ab_chain.py`（第 70 行）都显式接过，
+      本模块当初漏了；测试没抓到，是因为 `test_voicepreserve.py` 用 monkeypatch
+      把 `_metrics_for` 顶掉了 —— 于是"真路径"从没被跑到。
+      在真机上它偶尔"看着能用"，只是因为别的能力（切片 / 多链路评测）先被访问过、
+      顺手把 tools 塞进了**全局** sys.path：随访能不能用取决于用户点过什么，
+      这种隐式耦合必须消掉。
+
+    幂等：每次都查一次 `sys.path`（它很短），**不缓存判断结果** —— 缓存会让
+    "有人中途改过 sys.path"这种场景静默失效，而本函数存在的全部意义就是兜这个底。
+    """
+    import sys
+
+    tools = Path(__file__).resolve().parent.parent / "tools"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    return tools
+
+
 # ---------------- 录音引导语料（★ 唯一真相源） ----------------
 #
 # 这段语料**同时**被两处使用，所以它只能有一份定义：
@@ -941,6 +967,7 @@ def _metrics_for(wav: Path) -> dict:
     与 gate() 同一哲学（如实降级，不编数字顶上去）。指标集合用 `METRIC_KEYS`，
     与体检页同一份定义。
     """
+    ensure_tools_path()  # ← 不接这一步就是 500，见 ensure_tools_path 的注释
     import voice_metrics
     import voice_report
 
@@ -1143,6 +1170,7 @@ def gate(pid: str) -> dict:
     lamps = None
     if ref_path is not None:
         try:
+            ensure_tools_path()  # ← 同 _metrics_for：不接就是 ModuleNotFoundError
             import voice_metrics
             import voice_report
 
