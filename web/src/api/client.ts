@@ -450,6 +450,92 @@ export async function cancelAudiobook(): Promise<{ ok: boolean; message?: string
   return jsonFetch("/audiobook/cancel", { method: "POST" });
 }
 
+// ---- 讲稿录课（PPT 备注页 → 逐页旁白，sound.course） ----
+
+export type CoursePageIn = { page: number; text: string };
+
+export type CoursePageState = {
+  page: number;
+  text: string;
+  url: string;
+  duration_s: number;
+  failed: boolean;
+  error: string;
+};
+
+export type CourseStatus = {
+  running: boolean;
+  status: "idle" | "running" | "done" | "cancelled" | "error";
+  voice_id: string;
+  done: number;
+  total: number;
+  percent: number;
+  current_page: number;
+  current_text: string;
+  job_dir: string;
+  gap_ms: number;
+  pages: CoursePageState[];
+  error: string;
+};
+
+export type CourseParseResult = {
+  source: "pptx" | "text";
+  total: number;
+  skipped: number;
+  pages: CoursePageIn[];
+};
+
+/** 解析讲稿来源：.pptx 附件优先，否则按纯文本（`---` 分页）。二选一。 */
+export async function parseCourse(
+  file: File | undefined,
+  text: string
+): Promise<CourseParseResult> {
+  const form = new FormData();
+  if (file) form.append("file", file);
+  form.append("text", text);
+  const res = await fetch(BASE + "/course/parse", { method: "POST", body: form });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function runCourse(
+  pages: CoursePageIn[],
+  voiceId: string,
+  gapMs = 350
+): Promise<{ ok: boolean; total: number; voice_id: string; job_dir: string }> {
+  return jsonFetch("/course/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pages, voice_id: voiceId, gap_ms: gapMs }),
+  });
+}
+
+export async function getCourseStatus(): Promise<CourseStatus> {
+  return jsonFetch("/course/status");
+}
+
+export async function cancelCourse(): Promise<{ ok: boolean; message?: string }> {
+  return jsonFetch("/course/cancel", { method: "POST" });
+}
+
+export async function retryCourse(): Promise<{
+  ok: boolean;
+  total: number;
+  voice_id: string;
+  job_dir: string;
+}> {
+  return jsonFetch("/course/retry", { method: "POST" });
+}
+
 // ---- 离线变声工作台（录音/音频 → RVC 离线转换 → 导出） ----
 
 export type OfflineVcStatus = {

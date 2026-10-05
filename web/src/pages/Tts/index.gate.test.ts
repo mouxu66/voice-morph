@@ -35,9 +35,18 @@ describe("TtsRoute 的 tab 门控", () => {
     expect(indexSrc).not.toContain(`{ key: "book", label: "有声书（长文本）", content: <AudiobookPage {...useAudiobook()} /> }`)
   })
 
+  it("讲稿录课 tab 按 sound.course 显隐", () => {
+    expect(indexSrc).toContain('pluginVisible(catalog, "sound.course")')
+    expect(indexSrc).toContain("useCourse(courseOn)")
+    expect(indexSrc).toContain(`...(courseOn`)
+    expect(indexSrc).not.toContain(`{ key: "course", label: "讲稿录课（PPT）", content: <CoursePage {...useCourse()} /> }`)
+  })
+
   it("hook 必须无条件调用（React 规则），显隐只发生在 tabs 数组里", () => {
-    // 三行 hook 调用彼此相邻且在同一个函数体内（不在条件分支里）
-    const calls = indexSrc.search(/const tts = useTts\(\)\n {2}const book = useAudiobook\(bookOn\)\n {2}const wechat = useWechatSend\(wechatOn\)/)
+    // 四行 hook 调用彼此相邻且在同一个函数体内（不在条件分支里）
+    const calls = indexSrc.search(
+      /const tts = useTts\(\)\n {2}const book = useAudiobook\(bookOn\)\n {2}const course = useCourse\(courseOn\)\n {2}const wechat = useWechatSend\(wechatOn\)/
+    )
     expect(calls).toBeGreaterThanOrEqual(0)
     expect(indexSrc).toContain("const tts = useTts()")
   })
@@ -52,6 +61,12 @@ describe("被关掉时 hook 必须停止轮询（端点已不存在）", () => {
 
   it("useAudiobook 挂载即查状态的分量在 enabled=false 时直接返回", () => {
     const src = readRel(path.join("pages", "Audiobook", "useAudiobook.ts"))
+    expect(src).toContain("if (!enabled) return")
+    expect(src).toContain("[enabled, refresh, stopPoll]")
+  })
+
+  it("useCourse 同契约：enabled=false 不轮询", () => {
+    const src = readRel(path.join("pages", "Course", "useCourse.ts"))
     expect(src).toContain("if (!enabled) return")
     expect(src).toContain("[enabled, refresh, stopPoll]")
   })

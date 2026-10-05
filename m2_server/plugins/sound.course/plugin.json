@@ -1,0 +1,22 @@
+{
+  "id": "sound.course",
+  "name": "讲稿录课",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 185,
+  "summary": "把 PPT 备注页（或 --- 分页的讲稿）逐页转成旁白音轨：写一遍讲稿，用自己的保存声音逐页生成、逐页对齐导出（拟应用/推广方向）",
+  "requires": ["sound.tts"],
+  "routers": ["course_api"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [],
+  "extras": {
+    "python": [],
+    "external": [],
+    "models": []
+  },
+  "health": null,
+  "disable": {
+    "note": "关闭后「输字变声」里的讲稿录课标签消失（/api/course/* 不再挂载）；已生成的逐页音轨留在 outputs/ 下不受影响。"
+  }
+}

@@ -6,16 +6,20 @@ import { useTts } from "@/pages/Tts/useTts"
 import { TtsPage } from "@/pages/Tts/TtsPage"
 import { useAudiobook } from "@/pages/Audiobook/useAudiobook"
 import { AudiobookPage } from "@/pages/Audiobook/AudiobookPage"
+import { useCourse } from "@/pages/Course/useCourse"
+import { CoursePage } from "@/pages/Course/CoursePage"
 import { useSoundboard } from "@/pages/Tts/useSoundboard"
 import { useWechatSend } from "@/pages/Tts/useWechatSend"
 import { WechatSendPage } from "@/pages/Tts/WechatSendPage"
 
 /**
- * 语音合成（合并页）：单段合成、录课/有声书（长文本按句合成+拼接）、微信语音发送三个模式。
+ * 语音合成（合并页）：单段合成、录课/有声书（长文本按句合成+拼接）、
+ * 讲稿录课（PPT 备注逐页旁白）、微信语音发送四个模式。
  * 兼容旧深链：/tts?text= 自动填入单段文本框；/audiobook → ?tab=book；/wechat → ?tab=wechat。
  *
- * 「录课 / 有声书」与「微信发送」两个 tab 各自对应可关能力（sound.audiobook / hook.wechat）：
- * 按能力清单隐藏 —— 关掉后后端端点不再挂载，留着 tab 只会一路 404。
+ * 「录课 / 有声书」「讲稿录课」与「微信发送」tab 各自对应可关能力
+ * （sound.audiobook / sound.course / hook.wechat）：按能力清单隐藏 ——
+ * 关掉后后端端点不再挂载，留着 tab 只会一路 404。
  *
  * ⚠️ `sound.audiobook` **不在** `plugin_manifest.BODY_IDS`，所以标准预设下是关的。
  * 「声音保存」页有一条「去录一节课」深链直接落在这里（`?tab=book`），那边会先按
@@ -29,12 +33,14 @@ export function TtsRoute() {
   const { state } = usePluginCatalog()
   const catalog = state.status === "ready" ? state.catalog : null
   const bookOn = pluginVisible(catalog, "sound.audiobook")
+  const courseOn = pluginVisible(catalog, "sound.course")
   const wechatOn = pluginVisible(catalog, "hook.wechat")
   const fxBoardOn = pluginVisible(catalog, "sound.fx-board")
 
   // hook 必须无条件调用（React 规则）；enabled=false 时它们内部直接不轮询。
   const tts = useTts()
   const book = useAudiobook(bookOn)
+  const course = useCourse(courseOn)
   const wechat = useWechatSend(wechatOn)
   // 声板（素材目录）在**单段合成/有声书/微信**三处都要用（`SfxMarkBar` 的素材名
   // 就从它来），所以只要还有任一宿主 tab 开着就启用它 —— 以前只认微信，
@@ -60,6 +66,15 @@ export function TtsRoute() {
                 key: "book",
                 label: "录课 / 有声书",
                 content: <AudiobookPage {...book} soundboard={soundboard} />,
+              },
+            ]
+          : []),
+        ...(courseOn
+          ? [
+              {
+                key: "course",
+                label: "讲稿录课（PPT）",
+                content: <CoursePage {...course} />,
               },
             ]
           : []),
