@@ -57,7 +57,7 @@ MIT License，© 2026 mouxu（见根目录 `LICENSE`）。
 | **VB-CABLE**（`vb-cable.com`） | **Donationware**，分发条款见下 | 本仓库**没有内置**：`find` 无安装包、`grep` 无静默安装代码（2026-09-14 实测）。README 把它列为前置依赖 → **现状合规** |
 | **RVC 整合包**（`D:\RVC`，`VM_RVC_ROOT`） | 代码 = `RVC-Project/Retrieval-based-Voice-Conversion-WebUI` = **MIT**（GitHub API 实读，2026-09-14）。**底模条款另说，见下** | 外部目录，用户自备。其 `.venv` 内另有 `sounddevice` / `webrtcvad` / `soundfile` 等（`cascade_stream.py` / `play_worker.py` 在那边跑，见 README「新机器部署」）—— **不随本项目分发，故不在 §2.1 登记**（2026-09-20：`webrtcvad` 随第 5 步撤出主环境登记） |
 | **RVC 底模**（`hubert_base.pt` / `rmvpe.pt` / `pretrained_v2/*`） | ⚠️ **仓库标 `license: mit`，但同仓另有一份 `使用需遵守的协议-LICENSE.txt`** —— 正文在 MIT 版权行后插了一段中文：**"本软件仅供研究使用，使用软件者、传播软件导出的声音者自负全责。如不认可该条款，则不能使用/引用软件包内所有代码和文件。"**（2026-09-14 读 HF `lj1995/VoiceConversionWebUI` 原文） | **不随包分发**（用户在 `D:\RVC` 自备）→ 现状无分发义务。**但"仅供研究使用"意味着不得打进发行物** —— 已由门禁机器化（§2.3） |
-| **Python 运行时依赖 29 个**（核心 + 各能力 `extras.python`） | 全为宽松许可，**无 GPL**（见 §2.1）。**无 GPL 由门禁机器校验**（`tools/audit_licenses.py` 的 `FORBIDDEN`），不是靠人眼 | 由 `tools\setup_env.ps1` **按启用集**装；`torch` / `torchaudio` 从 CUDA 索引另装。**不要**直接 `pip install -r requirements.txt` 期望拿到全部能力 —— 第 5 步起重包只在清单的 `extras.python` 里 |
+| **Python 运行时依赖 30 个**（核心 + 各能力 `extras.python`） | 全为宽松许可，**无 GPL**（见 §2.1）。**无 GPL 由门禁机器校验**（`tools/audit_licenses.py` 的 `FORBIDDEN`），不是靠人眼 | 由 `tools\setup_env.ps1` **按启用集**装；`torch` / `torchaudio` 从 CUDA 索引另装。**不要**直接 `pip install -r requirements.txt` 期望拿到全部能力 —— 第 5 步起重包只在清单的 `extras.python` 里 |
 
 ### 2.1 Python 依赖（许可取自本机 `site-packages/*.dist-info/METADATA` 实读，2026-09-14）
 
@@ -88,6 +88,16 @@ librosa — **ISC**；Pillow — **HPND**；requests / python-multipart / pyaudi
 | `qwen-tts` | **Apache-2.0**（`License: Apache-2.0`；实读 `tts_trial/venv312/…/qwen_tts-0.1.1.dist-info`） | `sound.tts`（TTS worker） |
 | `transformers` | **Apache-2.0**（`License: Apache 2.0 License` + classifier） | `sound.audition`（NatScore 打分器） |
 | `uiautomation` | **Apache-2.0**（`License: Apache 2.0`） | `hook.wechat`（微信窗口 UIA） |
+
+**2026-10-05 新增 1 条**（同口径：插件 extras 触发）：
+
+| 包 | 许可 | 谁要它 |
+|---|---|---|
+| `audioseal` | **MIT**（0.2.0，实读本机 METADATA：classifier `OSI Approved :: MIT License` + `License-File: LICENSE`；Meta 官方实现 <https://github.com/facebookresearch/audioseal>，MIT 原文版权行 `Copyright (c) Meta Platforms, Inc. and affiliates.`） | `sound.watermark`（音频溯源水印，推理吃主 .venv 的 torch/torchaudio） |
+
+> `audioseal` 的**权重**（generator/detector .pth，HF `facebook/audioseal`，标签 `license: mit`，
+> 2026-10-05 实读）与代码同许可、无附加条款；首次使用时由后端经市场下载器拉到
+> 用户数据目录（`VM_TTS_MODELS_DIR/audioseal/`，sha256 强校验）—— **不进仓库、不随包分发**，同 `qwen-tts` 模式。
 
 > `deepfilter-stream` 的 ONNX 模型资产（DeepFilterNet3）首次运行自动下载到
 > `%LOCALAPPDATA%\deepfilter-stream\…`，**不进仓库、不随包分发**；上游 README 标
@@ -198,6 +208,7 @@ electron-builder 配置（`files` + `extraResources`）推出**真实打包面**
 > 判据宁可窄一点也别误报：一条开始喊狼来了的规则，下一次真出事时没人会看它。
 
 <!-- audit:deps:begin -->
+python:audioseal
 python:comtypes
 python:deepfilter-stream
 python:demucs

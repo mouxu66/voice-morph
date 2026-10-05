@@ -1,0 +1,35 @@
+{
+  "id": "sound.watermark",
+  "name": "音频水印",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 165,
+  "summary": "给音频嵌一个隐形溯源码（可检出、可溯源），并可选给合成的语音自动加标识；基于 Meta AudioSeal（MIT）",
+  "requires": [],
+  "routers": ["watermark_api"],
+  "hooks": [],
+  "routes": [
+    {
+      "path": "/watermark",
+      "module": "Watermark",
+      "export": "WatermarkRoute",
+      "nav": { "label": "音频水印", "icon": "Fingerprint", "group": "voices", "order": 50 }
+    }
+  ],
+  "legacy_routes": [],
+  "extras": {
+    "python": ["audioseal", "torch", "torchaudio"],
+    "external": [],
+    "models": [
+      {
+        "env": "VM_WATERMARK_MODELS_DIR",
+        "label": "AudioSeal 水印权重（generator + detector，首用时在本页自动下载）",
+        "size_hint_mb": 90
+      }
+    ]
+  },
+  "health": null,
+  "disable": {
+    "note": "关闭后「音频水印」页消失（/api/watermark/* 不再挂载），「合成自动加标识」也随之停止 —— 已嵌入水印的音频不受影响，码照样可检出。"
+  }
+}

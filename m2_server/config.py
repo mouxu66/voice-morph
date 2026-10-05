@@ -43,6 +43,10 @@ TTS_VENV_PY = _path("VM_TTS_VENV_PY", ROOT / "tts_trial" / "venv312" / "Scripts"
 # RVC 整合包根目录
 RVC_ROOT = _path("VM_RVC_ROOT", Path("D:/RVC"))
 
+# AudioSeal 水印权重目录（generator+detector 约 90MB；sound.watermark 插件首用时自动下载）。
+# 跟随 TTS_MODELS_DIR：桌面端已注入该变量（externalResourceEnv），无需改 Electron 主进程。
+WATERMARK_MODELS_DIR = _path("VM_WATERMARK_MODELS_DIR", TTS_MODELS_DIR / "audioseal")
+
 # 默认 RVC 实验名（新音色用各自 voice_id 作为 exp 名）。
 # 留空 = 本机没有“默认音色”：调用方应提示“请先创建/训练一个音色”。
 # 2026-09-13 前这里写的是作者本人的音色名（他 08-29 A/B 选出的最佳音色）——

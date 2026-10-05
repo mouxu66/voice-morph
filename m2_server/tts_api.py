@@ -102,6 +102,11 @@ def synth_wav(
     # ★ 会话目录：默认不落盘（见模块注释）
     out = session_out.new_path("tts")
     out.write_bytes(wav_bytes)
+    # 音频溯源水印（sound.watermark，默认关）：开着就给产物补一个隐形溯源码。
+    # 纯旁路 —— 组件缺失 / 模型没下 / 推理出错全都吞掉，合成结果本身不受任何影响。
+    import audio_watermark
+
+    audio_watermark.auto_mark_if_enabled(out)
     import soundfile as sf
 
     d, sr = sf.read(str(out))
@@ -186,6 +191,10 @@ def _synth_marked(text: str, kw_for, voice_id: str) -> tuple[Path, float, str]:
 
     out = session_out.new_path("tts")
     sf.write(str(out), pcm, sr, subtype="PCM_16")
+    # 与常规路径同一条水印旁路（默认关；失败吞掉，见 audio_watermark.auto_mark_if_enabled）
+    import audio_watermark
+
+    audio_watermark.auto_mark_if_enabled(out)
     return out, round(pcm.size / sr, 1), voice_id
 
 

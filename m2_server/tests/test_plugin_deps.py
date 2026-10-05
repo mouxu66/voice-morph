@@ -74,6 +74,10 @@ _FROZEN_EXTRAS: dict[str, list[str]] = {
     # 翻唱：demucs 分离（htdemucs，同训练那套主 .venv 子进程，torch/torchaudio 随之）；
     # librosa 供人声裁切/重采样。soundfile 是核心依赖（requirements.txt），不许重复声明。
     "sound.cover": ["demucs", "torch", "torchaudio", "librosa"],
+    # 音频水印：audioseal（Meta AudioSeal，MIT）推理吃主 .venv 的 torch/torchaudio ——
+    # 导入全在 audio_watermark.py 的函数里（无 Triton 的 Windows 必须先 setdefault
+    # NO_TORCH_COMPILE 再 import audioseal，见该模块顶部），但静态图照样算 required。
+    "sound.watermark": ["audioseal", "torch", "torchaudio"],
 }
 
 

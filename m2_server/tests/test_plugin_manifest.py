@@ -449,6 +449,7 @@ _FROZEN_ROUTES: tuple[tuple[str, str, str], ...] = (
     ("/ytdlp", "Ytdlp", "YtdlpRoute"),  # 在线扒歌：外部 yt-dlp 桥（可关）
     ("/workshop", "Workshop", "WorkshopRoute"),
     ("/preserve", "Preserve", "PreserveRoute"),  # 声音保存：教师等职业用嗓人群的嗓音档案
+    ("/watermark", "Watermark", "WatermarkRoute"),  # 音频水印：AudioSeal 溯源码（可检出/可溯源）
 )
 
 _FROZEN_LEGACY: tuple[tuple[str, str], ...] = (
@@ -480,6 +481,7 @@ _FROZEN_NAV: tuple[tuple[str, str, str, str, int], ...] = (
     ("/workshop", "训练变声", "Mic2", "voices", 30),
     ("/pet-market", "桌宠皮肤", "PawPrint", "desktop", 10),
     ("/preserve", "声音保存", "ShieldCheck", "voices", 40),
+    ("/watermark", "音频水印", "Fingerprint", "voices", 50),
 )
 
 

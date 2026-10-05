@@ -185,7 +185,8 @@ def test_default_preset_is_the_voice_morph_body():
     body = set(plugin_manifest.BODY_IDS)
     assert standard == plugin_manifest.expand(body), "standard 不再是 BODY_IDS 的闭包"
     assert standard - {p.id for p in plugin_manifest.load_all() if p.is_core} == body
-    # 被排除的 9 项逐个点名 —— 漏掉一个就是"本体"惄悄变胖
+    # 被排除的可选项逐个点名 —— 漏掉一个就是"本体"惄悄变胖
+    # （2026-10-05 加 sound.watermark：溯源水印是可选增强，不进变声最小闭环）
     for pid in (
         "sound.workshop",
         "sound.ft",
@@ -193,6 +194,7 @@ def test_default_preset_is_the_voice_morph_body():
         "sound.tts",
         "sound.audiobook",
         "sound.effects",
+        "sound.watermark",
         "pet.companion",
         "pet.market",
         "hook.wechat",
