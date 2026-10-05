@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import { Check, Copy, Power, RefreshCw, Server, Stethoscope, X } from "lucide-react"
-import { diagnose, getHealth } from "@/api/client"
+import { diagnose, getDiagnosticReport, getHealth } from "@/api/client"
 import type { DiagnoseInfo } from "@/types"
 import { useAppStore } from "@/store/useAppStore"
 import { ErrorPanel } from "@/components/ErrorPanel"
@@ -23,7 +23,8 @@ export function EnvHealth({ open, onClose }: { open: boolean; onClose: () => voi
   const [startErr, setStartErr] = useState<string | null>(null)
   const [showCmd, setShowCmd] = useState(false)
   const [copiedCmd, setCopiedCmd] = useState(false)
-  const [copiedReport, setCopiedReport] = useState(false)
+  // "" = 未复制 / "full" = 复制了后端 AI 调试接口的完整报告 / "brief" = 降级到本地简版
+  const [copiedReport, setCopiedReport] = useState<"" | "full" | "brief">("")
 
   const recheck = useCallback(async (): Promise<boolean> => {
     setLoading(true)
@@ -104,18 +105,35 @@ export function EnvHealth({ open, onClose }: { open: boolean; onClose: () => voi
     }
   }
 
-  const copyReport = async () => {
-    if (!diag) return
-    const lines = diag.items
-      .filter((i) => !i.ok)
-      .map((i) => `【${i.label}】未通过\n  - 现状：${i.detail}\n  - 排查：${i.hint || "—"}`)
-    const text =
-      `变声工坊 · 环境体检（${diag.all_ok ? "全部通过" : "存在未通过项"}）\n\n` +
-      (lines.length ? lines.join("\n\n") : "（无未通过项）")
+  // 首选：后端的**完整诊断报告**（`GET /api/ai/context?format=md`，已脱敏）——
+  // 它比本地拼的简版多出能力加载 / 音频链路 / 预热 / 上一条发送的 warning /
+  // 疑似错误日志，正是「这次为什么失败」要用的东西（见 docs/AI调试端点设计.md）。
+  // 取不到时降级到本地简版，并**如实标注「简版」**—— 一句「已复制」把两种
+  // 内容不同的东西说成同一件事，会让用户以为 AI 看到了完整现场。
+  const prepareReportText = async (): Promise<{ text: string; mode: "full" | "brief" } | null> => {
     try {
-      await navigator.clipboard.writeText(text)
-      setCopiedReport(true)
-      setTimeout(() => setCopiedReport(false), 1500)
+      return { text: await getDiagnosticReport(), mode: "full" }
+    } catch {
+      if (!diag) return null
+      const lines = diag.items
+        .filter((i) => !i.ok)
+        .map((i) => `【${i.label}】未通过\n  - 现状：${i.detail}\n  - 排查：${i.hint || "—"}`)
+      return {
+        text:
+          `变声工坊 · 环境体检（${diag.all_ok ? "全部通过" : "存在未通过项"}）\n\n` +
+          (lines.length ? lines.join("\n\n") : "（无未通过项）"),
+        mode: "brief",
+      }
+    }
+  }
+
+  const copyReport = async () => {
+    const prepared = await prepareReportText()
+    if (!prepared) return
+    try {
+      await navigator.clipboard.writeText(prepared.text)
+      setCopiedReport(prepared.mode)
+      setTimeout(() => setCopiedReport(""), 1500)
     } catch {
       /* 忽略 */
     }
@@ -226,11 +244,14 @@ export function EnvHealth({ open, onClose }: { open: boolean; onClose: () => voi
               <button
                 type="button"
                 onClick={copyReport}
-                disabled={failCount === 0}
-                className="flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-muted-foreground transition hover:text-foreground"
               >
                 {copiedReport ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                {copiedReport ? "已复制" : "复制完整体检报告"}
+                {copiedReport === "full"
+                  ? "已复制"
+                  : copiedReport === "brief"
+                    ? "已复制（简版）"
+                    : "复制诊断报告"}
               </button>
 
               <div className="space-y-2">

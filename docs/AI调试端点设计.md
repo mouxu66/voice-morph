@@ -1,8 +1,11 @@
 # AI 调试端点 · 设计与门禁同步清单
 
-> 状态：**设计稿（未实现）**，2026-10-05。读者：评审者 + 实现者（人/agent）。
+> 状态：**第一期已实现（只读面随 `core.system` 上线，2026-10-05）；写动作（第二期）仍待做**。
+> 读者：评审者 + 实现者（人/agent）。
 > 缘起：用户问「要不要给 AI 专门开发一个端点来调试/控制这个程序，用户出问题让 AI 帮忙」。
-> 结论：**要，但只读优先、写入白名单、默认全关**。本稿先定形状与门禁，落地前不动代码。
+> 结论：**要，但只读优先、写入白名单、默认全关**。
+> 2026-10-05 两处拍板：① 只读快照**并入 `core.system` 零门槛可用**（不做成可选插件）；
+> ②「复制诊断报告」按钮放**设置页环境体检卡片旁**。两项均已反映到下文与 §八/§九。
 >
 > 相关先例（改这份设计前先读）：
 > `docs/插件化设计.md`（一切皆插件）、`docs/遥控页二维码方案.md` §五（`hook.remote`
@@ -37,24 +40,30 @@
 
 ---
 
-## 二、形态：一个可选插件 `hook.ai`
+## 二、形态（★ 2026-10-05 拍板后：读写分层）
+
+### 2.1 第一期（只读）并入 `core.system`
 
 | 决策 | 取值 | 理由 |
 |---|---|---|
-| 插件 id | `hook.ai` | 与 `hook.wechat` / `hook.remote` 同族：对外部使用者（这里是 AI）开放的能力 |
-| `category` | `hook` | 清单校验只允许 `core/sound/pet/hook` 四类（`plugin_manifest._CATEGORIES`） |
-| `order` | 240 | 现役最大值是 `hook.remote` 的 230（落地时再核对一次） |
-| `routers` | `["ai_api"]`（新模块 `m2_server/ai_api.py`） | 清单校验拒绝空 routers；且它**真的有一个自己的路由面**，不为过校验而造 |
-| `requires` | `[]`（不声明） | 快照按「能力在就采、不在就带原因跳过」工作（同 `/diagnose` 的 `skipped` 逻辑），关掉微信/桌宠也能用；声明 `requires` 反而会把「关一个能力」变成「关一堆」 |
-| 默认状态 | **默认关**，不进 `standard` 预设 | 不动 `BODY_IDS`（那是「变声本体」的唯一定义，被测试逐字钉住）。用户在设置页按需开启 —— 与用户拍板的 `hook.remote`「有需要就装」同取向 |
+| 归属 | `core.system`（`routers` 加一项 `ai_api`） | 用户拍板：只读快照**零门槛可用** —— 报障时用户还没装/开任何东西就该能点「复制诊断报告」（§九第 1 条） |
+| 模块 | 新模块 `m2_server/ai_api.py` | 与 `system_api` 分开：AI 面是给外部工具看的**稳定契约**，别混进体检本身；`core.system` 的 `routers` 支持多项 |
+| 路由认领 | `plugin.json` 的 `routers` 加 `"ai_api"` | `_validate()` 要求每个 router **恰被一个插件认领**；核心不可关 → 始终挂载 |
+| 依赖 | 不 `requires` | 快照按「能力在就采、不在就带原因跳过」工作，关掉微信/桌宠也能用 |
 
-关闭 = 路由不挂载 = 404，与其它插件同构（`plugin_manifest.mount_plan` 的门控）。
-`disable.note` 要如实写：「关闭后 AI 调试接口整体消失（含只读快照）。」
+### 2.2 第二期（写动作）另起可选插件 `hook.ai`
 
-> **备选方案（已考虑，未采用）**：把只读快照放进 `core.system`（始终可用，用户报障
-> 零门槛）。否决理由：核心面每扩大一寸都要永久维护，而这是**给外部工具看**的面，
-> 不是应用本身的功能。宁可让用户「排障时开一下」。
-> 这条与 §九待拍板第 1 条是同一件事，评审时如果倾向「零门槛」，改的就是这里。
+写能力的安全等级高于读，**不给它 core 的零门槛**：
+
+| 决策 | 取值 | 说明 |
+|---|---|---|
+| 插件 id / category / order | `hook.ai` / `hook` / 240 | 与 `hook.wechat` / `hook.remote` 同族（现役最大 order 是 `hook.remote` 的 230） |
+| 写端点模块 | 新模块 `ai_actions_api.py`（`hook.ai` 认领） | ⚠️ **不能再把 `ai_api` 认领给第二个插件**（`_validate()`：一个 router 只能一个主人）——所以写动作必须另起模块，关闭 = 不挂载 = 404 |
+| 动作表 | 中性模块 `ai_actions.py`（**无路由**） | 读侧 `/api/ai/actions`（core）与写侧执行器共用**唯一真相源**；core 侧不许 import 已关闭插件的模块，所以表不能放在 `ai_actions_api.py` 里 |
+| 三重门 | 见 §三 3.2 | 插件启用 + `VM_AI_CONTROL=1` + `VM_AI_TOKEN`，fail closed |
+
+> 「只读 core、写动作插件」这条分层的代价：多一个模块与一次路由认领，换来的是
+> 读面零门槛（用户报障即时可用）与写面默认全关（不可逆动作要三重钥匙）。
 
 ---
 
@@ -62,11 +71,11 @@
 
 ### 3.1 三个端点
 
-| 方法 | 路径 | 作用 | 阶段 |
-|---|---|---|---|
-| `GET` | `/api/ai/context?format=json\|md&logs=0\|N` | 只读快照（字段见 §四）；`format=md` 返回可直接粘贴的脱敏报告 | 第一期 |
-| `GET` | `/api/ai/actions` | 机器可读的动作目录：每个动作的 schema、前置条件、当前是否可用及**原因** | 第二期随动作一起 |
-| `POST` | `/api/ai/actions/{action_id}` | 执行一个白名单动作（body 带参数；强制 `dry_run` 优先） | 第二期 |
+| 方法 | 路径 | 作用 | 归属 | 阶段 |
+|---|---|---|---|---|
+| `GET` | `/api/ai/context?format=json\|md&logs=0\|N` | 只读快照（字段见 §四）；`format=md` 返回可直接粘贴的脱敏报告 | `core.system`（新模块 `ai_api`，不可关） | 第一期 |
+| `GET` | `/api/ai/actions` | 动作目录：第一期只答「拒绝清单 + 写未启用」；二期加动作 schema | `core.system` | 第一期 |
+| `POST` | `/api/ai/actions/{action_id}` | 执行一个白名单动作（body 带参数；强制 `dry_run` 优先） | `hook.ai`（可选插件，默认关） | 第二期 |
 
 ### 3.2 鉴权矩阵（★ 比现有 API 更严，这是刻意的）
 
@@ -79,7 +88,7 @@
 | 本机回环（Electron / curl / agent / vite proxy） | ✅ 放行 | ❌ 需同时满足三个条件（见下） |
 | 局域网（手机 / 另一台电脑） | ❌ **默认 403**（即使设了 token 也不放，需将来的 `VM_AI_ALLOW_LAN=1`） | ❌ **永不开放** |
 | 公网 Origin 的浏览器页面 | ❌ 403（沿用 `_OriginGuardMiddleware`） | ❌ 403 |
-| 插件被用户关掉 | ❌ 404（路由未挂载） | ❌ 404 |
+| 插件被用户关掉 | 不适用：只读面归 `core.system`，核心不可关 | ❌ 404（`hook.ai` 未启用） |
 
 写动作的三重门（**fail closed**，任一不满足即拒）：
 
@@ -121,8 +130,10 @@
    用户主目录替换为 `%USERPROFILE%`；日志行截断到 200 字符。报告生成器把规则原文
    写进 `redaction` 段（用户能看懂自己交出去的是什么）。
 5. **`schema: 1` 版本号**：消费方按此解析；只增字段不升版，删改字段才升。
-6. **性能预算**：p95 ≤ 1s（含 diagnose 的文件探测；不含 GPU 推理），
-   前端按钮 3 秒内防连点（快照本身无副作用，但没必要连打）。
+6. **性能预算（实测，2026-10-05）**：热路径 ≈ 1.4s —— 音频只读枚举（PowerShell
+   `diag`）≈ 1.3s 是大头；冷启动首调更慢（`/health` 的 torch 探测 ≈ 2.2s、首次
+   import 更多）。**刻意不做缓存**：宁可慢一点，也不报一个陈旧的设备状态
+   （报告是用户点一次的动作，不是轮询）。
 
 ### 4.2 字段表
 
@@ -154,7 +165,7 @@
 | `warmup` | `warmup.status()` | worker 未起 → `ready:false` + 一句话 |
 | `wechat` | `wechat_voice` 的 precheck（只读） | 插件关 → `{ "enabled": false, "reason": "hook.wechat 未启用" }`，不 404 不 500 |
 | `history` | history 读取函数（倒序取前 N） | 文件不存在 → 空数组 + 原因；坏行沿用「跳过不 500」 |
-| `errors` | 新增进程内 ring buffer（≤500 行；`logging.Handler` 实现） | ⚠️ **局限如实写进 `notes`**：直接 `print` 到 stdout 的行不进缓冲（打包态另有 `%APPDATA%/<app>/backend.log` 可作补充源，但那是 Electron 写的，后端独立跑时不存在） |
+| `errors` | **读 Electron 捕获的 `%APPDATA%/voice-morph-desktop/backend.log` 尾部**（只读末尾 64KB、筛疑似错误行、行截断 200 字符；`VM_BACKEND_LOG` 可覆盖路径） | 文件不存在（后端独立由终端直跑）→ 空数组 + `notes` 说明「stdout 即日志」。★ 实现时否掉了设计初稿的 ring buffer：全仓日志就是 `print` 到 stdout（`plugin_loader.report` 的注释原文），装 logging handler 只能捕到零头 —— 那会把「没日志」伪装成「没错误」 |
 | `notes` | 现算 | 它就是「诚实性」本身，不许为空数组以外的省略 |
 | `redaction` | 静态声明 | — |
 
@@ -236,11 +247,15 @@
 > 这一节是本稿的重点：本项目的门禁密度很高，「写完功能才发现一堆红」的成本
 > 远高于开工前先对账。下面每一条都注明**为什么**。
 
-### 7.1 新增插件 + 新增 router 必然触发的
+### 7.1 新增 router / 新增插件必然触发的
+
+> 第一期（只读）**不新增插件**，只是给 `core.system` 加一个模块：第 0、2、6、7 条必做；
+> 第 1、3、4、5 条属第二期（新增 `hook.ai`）。
 
 | # | 门禁 / 文件 | 为什么 | 怎么做 |
 |---|---|---|---|
-| 1 | `m2_server/plugins/hook.ai/plugin.json` | 唯一真相源；`routers` 非空、router 不许被两个插件认领、`requires` 存在且无环 | 按 §二 的取值；`disable.note` 写清「关了什么消失」 |
+| 0 | `m2_server/plugins/core.system/plugin.json` 的 `routers` 加 `"ai_api"` | 每个 router 恰被一个插件认领；不加则该模块无人认领、挂载计划里没有它 | 第一期必做 |
+| 1 | `m2_server/plugins/hook.ai/plugin.json`（第二期） | 唯一真相源；`routers` 非空、router 不许被两个插件认领、`requires` 存在且无环 | 按 §二 2.2 的取值；`disable.note` 写清「关了写动作全消失」 |
 | 2 | `README.md` 三处手抄计数（能力数 / router 数 / 目录树） | `test_docs_freshness.py` 现算校验，加插件必动 | 按门禁报错信息改 |
 | 3 | `m2_server/tests/test_plugin_switch.py` | **在 `--fast` 里**：加一个插件会改「关一个能力跳到谁」的既有样本；`requires` 会给被依赖者加依赖方 | 新增 `ai_api` 的开关用例；样本被改动的按先例**改样本 + 加守卫**，不放宽断言 |
 | 4 | `m2_server/tests/test_plugin_manifest.py` / `test_plugin_extras.py` / `test_plugin_deps.py` | 清单结构、extras 与真实 import 对账 | ★ 本设计**零新第三方依赖**（只用 stdlib + 现有 fastapi 栈）——这是硬约束，为的就是不动这组门禁 |
@@ -259,12 +274,12 @@
 | 12 | 脱敏 | 构造含 `input_text`、含用户名路径的历史记录 → 报告里必须**不出现**（负面断言） |
 | 13 | ★ 变异验证 | 每条守卫测试都要**注入真违规它会红**（§8.19 / §8.21：错得自洽的守卫比没有更糟）；HTTP 级从 `TestClient` 打进去（§8.43：只从函数层调过的守卫等于没有） |
 
-### 7.3 前端与桌面端（第二期出现 UI 时）
+### 7.3 前端与桌面端（第一期就有 UI）
 
 | # | 门禁 / 动作 | 为什么 |
 |---|---|---|
-| 14 | `tools/audit_endpoint_ownership.py` | 新前端函数 → 端点归属必须可定位；「核心页里嵌可关组件」不许新增（baseline 只许缩小） |
-| 15 | `web/src/lib/pluginRoutes.catalog.test.tsx` + `pluginVisible` 门控 | 页内跨插件元素必须门控，否则关掉插件后按钮还在 → 点一下 404（§8.40、`preview_text` 的教训 §2.43） |
+| 14 | `tools/audit_endpoint_ownership.py` | 新前端函数 → 端点归属必须可定位（第一期就要跑；本按钮打的是 `core.system` 的 `/api/ai/*`，**不产生**新的「核心页嵌可关组件」） |
+| 15 | `pluginVisible` 门控（第二期） | 二期若把动作按钮/记录面板放进核心页，必须按 `hook.ai` 状态门控，否则关掉插件后按钮还在 → 点一下 404（§8.40、§2.43 的教训） |
 | 16 | `web` 三步：`tsc -b` / `npm run lint` / `vitest run` | `tools/check.py` 的 web 步与 ci.yml 逐条对齐；eslint 只在门禁里跑过才不算死脚本（§3.15 / §3.23 族） |
 | 17 | 桌面端生效路径 | 只改 `m2_server` + `web/src` → 源码模式重启即生效；安装版后端走 `sync_backend.ps1 -TargetRoot` + `verify_backend_sync.py`；前端走 `npm run ship`；**不涉及**主进程 → 不重打 asar |
 
@@ -291,12 +306,13 @@
 
 ## 八、分期与验收
 
-### 第一期（只读，独立可交付）
+### 第一期（只读，独立可交付）—— 并入 `core.system`，零门槛 ✅ 已实现（2026-10-05）
 
-- `GET /api/ai/context`（json + md）、`GET /api/ai/actions`（列空表也答，为二期占位）；
-- 前端「复制诊断报告」按钮 —— **放哪待拍板**（见 §九）；
-- 验收：curl 矩阵全绿 + §7.2 的 8/9/12/13 四组测试 + `python tools/check.py --ci-fidelity`
-  干净环境绿。
+- `GET /api/ai/context`（json + md）、`GET /api/ai/actions`（答拒绝清单 + 「写未启用」）；
+- 前端「复制诊断报告」按钮 —— 落在**环境体检面板**里那个已有按钮上（升级而不是新加），
+  端点拿不到时降级简版并如实标注「简版」；
+- 测试：`m2_server/tests/test_ai_api.py`（14 条）+ `web/src/components/EnvHealth.test.tsx`（2 条）；
+- 验收：全量 `python tools/check.py` 绿。
 
 ### 第二期（白名单动作 + 审计面板）
 
@@ -306,13 +322,11 @@
 
 ---
 
-## 九、待拍板（需要用户回答）
+## 九、拍板记录
 
-1. **只读快照也默认关吗**（推荐：默认关，排障时开启）——
-   备选是并入 `core.system` 零门槛可用，代价见 §二 的备选方案。
-2. **「复制诊断报告」按钮放哪**：设置页环境体检卡片旁（推荐；报障时用户就在这找
-   「哪里不对」）/ 能力索引页顶部（`RemoteQrCard` 先例的位置）。
-3. **第二期动作是否包含 `audio.setup_best`（改系统默认设备）**——
+1. ~~只读快照也默认关吗~~ **已拍板（2026-10-05）：并入 `core.system` 零门槛可用**。
+2. ~~「复制诊断报告」按钮放哪~~ **已拍板（2026-10-05）：设置页环境体检卡片旁**。
+3. **仍待拍板：第二期动作是否包含 `audio.setup_best`（改系统默认设备）**——
    推荐先只放 `plugins.*`（零外部副作用），设备类等真机需求。
 
 ---

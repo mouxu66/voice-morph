@@ -172,6 +172,32 @@ export async function diagnose(): Promise<DiagnoseInfo> {
 }
 
 /**
+ * AI 调试接口的只读诊断快照（Markdown）：环境体检 + 能力加载 + 音频设备 +
+ * 预热 + 微信发送预检 + 最近产出（不含文字内容）+ 疑似错误日志，后端已脱敏。
+ *
+ * 为什么走它而不是前端自己把 `/diagnose` 拼一段文字：这份报告要能回答
+ * 「这次为什么失败」（哪个能力没挂、音频链路缺什么、上一条发送有什么 warning），
+ * 而 `/diagnose` 只答「装没装」。设计见 `docs/AI调试端点设计.md`。
+ * 端点仅限本机访问；后端不可用时抛错，调用方自行降级（见 EnvHealth.copyReport）。
+ */
+export async function getDiagnosticReport(): Promise<string> {
+  const res = await fetch(`${BASE}/ai/context?format=md`, {
+    headers: { Accept: "text/markdown" },
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return res.text();
+}
+
+/**
  * 后端预热进度（TTS worker / RVC / 微信播放worker 常驻化，合计约 50s）。
  * 预热完成前发语音会卡在模型加载上（请求会等预热结束，不会失败），
  * 前端拿它把「为什么第一次这么慢」讲清楚。

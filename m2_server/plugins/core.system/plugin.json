@@ -6,7 +6,7 @@
   "order": 10,
   "summary": "健康检查、环境体检、存储看板与清理；其它插件的探针都挂在它上面",
   "requires": [],
-  "routers": ["system_api"],
+  "routers": ["system_api", "ai_api"],
   "hooks": [],
   "routes": [
     {

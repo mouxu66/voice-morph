@@ -97,7 +97,8 @@
 │   ├── server.py         # 应用装配层：app + 鉴权中间件 + CORS + 路由注册 + SPA 托管
 │   ├── runtime.py        # 跨模块共享状态（流水线/挖掘/内录状态、路径常量）
 │   ├── plugin_manifest.py plugin_loader.py  # 能力清单真相源 + 容错装载（M/N 已加载那行）
-│   ├── system_api.py voices_api.py raw_media_api.py pipeline_api.py clips_api.py
+│   ├── system_api.py ai_api.py voices_api.py raw_media_api.py pipeline_api.py clips_api.py
+│   │                     #   ↑ ai_api：AI 调试接口（只读快照 /api/ai/context，见 docs/AI调试端点设计.md）
 │   ├── tts_api.py mine_api.py capture_api.py ab_api.py ab_chain.py audio_api.py
 │   ├── media_api.py rvc_dataset_api.py market_api.py pet_market_api.py
 │   ├── cover_api.py ytdlp_api.py audition_api.py soundboard.py   # 翻唱/扒歌/试音/声板
@@ -154,7 +155,7 @@
 
 ## 后端 M2（FastAPI）
 
-`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 36 个独立 router 模块**（默认 `standard` 预设只挂 16 个，见上面「关掉一个能力」那节的说明）：
+`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 37 个独立 router 模块**（默认 `standard` 预设只挂 17 个，见上面「关掉一个能力」那节的说明）：
 
 `cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history_api`（历史）、`cover_api`（翻唱）、`ytdlp_api`（在线扒歌）、`audition_api`（试音间）、`soundboard`（特效声板）、`market_api` / `pet_market_api`（市场）、`openai_compat`（OpenAI 兼容层）、`watermark_api`（音频水印溯源）、`blindtest_api`（盲听评测）、`course_api`（讲稿录课：PPT 备注页逐页旁白）、`remote_api`（手机遥控的**能力现状查询** —— 见下）。
 
@@ -336,7 +337,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
 >
 > ⚠️ **默认预设是 `standard`（标准＝变声本体），只启用 3 项可选能力**
 > （`sound.offline-vc` / `sound.rvc-live` / `sound.audition`，2026-09-23 拍板）。
-> 「共 27 个能力」是**全开预设下的上限**；standard 下后端只挂 16 个 router 模块，
+> 「共 27 个能力」是**全开预设下的上限**；standard 下后端只挂 17 个 router 模块，
 > 其余 16 个（训练、微调、发掘、输字变声、有声书、效果器、桌宠、皮肤、微信、手机遥控、翻唱、扒歌、素材流水线、声音保存、音频水印、盲听评测）
 > 不加载路由、不占显存 —— 那个 `M/N 个已加载` 里的 N 是当前启用集，不是 31。
 >
