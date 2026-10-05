@@ -1,7 +1,7 @@
 /**
  * 侧栏「使用模式」切换块（2026-10-03）。
  *
- * 为什么存在：三个场景套餐（微信变身 / 声音保存 / 游戏变身）原本只住在
+ * 为什么存在：三个场景套餐（微信变声 / 声音保存 / 游戏变声）原本只住在
  * 能力面板（设置抽屉）的套餐行里 —— 用户反馈「找不到在哪里」。模式是产品级
  * 的入口，值得常驻侧栏，而不是藏在二级抽屉的一排按钮里。
  *
@@ -19,9 +19,9 @@ import { cn } from "@/lib/utils"
  *  不在表里的套餐（light/full/…）不进侧栏 —— 侧栏只留「按用户是谁」分的三个场景。
  *  `label` 是本地兜底：顶栏徽章（AppChrome）在卡片点击后立即显示，等不及后端清单刷新。 */
 export const SCENE_META: Record<string, { icon: typeof Gamepad2; label: string; hint: string }> = {
-  wechat: { icon: MessageCircle, label: "微信变身", hint: "聊天变声 · 微信发送" },
+  wechat: { icon: MessageCircle, label: "微信变声", hint: "聊天变声 · 微信发送" },
   preserve: { icon: GraduationCap, label: "声音保存", hint: "录下声音 · 护嗓讲课" },
-  game: { icon: Gamepad2, label: "游戏变身", hint: "游戏直播 · 实时变声" },
+  game: { icon: Gamepad2, label: "游戏变声", hint: "游戏直播 · 实时变声" },
 }
 
 type Catalog = Awaited<ReturnType<typeof getPlugins>>

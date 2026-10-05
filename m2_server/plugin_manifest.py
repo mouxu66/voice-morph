@@ -382,14 +382,14 @@ PRESETS: dict[str, list[str] | None] = {
     # ── 场景模式三件套（2026-10-03 用户拍板）：按「用户是谁」分组，不按「功能多少」。
     # 打游戏的用不上微信、录課老师用不上实时变声 —— 套餐只是**起点**，套用后仍可在
     # 设置页逐项开关；禁用的插件其路由/首页入口整个下架（前端按 enabled 过滤）。
-    # 微信变身：变声本体 + 微信发送 + 特效声板（[爆炸] 等音效标记只在微信链路生效）。
+    # 微信变声：变声本体 + 微信发送 + 特效声板（[爆炸] 等音效标记只在微信链路生效）。
     # ★ sound.tts 必须带：微信发送 UI 是输字变声页的 tab（/tts?tab=wechat），
     #   不带 tts 等于 tab 宿主页整个下架（有声书同理挂在 /tts?tab=book）。
     "wechat": ["sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board"],
     # 声音保存（护嗓）：建档录老师的声音 → 输字让它说话 → 整篇有声书。
     # 有声书 requires tts，闭包自动补上；不带实时变声/微信 —— 课堂场景用不上。
     "preserve": ["sound.preserve", "sound.tts", "sound.audiobook"],
-    # 游戏变身：游戏 / 直播 / 会议里实时变声 —— 就是变声本体本身（rvc-live 走虚拟声卡）。
+    # 游戏变声：游戏 / 直播 / 会议里实时变声 —— 就是变声本体本身（rvc-live 走虚拟声卡）。
     "game": ["sound.offline-vc", "sound.rvc-live", "sound.audition"],
     # 全能：全开
     "full": None,
@@ -406,11 +406,13 @@ DEFAULT_PRESET = "standard"
 PRESET_LABELS: dict[str, str] = {
     "light": "轻量",
     # 「本体」写进标签：设置页那一排按钮是用户唯一能看见"标准到底含什么"的地方
-    "standard": "标准（变身本体）",
+    # ★ 术语：产品是「变声工坊」，一律叫「变声」。曾误写成「变身」（body-transformation
+    #   的字面义），用户侧栏一眼看错，已全量改正 —— 改这里前先 grep「变身」。
+    "standard": "标准（变声本体）",
     # 场景模式：名字直接说场景，用户不猜
-    "wechat": "微信变身",
+    "wechat": "微信变声",
     "preserve": "声音保存（护嗓）",
-    "game": "游戏变身",
+    "game": "游戏变声",
     "full": "全能",
     "core": "仅核心",
 }

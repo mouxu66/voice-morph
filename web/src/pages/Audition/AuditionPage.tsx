@@ -466,7 +466,7 @@ function LivePanel(p: ReturnType<typeof useAudition>) {
 
       <p className="mt-3 text-xs leading-6 text-muted-foreground">
         左边备选音色里<strong className="font-medium text-foreground">点哪个音色，就换成哪个</strong> —— 一次只挂一个音色，
-        换一个要重载模型（约 10 来秒）。戴上耳机对着麦克风说话，就能听到变身后的自己。
+        换一个要重载模型（约 10 来秒）。戴上耳机对着麦克风说话，就能听到变声后的自己。
       </p>
       {p.batchRunning && (
         <p className="mt-2 text-xs text-yellow-600">批量试音正在跑，等它结束再开实时（两者都要独占显卡）。</p>

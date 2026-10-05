@@ -83,14 +83,18 @@ def test_disabled_but_depended_on_is_kept():
 
 def test_enabled_ids_drops_when_nobody_needs_it():
     """反过来：关掉一个**没人依赖**的，就该真的生效 —— 否则上一条的"保留"会吞掉一切。"""
-    plugin_manifest.write_disabled({"sound.audiobook", "sound.tts"})
+    plugin_manifest.write_disabled({"sound.audiobook", "sound.course", "sound.tts"})
     on = plugin_manifest.enabled_ids()
     assert "sound.tts" not in on
     assert "sound.audiobook" not in on
 
 
 def test_dependents_of_names_the_dependents():
-    assert plugin_manifest.dependents_of("sound.tts") == ["sound.audiobook"]
+    # sound.tts 有两个依赖方（2026-10-05 加 sound.course「讲稿录课」）：
+    # 有声书挂在输字变声页 tab 上，讲稿录课同样挂在那一页 → 都 requires tts。
+    # ★ 这条断言曾因漏改红过：方案④加了 sound.course 却没同步这里，
+    # 而门禁 --fast 的 FAST_TESTS 白名单不含本文件 → 漏到全量才炸（2026-10-05 修）。
+    assert plugin_manifest.dependents_of("sound.tts") == ["sound.audiobook", "sound.course"]
     assert plugin_manifest.dependents_of("sound.offline-vc") == ["sound.audition"]
     assert sorted(plugin_manifest.dependents_of("sound.workshop")) == ["sound.ft", "sound.mine"]
     # pet.companion 现有两个依赖方：桌宠皮肤与手机遥控（2026-10-02 加hook.remote）。
@@ -121,7 +125,10 @@ def test_enabled_ids_revives_transitively(monkeypatch):
 def test_dependents_of_ignores_disabled_dependents():
     """依赖者自己也被关了 → 不算依赖者（否则就关不掉任何东西了）。"""
     plugin_manifest.write_disabled({"sound.audiobook"})
-    assert plugin_manifest.dependents_of("sound.tts", {"sound.audiobook"}) == []
+    # 只剩 sound.course 还开着 → 它仍是依赖者，不能算 []。
+    assert plugin_manifest.dependents_of("sound.tts") == ["sound.course"]
+    plugin_manifest.write_disabled({"sound.audiobook", "sound.course"})
+    assert plugin_manifest.dependents_of("sound.tts", {"sound.audiobook", "sound.course"}) == []
 
 
 # ---------------------------------------------------------------- 2. 预设
@@ -177,7 +184,7 @@ def test_apply_preset_records_only_what_the_user_turned_off():
 def test_default_preset_is_the_voice_morph_body():
     """「标准」= 变声本体：**选音色 → 变 → 听** 的最小闭环。
 
-    为什么本体里没有 `sound.tts`（输字变声）—— 本体是**声音→声音**的变身，
+    为什么本体里没有 `sound.tts`（输字变声）—— 本体是**声音→声音**的变声，
     文字→语音是另一条生成路线；它同时是边际依赖最大的那个（`qwen-tts` + 4.9G 模型），
     正是"按需下载"最该覆盖的。训练 / 微调 / 发掘 / 效果器同理。
     """
@@ -212,16 +219,41 @@ def test_default_preset_is_the_voice_morph_body():
 # 并且回答"这个场景为什么多了/少了一项"。套餐只是起点，套用后仍可逐项开关。
 
 def test_scene_presets_are_pinned_literals():
-    """三个场景套餐的**起点集**钉死：微信变身 / 声音保存（护嗓）/ 游戏变身。"""
+    """三个场景套餐的**起点集**钉死：微信变声 / 声音保存（护嗓）/ 游戏变声。"""
     assert plugin_manifest.PRESETS["wechat"] == [
         "sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board"]
     assert plugin_manifest.PRESETS["preserve"] == [
         "sound.preserve", "sound.tts", "sound.audiobook"]
-    # 游戏变身 = 变声本体本身（实时变声走虚拟声卡进游戏/直播/会议）
+    # 游戏变声 = 变声本体本身（实时变声走虚拟声卡进游戏/直播/会议）
     assert plugin_manifest.PRESETS["game"] == list(plugin_manifest.BODY_IDS)
     # 标签直接说场景 —— 设置页那一排按钮是用户唯一看得见套餐含义的地方
     for name in ("wechat", "preserve", "game"):
         assert plugin_manifest.PRESET_LABELS[name], f"{name} 缺中文标签"
+
+
+def test_no_preset_label_says_bianshen_with_body_character():
+    """★ 术语守卫：预设标签一律「变**声**」，不许出现「变**身**」。
+
+    2026-10-05 用户在侧栏一眼看错：「微信变身 / 游戏变身」在这产品里
+    字面义是"变换身体"，而产品是变声（变声工坊 / 输字变声 / 实时变声）。
+    错字已全量改正，这里钉住 —— 标签是纯文案，没有别的门禁会拦它，
+    下一个人抄旧 commit 就可能写回去。
+    """
+    offenders = {
+        pid: label
+        for pid, label in plugin_manifest.PRESET_LABELS.items()
+        if "变身" in label
+    }
+    assert not offenders, f"预设标签误用「变身」（应为「变声」）：{offenders}"
+
+
+def test_preset_labels_are_about_voice_not_body():
+    """正向钉住三个场景标签的字面值：改文案就是改产品口径，必须有意为之。"""
+    assert plugin_manifest.PRESET_LABELS["wechat"] == "微信变声"
+    assert plugin_manifest.PRESET_LABELS["game"] == "游戏变声"
+    assert plugin_manifest.PRESET_LABELS["preserve"] == "声音保存（护嗓）"
+    # "本体"要写进标准档标签：设置页那一排按钮是用户唯一能看见"标准含什么"的地方
+    assert "变声本体" in plugin_manifest.PRESET_LABELS["standard"]
 
 
 def test_scene_presets_expand_to_right_scopes():
@@ -404,23 +436,26 @@ def test_core_cannot_be_disabled():
 
 def test_disable_is_blocked_while_dependents_are_enabled():
     rep = plugin_manifest.set_enabled("sound.tts", False)
-    assert rep["blocked_by"] == ["sound.audiobook"]
+    assert rep["blocked_by"] == ["sound.audiobook", "sound.course"]
     assert rep["enabled"] is True
     assert plugin_manifest.disabled_ids() == set()
 
 
 def test_disable_succeeds_once_the_dependent_is_off():
+    # 两个依赖方（audiobook / course）都得先关 —— 少关一个 tts 就仍被拉住（2026-10-05）
     plugin_manifest.set_enabled("sound.audiobook", False)
+    plugin_manifest.set_enabled("sound.course", False)
     rep = plugin_manifest.set_enabled("sound.tts", False)
     assert rep["enabled"] is False
-    assert plugin_manifest.disabled_ids() == {"sound.tts", "sound.audiobook"}
+    assert plugin_manifest.disabled_ids() == {"sound.tts", "sound.audiobook", "sound.course"}
 
 
 def test_enable_clears_the_flag():
     plugin_manifest.set_enabled("sound.audiobook", False)
+    plugin_manifest.set_enabled("sound.course", False)
     plugin_manifest.set_enabled("sound.tts", False)
     plugin_manifest.set_enabled("sound.tts", True)
-    assert plugin_manifest.disabled_ids() == {"sound.audiobook"}
+    assert plugin_manifest.disabled_ids() == {"sound.audiobook", "sound.course"}
 
 
 def test_set_enabled_on_unknown_id_raises():
@@ -446,7 +481,7 @@ def test_corrupt_state_file_falls_back_to_all_enabled():
 
 
 def test_mount_plan_skips_disabled():
-    plugin_manifest.write_disabled({"sound.audiobook", "sound.tts"})
+    plugin_manifest.write_disabled({"sound.audiobook", "sound.course", "sound.tts"})
     plan = plugin_manifest.mount_plan()
     ids = {pid for pid, _ in plan}
     assert "sound.tts" not in ids
@@ -457,7 +492,7 @@ def test_mount_plan_skips_disabled():
 
 def test_mount_plan_marks_skipped_modules():
     """跳过必须**记账**，否则 `state_of()` 会把"你关的"报成"未注册"。"""
-    plugin_manifest.write_disabled({"sound.audiobook", "sound.tts"})
+    plugin_manifest.write_disabled({"sound.audiobook", "sound.course", "sound.tts"})
     plugin_manifest.mount_plan()
     skip = plugin_manifest.skipped()
     for mod in _p("sound.tts").routers:
@@ -471,7 +506,7 @@ def test_skipped_is_not_reported_as_unregistered(monkeypatch):
     （比如把"未注册"这条整个删掉）。
     """
     monkeypatch.setattr(plugin_loader, "results", lambda: [])
-    plugin_manifest.write_disabled({"sound.audiobook", "sound.tts"})
+    plugin_manifest.write_disabled({"sound.audiobook", "sound.course", "sound.tts"})
     plugin_manifest.mount_plan()
 
     _, reasons_off = plugin_manifest.state_of(_p("sound.tts"), {"sound.tts"})
@@ -484,7 +519,7 @@ def test_skipped_is_not_reported_as_unregistered(monkeypatch):
 def test_hooks_for_skips_disabled():
     """`sound.tts` 的钩子就是那个"起线程加载 4.9G 模型"的 warmup ——
     关掉 TTS 却照跑 warmup，等于省了个入口没省显存。"""
-    plugin_manifest.write_disabled({"sound.audiobook", "sound.tts"})
+    plugin_manifest.write_disabled({"sound.audiobook", "sound.course", "sound.tts"})
     off = {h["module"] for h in plugin_manifest.hooks_for("import")}
     on = {h["module"] for h in plugin_manifest.hooks_for("import", include_disabled=True)}
     assert "warmup" not in off
@@ -517,12 +552,13 @@ def test_disable_endpoint_returns_404_for_unknown(client):
 
 def test_enable_disable_roundtrip_via_api(client):
     assert client.post("/api/plugins/sound.audiobook/disable").status_code == 200
+    assert client.post("/api/plugins/sound.course/disable").status_code == 200
     resp = client.post("/api/plugins/sound.tts/disable")
     assert resp.status_code == 200
     assert resp.json()["restartRequired"] is True, "开关是重启生效的，接口必须说清"
-    assert plugin_manifest.disabled_ids() == {"sound.tts", "sound.audiobook"}
+    assert plugin_manifest.disabled_ids() == {"sound.tts", "sound.audiobook", "sound.course"}
     assert client.post("/api/plugins/sound.tts/enable").status_code == 200
-    assert plugin_manifest.disabled_ids() == {"sound.audiobook"}
+    assert plugin_manifest.disabled_ids() == {"sound.audiobook", "sound.course"}
 
 
 def test_preset_endpoint(client):
@@ -560,7 +596,9 @@ def test_catalog_reports_the_current_preset(client):
 def test_blocked_by_tells_you_what_to_close_first(client):
     body = client.get("/api/plugins").json()
     by_id = {p["id"]: p for p in body["plugins"]}
-    assert by_id["sound.tts"]["blockedBy"] == ["sound.audiobook"]
+    # sound.tts 的依赖方有两个：sound.audiobook（有声书）+ sound.course（讲稿录课），
+    # 两者都挂在输字变声页 tab 上 → 想关 tts 得先关这两个（2026-10-05 随 sound.course 增补）。
+    assert by_id["sound.tts"]["blockedBy"] == ["sound.audiobook", "sound.course"]
     # 叶子能力（没人依赖它）→ 想关就关
     assert by_id["sound.audiobook"]["blockedBy"] == []
     # 核心能力被一堆人依赖，但拦它的**不是**依赖守卫而是"核心不可关"（400）——
@@ -677,7 +715,7 @@ def test_health_probe_degrades_instead_of_killing_the_catalog(monkeypatch):
 
 def test_disabled_plugin_is_not_probed():
     """关掉的能力不跑探针 —— 它连模块都没加载，问它健康没有意义。"""
-    plugin_manifest.write_disabled({"sound.tts", "sound.audiobook"})
+    plugin_manifest.write_disabled({"sound.tts", "sound.audiobook", "sound.course"})
     catalog = plugin_manifest.catalog()
     by_id = {p["id"]: p for p in catalog["plugins"]}
     assert by_id["sound.tts"]["healthProbe"] is None

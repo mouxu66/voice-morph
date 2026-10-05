@@ -129,6 +129,12 @@ FAST_TESTS = [
     # 少了它们，跑全量就会往用户真实的 outputs/ 与 media/ 里写（见 `docs/犯错档案-工程.md` §8.36/§8.37）。
     # 放进 --fast 才能在提交那一刻拦住，而不是等 pre-push 的全量。
     "m2_server/tests/test_output_isolation.py",
+    # 插件开关的依赖图与挂载（约 63s，2026-10-05 加进 --fast）：
+    # 这个文件**整份**都是「加/关一个能力会让哪些断言失效」的雷区 —— 方案④加了
+    # sound.course（requires sound.tts）后，`dependents_of("sound.tts")` 从 1 个变 2 个，
+    # 硬编码断言没同步 → 12 条红，而 --fast 白名单不含本文件，一路漏到全量才炸。
+    # 代价是 --fast 慢约 1 分钟；换来的是"改 requires 就在提交那一刻被拦"。
+    "m2_server/tests/test_plugin_switch.py",
     # 会话产物「即用即删」（约 0.3s，纯 tmp_path）：钉住三条只有测试守得住的不变量 ——
     # 产物默认落 outputs/.session/（否则"退出即删"删不到它）、save 幂等
     # （重复登记会在作品库里留下两条指向同一 wav 的记录，删一条另一条就悬空）、

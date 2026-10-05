@@ -1488,7 +1488,7 @@ def rvc_live_start(
             "input_device": _live_input_device(),
             "hint": (
                 "变声已在后台运行（无窗口）。系统录音已切到 CABLE Output，"
-                "微信等应用会用变身后的声音"
+                "微信等应用会用变声后的声音"
                 + ("；自我监听已开，你可以在耳机里听到自己。" if monitor_started else "")
             ),
         }

@@ -334,7 +334,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
 > 可用 `GET /api/plugins` 看实时状态（`ok` / `broken` / `disabled` 三态 + 开关结果 `enabled`）。
 > 改这里的表格前先看 `docs/插件化设计.md` —— 那份清单才是真相源，这张表是给人快速扫的。
 >
-> ⚠️ **默认预设是 `standard`（标准＝变身本体），只启用 3 项可选能力**
+> ⚠️ **默认预设是 `standard`（标准＝变声本体），只启用 3 项可选能力**
 > （`sound.offline-vc` / `sound.rvc-live` / `sound.audition`，2026-09-23 拍板）。
 > 「共 27 个能力」是**全开预设下的上限**；standard 下后端只挂 16 个 router 模块，
 > 其余 16 个（训练、微调、发掘、输字变声、有声书、效果器、桌宠、皮肤、微信、手机遥控、翻唱、扒歌、素材流水线、声音保存、音频水印、盲听评测）

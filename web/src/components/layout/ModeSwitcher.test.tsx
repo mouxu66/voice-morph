@@ -30,9 +30,9 @@ function catalog(preset: string) {
   return {
     preset,
     presets: [
-      { id: "wechat", label: "微信变身", plugins: ["sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board"] },
+      { id: "wechat", label: "微信变声", plugins: ["sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board"] },
       { id: "preserve", label: "声音保存（护嗓）", plugins: ["sound.preserve", "sound.tts", "sound.audiobook"] },
-      { id: "game", label: "游戏变身", plugins: ["sound.offline-vc", "sound.rvc-live", "sound.audition"] },
+      { id: "game", label: "游戏变声", plugins: ["sound.offline-vc", "sound.rvc-live", "sound.audition"] },
       { id: "light", label: "轻量", plugins: ["sound.offline-vc"] },
       { id: "full", label: "全能", plugins: [] },
     ],
@@ -54,8 +54,8 @@ describe("ModeSwitcher", () => {
   it("渲染三个场景模式，当前模式高亮；轻量/全能不进侧栏", async () => {
     getPlugins.mockResolvedValue(catalog("preserve"))
     render(<ModeSwitcher />)
-    await waitFor(() => expect(screen.getByText("微信变身")).toBeTruthy())
-    expect(screen.getByText("游戏变身")).toBeTruthy()
+    await waitFor(() => expect(screen.getByText("微信变声")).toBeTruthy())
+    expect(screen.getByText("游戏变声")).toBeTruthy()
     // 声音保存是当前模式：按钮带 aria-pressed（active 由 className 表达，用 title 断言）
     expect(screen.getByTitle(/切换到「声音保存（护嗓）」.*（当前）/)).toBeTruthy()
     expect(screen.queryByTitle(/「轻量」/)).toBeNull()
@@ -66,8 +66,8 @@ describe("ModeSwitcher", () => {
     getPlugins.mockResolvedValue(catalog("custom"))
     applyPluginPreset.mockResolvedValue({ ok: true, enabled: [] })
     render(<ModeSwitcher />)
-    await waitFor(() => expect(screen.getByText("微信变身")).toBeTruthy())
-    fireEvent.click(screen.getByTitle(/切换到「微信变身」/))
+    await waitFor(() => expect(screen.getByText("微信变声")).toBeTruthy())
+    fireEvent.click(screen.getByTitle(/切换到「微信变声」/))
     await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("wechat"))
     expect(screen.getByText("重启后生效")).toBeTruthy()
   })
@@ -77,8 +77,8 @@ describe("ModeSwitcher", () => {
     applyPluginPreset.mockResolvedValue({ ok: true, enabled: [] })
     restartBackend.mockResolvedValue({ running: true })
     render(<ModeSwitcher />)
-    await waitFor(() => expect(screen.getByText("微信变身")).toBeTruthy())
-    fireEvent.click(screen.getByTitle(/切换到「游戏变身」/))
+    await waitFor(() => expect(screen.getByText("微信变声")).toBeTruthy())
+    fireEvent.click(screen.getByTitle(/切换到「游戏变声」/))
     await waitFor(() => expect(screen.getByText("重启后生效")).toBeTruthy())
     fireEvent.click(screen.getByText("立即重启"))
     await waitFor(() => expect(restartBackend).toHaveBeenCalledTimes(1))

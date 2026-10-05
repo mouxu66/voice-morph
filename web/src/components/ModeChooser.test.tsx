@@ -36,9 +36,9 @@ function readyCatalog(preset: string) {
       catalog: {
         preset,
         presets: [
-          { id: "wechat", label: "微信变身", plugins: ["sound.offline-vc", "sound.tts"] },
+          { id: "wechat", label: "微信变声", plugins: ["sound.offline-vc", "sound.tts"] },
           { id: "preserve", label: "声音保存（护嗓）", plugins: ["sound.preserve", "sound.tts"] },
-          { id: "game", label: "游戏变身", plugins: ["sound.offline-vc", "sound.rvc-live"] },
+          { id: "game", label: "游戏变声", plugins: ["sound.offline-vc", "sound.rvc-live"] },
           { id: "light", label: "轻量", plugins: ["sound.offline-vc"] },
         ],
         plugins: [],
@@ -90,7 +90,7 @@ describe("ModeChooser", () => {
     hasBeenAsked.mockReturnValue(true)
     usePluginCatalog.mockReturnValue(readyCatalog("game"))
     render(<ModeChooser />)
-    fireEvent.click(screen.getByTitle(/进入「游戏变身」/))
+    fireEvent.click(screen.getByTitle(/进入「游戏变声」/))
     expect(applyPluginPreset).not.toHaveBeenCalled()
     expect(restartBackend).not.toHaveBeenCalled()
     expect(navigate).toHaveBeenCalledWith("/live")
