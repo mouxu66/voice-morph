@@ -159,6 +159,11 @@ FAST_TESTS = [
     #   ③ 16-Ch 端点否决（选中它 = 声音灌进没人听的端点，"一切正常但对面听不到"）。
     # 放进 --fast：这三条都是**用户听得出来、日志里看不出来**的退化。
     "m2_server/tests/test_passthrough.py",
+    # 文档新鲜度（约 0.7s，纯文件读）：README 的三处手抄计数（router 数 / 能力数
+    # / 目录树）与插件清单对账。**加一个插件就要动这三处**，此前不进 fast 的后果：
+    # sound.watermark（d49cc16）带着过期 README 过了 pre-commit，三个用例等到
+    # 下一个人跑全量才集体变红（sound.blindtest 882fd4c 时补修）。见犯错指南 §135。
+    "m2_server/tests/test_docs_freshness.py",
 ]
 
 
