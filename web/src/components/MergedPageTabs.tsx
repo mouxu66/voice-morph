@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect } from "react"
+import { type ReactNode, useEffect, useRef } from "react"
 import { useSearchParams } from "react-router-dom"
 import { cn } from "@/lib/utils"
 
@@ -29,6 +29,21 @@ export function MergedPageTabs({ tabs }: { tabs: MergedTab[] }) {
   const [params, setParams] = useSearchParams()
   const current = params.get("tab") ?? tabs[0].key
   const active = tabs.find((t) => t.key === current) ?? tabs[0]
+  const railRef = useRef<HTMLDivElement | null>(null)
+  const activeRef = useRef<HTMLButtonElement | null>(null)
+
+  /**
+   * 当前 tab 滚进可视范围（横向滚动条加出来后才需要）。
+   *
+   * 只在**窄屏真的溢出**时动手（`scrollWidth > clientWidth`）：桌面宽屏下
+   * 无条件 scrollIntoView 会让整页跟着轻微横移一下 —— 那种"莫名一抖"比不滚更糟。
+   * `inline: "nearest"` 保证已经可见时不动。
+   */
+  useEffect(() => {
+    const rail = railRef.current
+    if (!rail || rail.scrollWidth <= rail.clientWidth) return
+    activeRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" })
+  }, [current, tabs.length])
 
   /**
    * 把吸顶栏的厚度广播出去。
@@ -59,11 +74,22 @@ export function MergedPageTabs({ tabs }: { tabs: MergedTab[] }) {
         className="fixed inset-x-0 top-16 z-10 border-b border-border bg-background/85 backdrop-blur-xl lg:left-64"
         style={{ height: TAB_BAR_H }}
       >
-        <div className="mx-auto flex h-full max-w-7xl items-center gap-1.5 px-5 sm:px-8 lg:px-12">
+        {/*
+          横向滚动（2026-10-05 加）：窄屏（375px）装不下 4 个 tab ——「输字变声」
+          增了「讲稿录课（PPT）」后实测需要约 418px，而按钮都是 `shrink-0`，
+          原来只能整条溢出到视口外（手机上最后两个 tab 点不到）。
+          滚动条藏起来但**保留滚动能力**，另用 `scrollIntoView` 把当前 tab 挪进视野
+          （深链进来时它可能在屏幕外）。
+        */}
+        <div
+          ref={railRef}
+          className="mx-auto flex h-full max-w-7xl items-center gap-1.5 overflow-x-auto px-5 sm:px-8 lg:px-12 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
           {tabs.map((t) => (
             <button
               key={t.key}
               type="button"
+              ref={t.key === active.key ? activeRef : undefined}
               onClick={() => setParams({ tab: t.key })}
               className={cn(
                 "inline-flex shrink-0 items-center gap-2 rounded-md px-3.5 py-2 text-xs transition",

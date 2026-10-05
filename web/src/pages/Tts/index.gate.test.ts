@@ -35,6 +35,12 @@ describe("TtsRoute 的 tab 门控", () => {
     expect(indexSrc).not.toContain(`{ key: "book", label: "有声书（长文本）", content: <AudiobookPage {...useAudiobook()} /> }`)
   })
 
+  it("两个录课 tab 的 label 必须能区分（曾重名，用户点错）", () => {
+    // 「录课 / 有声书」与「讲稿录课（PPT）」都叫录课时，这一对断言就是防它们再合回去
+    expect(indexSrc).toContain('label: "有声书（长文本）"')
+    expect(indexSrc).toContain('label: "讲稿录课（PPT）"')
+  })
+
   it("讲稿录课 tab 按 sound.course 显隐", () => {
     expect(indexSrc).toContain('pluginVisible(catalog, "sound.course")')
     expect(indexSrc).toContain("useCourse(courseOn)")

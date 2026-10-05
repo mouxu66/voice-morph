@@ -22,6 +22,20 @@ const POLL_MS = 2000
 export function useCourse(enabled = true) {
   const { backendUp, voices, selectedVoiceId, selectVoice } = useAppStore()
   const [pages, setPages] = useState<CoursePageIn[]>([])
+  /**
+   * 讲稿文本已改动但没重新解析 —— `pages` 还是上一轮的旧解析结果。
+   *
+   * 为什么必须显式失效：合成时提交的是 `pages`，而用户眼前是刚编辑的文本框。
+   * 两者不同源却不给任何提示（`derived-state-integrity` 铁律踩过的坑），
+   * 结果是"录出来的旁白不是我写的稿"。所以 dirty 时直接禁掉合成按钮，
+   * 逼用户按「解析这段文本」把新稿变成页。
+   */
+  const [dirty, setDirty] = useState(false)
+  /**
+   * 讲稿原文。**放在 hook 里而不是页面本地 state** —— 导入 .txt 时要把读到的
+   * 文本回填进输入框，两处各存一份就会出现"框里空的但能合成"（显示与数据不同源）。
+   */
+  const [rawText, setRawTextState] = useState("")
   const [source, setSource] = useState<"pptx" | "text" | "">("")
   const [skipped, setSkipped] = useState(0)
   const [fileName, setFileName] = useState("")
@@ -74,7 +88,7 @@ export function useCourse(enabled = true) {
 
   const running = Boolean(status?.running)
   const canStart =
-    backendUp && !running && !submitting && pages.length > 0 && Boolean(selectedVoiceId)
+    backendUp && !running && !submitting && !dirty && pages.length > 0 && Boolean(selectedVoiceId)
 
   const loadSource = useCallback(
     async (file: File | undefined, rawText: string) => {
@@ -86,7 +100,18 @@ export function useCourse(enabled = true) {
         setSource(r.source)
         setSkipped(r.skipped)
         setFileName(file?.name ?? "")
+        setDirty(false)
+        // 让文本框与 pages 同源：pptx 成功 → 清掉旧草稿（不然框里是 A、合成的是 B）；
+        // txt 成功 → 把读到的原文回填（不然框是空的、页面看着像没东西）。
+        if (file) setRawTextState("")
+        else if (rawText.trim()) setRawTextState(rawText)
       } catch (error) {
+        // ★ 解析失败**清空** pages：留着上一次的解析结果，用户会以为新文件已就位
+        // （按钮可点 → 合成的是上一份 pptx 的页）。
+        setPages([])
+        setSource("")
+        setSkipped(0)
+        setFileName("")
         setErrorMessage(friendlyError(error, "解析失败"))
       } finally {
         setParsing(false)
@@ -94,6 +119,11 @@ export function useCourse(enabled = true) {
     },
     []
   )
+
+  const setRawText = useCallback((v: string) => {
+    setRawTextState(v)
+    setDirty(true)
+  }, [])
 
   const loadFile = useCallback(
     (file: File | undefined) => {
@@ -172,6 +202,9 @@ export function useCourse(enabled = true) {
     selectedVoiceId,
     selectVoice,
     pages,
+    dirty,
+    rawText,
+    setRawText,
     source,
     skipped,
     fileName,

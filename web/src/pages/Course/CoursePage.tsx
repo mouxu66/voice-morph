@@ -8,7 +8,7 @@ import {
   Sparkles,
   Square,
 } from "lucide-react"
-import { useMemo, useRef, useState } from "react"
+import { useMemo } from "react"
 import { Link } from "react-router-dom"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
@@ -27,14 +27,27 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
   const st = p.status
   const selectedName =
     p.voices.find((v) => v.id === p.selectedVoiceId)?.display_name ?? p.selectedVoiceId
-  const finished = st && !st.running && st.status === "done" && st.pages.length > 0
+  /**
+   * 「跑完了」= 不再 running 且**至少产出了一页**。
+   *
+   * 刻意不看 `status === "done"`：worker 异常终止（status=error）时前面几页的
+   * wav 已经在磁盘上，此时不给「时长清单」= 用户拿得到产物却拿不到清单。
+   */
+  const finished = Boolean(
+    st && !st.running && st.pages.some((pg) => !pg.failed && pg.url)
+  )
+  /**
+   * retry 只重跑失败页，进度条的 total 是「本次要跑几页」而不是总页数。
+   * 不区分的话会显示「1/1 页」配着右栏「12 页」，用户以为只合成了一页。
+   */
+  const retrying = Boolean(
+    st && st.running && st.pages.length > 0 && st.total < st.pages.length
+  )
   const failedCount = st?.pages.filter((pg) => pg.failed).length ?? 0
   const totalDuration = useMemo(
     () => (st?.pages ?? []).reduce((acc, pg) => acc + (pg.failed ? 0 : pg.duration_s), 0),
     [st]
   )
-  const [rawText, setRawText] = useState("")
-  const fileInput = useRef<HTMLInputElement | null>(null)
 
   const downloadManifest = () => {
     if (!st) return
@@ -90,16 +103,15 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
             </div>
 
             <div className="mt-5 flex flex-wrap items-center gap-3">
-              <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-muted-foreground transition hover:border-primary hover:text-primary">
-                <FileUp className="h-3.5 w-3.5" />上传 .pptx / .txt
+                <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-muted-foreground transition hover:border-primary hover:text-primary">
+                <FileUp className="h-3.5 w-3.5" aria-hidden="true" />上传 .pptx / .txt
                 <input
-                  ref={fileInput}
                   type="file"
                   accept=".pptx,.txt"
                   className="hidden"
+                  aria-label="上传讲稿文件（.pptx 或 .txt）"
                   onChange={(e) => {
                     p.loadFile(e.target.files?.[0])
-                    if (e.target.files?.[0]?.name.toLowerCase().endsWith(".pptx")) setRawText("")
                     e.target.value = ""
                   }}
                 />
@@ -109,20 +121,30 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
             </div>
 
             <textarea
-              value={rawText}
-              onChange={(e) => setRawText(e.target.value)}
+              value={p.rawText}
+              onChange={(e) => p.setRawText(e.target.value)}
               rows={6}
-              placeholder={"没有 PPT？把讲稿贴到这里，用单独一行 --- 分页：\n第一页：同学们好，今天讲第三章。\n---\n第二页：先看一个例子。"}
+              aria-label="讲稿文本，用单独一行 --- 分页"
+              spellCheck={false}
+              placeholder={"没有 PPT？把讲稿贴到这里，用单独一行 --- 分页…\n第一页：同学们好，今天讲第三章。\n---\n第二页：先看一个例子…"}
               className="mt-4 w-full resize-y rounded-md border border-border bg-background px-3 py-2.5 font-mono text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-primary"
             />
-            <button
-              type="button"
-              disabled={p.parsing || p.running || !rawText.trim()}
-              onClick={() => void p.loadText(rawText)}
-              className="mt-2 inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
-            >
-              解析这段文本
-            </button>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                disabled={p.parsing || p.running || !p.rawText.trim()}
+                onClick={() => void p.loadText(p.rawText)}
+                className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-primary hover:text-primary disabled:pointer-events-none disabled:opacity-50"
+              >
+                解析这段文本
+              </button>
+              {/* 讲稿改了但没重新解析：把「你看到的」和「会合成的」拉开距离摆出来 */}
+              {p.dirty && p.pages.length > 0 && (
+                <span className="text-xs text-yellow-600">
+                  讲稿已改动，下面还是上一次解析的结果 —— 重新解析后才能合成。
+                </span>
+              )}
+            </div>
 
             {p.skipped > 0 && (
               <p className="mt-3 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-600">
@@ -181,10 +203,14 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
             {st?.error && <ErrorPanel title="合成异常" detail={st.error} />}
 
             {st?.running && (
-              <div className="mt-5 rounded-lg border border-border bg-background/60 p-4">
+              <div
+                className="mt-5 rounded-lg border border-border bg-background/60 p-4"
+                role="status"
+                aria-live="polite"
+              >
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-medium text-foreground">
-                    逐页合成 · {st.done}/{st.total} 页
+                    {retrying ? "重试失败页" : "逐页合成"} · {st.done}/{st.total} 页
                   </span>
                   <span className="font-mono text-primary">{st.percent}%</span>
                 </div>

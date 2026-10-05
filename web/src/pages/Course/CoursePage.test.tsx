@@ -43,6 +43,9 @@ function mkProps(over: Partial<ReturnType<typeof useCourse>> = {}): ReturnType<t
     selectedVoiceId: "v1",
     selectVoice: vi.fn(),
     pages: [],
+    dirty: false,
+    rawText: "",
+    setRawText: vi.fn(),
     source: "",
     skipped: 0,
     fileName: "",
@@ -133,5 +136,44 @@ describe("CoursePage 渲染", () => {
     )
     const html = container.innerHTML
     expect(html).not.toMatch(/师范实训|诊断|疗效|健康监测/)
+  })
+
+  it("★ 陈旧解析：讲稿改动后合成按钮禁用 + 提示重新解析", () => {
+    // 不修的话：用户改完稿直接点合成，提交的是上一次的 pages ——
+    // 录出来的旁白和眼前这份稿不是一回事。
+    render(<CoursePage {...mkProps({ pages: [{ page: 1, text: "旧稿" }], dirty: true, canStart: false })} />)
+    const btn = screen.getByRole("button", { name: /逐页合成/ }) as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+    expect(screen.getByText(/讲稿已改动，下面还是上一次解析的结果/)).toBeDefined()
+  })
+
+  it("error 态（worker 中断）已产出的页仍给时长清单入口", () => {
+    const status: CourseStatus = {
+      ...doneStatus([
+        { page: 1, text: "第一页", url: "/u/1.wav", duration_s: 1, failed: false, error: "" },
+        { page: 2, text: "第二页", url: "", duration_s: 0, failed: true, error: "RuntimeError" },
+      ]),
+      status: "error",
+      error: "worker 崩了",
+    }
+    render(<CoursePage {...mkProps({ status })} />)
+    expect(screen.getByRole("button", { name: /时长清单/ })).toBeDefined()
+  })
+
+  it("retry 中：进度文案区分「重试失败页」", () => {
+    const status: CourseStatus = {
+      ...doneStatus([
+        { page: 1, text: "a", url: "/u/1.wav", duration_s: 1, failed: false, error: "" },
+        { page: 2, text: "b", url: "", duration_s: 0, failed: true, error: "x" },
+        { page: 3, text: "c", url: "/u/3.wav", duration_s: 1, failed: false, error: "" },
+      ]),
+      running: true,
+      status: "running",
+      done: 0,
+      total: 1,
+      percent: 0,
+    }
+    render(<CoursePage {...mkProps({ status, running: true })} />)
+    expect(screen.getByText(/重试失败页 · 0\/1 页/)).toBeDefined()
   })
 })

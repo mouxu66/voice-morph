@@ -76,8 +76,8 @@ export function AudiobookPage(
     <div className="min-h-full bg-gradient-to-br from-background via-background to-card">
       <header className="border-b border-border bg-card/30 px-5 py-10 sm:px-8 lg:px-12 lg:py-14">
         <div className="mx-auto max-w-7xl">
-          <p className="text-xs font-medium text-primary">录课 · 长文朗读</p>
-          <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">录课工作台</h2>
+          <p className="text-xs font-medium text-primary">有声书 · 长文朗读</p>
+          <h2 className="mt-4 font-display text-4xl font-bold tracking-tight text-foreground sm:text-5xl">有声书工作台</h2>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
             把一节课的讲稿粘贴进来（或导入 SRT 字幕），选一个音色逐句合成并自动拼接成完整音频；SRT 会按时间轴保留原节奏，支持逐句试听。
             想用自己的声音：先在「声音保存」录一段，回来在这里选它即可。
