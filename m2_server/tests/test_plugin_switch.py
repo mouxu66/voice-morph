@@ -187,6 +187,7 @@ def test_default_preset_is_the_voice_morph_body():
     assert standard - {p.id for p in plugin_manifest.load_all() if p.is_core} == body
     # 被排除的可选项逐个点名 —— 漏掉一个就是"本体"惄悄变胖
     # （2026-10-05 加 sound.watermark：溯源水印是可选增强，不进变声最小闭环）
+    # （2026-10-05 加 sound.blindtest：盲听评测是主观听测工具，零 GPU 依赖，按需开启）
     for pid in (
         "sound.workshop",
         "sound.ft",
@@ -195,6 +196,7 @@ def test_default_preset_is_the_voice_morph_body():
         "sound.audiobook",
         "sound.effects",
         "sound.watermark",
+        "sound.blindtest",
         "pet.companion",
         "pet.market",
         "hook.wechat",

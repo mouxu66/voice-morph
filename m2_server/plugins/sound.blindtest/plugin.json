@@ -1,0 +1,29 @@
+{
+  "id": "sound.blindtest",
+  "name": "盲听评测",
+  "kind": "builtin",
+  "category": "sound",
+  "order": 175,
+  "summary": "把样本匿名打乱生成二维码，手机扫码盲听打分，结果回传汇总排名（主观分与试音间客观分互补）",
+  "requires": [],
+  "routers": ["blindtest_api"],
+  "hooks": [],
+  "routes": [
+    {
+      "path": "/blindtest",
+      "module": "BlindTest",
+      "export": "BlindTestRoute",
+      "nav": { "label": "盲听评测", "icon": "Headphones", "group": "voices", "order": 25 }
+    }
+  ],
+  "legacy_routes": [],
+  "extras": {
+    "python": [],
+    "external": [],
+    "models": []
+  },
+  "health": null,
+  "disable": {
+    "note": "关闭后「盲听评测」页消失（/api/blindtest/* 不再挂载）；已有会话数据保留在 media/blindtest/，重新开启后照常可见。"
+  }
+}

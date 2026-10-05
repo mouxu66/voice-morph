@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <!-- viewport-fit=cover：iPhone 刘海屏下 env(safe-area-inset-*) 才生效 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0b1020" />
+    <title>变声工坊 · 盲听打分</title>
+    <!--
+      盲听打分页（sound.blindtest，2026-10-05）
+
+      为什么是独立自包含 HTML（与 remote.html 同一条路，不重复论证）：
+        单手竖屏的评委视角 + 零构建就能用（Vite 从 public/ 原样拷进 dist，
+        后端 server.py 的 SPA 兜底已在托管 web_dist，不需要新增任何后端路由）。
+
+      怎么打开：桌面端「盲听评测」页生成二维码 / 直接发链接——
+        http://<电脑IP>:<端口>/listen.html?t=<会话token>[&api_key=<VM_API_TOKEN>]
+        · t     ：会话凭证（后端按它找样本；链接只在自己局域网里传）
+        · api_key：设了 VM_API_TOKEN 才有 —— 认证走查询参数，因为 <audio src>
+          带不了自定义 Header（remote.html 的老结论）。
+
+      ★ 盲听底线（与后端 blindtest.py 同一条铁律）：本页拿到的接口形状里**没有**
+        「样本 A 是谁」—— 想作弊也没有数据。页面只显示 样本 A/B/C…。
+
+      ★ 本页所有请求都是**同源相对路径**（一律 /api 开头），不写带端口的地址字面量
+        （backendSurfaceAudit.test.ts 的登记要求；同源相对路径免登记）。
+
+      交互口径：每个样本一个原生 <audio controls preload="none">（不预载，
+      N 个样本不会一口气全下）+ MOS 1~5 五档按钮；全部打完才能交卷。
+      交完显示「盲汇总」——有排名、无身份。可反复交（多评委共用一条链接）。
+    -->
+    <style>
+      :root {
+        --bg: #0b1020;
+        --card: #151c31;
+        --card-2: #1d2540;
+        --line: #2a3350;
+        --txt: #e8ecf6;
+        --dim: #9aa6c4;
+        --acc: #6d8cff;
+        --ok: #35d39a;
+        --bad: #ff6b81;
+        --radius: 14px;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f4f6fb;
+          --card: #ffffff;
+          --card-2: #eef1f8;
+          --line: #dde3f0;
+          --txt: #131a2b;
+          --dim: #5b6785;
+          --acc: #3b5bdb;
+          --ok: #0f9d6b;
+          --bad: #c22b45;
+        }
+      }
+      * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        background: var(--bg);
+        color: var(--txt);
+        font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", Roboto, sans-serif;
+        padding: 0 14px calc(32px + env(safe-area-inset-bottom));
+        overflow-x: hidden;
+      }
+      header {
+        display: flex; align-items: center; gap: 10px;
+        padding: calc(env(safe-area-inset-top) + 14px) 0 12px;
+      }
+      h1 { font-size: 17px; margin: 0; font-weight: 650; }
+      .sub { color: var(--dim); font-size: 12.5px; margin: 2px 0 0; }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 14px;
+        margin: 10px 0;
+      }
+      .sid {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 30px; height: 30px; border-radius: 9px;
+        background: var(--card-2); border: 1px solid var(--line);
+        font-weight: 700; font-size: 14px; color: var(--acc);
+      }
+      .sample { display: flex; align-items: center; gap: 10px; }
+      audio {
+        width: 100%; min-width: 0; height: 40px; margin-top: 10px;
+        border-radius: 8px; outline: none;
+      }
+      .scale { display: flex; gap: 6px; margin-top: 10px; }
+      .scale button {
+        flex: 1; padding: 9px 0 7px;
+        border: 1px solid var(--line); border-radius: 10px;
+        background: var(--card-2); color: var(--dim);
+        font-size: 14px; font-weight: 650; line-height: 1.15;
+        cursor: pointer; transition: all 0.12s ease;
+      }
+      .scale button small { display: block; font-size: 10px; font-weight: 400; opacity: 0.75; }
+      .scale button.on {
+        border-color: var(--acc); background: var(--acc); color: #fff;
+      }
+      .scale button:disabled { opacity: 0.45; cursor: default; }
+      .hint { color: var(--dim); font-size: 12px; margin: 8px 0 0; }
+      .primary {
+        width: 100%; margin-top: 14px; padding: 13px 0;
+        border: 0; border-radius: 12px;
+        background: var(--acc); color: #fff;
+        font-size: 15px; font-weight: 650; cursor: pointer;
+      }
+      .primary:disabled { opacity: 0.45; cursor: default; }
+      .note {
+        width: 100%; margin-top: 12px; padding: 10px 12px;
+        border: 1px solid var(--line); border-radius: 10px;
+        background: var(--card-2); color: var(--txt);
+        font: inherit; font-size: 13.5px; resize: none;
+      }
+      .err {
+        background: color-mix(in srgb, var(--bad) 12%, transparent);
+        border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
+        color: var(--bad); border-radius: 10px;
+        padding: 10px 12px; font-size: 13px; margin: 10px 0;
+        word-break: break-all;
+      }
+      .okbox {
+        border: 1px solid color-mix(in srgb, var(--ok) 50%, transparent);
+        background: color-mix(in srgb, var(--ok) 10%, transparent);
+        color: var(--ok); border-radius: 10px;
+        padding: 12px 14px; font-size: 13.5px; margin: 10px 0;
+      }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th { color: var(--dim); font-weight: 500; text-align: left; padding: 6px 8px 6px 0; }
+      td { padding: 6px 8px 6px 0; border-top: 1px solid var(--line); }
+      .rank1 { color: var(--ok); font-weight: 700; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>盲听打分</h1>
+    </header>
+    <p class="sub" id="subtitle">正在载入…</p>
+    <div id="err" class="err hidden"></div>
+    <div id="okbox" class="okbox hidden"></div>
+
+    <main id="main" class="hidden">
+      <div id="samples"></div>
+      <textarea
+        id="note"
+        class="note"
+        rows="2"
+        maxlength="500"
+        placeholder="整体感受，想说就说（可不填）"
+      ></textarea>
+      <button id="submit" class="primary" type="button">提交打分</button>
+      <p class="hint">样本顺序对所有人一致；哪个样本是谁，页面上拿不到 —— 放心凭耳朵。</p>
+    </main>
+
+    <section id="results" class="hidden">
+      <div class="card">
+        <p style="margin: 0 0 8px; font-weight: 650;">当前盲汇总（有排名，无身份）</p>
+        <table>
+          <thead>
+            <tr><th>#</th><th>样本</th><th>均分</th><th>票数</th></tr>
+          </thead>
+          <tbody id="result-rows"></tbody>
+        </table>
+      </div>
+      <button id="again" class="primary" type="button">再打一份（换了个人听？）</button>
+    </section>
+
+    <script>
+      "use strict";
+      // token 与 api_key：URL 里带了就存 localStorage（加书签后不必再带，remote.html 同款）。
+      var qs = new URLSearchParams(location.search);
+      var TOKEN = (qs.get("t") || localStorage.getItem("blindtest_t") || "").trim();
+      var API_KEY = (qs.get("api_key") || localStorage.getItem("api_key") || "").trim();
+      if (TOKEN) localStorage.setItem("blindtest_t", TOKEN);
+      if (API_KEY) localStorage.setItem("api_key", API_KEY);
+      var SCORES = {}; // sid → 1..5
+
+      function url(path) {
+        if (!API_KEY) return path;
+        return path + (path.indexOf("?") >= 0 ? "&" : "?") + "api_key=" + encodeURIComponent(API_KEY);
+      }
+
+      function showErr(msg) {
+        var box = document.getElementById("err");
+        box.textContent = msg;
+        box.classList.remove("hidden");
+      }
+      function showOk(msg) {
+        var box = document.getElementById("okbox");
+        box.textContent = msg;
+        box.classList.remove("hidden");
+      }
+
+      var MOS = [["5", "很好"], ["4", "较好"], ["3", "一般"], ["2", "较差"], ["1", "很差"]];
+
+      function renderSamples(list) {
+        var root = document.getElementById("samples");
+        root.innerHTML = "";
+        list.forEach(function (s) {
+          var card = document.createElement("div");
+          card.className = "card";
+          var head = document.createElement("div");
+          head.className = "sample";
+          var tag = document.createElement("span");
+          tag.className = "sid";
+          tag.textContent = s.sid;
+          var title = document.createElement("span");
+          title.style.fontSize = "13.5px";
+          title.style.color = "var(--dim)";
+          title.textContent = "样本 " + s.sid;
+          head.appendChild(tag);
+          head.appendChild(title);
+          card.appendChild(head);
+          var audio = document.createElement("audio");
+          audio.controls = true;
+          audio.preload = "none";
+          audio.src = url(s.url);
+          card.appendChild(audio);
+          var scale = document.createElement("div");
+          scale.className = "scale";
+          MOS.forEach(function (pair) {
+            var b = document.createElement("button");
+            b.type = "button";
+            b.dataset.sid = s.sid;
+            b.dataset.val = pair[0];
+            b.innerHTML = pair[0] + "<small>" + pair[1] + "</small>";
+            b.addEventListener("click", function () {
+              SCORES[s.sid] = parseInt(pair[0], 10);
+              refreshScale();
+            });
+            scale.appendChild(b);
+          });
+          card.appendChild(scale);
+          root.appendChild(card);
+        });
+        refreshScale();
+      }
+
+      function refreshScale() {
+        document.querySelectorAll("#samples .scale button").forEach(function (b) {
+          var on = SCORES[b.dataset.sid] === parseInt(b.dataset.val, 10);
+          b.classList.toggle("on", on);
+        });
+        var btn = document.getElementById("submit");
+        var need = document.querySelectorAll("#samples .scale").length;
+        var done = Object.keys(SCORES).length;
+        btn.disabled = done < need;
+        btn.textContent = done < need ? "还剩 " + (need - done) + " 个样本没打分" : "提交打分";
+      }
+
+      function renderResults(data) {
+        var rows = document.getElementById("result-rows");
+        rows.innerHTML = "";
+        var ranked = data.samples.filter(function (s) { return s.mean !== null; });
+        ranked.sort(function (a, b) { return b.mean - a.mean; });
+        ranked.forEach(function (s, i) {
+          var tr = document.createElement("tr");
+          tr.innerHTML =
+            '<td class="' + (i === 0 ? "rank1" : "") + '">' + (i + 1) + "</td>" +
+            "<td>样本 " + s.sid + "</td>" +
+            "<td>" + s.mean + "</td>" +
+            "<td>" + s.n + "</td>";
+          rows.appendChild(tr);
+        });
+        document.getElementById("results").classList.remove("hidden");
+      }
+
+      function load() {
+        if (!TOKEN) {
+          document.getElementById("subtitle").textContent = "链接不完整";
+          showErr("缺会话标识（?t=…）—— 请从桌面端「盲听评测」页重新扫码。");
+          return;
+        }
+        fetch(url("/api/blindtest/t/" + encodeURIComponent(TOKEN)))
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (b) { throw new Error(b.detail || r.statusText); });
+            return r.json();
+          })
+          .then(function (data) {
+            document.getElementById("subtitle").textContent =
+              "「" + (data.title || "盲听") + "」 · " + data.n_samples + " 个样本";
+            if (data.closed) {
+              document.getElementById("main").classList.add("hidden");
+              showOk("这场盲听已收卷 —— 感谢参与，可以看看下面的汇总。");
+              loadResults();
+              return;
+            }
+            document.getElementById("main").classList.remove("hidden");
+            renderSamples(data.samples);
+          })
+          .catch(function (e) {
+            document.getElementById("subtitle").textContent = "打不开这场盲听";
+            showErr(e.message || String(e));
+          });
+      }
+
+      function loadResults() {
+        fetch(url("/api/blindtest/t/" + encodeURIComponent(TOKEN) + "/results"))
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            if (data) renderResults(data);
+          })
+          .catch(function () { /* 汇总拿不到就算了，不影响打分 */ });
+      }
+
+      document.getElementById("submit").addEventListener("click", function () {
+        var btn = document.getElementById("submit");
+        btn.disabled = true;
+        fetch(url("/api/blindtest/t/" + encodeURIComponent(TOKEN) + "/submit"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scores: SCORES, note: document.getElementById("note").value.trim() }),
+        })
+          .then(function (r) {
+            if (!r.ok) return r.json().then(function (b) { throw new Error(b.detail || r.statusText); });
+            return r.json();
+          })
+          .then(function () {
+            SCORES = {};
+            document.getElementById("note").value = "";
+            document.getElementById("err").classList.add("hidden");
+            showOk("已收到，谢谢！刷新排名见下方。");
+            loadResults();
+            refreshScale();
+          })
+          .catch(function (e) {
+            btn.disabled = false;
+            refreshScale();
+            showErr("提交失败：" + (e.message || e));
+          });
+      });
+
+      document.getElementById("again").addEventListener("click", function () {
+        document.getElementById("results").classList.add("hidden");
+        document.getElementById("okbox").classList.add("hidden");
+        document.getElementById("main").classList.remove("hidden");
+        refreshScale();
+        window.scrollTo(0, 0);
+      });
+
+      load();
+    </script>
+  </body>
+</html>

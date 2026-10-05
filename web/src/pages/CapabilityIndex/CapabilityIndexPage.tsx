@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom"
-import { ArrowRight, Boxes, Camera, CloudDownload, Hammer, Library, Mic2, Music4, Radio, ScanSearch, ShieldCheck, ShoppingBag, Sparkles, Volume2 } from "lucide-react"
+import { ArrowRight, Boxes, Camera, CloudDownload, Hammer, Headphones, Library, Mic2, Music4, Radio, ScanSearch, ShieldCheck, ShoppingBag, Sparkles, Volume2 } from "lucide-react"
 import { Card, PageShell } from "@/components/layout/PageShell"
 import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
 import { RemoteQrCard } from "./RemoteQrCard"
@@ -45,6 +45,7 @@ export function CapabilityIndexRoute() {
     { to: "/live?tab=rvc", name: "实时变声", desc: "开麦即变，游戏/会议/语音直接用", icon: Radio, plugin: "sound.rvc-live" },
     { to: "/preserve", name: "声音保存", desc: "在声音还清晰时录一段、本机保存，日后以自己的声音说话；面向教师等长期用嗓人群", icon: ShieldCheck, plugin: "sound.preserve" },
     { to: "/watermark", name: "音频水印", desc: "给音频嵌一个隐形的溯源码，可检出、可溯源；也可给合成语音自动加标识", icon: ShieldCheck, plugin: "sound.watermark" },
+    { to: "/blindtest", name: "盲听评测", desc: "样本匿名打乱生成二维码，手机扫码盲听打分，结果回传汇总排名", icon: Headphones, plugin: "sound.blindtest" },
     { to: "/voices?tab=mine", name: "我的音色", desc: "所有音色档案的管理与导出", icon: Library, plugin: null },
     { to: "/voices?tab=market", name: "音色市场", desc: "开源音色下载安装，含断点续传与回滚", icon: ShoppingBag, plugin: null },
     { to: "/pet-market", name: "桌宠与人偶市场", desc: "桌面人偶本体、皮肤市场、自定义形象", icon: Sparkles, plugin: "pet.market" },
