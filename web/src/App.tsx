@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { getHealth, listVoicesWithSelected } from "@/api/client"
 import { AppChrome } from "@/components/layout/AppChrome"
 import { EnvHealth } from "@/components/EnvHealth"
+import { AiDebugPanel } from "@/components/AiDebugPanel"
 import { ModelSetupPanel, SetupBanner } from "@/components/ModelSetupPanel"
 import { SendChainCheck } from "@/components/SendChainCheck"
 import { StoragePanel } from "@/components/StoragePanel"
@@ -52,6 +53,7 @@ export default function App() {
   const [modelOpen, setModelOpen] = useState(false)
   const [chainOpen, setChainOpen] = useState(false)
   const [storageOpen, setStorageOpen] = useState(false)
+  const [aiOpen, setAiOpen] = useState(false)
   const [capOpen, setCapOpen] = useState(false)
   const [licensesOpen, setLicensesOpen] = useState(false)
   const [updateOpen, setUpdateOpen] = useState(false)
@@ -237,7 +239,8 @@ export default function App() {
       {/* 缺模型时的全局降级提示：不阻塞启动，只提示相关功能不可用 */}
       {/* 「看诊断」直接开到环境体检：能力没挂上时那面板里的勾叉清单比配置向导更对口 */}
       <SetupBanner onOpen={() => setModelOpen(true)} onDiagnose={() => setEnvOpen(true)} />
-      <EnvHealth open={envOpen} onClose={() => setEnvOpen(false)} />
+      <EnvHealth open={envOpen} onClose={() => setEnvOpen(false)} onOpenAi={() => setAiOpen(true)} />
+      <AiDebugPanel open={aiOpen} onClose={() => setAiOpen(false)} />
       <ModelSetupPanel open={modelOpen} onClose={() => setModelOpen(false)} />
       <SendChainCheck open={chainOpen} onClose={() => setChainOpen(false)} />
       <StoragePanel open={storageOpen} onClose={() => setStorageOpen(false)} />

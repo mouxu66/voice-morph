@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -152,6 +153,61 @@ def test_lan_is_rejected(lan_client):
     assert lan_client.get("/api/ai/actions").status_code == 403
 
 
+def test_every_ai_endpoint_is_loopback_only(lan_client):
+    """★ 不变量：**每一个** `/api/ai/*` 端点都必须拒 LAN —— 自动遍历，不靠人记得写。
+
+    这条替代「每个端点手写 `_require_loopback()`」那种写法。手写的致命处：
+    新增端点时忘了写 = 默认对 LAN 开放，而快照里含本机路径与日志尾部。
+    本用例把已挂载的 `/api/ai/*` 路由全部拉出来逐个打一遍，
+    所以**将来新增端点漏了保护也会红**（门禁的全部意义就在这里）。
+
+    路径参数用占位符替换 —— 只验「来源被拒」，不验业务逻辑。
+
+    ⚠ 遍历方式必须走 `original_router.routes`：本项目这个 FastAPI 版本里
+    `app.include_router()` 塞进去的是 `_IncludedRouter` **包装器**，
+    它自己的 `.path` 是空串、`.routes` 是 `None`（实测 38 个 router 挂载后
+    `app.routes` 里38 条全是空 path）。早先版本直接遍历 `app.routes` 于是
+    收集到 0 条 ——而 `assert paths` 那句让它「红」了，可红的理由是
+    「没找到路由」而不是「LAN 被放行」，**差点把一个恒真断言当成门禁**。
+    """
+    import server
+
+    paths: list[str] = []
+    for route in server.app.routes:
+        inner = getattr(route, "original_router", None)
+        if inner is None:
+            continue
+        paths += [getattr(r, "path", "") for r in inner.routes]
+    ai_paths = [p for p in paths if p.startswith("/api/ai/")]
+    assert len(ai_paths) >= 3, f"只找到 {len(ai_paths)} 条 /ai/* 路由，遍历方式不对"
+    for p in ai_paths:
+        concrete = p.replace("{action_id}", "plugins.enable")
+        # ★ 必须按端点自己的方法打：拿 GET 去打 POST 端点得到的是 405/404
+        # （路由匹配上了但方法不对），而本用例断言的是 403 ——
+        # 那种红是「测法错了」，不是「保护没生效」，等于白测一条。
+        methods = _methods_of(server.app, p)
+        assert methods, f"{concrete} 没找到任何方法"
+        for method in methods:
+            r = lan_client.request(method, concrete)
+            # 403 = 回环守卫生效（目标）；404/405 = 被更早的守卫拦下（可接受，
+            # 例如 hook.ai 关着时写路由压根不存在）。其它状态码 = 守卫漏了。
+            assert r.status_code in (403, 404, 405), (
+                f"{method} {concrete} 未经守卫就返回了 {r.status_code}"
+            )
+
+
+def _methods_of(app, path: str) -> list[str]:
+    """取某条挂载路由上真实注册的方法。"""
+    for route in app.routes:
+        inner = getattr(route, "original_router", None)
+        if inner is None:
+            continue
+        for r in inner.routes:
+            if getattr(r, "path", "") == path:
+                return sorted((getattr(r, "methods", None) or set()) - {"HEAD", "OPTIONS"})
+    return []
+
+
 def test_bad_format_is_400(client):
     assert client.get("/api/ai/context", params={"format": "xml"}).status_code == 400
 
@@ -220,6 +276,114 @@ def test_redaction_applies_to_log_lines(client, monkeypatch, tmp_path):
     assert home not in joined
     assert "%USERPROFILE%" in joined
     assert "一切正常的一行" not in joined, "疑似错误筛选失效（把正常行也带上了）"
+
+
+# ---------------------------------------------------------------- 3b. ★ P0 脱敏回归
+
+
+def _write_log(monkeypatch, tmp_path, line: str) -> None:
+    log = tmp_path / "backend.log"
+    log.write_text(line + "\n", encoding="utf-8")
+    monkeypatch.setattr(ai_api, "_log_path", lambda: log)
+
+
+def test_spoken_asr_text_never_reaches_report(client, monkeypatch, tmp_path):
+    """★ P0 回归：日志里 ASR 识别出的**用户原话**不许进报告。
+
+    泄漏源是 `cascade_stream.py` 的
+        print(f"[live-asr] 「{text}」 ({...}s)")
+    —— 用户原话进 stdout → backend.log → 本报告。而这行**恰好**很容易命中
+    `_LOG_SUSPECT`（用户抱怨的「这局失败了」「不行」自带「失败/错误」），
+    于是用户点一次「复制诊断报告」就把刚说的银行卡号发给了第三方 AI。
+
+    本条断言用**全文搜**（含号码与原话片段），不是逐字段断言：逐字段会假绿。
+    """
+    _write_log(
+        monkeypatch,
+        tmp_path,
+        "[live-asr] 「我银行卡密码是 6222020200112233 这局失败了帮我改一下」 (1.2s)",
+    )
+    body = client.get("/api/ai/context").json()
+    raw = json.dumps(body, ensure_ascii=False)
+    assert "6222020200112233" not in raw, "ASR 用户原话里的银行卡号被原样带出去了"
+    assert "银行卡密码" not in raw
+    # 也不能「为了安全」把整行丢掉 —— 引号与耗时是诊断信号（发生过一次转写 + 耗时）
+    joined = "\n".join(body["errors"]["items"])
+    assert "<用户原话已省略>" in joined, "占位符缺失：要么没脱敏，要么整行被吞掉"
+    assert "1.2s" in joined, "行尾耗时被误伤：脱敏不该毁掉诊断信息"
+
+
+def test_id_card_and_phone_in_log_are_redacted(client, monkeypatch, tmp_path):
+    """号码类兜底（不依赖引号）：异常文本里直接夹带号码同样要隐藏。"""
+    _write_log(
+        monkeypatch,
+        tmp_path,
+        "[analyze] FAIL ref.wav: OSError 出错了 13800138000 身份证 110101199001011234",
+    )
+    body = client.get("/api/ai/context").json()
+    raw = json.dumps(body, ensure_ascii=False)
+    assert "13800138000" not in raw
+    assert "110101199001011234" not in raw
+    assert "<疑似号码已隐藏>" in raw
+
+
+def test_number_redaction_does_not_eat_diagnostics(client, monkeypatch, tmp_path):
+    """★ 反向守卫：号码正则**不许误伤**正常诊断数字。
+
+    没有这条，一个「宁滥勿缺」的号码正则会把耗时(0.35)、端口、音色编号全抹成
+    星号，报告变得无从解读 —— 而这类退化同样不报错。
+    """
+    _write_log(
+        monkeypatch,
+        tmp_path,
+        "[cascade] 端到端滞后 0.35s (avg 0.30) 失败重试 id=1_abc1234 port=8080 took=1.5s",
+    )
+    body = client.get("/api/ai/context").json()
+    joined = "\n".join(body["errors"]["items"])
+    for keep in ("0.35", "0.30", "1_abc1234", "8080", "1.5s"):
+        assert keep in joined, f"正常诊断数字 {keep} 被误抹了（正则边界写太宽）"
+
+
+def test_number_redaction_never_leaves_partial_digits(client, monkeypatch, tmp_path):
+    """★ 正则边界（`(?<!\\d)` / `(?!\\d)`）真正的作用：防止**部分**吞噬。
+
+    变异验证时实测的差异 —— 去掉边界后，一串 13 位数字会被从中间截断、
+    尾部数字**原样留下**：
+
+        '1380013800012' 有边界 → 原样（不是号码）
+                     无边界 → '<X>12'  ← 尾巴 12 泄漏，且报告里出现无意义残缺号
+
+    半截号码比完整号码更糟：它看起来像被「部分识别」过的真实号码，
+    排障时会把人带偏。所以这条钉住「要么完整隐藏、要么原样保留」，
+    不接受「吃掉一半」。
+    """
+    _write_log(
+        monkeypatch,
+        tmp_path,
+        "[cascade] 块处理失败(3): 13 位串 1380013800012 出错了；18位 110101199001011234567 也出错",
+    )
+    body = client.get("/api/ai/context").json()
+    joined = "\n".join(body["errors"]["items"])
+    # 非号码的长串：要么原样保留，要么整段隐藏 —— 不接受残缺的尾巴
+    assert "1380013800012" in joined or "<疑似号码已隐藏>" in joined
+    assert not re.search(r"<疑似号码已隐藏>12", joined), (
+        "号码被部分吞噬：占位符后面还留着数字尾巴 —— 正则的左右边界写丢了"
+    )
+
+
+def test_redaction_runs_before_truncation(client, monkeypatch, tmp_path):
+    """★ 顺序不变量：脱敏在截断**之前**。
+
+    反过来的话，200 字符的截断会把「」拦腰切断（用户原话通常很长），
+    闭合引号没了 → 引号规则匹配不上 → 报告照样带出半句原话。
+    这条用「原话长度 > 截断上限」的真实边界钉住，不靠注释说明。
+    """
+    spoken = "这是一句很长的用户原话" * 30  # > 200 字符，必被截断
+    _write_log(monkeypatch, tmp_path, f"[live-asr] 「{spoken} 失败了」 (2.0s)")
+    body = client.get("/api/ai/context").json()
+    raw = json.dumps(body, ensure_ascii=False)
+    assert "很长的用户原话" not in raw, "先截断再脱敏：引号被切断 → 原话泄漏"
+    assert len(body["errors"]["items"][0]) <= 200, "截断上限失效"
 
 
 # ---------------------------------------------------------------- 4. 拒绝清单（声明式）

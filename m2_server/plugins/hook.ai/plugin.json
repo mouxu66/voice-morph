@@ -1,0 +1,22 @@
+{
+  "id": "hook.ai",
+  "name": "AI 调试写动作",
+  "kind": "builtin",
+  "category": "hook",
+  "order": 240,
+  "summary": "让外部 AI 在三重门下开关能力（plugins.enable / plugins.preset）；默认全关，只限本机",
+  "requires": [],
+  "routers": ["ai_actions_api"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [],
+  "extras": {
+    "python": [],
+    "external": [],
+    "models": []
+  },
+  "health": null,
+  "disable": {
+    "note": "默认关闭。关闭后 POST /api/ai/actions/* 立刻404（路由不挂载）；只读快照 /api/ai/context 与「AI 操作记录」面板仍可用 —— 报障时不该依赖任何可选能力。即使打开，写动作仍需另外两个条件：本机回环 + VM_AI_CONTROL=1 + VM_AI_TOKEN 三者同时满足（缺任一即403）。拒绝清单类动作（发微信 / 删除 / 任意命令执行）永远不会开放。"
+  }
+}

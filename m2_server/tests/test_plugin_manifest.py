@@ -55,12 +55,27 @@ _NAV_TSX = (_ROOT / "web" / "src" / "components" / "voice-studio" / "StudioNav.t
 
 @pytest.fixture(autouse=True)
 def _clean_caches():
-    """用例之间不共享 registry / 清单缓存。"""
+    """用例之间不共享 registry / 清单缓存。
+
+    ★ `reset_skipped()` 不是凑数：`_SKIPPED` 是 `plugin_manifest` 里的模块级集合，
+    `mount_plan()`（不带 `include_disabled`）会把 disabled 插件的 router 记进去，
+    而 `state_of()` 靠它豁免「未注册」报错。它**不受 `reset_cache()` 管辖**，
+    任何调用过 `mount_plan()` 的测试文件都会把痕迹留给下一个文件 ——
+    2026-10-06 实测：`test_ai_actions_api.py` 跑完后，
+    `test_router_never_attempted_counts_as_broken_not_ok` 红成
+    `{'ok': 1, 'broken': 27}`，而加载器账本明明是空的（查错地方了）。
+
+    setup 与 teardown **两边都要清**：setup 清掉「上个文件留下的」，
+    teardown 清掉「本文件自己留下的」—— 只清一边的话，本文件里任何调过
+    `mount_plan()` 的用例（例如 `test_mount_plan_*`）照样会把痕迹带出去。
+    """
     plugin_loader.reset()
     plugin_manifest.reset_cache()
+    plugin_manifest.reset_skipped()
     yield
     plugin_loader.reset()
     plugin_manifest.reset_cache()
+    plugin_manifest.reset_skipped()
 
 
 def _load_all() -> None:
@@ -348,6 +363,89 @@ def test_missing_or_broken_state_file_means_nothing_disabled(tmp_path, monkeypat
     ok.write_text(json.dumps({"enabled": ["sound.tts"]}), encoding="utf-8")
     monkeypatch.setattr(plugin_manifest, "STATE_FILE", ok)
     assert plugin_manifest.disabled_ids() == set(), "只认 disabled 键（白名单会让新插件默认被关掉）"
+
+
+def test_skipped_ledger_is_populated_by_mount_plan_and_cleared_only_by_its_own_reset(
+    tmp_path, monkeypatch
+):
+    """★ `_SKIPPED` 记账的两个不变量（2026-10-06 加，为跨文件污染立守卫）。
+
+    背景：`state_of()` 靠 `_SKIPPED` 区分「因为被关掉所以没加载」与「清单声称
+    挂着却没挂」—— 前者不该报「未注册」。而 `mount_plan()`（不带
+    `include_disabled`）会把每个 disabled 插件的 router 记进去。
+
+    坑在于它是**模块级**集合，且 `reset_cache()` **管不到**它。于是任何调过
+    `mount_plan()` 的测试文件都会把痕迹留给下一个文件：
+    `test_ai_actions_api.py` 跑完后，`hook.ai` 明明没被尝试过却不报未注册 →
+    零reasons → 被判成 ok，`test_router_never_attempted_counts_as_broken_not_ok`
+    红成 `{'ok': 1, 'broken': 27}`，而且**只在全量跑时出现**。
+
+    所以这里钉两件事：
+      1. `mount_plan()` 确实会写这个账本（否则上面整段推理的前提就没了）；
+      2. `reset_cache()` **清不掉**它，只有 `reset_skipped()` 能清。
+         —— 这条是重点：它把「清一半」这个错法变成一条会红的断言，
+         而不是靠下一个文件莫名其妙地红。
+    """
+    state = tmp_path / "plugins.json"
+    state.write_text(json.dumps({"disabled": ["hook.ai"]}), encoding="utf-8")
+    monkeypatch.setattr(plugin_manifest, "STATE_FILE", state, raising=False)
+
+    plugin_manifest.mount_plan()
+    assert ("ai_actions_api", plugin_loader.ROUTER_PURPOSE) in plugin_manifest.skipped(), (
+        "前提失效：mount_plan() 没把被关插件记进 _SKIPPED"
+        "（若将来改成不记账，本用例应随 state_of 的豁免逻辑一起改）"
+    )
+
+    plugin_manifest.reset_cache()  # 常见的「顺手清一下」——**清不掉它**
+    assert ("ai_actions_api", plugin_loader.ROUTER_PURPOSE) in plugin_manifest.skipped(), (
+        "reset_cache() 竟然能清 _SKIPPED 了？那 reset_skipped 就成了多余的第二套 reset，"
+        "两条注释与跨文件收尾都要重新审"
+    )
+
+    plugin_manifest.reset_skipped()
+    assert plugin_manifest.skipped() == set(), "reset_skipped() 必须清空整个账本"
+
+
+def test_autouse_fixture_leaves_no_skipped_trace_for_the_next_file():
+    """本文件自己的 autouse fixture 也必须收尾 `_SKIPPED`（守卫 `_clean_caches`）。
+
+    上面那条证明「谁调mount_plan 谁负责清」，这条从**被污染方**的角度钉住：
+    `_clean_caches` 的 teardown 若漏了 `reset_skipped()`，任何调用方漏清都会
+    打穿这里 —— 而症状出现在**别的文件**里（`{'ok': 1, 'broken': 27}`），
+    排查成本极高。宁可在本文件里红。
+
+    ★ 为什么不直接调 `_clean_caches()`：pytest 明确禁止直接调用 fixture
+    （新版本会raise）。这里改成**验它真的清得掉**：先手动留下痕迹，
+    再调 `reset_skipped()`，并额外用 `inspect.getsource` 钉住 fixture 体内
+    **setup 与 teardown 两处都有**它 —— 后半句才是「这个 fixture 不会退化」的那一半。
+    只清一边是不够的：setup 清不掉本文件自己留下的，teardown 清不掉上个文件留下的。
+    """
+    import inspect
+
+    # 前半：reset_skipped() 确实清得掉这份痕迹
+    plugin_manifest.skipped().add(("some_other_module", plugin_loader.ROUTER_PURPOSE))
+    plugin_manifest.reset_skipped()
+    assert plugin_manifest.skipped() == set(), "reset_skipped() 连这都清不掉？"
+
+    # 后半：★ 本 fixture 必须 setup + teardown **各清一次**。
+    # 判据取「相对 `yield` 的位置」而不是绝对行号，也不用数字符串：
+    #   · 数字符串会被 docstring/注释里的同名词骗过（改个措辞就假红，
+    #     或者反过来——注释删了代码没删，守卫假装还在）；
+    #   · 绝对行号会在上面任何一次编辑后整体偏移。
+    lines = inspect.getsource(_clean_caches).splitlines()
+    yld = next(i for i, ln in enumerate(lines) if ln.strip() == "yield")
+    hits = [
+        i
+        for i, ln in enumerate(lines)
+        if "reset_skipped()" in ln and ln.strip().startswith("plugin_manifest.")
+    ]
+    before = [i for i in hits if i < yld]
+    after = [i for i in hits if i > yld]
+    assert len(before) == 1 and len(after) == 1, (
+        f"_clean_caches 里 reset_skipped() 在 yield 前 {len(before)} 次、后 {len(after)} 次，"
+        "必须各一次。只清一边不够："
+        "setup 清不掉本文件自己留下的，teardown 清不掉上个文件留下的。"
+    )
 
 
 # ------------------------------------------------------- 与前端对齐

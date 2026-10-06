@@ -61,7 +61,7 @@ describe("EnvHealth · 复制诊断报告", () => {
     diagnose.mockResolvedValue(DIAG_OK)
     getDiagnosticReport.mockResolvedValue("# 变声工坊 · 诊断报告\n完整内容")
 
-    render(<EnvHealth open onClose={() => {}} />)
+    render(<EnvHealth open onClose={() => {}} onOpenAi={() => {}} />)
     fireEvent.click(await screen.findByRole("button", { name: "复制诊断报告" }))
 
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
@@ -75,7 +75,7 @@ describe("EnvHealth · 复制诊断报告", () => {
     diagnose.mockResolvedValue(DIAG_ONE_FAIL)
     getDiagnosticReport.mockRejectedValue(new Error("404 Not Found"))
 
-    render(<EnvHealth open onClose={() => {}} />)
+    render(<EnvHealth open onClose={() => {}} onOpenAi={() => {}} />)
     fireEvent.click(await screen.findByRole("button", { name: "复制诊断报告" }))
 
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))

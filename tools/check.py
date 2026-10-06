@@ -170,6 +170,19 @@ FAST_TESTS = [
     # sound.watermark（d49cc16）带着过期 README 过了 pre-commit，三个用例等到
     # 下一个人跑全量才集体变红（sound.blindtest 882fd4c 时补修）。见犯错指南 §135。
     "m2_server/tests/test_docs_freshness.py",
+    # AI 调试面（约 1~2s，纯内存 + TestClient + tmp 文件）：`/api/ai/*`。
+    # 放进 --fast 的理由很硬—— 这一层退化后**全程不报错**：
+    #   ① 脱敏失效 → 用户点一次「复制诊断报告」就把 ASR 识别出的用户原话
+    #      （含银行卡号，因为那句「这局失败了」恰好命中错误筛选）发给了第三方 AI，
+    #      事后收不回；
+    #   ② 回环守卫失效 → 同一份含本机路径与日志的快照对 LAN 开放；
+    #   ③ 三重门失效 → AI 静默改了用户的插件开关，而 UI 上看不出区别。
+    # 三条都只有「AI 看见了什么 / 用户丢了什么」能发现，测试是唯一的机械判据。
+    "m2_server/tests/test_ai_api.py",
+    # AI 写动作（第二期，约 4s，同上再叠一层）：三重门 / 默认拒绝 /
+    # 审计 fail-closed。上面三条退化它就全红，且它自己也有独立的
+    # 「门被拆掉」变异用例 —— 这些守卫的共同特点是**改坏时不报错**。
+    "m2_server/tests/test_ai_actions_api.py",
 ]
 
 

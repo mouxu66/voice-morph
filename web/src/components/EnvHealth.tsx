@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { Check, Copy, Power, RefreshCw, Server, Stethoscope, X } from "lucide-react"
+import { Bot, Check, Copy, Power, RefreshCw, Server, Stethoscope, X } from "lucide-react"
 import { diagnose, getDiagnosticReport, getHealth } from "@/api/client"
 import type { DiagnoseInfo } from "@/types"
 import { useAppStore } from "@/store/useAppStore"
@@ -13,7 +13,16 @@ python m2_server/server.py`
 /** 环境体检面板：检查本机依赖并支持一键启动后端。
  * - 后端在线：展示勾叉清单（ffmpeg / RVC 整合包 / 权重 / CUDA / 模型），失败项带排查建议与复制。
  * - 后端离线：Electron 下点「启动本地服务」真正拉起；非桌面端降级为「显示命令 + 复制」。 */
-export function EnvHealth({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function EnvHealth({
+  open,
+  onClose,
+  onOpenAi,
+}: {
+  open: boolean
+  onClose: () => void
+  /** 打开「AI 调试面」面板（动作目录 + AI 操作记录）。 */
+  onOpenAi: () => void
+}) {
   const backendUp = useAppStore((s) => s.backendUp)
   const setHealth = useAppStore((s) => s.setHealth)
 
@@ -241,18 +250,34 @@ export function EnvHealth({ open, onClose }: { open: boolean; onClose: () => voi
                   : `⚠ 有 ${failCount} 项待处理（不影响基本使用，按需修复）`}
               </div>
 
-              <button
-                type="button"
-                onClick={copyReport}
-                className="flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-muted-foreground transition hover:text-foreground"
-              >
-                {copiedReport ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                {copiedReport === "full"
-                  ? "已复制"
-                  : copiedReport === "brief"
-                    ? "已复制（简版）"
-                    : "复制诊断报告"}
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={copyReport}
+                  className="flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-muted-foreground transition hover:text-foreground"
+                >
+                  {copiedReport ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copiedReport === "full"
+                    ? "已复制"
+                    : copiedReport === "brief"
+                      ? "已复制（简版）"
+                      : "复制诊断报告"}
+                </button>
+
+                {/* AI 调试面：动作目录 + AI 操作记录（第二期）。
+                    入口放这里而不是另开一处 —— 用户在报障时的动线就是
+                    「体检 → 把报告给 AI」，多一个入口就多一次找不到。
+                    **不受 hook.ai 启用状态门控**：关掉写能力后仍要看得到
+                    「AI 之前做过什么」，关插件是止血不是销毁证据。 */}
+                <button
+                  type="button"
+                  onClick={onOpenAi}
+                  className="flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-muted-foreground transition hover:text-foreground"
+                >
+                  <Bot className="h-3.5 w-3.5" />
+                  AI 调试面
+                </button>
+              </div>
 
               <div className="space-y-2">
                 {diag.items.map((i) =>

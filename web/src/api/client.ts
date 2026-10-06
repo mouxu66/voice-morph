@@ -197,6 +197,66 @@ export async function getDiagnosticReport(): Promise<string> {
   return res.text();
 }
 
+/** `/api/ai/actions` 的动作目录返回体（只读面，任何时候都能读）。 */
+export interface AiActionsCatalog {
+  schema: number;
+  write_enabled: boolean;
+  write_reason: string;
+  /** 缺了哪几道门 —— 逐条点名，别让用户猜 */
+  missing_gates: string[];
+  actions: Array<{
+    id: string;
+    desc: string;
+    risk: string;
+    schema: Record<string, string>;
+  }>;
+  denied: Array<{ id: string; reason: string }>;
+}
+
+/**
+ * 动作目录：能做什么（schema + 风险）、不能做什么（拒绝清单）、以及写能力现在开着没。
+ *
+ * `write_enabled` 是**实时**判据（三重门），不是「有没有写插件」——
+ * 用户设了 token 但忘了 `VM_AI_CONTROL=1` 时它也是 false，而 `missing_gates`
+ * 会点名缺哪一项，不让调用方去猜。
+ */
+export async function getAiActions(): Promise<AiActionsCatalog> {
+  return jsonFetch<AiActionsCatalog>("/ai/actions");
+}
+
+/** 审计账本里的一条记录。 */
+export interface AiAuditEntry {
+  id: string;
+  ts: number;
+  action: string;
+  params: Record<string, unknown>;
+  dry_run: boolean;
+  ok: boolean;
+  code: number;
+  duration_ms: number;
+  actor: string;
+  evidence: unknown;
+  message: string;
+}
+
+export interface AiAuditTail {
+  schema: number;
+  items: AiAuditEntry[];
+  total: number;
+  source: string;
+  note: string;
+}
+
+/**
+ * AI 操作记录（只读，倒序）。
+ *
+ * 刻意与 `hook.ai` 的启用状态解耦：用户关掉写能力后**仍然该看得见**
+ * 「关掉之前 AI 做过什么」—— 关插件是为了止血，不是为了销毁证据。
+ */
+export async function getAiAudit(limit = 100): Promise<AiAuditTail> {
+  return jsonFetch<AiAuditTail>(`/ai/audit?limit=${limit}`);
+}
+
 /**
  * 后端预热进度（TTS worker / RVC / 微信播放worker 常驻化，合计约 50s）。
  * 预热完成前发语音会卡在模型加载上（请求会等预热结束，不会失败），

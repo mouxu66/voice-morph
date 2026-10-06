@@ -40,11 +40,9 @@ import history
 import plugin_loader
 import plugin_manifest
 import system_api
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
 from runtime import API_PREFIX, ROOT
-
-router = APIRouter(prefix=API_PREFIX)
 
 SCHEMA = 1
 
@@ -61,6 +59,30 @@ _LOG_MAX_LINES = 200
 #: 「疑似错误」的启发式判据。宁可多带几行也别漏掉 Traceback；
 #: 它只是**筛选**，不是结论 —— 报告里写的是「疑似」。
 _LOG_SUSPECT = re.compile(r"(?i)(traceback|\berror\b|\bexception\b|\bwarn|failed|失败|错误|告警|不可用)")
+
+#: ★ 日志行里「引号包裹的用户原话」。这是本模块最要紧的一条脱敏规则。
+#:
+#: 泄漏源唯一且已确认：`cascade_stream.py` 的 `print(f"[live-asr] 「{text}」 ...")`
+#: —— 把 **ASR 识别出的用户原话**写进 stdout → Electron 落 backend.log →
+#: 本模块读它。而 `_LOG_SUSPECT` 命中「失败/错误/warn」，于是游戏/直播场景里
+#: 用户嘴里的「这局失败了」「不行」会**带着银行卡号一起**进诊断报告
+#: （2026-10-06 实测复现，见 `.workbuddy-ai/memory/2026-10-06.md`）。
+#: 讽刺的是：正因为它是用户抱怨的那句话，才更容易命中错误筛选。
+#:
+#: 为什么替换引号内而不是丢掉整行：引号本身是**诊断信号** ——
+#: 保留「发生过一次转写」与行尾耗时，抹掉的只是原话本身。
+_LOG_QUOTED_USER_TEXT = re.compile(r"(「[^」]*」|『[^』]*』)")
+
+#: 号码类兜底：引号规则万一漏掉的路径（如异常文本里直接夹带数字串）。
+#: 两侧 `(?<!\d)`/`(?!\d)` 卡死边界 —— 否则耗时(0.35)、时间戳、音色编号
+#: 会被当成「号码」抹掉，把报告变成一堆无从解读的星号。
+_SENSITIVE_NUMBERS = re.compile(
+    r"(?<!\d)(?:"
+    r"\d{17}[\dXx]"  # 身份证 18 位
+    r"|\d{16,19}"  # 银行卡 16-19 位
+    r"|1[3-9]\d{9}"  # 手机号 11 位
+    r")(?!\d)"
+)
 
 #: 允许访问只读面 / 写面的来源主。`testclient` 是 Starlette TestClient 的**合成 peer**，
 #: 真实 socket 的对端地址不可能是这个字符串（服务端读的是 socket，不是请求头）。
@@ -91,6 +113,14 @@ def _require_loopback(request: Request) -> str:
     return host
 
 
+# ★ 回环限制挂成 **router 级依赖**，不是每个端点手写 `_require_loopback()`。
+# 手写的致命处：新增端点时忘了写 = 默认对 LAN 开放，而快照里含本机路径与日志尾部
+# —— 「忘了写一行代码」造成的后果不能靠自觉。挂成依赖后新增端点自动受保护；
+# 要放开某个端点得显式覆盖（届时会被 review 看见），而不是「忘了删一行」。
+#门禁 `test_ai_api.py::test_every_ai_endpoint_is_loopback_only` 钉住这条不变量。
+router = APIRouter(prefix=API_PREFIX, dependencies=[Depends(_require_loopback)])
+
+
 def _home_prefixes() -> list[str]:
     out = []
     for getter in (lambda: str(Path.home()), lambda: os.path.expanduser("~")):
@@ -108,6 +138,10 @@ def _token_values() -> list[str]:
 
 
 def _redact_str(value: str) -> str:
+    # 顺序有讲究：先整段抹掉「引号里的用户原话」，再扫号码 —— 反过来的话，
+    # 号码正则可能在原话里只匹配到一半，剩下的半截照样出去。
+    value = _LOG_QUOTED_USER_TEXT.sub("「<用户原话已省略>」", value)
+    value = _SENSITIVE_NUMBERS.sub("<疑似号码已隐藏>", value)
     for home in _home_prefixes():
         if home and home in value:
             value = value.replace(home, "%USERPROFILE%")
@@ -247,7 +281,10 @@ def _errors_section(logs: int, notes: list[dict]) -> dict:
         return {"items": [], "source": str(path), "note": "日志读取失败"}
     text = raw.decode("utf-8", errors="replace")
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    suspect = [ln[:_LOG_LINE_MAX] for ln in lines if _LOG_SUSPECT.search(ln)]
+    # ★ 先脱敏、再截断。反过来的话，截断会把「」拦腰切断（用户原话很长，
+    # 而截断上限 200 字符），闭合引号没了引号规则就匹配不上 —— 一个只写在
+    # 文档里没人验证的顺序漏洞：报告照样带出半句原话。
+    suspect = [_redact_str(ln)[:_LOG_LINE_MAX] for ln in lines if _LOG_SUSPECT.search(ln)]
     return {
         "items": suspect[-min(logs, _LOG_MAX_LINES):],
         "source": str(path),
@@ -321,7 +358,9 @@ def build_context(logs: int = 50) -> dict:
             "rules": [
                 "用户主目录 → %USERPROFILE%",
                 "input_text 等用户文字字段一律剔除（历史只留白名单字段）",
-                f"日志行截断到 {_LOG_LINE_MAX} 字符",
+                "日志里引号包裹的用户原话（「」/『』）→ 「<用户原话已省略>」",
+                "日志里的身份证/银行卡/手机号→ <疑似号码已隐藏>",
+                f"日志行截断到 {_LOG_LINE_MAX} 字符（脱敏在截断之前）",
                 "VM_API_TOKEN / VM_AI_TOKEN 的值出现即替换",
             ],
             "dropped_fields": sorted(_DROP_KEYS),
@@ -333,12 +372,16 @@ def build_context(logs: int = 50) -> dict:
     redacted["redaction"]["applied"] = {
         "home_replaced": "%USERPROFILE%" in blob,
         "token_replaced": "<redacted-token>" in blob,
+        "spoken_text_redacted": "<用户原话已省略>" in blob,
+        "numbers_redacted": "<疑似号码已隐藏>" in blob,
     }
     return redacted
 
 
-#: 第二期的动作表还没有；**拒绝清单现在就答**，且是声明式的 ——
-#: 「表里没有的一律 404」靠的是默认拒绝，不是「记得不要实现」。
+#: 第二期的动作表在 `ai_actions.py`（中性模块，读侧与写侧共用唯一真相源）。
+#: **拒绝清单现在就答**，且是声明式的 ——「表里没有的一律 404」靠的是默认拒绝，
+#: 不是「记得不要实现它」。这条清单与 `ai_actions.is_allowed()` 是**双向**的：
+#: 任何 action_id 要么在动作表里、要么在拒绝清单里，两边都没有即为设计漏洞。
 _DENIED = [
     {"id": "shell.exec", "reason": "红线：任何形态的任意命令/脚本执行都不做"},
     {"id": "wechat.send_text", "reason": "不可逆的外部副作用（发进的是别人的微信），要人确认"},
@@ -359,7 +402,6 @@ def ai_context(request: Request, response: Response, format: str = "json", logs:
     仅限回环访问（见模块注释的鉴权取舍）。无副作用 —— 它调用的采集函数都是只读的
     （音频那段会跑一次只读的 PowerShell 枚举，同 `/audio/send_chain`）。
     """
-    _require_loopback(request)
     if format not in ("json", "md"):
         raise HTTPException(status_code=400, detail="format 只能是 json 或 md")
     logs = max(0, min(int(logs), _LOG_MAX_LINES))
@@ -375,17 +417,51 @@ def ai_context(request: Request, response: Response, format: str = "json", logs:
 
 
 @router.get("/ai/actions")
-def ai_actions(request: Request, response: Response):
-    """动作目录（第一期：无写动作，只答拒绝清单与本层状态）。"""
-    _require_loopback(request)
+def ai_actions_catalog(request: Request, response: Response):
+    """动作目录：能做什么（schema + 风险等级）+ 明确不能做什么（拒绝清单）。
+
+    第二期起`write_enabled` 由三重门实时决定 —— 用户设了 token 但忘了
+    `VM_AI_CONTROL=1` 时，这里要如实答false 并点名缺哪一项，
+    而不是笼统说「未启用」（设计稿 §3.3：拒绝也要说清为什么）。
+    """
     response.headers["Cache-Control"] = "no-store"
+
+    import ai_actions as _table  # 中性动作表：hook.ai 关着也能读
+
+    reasons: list[str] = []
+    if os.environ.get("VM_AI_CONTROL", "") != "1":
+        reasons.append("缺 VM_AI_CONTROL=1（总开关）")
+    if not os.environ.get("VM_AI_TOKEN", ""):
+        reasons.append("缺 VM_AI_TOKEN（未设 token 即视为无写能力，不回退 VM_API_TOKEN）")
+
+    # 路由在不在 = 第 1 门（hook.ai 启用）。判据用加载器账本里的真实记录，
+    # 不靠 import 已关闭插件的模块去猜（那会破坏插件化边界）。
+    router_alive = plugin_loader.is_loaded("ai_actions_api")
+    if not router_alive:
+        reasons.append("hook.ai 未启用（写动作路由未挂载）")
+
     return {
         "schema": SCHEMA,
-        "write_enabled": False,
-        "write_reason": "写动作属第二期（可选插件 hook.ai：VM_AI_CONTROL + VM_AI_TOKEN 三重门），本版本只有只读快照",
-        "actions": [],
+        "write_enabled": not reasons,
+        "write_reason": "写动作三重门全部满足" if not reasons else "；".join(reasons),
+        "missing_gates": reasons,
+        "actions": _table.catalog() if router_alive else [],
         "denied": _DENIED,
     }
+
+
+@router.get("/ai/audit")
+def ai_audit_tail(request: Request, response: Response, limit: int = 100):
+    """AI 操作记录（只读）。第二期起`hook.ai` 写动作的账本。
+
+    **刻意不在只读端点里 import `ai_audit` 的写入路径之外的任何东西**，
+    且不要求 hook.ai 启用 —— 用户关掉插件后仍然该看得见「关掉前AI 做过什么」。
+    """
+    response.headers["Cache-Control"] = "no-store"
+    import ai_audit
+
+    limit = max(1, min(int(limit), 500))
+    return {"schema": SCHEMA, **ai_audit.tail(limit=limit)}
 
 
 # ---------------------------------------------------------------- Markdown 报告
