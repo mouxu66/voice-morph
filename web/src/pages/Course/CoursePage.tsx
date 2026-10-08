@@ -1,4 +1,5 @@
 import {
+  ChevronDown,
   CircleAlert,
   Download,
   FileUp,
@@ -107,8 +108,9 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
             讲稿驱动录课
           </h2>
           <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-            把讲稿写进 PPT 每页的「备注」（或用 --- 分页的纯文本），选一个音色逐页生成旁白；
-            每页一条独立音轨 + 时长清单，逐页对齐导出，插回课件即可。拟用于备课提效场景。
+            上传 PPT 就能录：每页先看「备注」，没有备注时自动用这页幻灯片上的文字当讲稿。
+            不用回头逐页补备注 —— 在上传后的框里顺手改几句即可。选一个音色逐页生成旁白，
+            每页一条独立音轨 + 时长清单，逐页对齐导出、插回课件即可。拟用于备课提效场景。
             想用自己的声音：先在「声音保存」录一段，回来在这里选它即可。
           </p>
         </div>
@@ -120,11 +122,11 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-medium text-primary">第一步 · 导入讲稿</p>
-                <h3 className="mt-2 text-lg font-semibold text-card-foreground">PPT 备注页 / 分页文本</h3>
+                <h3 className="mt-2 text-lg font-semibold text-card-foreground">上传 PPT（讲稿自动带出）</h3>
               </div>
               {p.pages.length > 0 && (
                 <span className="rounded-full bg-primary/15 px-2.5 py-0.5 text-xs text-primary">
-                  {p.source === "pptx" ? `PPT · ${p.pages.length} 页有备注` : `文本 · ${p.pages.length} 页`}
+                  {p.source === "pptx" ? `PPT · ${p.pages.length} 页讲稿` : `文本 · ${p.pages.length} 页`}
                 </span>
               )}
             </div>
@@ -179,9 +181,16 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
               )}
             </div>
 
+            {p.pages.some((pg) => pg.source === "body") && (
+              <p className="mt-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                有 {p.pages.filter((pg) => pg.source === "body").length} 页没有备注，已自动用这页幻灯片上的
+                文字当讲稿 —— 想改的话，直接在下面的框里改，或去 PPT 补备注后重新上传。
+              </p>
+            )}
+
             {p.skipped > 0 && (
-              <p className="mt-3 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-600">
-                {p.skipped} 页没有备注，已跳过 —— 需要它们发声的话，把讲稿补进对应页的「备注」再重新上传。
+              <p className="mt-3 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs leading-5 text-yellow-600">
+                {p.skipped} 页备注和幻灯片文字都是空的，没有内容可录、已跳过。
               </p>
             )}
 
@@ -317,24 +326,35 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
             </div>
           </div>
 
-          {/* 第三步：出片。画面来自**原课件**（后端在合成时把它复制进产物目录），
-              所以贴文本的批次没有画面可导 —— 那种情况按钮禁用 + 说明原因。 */}
-          <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
-            <div className="flex flex-wrap items-start justify-between gap-4">
+          {/* 出片是**可选**的第二步延伸：多数老师只要逐页旁白音轨就够用，
+              做成视频还需要本机装 PowerPoint。默认收起，想做成片的再展开。
+              画面来自原课件（后端合成时复制进产物目录），贴文本的批次没有画面可导。 */}
+          <details className="group rounded-2xl border border-border bg-card/85 shadow-lg backdrop-blur-xl">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-2xl p-5 transition hover:bg-card sm:p-6">
               <div>
-                <p className="text-xs font-medium text-primary">第三步 · 导出成片</p>
-                <h3 className="mt-2 text-lg font-semibold text-card-foreground">课件画面 + 旁白 → 视频</h3>
+                <p className="text-xs font-medium text-muted-foreground">可选 · 需要成片再做</p>
+                <h3 className="mt-2 flex items-center gap-2 text-lg font-semibold text-card-foreground">
+                  <Film className="h-4 w-4 text-primary" />
+                  课件画面 + 旁白 → 视频
+                </h3>
               </div>
-              {p.video?.status === "done" && (
-                <span className="rounded-full bg-primary/15 px-2.5 py-0.5 text-xs text-primary">
-                  {p.video.duration_s > 0 ? `${p.video.duration_s.toFixed(1)}s · ` : ""}
-                  {p.video.pages} 页画面
-                </span>
-              )}
-            </div>
-            <p className="mt-3 text-xs leading-5 text-muted-foreground">
-              把右栏这一批的逐页旁白配上<b>原课件的逐页画面</b>，导出一个 1920×1080 的 mp4。
-              画面靠本机 PowerPoint 逐页导出，导过的页会复用；改成 24fps 或调大页间停顿都能重出一次。
+              <div className="flex shrink-0 items-center gap-3">
+                {p.video?.status === "done" && (
+                  <span className="rounded-full bg-primary/15 px-2.5 py-0.5 text-xs text-primary">
+                    {p.video.duration_s > 0 ? `${p.video.duration_s.toFixed(1)}s · ` : ""}
+                    {p.video.pages} 页画面
+                  </span>
+                )}
+                <ChevronDown className="h-4 w-4 text-muted-foreground transition group-open:rotate-180" aria-hidden="true" />
+              </div>
+            </summary>
+
+            <div className="px-5 pb-5 sm:px-6 sm:pb-6">
+            <p className="text-xs leading-5 text-muted-foreground">
+              只要旁白音轨的话，做到上一步就够了（右栏逐页试听、下载时长清单）。
+              想要一整段带画面的讲课视频，再把右栏这批旁白配上<b>原课件的逐页画面</b>，
+              导出一个 1920×1080 的 mp4 —— 这一步需要本机装了 PowerPoint。
+              导过的页会复用画面；改成 24fps 或调大页间停顿都能重出一次。
             </p>
 
             {!p.sourcePptx && (
@@ -451,7 +471,8 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
                 </a>
               </div>
             )}
-          </div>
+            </div>
+          </details>
         </section>
 
         <section>

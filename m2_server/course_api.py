@@ -1,4 +1,4 @@
-"""讲稿驱动录课：PPT 备注页 → 逐页旁白（方案④，2026-10-05）。
+"""讲稿驱动录课：PPT（备注页 / 幻灯片正文）→ 逐页旁白（方案④，2026-10-05）。
 
 用法：
     POST /api/course/parse     上传 .pptx（multipart）或贴纯文本（`---` 分页）→ 页列表
@@ -12,6 +12,10 @@
       页序按 `ppt/slides/slideN.xml` 的 N；备注通过每页的 rels
       （Target=`../notesSlides/notesSlideM.xml`）映射 —— **不按 notesSlide 文件名
       排序**（页序调整/删页后的 pptx 会整体错位）。
+    - **讲稿来源备注优先、正文兜底**（2026-10-08）：某页没写备注时，自动取该页
+      `ppt/slides/slideN.xml` 里可见的正文当讲稿草稿 —— 老师做 PPT 已经够累，
+      不该再被要求"回头逐页补备注"（真实素材里 6 个 pptx 无一有备注）。
+      两者都空的页才跳过。每页带 `source`（remark/body）供前端区分。
     - 纯文本兜底：单独一行 `---`（3 个以上连字符）分页。
     - 逐页独立 wav：`outputs/course_<stamp>/page_001.wav` + `manifest.json`
       （页号/文本/时长）。**不拼整条大音频** —— 老师要的是"逐页对齐导出"，
@@ -52,8 +56,11 @@ _PPTX_A_T_RE = re.compile(r"<a:t>(.*?)</a:t>", re.S)
 _PPTX_REL_TARGET_RE = re.compile(r'Target="[^"]*notesSlides/(notesSlide\d+\.xml)"')
 
 
-def _notes_text(xml: str) -> str:
-    """一张备注页 XML → 纯文本：按 `<a:p>` 分段（段间换行），段内拼接各 `<a:t>` run。"""
+def _slide_text(xml: str) -> str:
+    """一页 XML → 纯文本：按 `<a:p>` 分段（段间换行），段内拼接各 `<a:t>` run。
+
+    备注页（notesSlide）与幻灯片正文（slide）结构相同，共用这一个解析函数。
+    """
     paras: list[str] = []
     for p in _PPTX_A_P_RE.findall(xml):
         runs = [unescape(t) for t in _PPTX_A_T_RE.findall(p)]
@@ -63,11 +70,20 @@ def _notes_text(xml: str) -> str:
     return "\n".join(paras)
 
 
+# 旧名保留：备注解析此前叫 _notes_text，测试/外部若还引用不至于断。
+_notes_text = _slide_text
+
+
 def parse_pptx(data: bytes) -> tuple[list[dict], int]:
     """pptx 字节 → (pages, skipped)。
 
-    pages=[{page, text}]（text 非空的页，page 为 1 起的幻灯片序号）；
-    没写备注的页不计入（skipped 计数）—— 老师不需要"第 7 页是空的"这种噪音。
+    pages=[{page, text, source}]（text 非空的页，page 为 1 起的幻灯片序号）；
+    `source` 标明这页的讲稿来自哪：`remark`（备注页）/ `body`（幻灯片正文兜底）。
+
+    讲稿来源优先级：**备注优先、正文兜底**（2026-10-08 简化：老师做 PPT 已经够累，
+    不该再被要求"回头逐页补备注"）。某页没写备注时，自动取该页幻灯片上可见的
+    正文当讲稿草稿 —— 老师在上传后的页面里顺手改几句即可。
+    连备注和正文都没有的页才计入 skipped（真正的全空页）。
     """
     import io
     import zipfile
@@ -97,10 +113,17 @@ def parse_pptx(data: bytes) -> tuple[list[dict], int]:
         pages: list[dict] = []
         skipped = 0
         for i in slides:
+            # 1) 备注优先
             nf = notes_of.get(i)
-            text = _notes_text(zf.read(nf).decode("utf-8", "replace")) if nf and nf in names else ""
-            if text.strip():
-                pages.append({"page": i, "text": text.strip()})
+            remark = _slide_text(zf.read(nf).decode("utf-8", "replace")) if nf and nf in names else ""
+            if remark.strip():
+                pages.append({"page": i, "text": remark.strip(), "source": "remark"})
+                continue
+            # 2) 备注没有 → 幻灯片正文兜底
+            sf = f"ppt/slides/slide{i}.xml"
+            body = _slide_text(zf.read(sf).decode("utf-8", "replace")) if sf in names else ""
+            if body.strip():
+                pages.append({"page": i, "text": body.strip(), "source": "body"})
             else:
                 skipped += 1
     return pages, skipped
@@ -338,7 +361,10 @@ async def course_parse(
         if not pages:
             raise HTTPException(
                 status_code=400,
-                detail=f"这个 pptx 的 {skipped} 页备注全是空的 —— 先把讲稿写进每页的「备注」再上传",
+                detail=(
+                    f"这个 pptx 的 {skipped} 页既没有备注、幻灯片上也没有文字 —— "
+                    "没有可当讲稿的内容（可以改用「粘贴文本」，用单独一行 --- 分页）"
+                ),
             )
         return {"source": "pptx", "total": len(pages), "skipped": skipped, "pages": pages,
                 # 留底：导出成片要从**原课件**导画面（贴文本的批次没有这一项）

@@ -538,7 +538,15 @@ export async function cancelAudiobook(): Promise<{ ok: boolean; message?: string
 
 // ---- 讲稿录课（PPT 备注页 → 逐页旁白，sound.course） ----
 
-export type CoursePageIn = { page: number; text: string };
+export type CoursePageIn = {
+  page: number;
+  text: string;
+  /**
+   * 这页讲稿从哪来：`remark`（PPT 备注页）/ `body`（备注为空时自动取该页幻灯片正文）。
+   * 贴文本的批次没有这个字段。前端据此标一句「这页用的是正文草稿」，老师可回改。
+   */
+  source?: "remark" | "body";
+};
 
 export type CoursePageState = {
   page: number;

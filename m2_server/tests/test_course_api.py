@@ -30,17 +30,24 @@ from fastapi.testclient import TestClient
 
 # ---------------- 工具 ----------------
 
-def _mk_pptx(slides: dict[int, str | None]) -> bytes:
+def _mk_pptx(slides: dict[int, str | None], bodies: dict[int, str] | None = None) -> bytes:
     """现场构造一个最小 pptx（内存 zip）。
 
     slides: {slide 序号: 备注文本}。None = 有 slide 没写备注。
+    bodies: {slide 序号: 幻灯片正文文本}。默认空（正文为空）—— 只测备注路径时不用管。
     备注文件名**故意**与 slide 序号错一位（notesSlide{i+1} 对应 slide{i}），
     用于钉住「页序靠 rels 映射、不按文件名排序」——排错了断言当场红。
     """
+    bodies = bodies or {}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for i in sorted(slides):
-            zf.writestr(f"ppt/slides/slide{i}.xml", "<xml/>")
+            body = bodies.get(i)
+            if body:
+                paras = "".join(f"<a:p><a:r><a:t>{ln}</a:t></a:r></a:p>" for ln in body.split("\n"))
+                zf.writestr(f"ppt/slides/slide{i}.xml", f"<p:sld>{paras}</p:sld>")
+            else:
+                zf.writestr(f"ppt/slides/slide{i}.xml", "<xml/>")
             note = slides[i]
             if note is None:
                 continue
@@ -139,7 +146,8 @@ class TestParsePptx:
         )
         assert [p["page"] for p in pages] == [1, 2]
         assert pages[0]["text"] == "第一页讲：导课。"
-        assert skipped == 1  # 没写备注的页不计入，只报 skipped
+        assert pages[0]["source"] == "remark"
+        assert skipped == 1  # 第 3 页备注和正文都没有，才计入 skipped
 
     def test_page_order_follows_slide_number_not_note_filename(self):
         """页序必须按 slide 序号（rels 映射），不按 notesSlide 文件名。
@@ -150,12 +158,48 @@ class TestParsePptx:
         pages, _ = course_api.parse_pptx(
             _mk_pptx({1: "甲页备注", 2: "乙页备注"})
         )
-        assert pages[0] == {"page": 1, "text": "甲页备注"}
-        assert pages[1] == {"page": 2, "text": "乙页备注"}
+        assert pages[0] == {"page": 1, "text": "甲页备注", "source": "remark"}
+        assert pages[1] == {"page": 2, "text": "乙页备注", "source": "remark"}
 
     def test_xml_entities_unescaped(self):
         pages, _ = course_api.parse_pptx(_mk_pptx({1: "a&lt;b &amp; c"}))
         assert pages[0]["text"] == "a<b & c"
+
+    def test_body_used_when_no_remark(self):
+        """★ 简化核心：没写备注的页，自动拿幻灯片正文当讲稿草稿。"""
+        pages, skipped = course_api.parse_pptx(
+            _mk_pptx({1: None}, bodies={1: "第三章 数据结构\n数组与链表"})
+        )
+        assert skipped == 0
+        assert pages[0]["page"] == 1
+        assert pages[0]["source"] == "body"
+        assert pages[0]["text"] == "第三章 数据结构\n数组与链表"
+
+    def test_remark_wins_over_body(self):
+        """有备注时备注优先，正文只做兜底（不覆盖老师手写的讲稿）。"""
+        pages, _ = course_api.parse_pptx(
+            _mk_pptx({1: "这是备注讲稿"}, bodies={1: "这是幻灯片正文"})
+        )
+        assert pages[0] == {"page": 1, "text": "这是备注讲稿", "source": "remark"}
+
+    def test_headline_page_with_only_body_still_recorded(self):
+        """真实场景：整份 PPT 一个备注都没有 —— 以前全 skipped，现在全靠正文顶。"""
+        pages, skipped = course_api.parse_pptx(
+            _mk_pptx({1: None, 2: None, 3: None},
+                     bodies={1: "封面：第一讲", 2: "目录", 3: "小结"})
+        )
+        assert skipped == 0
+        assert [p["page"] for p in pages] == [1, 2, 3]
+        assert all(p["source"] == "body" for p in pages)
+
+    def test_only_blank_pages_are_skipped(self):
+        """备注空 + 正文空 = 真正的空页，才跳过。"""
+        pages, skipped = course_api.parse_pptx(
+            _mk_pptx({1: "有备注", 2: None, 3: None}, bodies={3: "有正文"})
+        )
+        assert [p["page"] for p in pages] == [1, 3]
+        assert [p["source"] for p in pages] == ["remark", "body"]
+        assert skipped == 1  # 只有第 2 页两处都空
 
     def test_bad_zip_raises_value_error(self):
         with pytest.raises(ValueError, match="pptx"):
@@ -199,14 +243,32 @@ class TestParseEndpoint:
         assert body["source"] == "pptx" and body["total"] == 1 and body["skipped"] == 1
         assert body["pages"][0]["text"] == "导课"
 
-    def test_pptx_all_notes_empty_is_a_clear_400(self, client):
-        """全空备注是最常见的真实踩坑 —— 报错要把"写进备注"说清楚。"""
+    def test_upload_pptx_without_any_remarks_still_works(self, client):
+        """★ 简化后：整份 PPT 没写备注也能直接解析（用幻灯片正文当讲稿）。"""
+        r = client.post(
+            "/api/course/parse",
+            files={
+                "file": (
+                    "course.pptx",
+                    _mk_pptx({1: None, 2: None}, bodies={1: "封面", 2: "正文页"}),
+                    "application/octet-stream",
+                )
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 2 and body["skipped"] == 0
+        assert [p["source"] for p in body["pages"]] == ["body", "body"]
+
+    def test_pptx_with_nothing_at_all_is_a_clear_400(self, client):
+        """备注和幻灯片正文都空 → 报错要说清双路径（备注 / 粘贴文本）。"""
         r = client.post(
             "/api/course/parse",
             files={"file": ("course.pptx", _mk_pptx({1: None, 2: None}), "application/octet-stream")},
         )
         assert r.status_code == 400
-        assert "备注" in r.json()["detail"]
+        detail = r.json()["detail"]
+        assert "没有文字" in detail and "粘贴文本" in detail
 
     def test_text_fallback(self, client):
         r = client.post("/api/course/parse", data={"text": "第一页\n---\n第二页"})

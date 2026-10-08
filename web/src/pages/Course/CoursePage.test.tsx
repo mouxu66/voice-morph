@@ -140,9 +140,37 @@ describe("CoursePage 渲染", () => {
     expect(screen.getByText("33%")).toBeDefined()
   })
 
-  it("skipped 提示：没写备注的页要引导补备注，而不是无声消失", () => {
+  it("skipped 提示：备注和幻灯片正文都空的页要说清「没内容可录」，不是劝人补备注", () => {
     render(<CoursePage {...mkProps({ skipped: 2, pages: [{ page: 1, text: "x" }], source: "pptx" })} />)
-    expect(screen.getByText(/2 页没有备注，已跳过/)).toBeDefined()
+    expect(screen.getByText(/2 页备注和幻灯片文字都是空的，没有内容可录/)).toBeDefined()
+  })
+
+  it("★ 正文兜底提示：没有备注的页自动用幻灯片文字，并说明能改", () => {
+    // 简化核心：老师做 PPT 已经够累，不该再被要求回头逐页补备注。
+    render(
+      <CoursePage
+        {...mkProps({
+          source: "pptx",
+          pages: [
+            { page: 1, text: "备注稿", source: "remark" },
+            { page: 2, text: "正文稿", source: "body" },
+          ],
+        })}
+      />
+    )
+    expect(screen.getByText(/有 1 页没有备注，已自动用这页幻灯片上的\s*文字当讲稿/)).toBeDefined()
+  })
+
+  it("全部备注齐全时不出现正文兜底提示", () => {
+    render(
+      <CoursePage
+        {...mkProps({
+          source: "pptx",
+          pages: [{ page: 1, text: "备注稿", source: "remark" }],
+        })}
+      />
+    )
+    expect(screen.queryByText(/已自动用这页幻灯片上的/)).toBeNull()
   })
 
   it("文案红线：不出现「师范实训/诊断/疗效」等越界措辞", () => {
