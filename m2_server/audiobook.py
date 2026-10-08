@@ -193,11 +193,27 @@ def _pieces_of(text: str) -> tuple[list[str | None], list[str | None]]:
     return texts, after
 
 
-def _synth_pieces(texts, after, qwen_tts, ref, voice_id) -> tuple["object", int]:
+def _synth_pieces(
+    texts,
+    after,
+    qwen_tts,
+    ref,
+    voice_id,
+    *,
+    style_ref: str = "",
+    style_ref_text: str = "",
+    seg_chars: int = 0,
+) -> tuple["object", int]:
     """逐片合成 →（带音效时）组装 → (PCM float32, sr)。
 
     无标记时只合成一次、结果原样返回（**不做峰值归一**）—— 现有产物的音量
     一个字节都不变，这是"无标记零回归"的落点。
+
+    `style_ref` 非空 → 走**风格参考 ICL**（讲稿录课的"有情绪版旁白"，见
+    `course_api`）。⚠️ 这是**整段克隆**：声音与语气都取自参考音，`ref`/`voice_id`
+    那份音色在 worker 端会被丢掉（`qwen3_tts_service._tts_style_blocking` 只拿
+    style_ref 当克隆参考）—— 别把它当成"只借语气"。三个参数默认空/0 时，调用
+    与加它们之前逐字相同（无标记零回归契约）。
     """
     import io
 
@@ -209,13 +225,20 @@ def _synth_pieces(texts, after, qwen_tts, ref, voice_id) -> tuple["object", int]
         if t is None:
             raws.append((None, 0))
             continue
-        wav = qwen_tts(
-            t,
-            ref_audio=str(ref),
-            ref_text="",
-            language=_detect_lang(t),
-            voice_id=voice_id,
-        )
+        kw: dict = {
+            "ref_audio": str(ref),
+            "ref_text": "",
+            "language": _detect_lang(t),
+            "voice_id": voice_id,
+        }
+        if style_ref:
+            # 与 tts_api._kw 同口径：style_ref_text 空就不传（worker 会自己转写参考音）
+            kw["style_ref"] = style_ref
+            if style_ref_text:
+                kw["style_ref_text"] = style_ref_text
+            if seg_chars > 0:
+                kw["seg_chars"] = seg_chars
+        wav = qwen_tts(t, **kw)
         data, psr = sf.read(io.BytesIO(wav), dtype="float32", always_2d=False)
         if getattr(data, "ndim", 1) > 1:
             data = data.mean(axis=1)

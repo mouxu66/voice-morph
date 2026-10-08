@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { CoursePage } from "@/pages/Course/CoursePage"
 import type { useCourse } from "@/pages/Course/useCourse"
@@ -51,6 +51,8 @@ function mkProps(over: Partial<ReturnType<typeof useCourse>> = {}): ReturnType<t
     fileName: "",
     gapMs: 350,
     setGapMs: vi.fn(),
+    styleRefVoice: "",
+    setStyleRefVoice: vi.fn(),
     parsing: false,
     submitting: false,
     running: false,
@@ -71,6 +73,7 @@ const doneStatus = (pages: CourseStatus["pages"]): CourseStatus => ({
   running: false,
   status: "done",
   voice_id: "v1",
+  style_ref_voice: "",
   done: pages.length,
   total: pages.length,
   percent: 100,
@@ -175,5 +178,48 @@ describe("CoursePage 渲染", () => {
     }
     render(<CoursePage {...mkProps({ status, running: true })} />)
     expect(screen.getByText(/重试失败页 · 0\/1 页/)).toBeDefined()
+  })
+})
+
+/**
+ * 风格参考 ICL（2026-10-08 接入）。
+ *
+ * ⚠️ 这里守的是**措辞与代码行为一致**：`_tts_style_blocking` 拿 style_ref 当克隆
+ * 参考、丢弃 ref_audio —— 实测输出频谱与参考音相关 0.989、与旁白音色参考音 0.932。
+ * 所以文案不许写成"音色仍由旁白音色决定"（那是错的），必须点明音色也一起带过来。
+ */
+describe("CoursePage · 风格参考", () => {
+  beforeEach(() => {
+    document.body.innerHTML = ""
+  })
+
+  it("默认不启用，并说明不启用=纯声纹（语调偏平）", () => {
+    render(<CoursePage {...mkProps({ pages: [{ page: 1, text: "x" }] })} />)
+    const sel = screen.getByLabelText(/风格参考/) as HTMLSelectElement
+    expect(sel.value).toBe("")
+    expect(screen.getByText(/不启用（用上面选的旁白音色）/)).toBeDefined()
+    expect(screen.getByText(/纯声纹克隆/)).toBeDefined()
+  })
+
+  it("★ 启用后文案必须点明「音色也一起带过来」，不能宣称音色仍由旁白音色决定", () => {
+    render(
+      <CoursePage {...mkProps({ pages: [{ page: 1, text: "x" }], styleRefVoice: "v1" })} />
+    )
+    expect(screen.getByText(/声音与语气/)).toBeDefined()
+    expect(screen.getByText(/音色也一起带过来/)).toBeDefined()
+    expect(screen.getByText(/旁白音色此时不参与发声/)).toBeDefined()
+  })
+
+  it("只列有参考音的音色：RVC 纯模型音色选了必 404，不能出现在下拉里", () => {
+    const voices = [
+      { id: "v1", display_name: "测试音色" },
+      { id: "rvc_only", display_name: "纯模型音色", has_reference: false },
+    ] as ReturnType<typeof useCourse>["voices"]
+    render(<CoursePage {...mkProps({ pages: [{ page: 1, text: "x" }], voices })} />)
+    const sel = screen.getByLabelText(/风格参考/) as HTMLSelectElement
+    // 只该有「不启用」+ 有参考音那个；纯模型音色（rvc_only）不许出现
+    expect(Array.from(sel.querySelectorAll("option")).map((o) => o.value)).toEqual(["", "v1"])
+    expect(within(sel).getByRole("option", { name: /测试音色/ })).toBeDefined()
+    expect(within(sel).queryByRole("option", { name: /纯模型音色/ })).toBeNull()
   })
 })

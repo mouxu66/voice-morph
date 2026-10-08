@@ -18,6 +18,10 @@
       每页的音轨插回课件对应页；整段拼接是有声书（sound.audiobook）的事。
     - 单页失败可续跑：一页失败标记 failed、其余页照常导出；retry 只重跑失败页、
       原位更新清单。合成的每页重试一次（瞬时 OOM/worker 抖动不必劳用户重提）。
+    - 旁白可选**风格参考 ICL**（`style_ref_voice`，2026-10-08 接入 `outputs/lecture_demo`
+      的实测成果）：纯声纹 x-vector 只取"这是谁"、丢掉"他怎么说的"，是录课旁白人机感
+      的根因。⚠️ 但它是**整段克隆** —— 声音与语气都取自参考音，`voice_id` 那份音色
+      不参与发声（实测：输出频谱与参考音相关 0.989、与旁白音色参考音 0.932）。
     - 同一时刻只允许一个任务（GPU 单路），重复提交 409（与 audiobook 同口径）。
     - 模块级**不 import audiobook**（可关插件；模块级拉依赖违反
       test_cross_plugin_import_isolation 锁的契约）—— 复用的切句/合成样板
@@ -121,6 +125,7 @@ COURSE_STATE: dict = {
     "running": False,
     "status": "idle",  # idle | running | done | cancelled | error
     "voice_id": "",
+    "style_ref_voice": "",  # 风格参考 ICL 的音色 id（空=纯声纹）；retry 沿用，见 _course_worker
     "done": 0,
     "total": 0,
     "percent": 0,
@@ -136,6 +141,10 @@ _course_lock = threading.Lock()
 
 _PAGE_ATTEMPTS = 2  # 每页最多尝试次数（瞬时失败自动重试一次，不必劳用户重提）
 
+#: 风格参考 ICL 的段长（字符）。30 = `outputs/lecture_demo` 实测值（synth_lecture.py 的
+#: `--seg-chars` 默认值就是 30，成片即按它出的）；worker 端还会先按句尾标点切，超长句才硬切。
+_STYLE_SEG_CHARS = 30
+
 
 class CoursePageIn(BaseModel):
     page: int
@@ -146,6 +155,10 @@ class CourseRunRequest(BaseModel):
     pages: list[CoursePageIn]
     voice_id: str = ""
     gap_ms: int = 350
+    # 风格参考 ICL（有情绪版旁白，2026-10-08 接入）：与 /api/tts 同口径 —— 只收
+    # **音色 id** 走白名单，不收裸路径。空 = 不启用（纯声纹 x-vector，语调偏平）。
+    # ⚠️ 启用后是**整段克隆**：声音与语气都取自参考音，`voice_id` 那份音色不参与发声。
+    style_ref_voice: str = ""
 
 
 def _manifest(pages: list[dict]) -> dict:
@@ -174,7 +187,15 @@ def _page_url(job_name: str, page: int) -> str:
     return f"/api/media/outputs/{job_name}/page_{page:03d}.wav"
 
 
-def _course_worker(job_dir, job_name: str, run_pages: list[dict], voice_id: str, gap_ms: int) -> None:
+def _course_worker(
+    job_dir,
+    job_name: str,
+    run_pages: list[dict],
+    voice_id: str,
+    gap_ms: int,
+    style_ref: str = "",
+    style_ref_text: str = "",
+) -> None:
     """合成 run_pages 里的每一页（其余页的 state 原样保留 —— retry 只跑失败页的落点）。"""
     import soundfile as sf
     from pydub import AudioSegment
@@ -185,6 +206,12 @@ def _course_worker(job_dir, job_name: str, run_pages: list[dict], voice_id: str,
     ref = voice_ref(voice_id)[0]
     gap = AudioSegment.silent(duration=gap_ms, frame_rate=24000)
     total = len(run_pages)
+    # 风格参考只在真给了参考音时才组 kwargs —— 空字典 = 与接入前逐字相同的调用
+    style_kw = (
+        {"style_ref": style_ref, "style_ref_text": style_ref_text, "seg_chars": _STYLE_SEG_CHARS}
+        if style_ref
+        else {}
+    )
 
     try:
         for idx, page in enumerate(run_pages):
@@ -211,7 +238,9 @@ def _course_worker(job_dir, job_name: str, run_pages: list[dict], voice_id: str,
                     pieces = []
                     for si, sent in enumerate(sents):
                         texts, after = ab._pieces_of(sent)
-                        pcm, sr = ab._synth_pieces(texts, after, qwen_tts, ref, voice_id)
+                        pcm, sr = ab._synth_pieces(
+                            texts, after, qwen_tts, ref, voice_id, **style_kw
+                        )
                         seg = AudioSegment(
                             pcm.tobytes(), frame_rate=sr, sample_width=pcm.dtype.itemsize, channels=1
                         )
@@ -296,6 +325,15 @@ async def course_run(req: CourseRunRequest):
             raise HTTPException(status_code=400, detail="请先指定合法音色")
         voice_ref(voice_id)  # 前置校验，避免起线程后才发现音色不存在
 
+        # 风格参考（可选）：先校验再起线程 —— 非法/不存在时线程里报错用户看不见
+        style_ref_voice = req.style_ref_voice.strip()
+        style_ref, style_ref_text = "", ""
+        if style_ref_voice:
+            if not is_valid_voice_id(style_ref_voice):
+                raise HTTPException(status_code=400, detail="风格参考音色非法")
+            sref, srtext = voice_ref(style_ref_voice)
+            style_ref, style_ref_text = str(sref), srtext
+
         import session_out  # noqa: F401 —— 会话目录语义的统一入口（本任务产物落 outputs 根子目录）
 
         from config import OUTPUTS_DIR
@@ -314,6 +352,7 @@ async def course_run(req: CourseRunRequest):
             running=True,
             status="running",
             voice_id=voice_id,
+            style_ref_voice=style_ref_voice,
             done=0,
             total=len(state_pages),
             percent=0,
@@ -327,7 +366,15 @@ async def course_run(req: CourseRunRequest):
 
     threading.Thread(
         target=_course_worker,
-        args=(job_dir, job_name, state_pages, voice_id, max(0, min(req.gap_ms, 3000))),
+        args=(
+            job_dir,
+            job_name,
+            state_pages,
+            voice_id,
+            max(0, min(req.gap_ms, 3000)),
+            style_ref,
+            style_ref_text,
+        ),
         daemon=True,
     ).start()
     return {"ok": True, "total": len(state_pages), "voice_id": voice_id, "job_dir": job_name}
@@ -368,6 +415,16 @@ async def course_retry():
             raise HTTPException(status_code=400, detail="上次的音色已失效，请重新提交任务")
         voice_ref(voice_id)
 
+        # 风格参考沿用上次任务：retry 出来的页要和同批其他页是同一个声音，
+        # 否则「重试失败页」会悄悄换一个人念那几页。
+        style_ref_voice = COURSE_STATE.get("style_ref_voice") or ""
+        style_ref, style_ref_text = "", ""
+        if style_ref_voice:
+            if not is_valid_voice_id(style_ref_voice):
+                raise HTTPException(status_code=400, detail="上次的风格参考音色已失效，请重新提交任务")
+            sref, srtext = voice_ref(style_ref_voice)
+            style_ref, style_ref_text = str(sref), srtext
+
         gap_ms = COURSE_STATE["gap_ms"]
         # 先把失败页置回"待跑"态，worker 只跑这批页、原位更新
         for p in COURSE_STATE["pages"]:
@@ -387,7 +444,7 @@ async def course_retry():
 
     threading.Thread(
         target=_course_worker,
-        args=(job_dir, job_name, failed, voice_id, gap_ms),
+        args=(job_dir, job_name, failed, voice_id, gap_ms, style_ref, style_ref_text),
         daemon=True,
     ).start()
     return {"ok": True, "total": len(failed), "voice_id": voice_id, "job_dir": job_name}

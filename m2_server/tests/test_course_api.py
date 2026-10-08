@@ -5,6 +5,8 @@
       不按 notesSlide 文件名 —— 页序调整后不错位）/ 坏 zip
     - 纯文本兜底：`---` 分页 / 无标记整篇一页
     - 合成：mock qwen3_tts 端到端（逐页 wav + manifest）/ 单页失败可续跑（retry）
+    - 风格参考 ICL：传 style_ref_voice → qwen_tts 收到 style_ref/seg_chars；
+      不传 → 一个都不传（零回归钉子）；retry 沿用；非法 → 400
     - 任务互斥 409 / 入参校验
     - 插件清单红线（summary 措辞 + router 模块存在）
 
@@ -18,6 +20,7 @@ import json
 import re
 import time
 import zipfile
+from pathlib import Path
 
 import course_api
 import pytest
@@ -62,11 +65,17 @@ def client():
 
 @pytest.fixture
 def fake_voice(monkeypatch):
-    """合法音色放行 + voice_ref 给假参考音（不碰 voicebank / worker）。"""
-    monkeypatch.setattr(course_api, "is_valid_voice_id", lambda v: v == "v_test")
-    monkeypatch.setattr(
-        course_api, "voice_ref", lambda v: (__import__("pathlib").Path("ref.wav"), "")
-    )
+    """合法音色放行 + voice_ref 给假参考音（不碰 voicebank / worker）。
+
+    `v_style` 额外带一份文字稿 —— 风格参考 ICL 里 `style_ref_text` 的有无是两条
+    不同的调用形状（空则不传、由 worker 自己转写），要能各测一次。
+    """
+    monkeypatch.setattr(course_api, "is_valid_voice_id", lambda v: v in ("v_test", "v_style"))
+
+    def _ref(v):
+        return (Path(f"{v}_ref.wav"), "风格参考的文字稿" if v == "v_style" else "")
+
+    monkeypatch.setattr(course_api, "voice_ref", _ref)
 
 
 @pytest.fixture
@@ -74,15 +83,17 @@ def fake_tts(monkeypatch):
     """合成入口打桩：返回 0.1s 24k 单声道正弦 wav。
 
     `boom` 非空时，文本含该词的**句**抛异常 —— 造"单页失败"而不惊动其他页。
-    返回一个可调的 calls 计数器供断言重试/续跑行为。
+    返回可调的 calls 计数器 + kwargs 记录（style_ref 透传就靠它断言，
+    只数调用次数看不出"参数到底传没传"）。
     """
     import soundfile as sf
     import numpy as np
 
-    state = {"calls": 0, "boom": ""}
+    state = {"calls": 0, "boom": "", "kwargs": []}
 
-    def _fake(text, **_kw):
+    def _fake(text, **kw):
         state["calls"] += 1
+        state["kwargs"].append(kw)
         if state["boom"] and state["boom"] in text:
             raise RuntimeError(f"模拟合成失败：{text[:10]}")
         buf = io.BytesIO()
@@ -106,7 +117,7 @@ def _wait_done(timeout_s: float = 15.0) -> dict:
 
 def _reset_state():
     course_api.COURSE_STATE.update(
-        running=False, status="idle", voice_id="", done=0, total=0,
+        running=False, status="idle", voice_id="", style_ref_voice="", done=0, total=0,
         percent=0, current_page=0, current_text="", job_dir="", gap_ms=350,
         pages=[], error="",
     )
@@ -298,6 +309,99 @@ class TestRunSynthesis:
         # 非法音色
         r = client.post("/api/course/run", json={"pages": [{"page": 1, "text": "x"}], "voice_id": "nope"})
         assert r.status_code == 400
+
+
+# ---------------- 风格参考 ICL（有情绪版旁白，2026-10-08 接入） ----------------
+
+class TestStyleRefIcl:
+    """`style_ref_voice` 的透传与零回归。
+
+    只断言"合成被调了几次"看不出参数到底传没传 —— 所以打桩里记 kwargs。
+    两端契约：给了 → qwen_tts 收到 style_ref(+seg_chars=30)；没给 → **一个都不传**
+    （默认空参数 = 与接入前逐字相同的调用，这是 audiobook/course 零回归的钉子）。
+    """
+
+    def test_run_with_style_ref_passes_icl_kwargs(self, client, fake_voice, fake_tts):
+        r = client.post(
+            "/api/course/run",
+            json={"pages": [{"page": 1, "text": "第一页。"}],
+                  "voice_id": "v_test", "style_ref_voice": "v_style"},
+        )
+        assert r.status_code == 200
+        st = _wait_done()
+        assert st["status"] == "done" and st["error"] == ""
+        assert st["style_ref_voice"] == "v_style"  # status 可见（前端与排障都读它）
+        assert fake_tts["kwargs"], "一次合成都没发生"
+        for kw in fake_tts["kwargs"]:
+            assert kw["style_ref"] == str(Path("v_style_ref.wav"))
+            assert kw["style_ref_text"] == "风格参考的文字稿"
+            assert kw["seg_chars"] == 30  # 实验验证值，见 course_api._STYLE_SEG_CHARS
+            # 旁白音色仍然照发 —— worker 端 style 分支会忽略它，但请求形状不该变
+            assert kw["ref_audio"] == str(Path("v_test_ref.wav"))
+
+    def test_style_ref_without_ref_text_omits_the_text_kwarg(self, client, fake_voice, fake_tts):
+        """参考音没有文字稿时**不传** `style_ref_text`（worker 会自己转写）。
+
+        传空串与不传不是一回事：service 判的是 `style_text` 真值，空串会走进
+        "自动转写"那条路（结果一样），但不传才是与 /api/tts 一致的形状。
+        """
+        client.post(
+            "/api/course/run",
+            json={"pages": [{"page": 1, "text": "第一页。"}],
+                  "voice_id": "v_test", "style_ref_voice": "v_test"},
+        )
+        st = _wait_done()
+        assert st["status"] == "done", st["error"]
+        assert fake_tts["kwargs"], "一次合成都没发生"
+        for kw in fake_tts["kwargs"]:
+            assert kw["style_ref"] == str(Path("v_test_ref.wav"))
+            assert "style_ref_text" not in kw
+
+    def test_run_without_style_ref_passes_nothing_extra(self, client, fake_voice, fake_tts):
+        """★ 零回归钉子：不传 style_ref_voice 时 qwen_tts 的参数里**没有**这三个键。"""
+        client.post(
+            "/api/course/run",
+            json={"pages": [{"page": 1, "text": "第一页。"}], "voice_id": "v_test"},
+        )
+        st = _wait_done()
+        assert st["status"] == "done", st["error"]
+        assert st["style_ref_voice"] == ""
+        assert fake_tts["kwargs"], "一次合成都没发生"
+        for kw in fake_tts["kwargs"]:
+            assert "style_ref" not in kw and "style_ref_text" not in kw and "seg_chars" not in kw
+
+    def test_retry_keeps_style_ref(self, client, fake_voice, fake_tts):
+        """retry 只重跑失败页 —— 那几页必须还是**同一个声音**，不能悄悄换人念。"""
+        fake_tts["boom"] = "炸"
+        client.post(
+            "/api/course/run",
+            json={"pages": [{"page": 1, "text": "正常页。"}, {"page": 2, "text": "要炸。"}],
+                  "voice_id": "v_test", "style_ref_voice": "v_style"},
+        )
+        _wait_done()
+        calls_after_run = fake_tts["calls"]
+        fake_tts["boom"] = ""
+
+        r = client.post("/api/course/retry")
+        assert r.status_code == 200
+        st = _wait_done()
+        assert st["status"] == "done" and st["error"] == ""
+        assert st["style_ref_voice"] == "v_style"  # 沿用下来了
+        for kw in fake_tts["kwargs"][calls_after_run:]:  # 只看 retry 之后的新调用
+            assert kw["style_ref"] == str(Path("v_style_ref.wav"))
+            assert kw["seg_chars"] == 30
+
+    def test_invalid_style_ref_voice_is_400_before_synth(self, client, fake_voice, fake_tts):
+        """非法参考音色要在**起线程之前**报 400（线程里报错用户看不见，还白占 GPU）。"""
+        r = client.post(
+            "/api/course/run",
+            json={"pages": [{"page": 1, "text": "第一页。"}],
+                  "voice_id": "v_test", "style_ref_voice": "nope"},
+        )
+        assert r.status_code == 400
+        assert "风格参考" in r.json()["detail"]
+        assert fake_tts["calls"] == 0
+        assert course_api.COURSE_STATE["running"] is False
 
 
 # ---------------- 插件清单红线 ----------------

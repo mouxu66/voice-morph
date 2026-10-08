@@ -44,6 +44,14 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
     st && st.running && st.pages.length > 0 && st.total < st.pages.length
   )
   const failedCount = st?.pages.filter((pg) => pg.failed).length ?? 0
+  /**
+   * 风格参考只列**有参考音**的音色：RVC 纯模型音色没有 reference.wav，
+   * 后端 `voice_ref()` 对它直接 404 —— 列出来就是给用户一个点了整页失败的选项。
+   */
+  const styleRefOptions = useMemo(
+    () => p.voices.filter((v) => v.has_reference !== false),
+    [p.voices]
+  )
   const totalDuration = useMemo(
     () => (st?.pages ?? []).reduce((acc, pg) => acc + (pg.failed ? 0 : pg.duration_s), 0),
     [st]
@@ -191,6 +199,34 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
                   onChange={(e) => p.setGapMs(Number(e.target.value))}
                   className="mt-2 w-full accent-[var(--primary)]"
                 />
+              </div>
+
+              <div className="mt-4">
+                <label htmlFor="course-style-ref" className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                  <Sparkles className="h-3.5 w-3.5" />风格参考（语气起伏）
+                </label>
+                <select
+                  id="course-style-ref"
+                  value={p.styleRefVoice}
+                  onChange={(e) => p.setStyleRefVoice(e.target.value)}
+                  className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2.5 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <option value="">不启用（用上面选的旁白音色）</option>
+                  {styleRefOptions.map((v) => (
+                    <option key={v.id} value={v.id}>{voiceOptionLabel(v)}</option>
+                  ))}
+                </select>
+                {p.styleRefVoice ? (
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                    整页由这段参考音的<b>声音与语气</b>朗读（ICL 克隆，音色也一起带过来）——
+                    上面选的旁白音色此时不参与发声；长句会自动分段。想录自己的声音就别启用这一项。
+                  </p>
+                ) : (
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                    不启用＝纯声纹克隆：只学"这是谁"，语调偏平。换成一段本身有起伏的参考音，
+                    旁白会更像在讲课。
+                  </p>
+                )}
               </div>
             </div>
 

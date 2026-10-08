@@ -40,6 +40,11 @@ export function useCourse(enabled = true) {
   const [skipped, setSkipped] = useState(0)
   const [fileName, setFileName] = useState("")
   const [gapMs, setGapMs] = useState(350)
+  /**
+   * 风格参考 ICL：""=不启用（纯声纹克隆，语调平）；非空=用该音色的参考音做整段
+   * 克隆（有情绪版旁白，见 client.ts 的 `CourseStatus.style_ref_voice` 注释）。
+   */
+  const [styleRefVoice, setStyleRefVoice] = useState("")
   const [parsing, setParsing] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState("")
@@ -149,11 +154,12 @@ export function useCourse(enabled = true) {
     setSubmitting(true)
     setErrorMessage("")
     try {
-      const r = await runCourse(pages, selectedVoiceId ?? "", gapMs)
+      const r = await runCourse(pages, selectedVoiceId ?? "", gapMs, styleRefVoice)
       setStatus({
         running: true,
         status: "running",
         voice_id: r.voice_id,
+        style_ref_voice: styleRefVoice,
         total: r.total,
         done: 0,
         percent: 0,
@@ -170,7 +176,7 @@ export function useCourse(enabled = true) {
     } finally {
       setSubmitting(false)
     }
-  }, [canStart, pages, selectedVoiceId, gapMs, startPoll])
+  }, [canStart, pages, selectedVoiceId, gapMs, styleRefVoice, startPoll])
 
   const cancel = useCallback(async () => {
     try {
@@ -210,6 +216,8 @@ export function useCourse(enabled = true) {
     fileName,
     gapMs,
     setGapMs,
+    styleRefVoice,
+    setStyleRefVoice,
     parsing,
     submitting,
     running,

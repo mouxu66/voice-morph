@@ -553,6 +553,11 @@ export type CourseStatus = {
   running: boolean;
   status: "idle" | "running" | "done" | "cancelled" | "error";
   voice_id: string;
+  /**
+   * 风格参考 ICL 的音色 id（空=不启用，走纯声纹克隆）。
+   * ⚠️ 非空时是**整段克隆**：声音与语气都取自参考音，`voice_id` 那份音色不参与发声。
+   */
+  style_ref_voice: string;
   done: number;
   total: number;
   percent: number;
@@ -596,12 +601,18 @@ export async function parseCourse(
 export async function runCourse(
   pages: CoursePageIn[],
   voiceId: string,
-  gapMs = 350
+  gapMs = 350,
+  styleRefVoice = ""
 ): Promise<{ ok: boolean; total: number; voice_id: string; job_dir: string }> {
   return jsonFetch("/course/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pages, voice_id: voiceId, gap_ms: gapMs }),
+    body: JSON.stringify({
+      pages,
+      voice_id: voiceId,
+      gap_ms: gapMs,
+      style_ref_voice: styleRefVoice,
+    }),
   });
 }
 
