@@ -223,7 +223,7 @@ def test_scene_presets_are_pinned_literals():
     assert plugin_manifest.PRESETS["wechat"] == [
         "sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board"]
     assert plugin_manifest.PRESETS["preserve"] == [
-        "sound.preserve", "sound.tts", "sound.audiobook"]
+        "sound.preserve", "sound.tts", "sound.audiobook", "sound.course"]
     # 游戏变声 = 变声本体本身（实时变声走虚拟声卡进游戏/直播/会议）
     assert plugin_manifest.PRESETS["game"] == list(plugin_manifest.BODY_IDS)
     # 标签直接说场景 —— 设置页那一排按钮是用户唯一看得见套餐含义的地方
@@ -265,8 +265,9 @@ def test_scene_presets_expand_to_right_scopes():
     # 实时变声 / 声音保存不该混进来
     assert {"sound.tts", "hook.wechat", "sound.fx-board", "sound.offline-vc"} <= wechat
     assert "sound.rvc-live" not in wechat and "sound.preserve" not in wechat
-    # 保存：三件套齐（有声书靠 requires 闭包带上 tts）；不碰微信 / 实时
-    assert {"sound.preserve", "sound.tts", "sound.audiobook"} <= preserve
+    # 保存：三件套齐（有声书靠 requires 闭包带上 tts）+ 录课（2026-10-08：
+    # preserve 的目标用户就是录课老师，PPT→讲课视频是主打闭环）；不碰微信 / 实时
+    assert {"sound.preserve", "sound.tts", "sound.audiobook", "sound.course"} <= preserve
     assert "hook.wechat" not in preserve and "sound.rvc-live" not in preserve
     # 游戏 = 标准（同一套展开结果，只是叫用户听得懂的名字）
     assert game == plugin_manifest.preset_ids("standard")
@@ -319,6 +320,35 @@ def test_seeding_is_off_by_default_in_tests():
     assert os.environ.get(plugin_manifest.SEED_ENV) == "0"
     assert plugin_manifest.ensure_state_file() is None
     assert not plugin_manifest.STATE_FILE.exists()
+
+
+def test_deleted_state_file_after_seeding_means_all_on(monkeypatch, tmp_path):
+    """播种过之后配置文件**被删** → 不再重置成默认套餐，按全开（fail-open）处理。
+
+    真实事故（2026-10-08）：用户删了 plugins.json 想重置，重启后被静默关回 18 项 ——
+    旧播种逻辑把「文件缺失」一律当「全新安装」。播种标记把两者分开：
+    全新安装照旧播种 `standard`；删过之后的缺失 = 全开。
+    恢复默认套餐必须是设置页里套用预设的显式动作，不该由删除操作隐式触发。
+    """
+    monkeypatch.delenv(plugin_manifest.SEED_ENV, raising=False)
+    state = tmp_path / "plugins.json"
+    monkeypatch.setattr(plugin_manifest, "STATE_FILE", state)
+    assert not state.exists(), "夹具给的必须是空状态"
+
+    first = plugin_manifest.ensure_state_file()
+    assert first == _ids() - plugin_manifest.preset_ids("standard")
+    assert plugin_manifest._seed_marker().exists(), "首次播种必须留下标记"
+
+    # ↓↓ 与旧语义的分岔点：标记在而文件没了 = 误删，不重播种
+    state.unlink()
+    assert plugin_manifest.ensure_state_file() is None
+    assert not state.exists(), "不许把默认套餐悄悄写回去"
+    assert plugin_manifest.disabled_ids() == set(), "误删 = 全开（fail-open），不是 standard"
+
+    # write_disabled 也会补标记：从未播种过的机器上，用户手动开关过 → 同样受保护
+    plugin_manifest._seed_marker().unlink()
+    plugin_manifest.write_disabled({"sound.tts"})
+    assert plugin_manifest._seed_marker().exists()
 
 
 #: 探针：在**子进程**里把 `import server` 跑一遍（挂载只在这一刻发生）。

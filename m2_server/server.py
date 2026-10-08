@@ -206,7 +206,8 @@ def _mount_all() -> None:
     # ★ 首次运行：先把默认套餐（「标准」= 变声本体）落成一份显式状态，**再**算挂载计划。
     # 顺序不能反 —— `mount_plan()` 是读着 `disabled_ids()` 算出来的
     # （见 `ensure_state_file` 的注释）。已有配置文件时是 no-op：老用户
-    # （含刚在设置页调过开关的）不受影响。
+    # （含刚在设置页调过开关的）不受影响。配置文件被删（播种标记在）时也是
+    # no-op：按全开处理，不把默认套餐悄悄写回去（2026-10-08 语义修正）。
     _seeded = plugin_manifest.ensure_state_file()
     if _seeded is not None:
         print(

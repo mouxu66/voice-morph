@@ -53,6 +53,16 @@ import plugin_loader
 PLUGINS_DIR = Path(__file__).resolve().parent / "plugins"
 STATE_FILE = cfg.OUTPUTS_DIR / "plugins.json"
 
+
+def _seed_marker() -> Path:
+    """播种标记：与状态文件同目录的 `plugins.seeded`。
+
+    为什么做成**函数**而不是常量：测试夹具只 `monkeypatch` `STATE_FILE`（见
+    `conftest.py::_isolated_plugin_state`）—— 标记必须跟着它走，常量会在
+    导入期求值、对 patch 无感知（同 `docs/犯错档案-工程.md` §8.36 的早绑定坑）。
+    """
+    return STATE_FILE.with_name("plugins.seeded")
+
 STATE_OK = "ok"
 STATE_BROKEN = "broken"
 STATE_DISABLED = "disabled"
@@ -386,9 +396,12 @@ PRESETS: dict[str, list[str] | None] = {
     # ★ sound.tts 必须带：微信发送 UI 是输字变声页的 tab（/tts?tab=wechat），
     #   不带 tts 等于 tab 宿主页整个下架（有声书同理挂在 /tts?tab=book）。
     "wechat": ["sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board"],
-    # 声音保存（护嗓）：建档录老师的声音 → 输字让它说话 → 整篇有声书。
+    # 声音保存（护嗓）：建档录老师的声音 → 输字让它说话 → 整篇有声书 → 录课出片。
     # 有声书 requires tts，闭包自动补上；不带实时变声/微信 —— 课堂场景用不上。
-    "preserve": ["sound.preserve", "sound.tts", "sound.audiobook"],
+    # ★ sound.course 必须带（2026-10-08 用户拍板）：这个模式的目标用户就是录课老师，
+    #   「PPT + 音色 → 讲课视频」是该场景的主打闭环 —— 漏掉它等于模式切换一次
+    #   录课就消失一次（真实事故：用户在 preserve 模式下怎么开都留不住）。
+    "preserve": ["sound.preserve", "sound.tts", "sound.audiobook", "sound.course"],
     # 游戏变声：游戏 / 直播 / 会议里实时变声 —— 就是变声本体本身（rvc-live 走虚拟声卡）。
     "game": ["sound.offline-vc", "sound.rvc-live", "sound.audition"],
     # 全能：全开
@@ -493,6 +506,8 @@ def write_disabled(disabled) -> None:
     tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
     tmp.write_text(payload, encoding="utf-8")
     tmp.replace(STATE_FILE)
+    # 写过盘就留凭证：此后「文件消失」是误删，不再等于「全新安装」（见 ensure_state_file）。
+    _seed_marker().touch()
 
 
 def set_enabled(pid: str, on: bool) -> dict:
@@ -562,10 +577,22 @@ def ensure_state_file() -> set[str] | None:
     ⚠️ **本函数必须在 `mount_plan()` 之前调用**：`mount_plan()` 是读着
     `disabled_ids()` 算出来的，晚一步就是「种了一份状态、但这次启动按旧的算」。
     唯一的调用点在 `server.py::_mount_all()` 的开头。
+
+    **「全新安装」与「文件被删」必须区分开（2026-10-08 事故）**：用户删了状态文件，
+    重启后被静默关回 18 项 —— 播种把「文件缺失」当成了「全新安装」，用户的选择
+    被无声降级。现在播种时/写盘时都会留下标记（`_seed_marker()`）；标记在而文件没
+    → 按读取语义走 fail-open（全开）并打日志，**不再重播种**。恢复默认套餐改成
+    设置页里套用预设的**显式**动作，这是它本来就该有的语义。
     """
     if os.environ.get(SEED_ENV, "").strip() == "0":
         return None
     if STATE_FILE.exists():
+        return None
+    if _seed_marker().exists():
+        print(
+            f"[plugins] {STATE_FILE.name} 缺失但播种标记在 —— 视为被误删，"
+            f"按全开处理；要恢复默认套餐请在设置页套用 {DEFAULT_PRESET!r}"
+        )
         return None
     off = {p.id for p in load_all() if p.id not in preset_ids(DEFAULT_PRESET)}
     write_disabled(off)
