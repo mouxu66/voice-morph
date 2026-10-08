@@ -30,9 +30,11 @@
 """
 
 import re
+import shutil
 import threading
 import time
 from html import unescape
+from pathlib import Path
 
 from common import is_valid_voice_id, selected_voice, voice_ref
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -133,6 +135,7 @@ COURSE_STATE: dict = {
     "current_text": "",
     "job_dir": "",  # 相对 outputs 的目录名（course_<stamp>）
     "gap_ms": 350,  # retry 续跑时要沿用上次的句间停顿
+    "source_pptx": "",  # 源课件在 job 目录里的文件名（source.pptx；贴文本的批次为空）
     "pages": [],  # [{page, text, url, duration_s, failed, error}]
     "error": "",
 }
@@ -159,6 +162,42 @@ class CourseRunRequest(BaseModel):
     # **音色 id** 走白名单，不收裸路径。空 = 不启用（纯声纹 x-vector，语调偏平）。
     # ⚠️ 启用后是**整段克隆**：声音与语气都取自参考音，`voice_id` 那份音色不参与发声。
     style_ref_voice: str = ""
+    # parse 时暂存的源课件裸名（`course_src_<hash>.pptx`）：复制进 job 目录，
+    # 导出成片时用它导画面。贴文本的批次为空串。
+    source_pptx: str = ""
+
+
+#: 源课件暂存名（会话目录里）：`course_src_<内容 sha1 前 10 位>.pptx`。
+#: 内容寻址 ⇒ 同一份课件反复上传不会堆一堆副本；**裸名**（不带目录），与
+#: `session_out` 的对外契约一致（消费侧显式拒绝含 `/` 的名字）。
+_SOURCE_RE = re.compile(r"^course_src_[0-9a-f]{10}\.pptx$")
+
+
+def save_source_pptx(data: bytes) -> str:
+    """把上传的 .pptx 存进**会话目录**（退出即删），返回裸名。
+
+    为什么必须留底：讲课视频的画面要从**原课件**导出来（`tools/pptx_to_png.py`）。
+    此前 parse 只读备注文字、不看图形、也不留文件 —— 用户合成完再想导出成片就只能
+    重传一次。存会话目录而不是 outputs 根：它是"本次会话的原料"；真出了片，源课件
+    会随产物复制进 `outputs/course_*/source.pptx`，那才是该长期留着的那一份。
+    """
+    import hashlib
+
+    import session_out
+
+    name = f"course_src_{hashlib.sha1(data).hexdigest()[:10]}.pptx"
+    (session_out.ensure() / name).write_bytes(data)
+    return name
+
+
+def resolve_source_pptx(name: str) -> Path | None:
+    """暂存裸名 → 路径。名字不合法（含路径成分）或文件不在（会话被清过）返回 None。"""
+    if not _SOURCE_RE.match(str(name or "").strip()):
+        return None
+    import session_out
+
+    p = session_out.session_dir() / str(name).strip()
+    return p if p.is_file() else None
 
 
 def _manifest(pages: list[dict]) -> dict:
@@ -178,8 +217,14 @@ def _manifest(pages: list[dict]) -> dict:
 def _write_manifest(job_dir, pages) -> None:
     import json
 
+    payload = _manifest(pages)
+    # 出片要用的口径也落进 manifest：页间停顿此前只在内存的 STATE 里，重启后
+    # "这一批到底留了多久的停顿"就无从考证，而视频正是按它排时间轴的。
+    payload.update({
+        k: COURSE_STATE.get(k) for k in ("gap_ms", "voice_id", "style_ref_voice", "source_pptx")
+    })
     (job_dir / "manifest.json").write_text(
-        json.dumps(_manifest(pages), ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 
@@ -295,7 +340,9 @@ async def course_parse(
                 status_code=400,
                 detail=f"这个 pptx 的 {skipped} 页备注全是空的 —— 先把讲稿写进每页的「备注」再上传",
             )
-        return {"source": "pptx", "total": len(pages), "skipped": skipped, "pages": pages}
+        return {"source": "pptx", "total": len(pages), "skipped": skipped, "pages": pages,
+                # 留底：导出成片要从**原课件**导画面（贴文本的批次没有这一项）
+                "source_pptx": save_source_pptx(data)}
 
     body = text
     if not body.strip() and file is not None and fname:
@@ -343,6 +390,19 @@ async def course_run(req: CourseRunRequest):
         job_dir = OUTPUTS_DIR / job_name
         job_dir.mkdir(parents=True, exist_ok=True)
 
+        # 源课件：暂存裸名 → 复制进 job 目录（成片要从它导画面）。
+        # 名字非法/文件不在都要**当场 400**：等出片时才发现没有课件，用户已经等了一轮合成。
+        source_pptx = ""
+        if req.source_pptx:
+            src = resolve_source_pptx(req.source_pptx)
+            if src is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="源课件已不在（会话目录被清理过）—— 重新上传 .pptx 再合成一次",
+                )
+            shutil.copy2(src, job_dir / "source.pptx")
+            source_pptx = "source.pptx"
+
         state_pages = [
             {"page": p["page"], "text": p["text"], "url": "", "duration_s": 0.0, "failed": False, "error": ""}
             for p in pages
@@ -360,6 +420,7 @@ async def course_run(req: CourseRunRequest):
             current_text="",
             job_dir=job_name,
             gap_ms=max(0, min(req.gap_ms, 3000)),
+            source_pptx=source_pptx,
             pages=state_pages,
             error="",
         )

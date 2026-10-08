@@ -413,8 +413,10 @@ class TestManifestGuard:
 
         m2 = Path(course_api.__file__).parent
         mf = json.loads((m2 / "plugins" / "sound.course" / "plugin.json").read_text("utf-8"))
-        assert mf["routers"] == ["course_api"]
+        # course_video：导出成片（课件画面 + 旁白 → mp4），与 course_api 同一能力
+        assert mf["routers"] == ["course_api", "course_video"]
         assert (m2 / "course_api.py").is_file()
+        assert (m2 / "course_video.py").is_file()
 
     def test_summary_wording_redline(self):
         """口径红线（同③的规矩）：说「拟应用/推广」，不说「已实现师范实训」，

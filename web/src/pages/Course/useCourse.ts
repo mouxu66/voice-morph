@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   cancelCourse,
+  cancelCourseVideo,
   getCourseStatus,
+  getCourseVideoStatus,
   parseCourse,
   retryCourse,
   runCourse,
+  runCourseVideo,
   type CoursePageIn,
   type CourseStatus,
+  type CourseVideoStatus,
 } from "@/api/client"
 import { useAppStore } from "@/store/useAppStore"
 import { friendlyError } from "@/lib/errors"
@@ -49,7 +53,18 @@ export function useCourse(enabled = true) {
   const [submitting, setSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState("")
   const [status, setStatus] = useState<CourseStatus | null>(null)
+  /**
+   * 上传课件的暂存裸名（后端 parse 时存进会话目录）。合成时要回传 ——
+   * 成片的画面就是从这个文件导的；贴文本来的批次是空串（出不了画面）。
+   */
+  const [sourcePptx, setSourcePptx] = useState("")
+  const [video, setVideo] = useState<CourseVideoStatus | null>(null)
+  const [videoFps, setVideoFps] = useState(30)
+  /** 页间停顿（秒*1000）。默认跟随合成那个，可单独调 —— 成片的节奏由它定。 */
+  const [videoGapMs, setVideoGapMs] = useState(350)
+  const [forceSlides, setForceSlides] = useState(false)
   const pollTimer = useRef<number | null>(null)
+  const videoTimer = useRef<number | null>(null)
 
   const stopPoll = useCallback(() => {
     if (pollTimer.current != null) {
@@ -68,6 +83,30 @@ export function useCourse(enabled = true) {
     }
   }, [stopPoll])
 
+  // ---- 导出成片：自己的轮询（与逐页合成互不阻塞，两个后台任务各跑各的）----
+
+  const stopVideoPoll = useCallback(() => {
+    if (videoTimer.current != null) {
+      window.clearInterval(videoTimer.current)
+      videoTimer.current = null
+    }
+  }, [])
+
+  const refreshVideo = useCallback(async () => {
+    try {
+      const v = await getCourseVideoStatus()
+      setVideo(v)
+      if (!v.running) stopVideoPoll()
+    } catch {
+      /* 服务离线时静默，下一次轮询再试 */
+    }
+  }, [stopVideoPoll])
+
+  const startVideoPoll = useCallback(() => {
+    stopVideoPoll()
+    videoTimer.current = window.setInterval(() => void refreshVideo(), POLL_MS)
+  }, [refreshVideo, stopVideoPoll])
+
   // 挂载时拉一次状态（服务端任务可能仍在跑），running 则开始轮询
   useEffect(() => {
     if (!enabled) return
@@ -82,9 +121,22 @@ export function useCourse(enabled = true) {
       } catch {
         /* ignore */
       }
+      try {
+        const v = await getCourseVideoStatus()
+        setVideo(v)
+        if (v.running) {
+          stopVideoPoll()
+          videoTimer.current = window.setInterval(() => void refreshVideo(), POLL_MS)
+        }
+      } catch {
+        /* ignore */
+      }
     })()
-    return stopPoll
-  }, [enabled, refresh, stopPoll])
+    return () => {
+      stopPoll()
+      stopVideoPoll()
+    }
+  }, [enabled, refresh, refreshVideo, stopPoll, stopVideoPoll])
 
   const startPoll = useCallback(() => {
     stopPoll()
@@ -105,6 +157,7 @@ export function useCourse(enabled = true) {
         setSource(r.source)
         setSkipped(r.skipped)
         setFileName(file?.name ?? "")
+        setSourcePptx(r.source_pptx ?? "")
         setDirty(false)
         // 让文本框与 pages 同源：pptx 成功 → 清掉旧草稿（不然框里是 A、合成的是 B）；
         // txt 成功 → 把读到的原文回填（不然框是空的、页面看着像没东西）。
@@ -117,6 +170,7 @@ export function useCourse(enabled = true) {
         setSource("")
         setSkipped(0)
         setFileName("")
+        setSourcePptx("")
         setErrorMessage(friendlyError(error, "解析失败"))
       } finally {
         setParsing(false)
@@ -154,7 +208,7 @@ export function useCourse(enabled = true) {
     setSubmitting(true)
     setErrorMessage("")
     try {
-      const r = await runCourse(pages, selectedVoiceId ?? "", gapMs, styleRefVoice)
+      const r = await runCourse(pages, selectedVoiceId ?? "", gapMs, styleRefVoice, sourcePptx)
       setStatus({
         running: true,
         status: "running",
@@ -170,13 +224,15 @@ export function useCourse(enabled = true) {
         pages: [],
         error: "",
       })
+      // 新一批合成 → 上一次的成片不再代表眼前这批，先清掉（免得用户以为它是新的）
+      setVideo(null)
       startPoll()
     } catch (error) {
       setErrorMessage(friendlyError(error, "任务提交失败"))
     } finally {
       setSubmitting(false)
     }
-  }, [canStart, pages, selectedVoiceId, gapMs, styleRefVoice, startPoll])
+  }, [canStart, pages, selectedVoiceId, gapMs, styleRefVoice, sourcePptx, startPoll])
 
   const cancel = useCallback(async () => {
     try {
@@ -202,6 +258,58 @@ export function useCourse(enabled = true) {
     }
   }, [startPoll])
 
+  // ---- 导出成片 ----
+
+  const videoRunning = Boolean(video?.running)
+  /**
+   * 能导出成片 = 有一批合成好的页 + 这一批带着源课件 + 两个任务都没在跑。
+   * 贴文本来的批次没有源课件 → 按钮禁用并由页面解释原因（不做一个点了必 400 的按钮）。
+   */
+  const canExportVideo =
+    backendUp && !running && !videoRunning && Boolean(sourcePptx) && Boolean(status?.pages.some((pg) => !pg.failed && pg.url))
+
+  const startVideo = useCallback(async () => {
+    if (!canExportVideo) return
+    setErrorMessage("")
+    try {
+      await runCourseVideo({
+        fps: videoFps,
+        gapMs: videoGapMs,
+        forceSlides,
+        // pin 住批次：导出的一定是右栏这一批，而不是"内存里最后一次"
+        jobDir: status?.job_dir ?? "",
+      })
+      setVideo({
+        running: true,
+        status: "running",
+        step: "",
+        percent: 0,
+        message: "准备中…",
+        job_dir: status?.job_dir ?? "",
+        out_url: "",
+        out_name: "",
+        duration_s: 0,
+        pages: status?.pages.length ?? 0,
+        slides: 0,
+        fps: videoFps,
+        gap_ms: videoGapMs,
+        error: "",
+      })
+      startVideoPoll()
+    } catch (error) {
+      setErrorMessage(friendlyError(error, "导出成片失败"))
+    }
+  }, [canExportVideo, forceSlides, status, startVideoPoll, videoFps, videoGapMs])
+
+  const cancelVideo = useCallback(async () => {
+    try {
+      await cancelCourseVideo()
+      setErrorMessage("")
+    } catch (error) {
+      setErrorMessage(friendlyError(error, "取消导出失败"))
+    }
+  }, [])
+
   return {
     backendUp,
     voices,
@@ -218,6 +326,7 @@ export function useCourse(enabled = true) {
     setGapMs,
     styleRefVoice,
     setStyleRefVoice,
+    sourcePptx,
     parsing,
     submitting,
     running,
@@ -230,5 +339,16 @@ export function useCourse(enabled = true) {
     start,
     cancel,
     retry,
+    video,
+    videoRunning,
+    canExportVideo,
+    startVideo,
+    cancelVideo,
+    videoFps,
+    setVideoFps,
+    videoGapMs,
+    setVideoGapMs,
+    forceSlides,
+    setForceSlides,
   }
 }

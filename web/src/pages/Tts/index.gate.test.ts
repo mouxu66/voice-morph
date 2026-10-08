@@ -73,7 +73,8 @@ describe("被关掉时 hook 必须停止轮询（端点已不存在）", () => {
 
   it("useCourse 同契约：enabled=false 不轮询", () => {
     const src = readRel(path.join("pages", "Course", "useCourse.ts"))
+    // 挂载 useEffect 扩了成片轮询（refreshVideo/stopVideoPoll），enabled 必须仍在依赖里
     expect(src).toContain("if (!enabled) return")
-    expect(src).toContain("[enabled, refresh, stopPoll]")
+    expect(src).toContain("[enabled, refresh, refreshVideo, stopPoll, stopVideoPoll]")
   })
 })

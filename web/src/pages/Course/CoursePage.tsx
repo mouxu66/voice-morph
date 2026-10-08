@@ -2,6 +2,7 @@ import {
   CircleAlert,
   Download,
   FileUp,
+  Film,
   Loader2,
   Presentation,
   RefreshCw,
@@ -290,6 +291,138 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
                 </button>
               )}
             </div>
+          </div>
+
+          {/* 第三步：出片。画面来自**原课件**（后端在合成时把它复制进产物目录），
+              所以贴文本的批次没有画面可导 —— 那种情况按钮禁用 + 说明原因。 */}
+          <div className="rounded-2xl border border-border bg-card/85 p-5 shadow-lg backdrop-blur-xl sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-medium text-primary">第三步 · 导出成片</p>
+                <h3 className="mt-2 text-lg font-semibold text-card-foreground">课件画面 + 旁白 → 视频</h3>
+              </div>
+              {p.video?.status === "done" && (
+                <span className="rounded-full bg-primary/15 px-2.5 py-0.5 text-xs text-primary">
+                  {p.video.duration_s > 0 ? `${p.video.duration_s.toFixed(1)}s · ` : ""}
+                  {p.video.pages} 页画面
+                </span>
+              )}
+            </div>
+            <p className="mt-3 text-xs leading-5 text-muted-foreground">
+              把右栏这一批的逐页旁白配上<b>原课件的逐页画面</b>，导出一个 1920×1080 的 mp4。
+              画面靠本机 PowerPoint 逐页导出，导过的页会复用；改成 24fps 或调大页间停顿都能重出一次。
+            </p>
+
+            {!p.sourcePptx && (
+              <p className="mt-3 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-600">
+                这一批的讲稿是<b>粘贴的文本</b>，没有课件文件 —— 出片没有画面可配。
+                想要画面：上传 .pptx 重新解析，再合成一次。
+              </p>
+            )}
+
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <div>
+                <label htmlFor="course-video-fps" className="text-xs font-medium text-muted-foreground">
+                  帧率
+                </label>
+                <select
+                  id="course-video-fps"
+                  value={p.videoFps}
+                  onChange={(e) => p.setVideoFps(Number(e.target.value))}
+                  className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2.5 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <option value={30}>30 fps（推荐）</option>
+                  <option value={24}>24 fps（更小）</option>
+                  <option value={60}>60 fps（更顺，文件更大）</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="course-video-gap" className="flex items-center justify-between text-xs font-medium text-muted-foreground">
+                  <span>页间停顿</span>
+                  <span className="font-mono text-primary">{p.videoGapMs} ms</span>
+                </label>
+                <input
+                  id="course-video-gap"
+                  type="range"
+                  min={0}
+                  max={1500}
+                  step={50}
+                  value={p.videoGapMs}
+                  onChange={(e) => p.setVideoGapMs(Number(e.target.value))}
+                  className="mt-2 w-full accent-[var(--primary)]"
+                />
+              </div>
+            </div>
+
+            <label className="mt-3 inline-flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={p.forceSlides}
+                onChange={(e) => p.setForceSlides(e.target.checked)}
+                className="h-3.5 w-3.5 accent-[var(--primary)]"
+              />
+              重新导出画面（默认复用上次导出的，快得多）
+            </label>
+
+            <div className="mt-5 flex flex-wrap gap-3">
+              <button
+                type="button"
+                disabled={!p.canExportVideo}
+                onClick={() => void p.startVideo()}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-5 py-3 text-sm font-medium text-primary-foreground shadow-md transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50"
+              >
+                {p.videoRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Film className="h-4 w-4" />}
+                {p.videoRunning ? "导出中…" : "导出成片"}
+              </button>
+              {p.videoRunning && (
+                <button
+                  type="button"
+                  onClick={() => void p.cancelVideo()}
+                  className="inline-flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive transition hover:bg-destructive/20"
+                >
+                  <Square className="h-4 w-4" />取消导出
+                </button>
+              )}
+            </div>
+
+            {p.videoRunning && (
+              <div className="mt-4 rounded-lg border border-border bg-background/60 p-4" role="status" aria-live="polite">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-foreground">
+                    {p.video?.step === "mux" ? "合成视频" : "导出画面"} · {p.video?.message}
+                  </span>
+                  <span className="font-mono text-primary">{p.video?.percent ?? 0}%</span>
+                </div>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary transition-all"
+                    style={{ width: `${p.video?.percent ?? 0}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {p.video?.status === "error" && <ErrorPanel title="导出成片失败" detail={p.video.error} />}
+
+            {p.video?.status === "done" && p.video.out_url && (
+              <div className="mt-4">
+                {/* 成片就在产物目录里，直接放播放器 + 下载 —— 视频不需要另存/转码 */}
+                <video
+                  controls
+                  preload="metadata"
+                  src={mediaUrl(p.video.out_url)}
+                  aria-label="讲课视频预览"
+                  className="w-full rounded-lg border border-border bg-black"
+                />
+                <a
+                  href={mediaUrl(p.video.out_url)}
+                  download={p.video.out_name}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/20"
+                >
+                  <Download className="h-3.5 w-3.5" />下载 mp4
+                </a>
+              </div>
+            )}
           </div>
         </section>
 

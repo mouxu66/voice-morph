@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { CoursePage } from "@/pages/Course/CoursePage"
 import type { useCourse } from "@/pages/Course/useCourse"
-import type { CourseStatus } from "@/api/client"
+import type { CourseStatus, CourseVideoStatus } from "@/api/client"
 
 /**
  * 讲稿录课页的渲染测试（jsdom）。
@@ -53,6 +53,7 @@ function mkProps(over: Partial<ReturnType<typeof useCourse>> = {}): ReturnType<t
     setGapMs: vi.fn(),
     styleRefVoice: "",
     setStyleRefVoice: vi.fn(),
+    sourcePptx: "",
     parsing: false,
     submitting: false,
     running: false,
@@ -65,6 +66,17 @@ function mkProps(over: Partial<ReturnType<typeof useCourse>> = {}): ReturnType<t
     start: vi.fn(),
     cancel: vi.fn(),
     retry: vi.fn(),
+    video: null,
+    videoRunning: false,
+    canExportVideo: false,
+    startVideo: vi.fn(),
+    cancelVideo: vi.fn(),
+    videoFps: 30,
+    setVideoFps: vi.fn(),
+    videoGapMs: 350,
+    setVideoGapMs: vi.fn(),
+    forceSlides: false,
+    setForceSlides: vi.fn(),
     ...over,
   }
 }
@@ -221,5 +233,94 @@ describe("CoursePage · 风格参考", () => {
     expect(Array.from(sel.querySelectorAll("option")).map((o) => o.value)).toEqual(["", "v1"])
     expect(within(sel).getByRole("option", { name: /测试音色/ })).toBeDefined()
     expect(within(sel).queryByRole("option", { name: /纯模型音色/ })).toBeNull()
+  })
+})
+
+/**
+ * 导出成片（2026-10-08 接入，course_video.py）。
+ *
+ * ⚠️ 这里守的是「能出片」的界面前提：画面来自**原课件**（source.pptx），
+ * 贴文本的批次必须解释原因而不是给一个点了必 400 的按钮。
+ */
+describe("CoursePage · 导出成片", () => {
+  const videoStatus = (over: Partial<CourseVideoStatus> = {}): CourseVideoStatus => ({
+    running: false,
+    status: "idle",
+    step: "",
+    percent: 0,
+    message: "",
+    job_dir: "course_123",
+    out_url: "",
+    out_name: "course.mp4",
+    duration_s: 0,
+    pages: 0,
+    slides: 0,
+    fps: 30,
+    gap_ms: 350,
+    error: "",
+    ...over,
+  })
+
+  beforeEach(() => {
+    document.body.innerHTML = ""
+  })
+
+  it("贴文本的批次：按钮禁用并解释「没有课件文件」，不出给必 400 的按钮", () => {
+    render(<CoursePage {...mkProps({ pages: [{ page: 1, text: "x" }], sourcePptx: "" })} />)
+    const btn = screen.getByRole("button", { name: /导出成片/ }) as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+    expect(screen.getByText(/粘贴的文本/)).toBeDefined()
+    expect(screen.getByText(/上传 \.pptx 重新解析/)).toBeDefined()
+  })
+
+  it("运行中：进度按 step 区分「导出画面/合成视频」+ 可取消", () => {
+    render(
+      <CoursePage
+        {...mkProps({
+          sourcePptx: "course_src_abc.pptx",
+          canExportVideo: false,
+          videoRunning: true,
+          video: videoStatus({ running: true, status: "running", step: "mux", percent: 72, message: "正在把画面与旁白合成视频…" }),
+        })}
+      />
+    )
+    expect(screen.getByText(/合成视频 · 正在把画面与旁白合成视频/)).toBeDefined()
+    expect(screen.getByText("72%")).toBeDefined()
+    expect(screen.getByRole("button", { name: /取消导出/ })).toBeDefined()
+  })
+
+  it("error 态：报「导出成片失败」并把工具那一行的原文送到界面", () => {
+    render(
+      <CoursePage
+        {...mkProps({
+          sourcePptx: "course_src_abc.pptx",
+          video: videoStatus({ status: "error", error: "导出画面失败（退出码 1）：PowerPoint 弹了模态框" }),
+        })}
+      />
+    )
+    expect(screen.getByText("导出成片失败")).toBeDefined()
+    expect(screen.getByText(/PowerPoint 弹了模态框/)).toBeDefined()
+  })
+
+  it("done 态：出播放器 + 下载链接（时长与页数进徽标）", () => {
+    render(
+      <CoursePage
+        {...mkProps({
+          sourcePptx: "course_src_abc.pptx",
+          canExportVideo: true,
+          video: videoStatus({
+            status: "done",
+            out_url: "/api/media/outputs/course_123/course.mp4",
+            duration_s: 12.34,
+            pages: 2,
+          }),
+        })}
+      />
+    )
+    expect(screen.getByText(/12\.3s · 2 页画面/)).toBeDefined()
+    const player = screen.getByLabelText("讲课视频预览") as HTMLVideoElement
+    expect(player.src).toContain("/api/media/outputs/course_123/course.mp4")
+    const dl = screen.getByRole("link", { name: /下载 mp4/ }) as HTMLAnchorElement
+    expect(dl.getAttribute("download")).toBe("course.mp4")
   })
 })

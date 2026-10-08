@@ -108,7 +108,7 @@
 │   ├── cascade.py rvc_live.py offline_vc.py seed_vc.py audiobook.py
 │   ├── effects.py wechat_voice.py finetune.py history_api.py openai_compat.py   # 各能力 APIRouter
 │   ├── remote_api.py    # 手机遥控（编排层：只报"三个标签各自能不能用"，不Own 功能）
-│   ├── watermark_api.py blindtest_api.py course_api.py   # 音频水印溯源 / 盲听评测（手机扫码盲听打分）/ 讲稿录课（PPT 备注逐页旁白）
+│   ├── watermark_api.py blindtest_api.py course_api.py course_video.py   # 音频水印溯源 / 盲听评测（手机扫码盲听打分）/ 讲稿录课（逐页旁白 + 课件画面出片）
 │   └── qwen3_tts.py qwen3_tts_service.py   # Qwen3-TTS 客户端 / 常驻 worker(:8001)
 ├── m1_workshop/          # M1 素材流水线（pipeline.py：提轨→去BGM→切 2.5~10s 片段）
 ├── tts_models/           # Qwen3-TTS 权重（qwen3-tts-1.7b-base 等）
@@ -155,7 +155,7 @@
 
 ## 后端 M2（FastAPI）
 
-`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 38 个独立 router 模块**（默认 `standard` 预设只挂 17 个，见上面「关掉一个能力」那节的说明）：
+`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 39 个独立 router 模块**（默认 `standard` 预设只挂 17 个，见上面「关掉一个能力」那节的说明）：
 
 `cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history_api`（历史）、`cover_api`（翻唱）、`ytdlp_api`（在线扒歌）、`audition_api`（试音间）、`soundboard`（特效声板）、`market_api` / `pet_market_api`（市场）、`openai_compat`（OpenAI 兼容层）、`watermark_api`（音频水印溯源）、`blindtest_api`（盲听评测）、`course_api`（讲稿录课：PPT 备注页逐页旁白）、`remote_api`（手机遥控的**能力现状查询** —— 见下）。
 
