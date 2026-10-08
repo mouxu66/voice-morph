@@ -9,7 +9,7 @@ import {
   Sparkles,
   Square,
 } from "lucide-react"
-import { useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
@@ -57,6 +57,24 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
     () => (st?.pages ?? []).reduce((acc, pg) => acc + (pg.failed ? 0 : pg.duration_s), 0),
     [st]
   )
+  /**
+   * 导出成片是两步长任务（导画面 → 编码视频）。编码那步后端没有细粒度进度
+   * （ffmpeg 静默跑几十秒，percent 停在 72% 的平台期）—— 加个已用时计数器让
+   * 「在动」可见，用户不会以为卡死（2026-10-08 模拟用户反馈：0% 直接跳失败）。
+   */
+  const [videoElapsed, setVideoElapsed] = useState(0)
+  useEffect(() => {
+    if (!p.videoRunning) return
+    setVideoElapsed(0)
+    const t = window.setInterval(() => setVideoElapsed((s) => s + 1), 1000)
+    return () => window.clearInterval(t)
+  }, [p.videoRunning])
+  const videoStepLabel =
+    p.video?.step === "mux"
+      ? "第 2/2 步 · 合成视频"
+      : p.video?.step === "slides"
+        ? "第 1/2 步 · 导出课件画面"
+        : ""
 
   const downloadManifest = () => {
     if (!st) return
@@ -112,12 +130,18 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
             </div>
 
             <div className="mt-5 flex flex-wrap items-center gap-3">
-                <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-muted-foreground transition hover:border-primary hover:text-primary">
+                {/*
+                 * ★ file input 用 sr-only 而不是 hidden：display:none 会把 input 从
+                 * 无障碍树里整个摘掉 —— 键盘用户 Tab 不到、读屏器不播报、自动化工具
+                 * 点不了（2026-10-08 模拟用户实测：只能 invoke 不能 click）。
+                 * sr-only 视觉上同样不可见，但元素仍在、可聚焦，点 label 一样能开文件框。
+                 */}
+                <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs font-medium text-muted-foreground transition hover:border-primary hover:text-primary focus-within:border-primary focus-within:ring-2 focus-within:ring-primary">
                 <FileUp className="h-3.5 w-3.5" aria-hidden="true" />上传 .pptx / .txt
                 <input
                   type="file"
                   accept=".pptx,.txt"
-                  className="hidden"
+                  className="sr-only"
                   aria-label="上传讲稿文件（.pptx 或 .txt）"
                   onChange={(e) => {
                     p.loadFile(e.target.files?.[0])
@@ -389,9 +413,13 @@ export function CoursePage(p: ReturnType<typeof useCourse>) {
               <div className="mt-4 rounded-lg border border-border bg-background/60 p-4" role="status" aria-live="polite">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-medium text-foreground">
-                    {p.video?.step === "mux" ? "合成视频" : "导出画面"} · {p.video?.message}
+                    {videoStepLabel && `${videoStepLabel} · `}
+                    {p.video?.message || "正在启动导出任务…"}
                   </span>
-                  <span className="font-mono text-primary">{p.video?.percent ?? 0}%</span>
+                  <span className="font-mono text-primary">
+                    {p.video?.percent ?? 0}%
+                    {p.video?.step === "mux" && videoElapsed >= 3 ? ` · 已用时 ${videoElapsed}s` : ""}
+                  </span>
                 </div>
                 <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
                   <div

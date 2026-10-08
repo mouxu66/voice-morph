@@ -577,22 +577,8 @@ def render(
     v = next((s for s in st.get("streams", []) if s.get("codec_type") == "video"), None)
     a = next((s for s in st.get("streams", []) if s.get("codec_type") == "audio"), None)
     dur = float(st.get("format", {}).get("duration") or 0.0)
-    problems = []
-    if v is None:
-        problems.append("没有视频轨")
-    if a is None:
-        problems.append("没有音频轨")
-    if v is not None and v.get("pix_fmt") != "yuv420p":
-        problems.append(f"像素格式是 {v.get('pix_fmt')}（播放器兼容性差，应为 yuv420p）")
-    if v is not None and (int(v.get("width") or 0), int(v.get("height") or 0)) != (geom["width"], geom["height"]):
-        problems.append(f"成片分辨率 {v.get('width')}×{v.get('height')} 与帧不一致")
     audio_s = probe_duration(ffprobe, tl.audio)  # type: ignore[arg-type]
-    if fit != "none" and dur + MIN_COVER_S < audio_s - 0.25:
-        # 被剪掉的永远是最后一句 —— 这是本工具最不能接受的结果
-        problems.append(f"成片 {dur:.2f}s 短于音轨 {audio_s:.2f}s：旁白被剪了")
-    if fit == "audio" and abs(dur - audio_s) > 0.15:
-        # fit=audio 的承诺是"正好等于旁白长度"（-shortest 收口），差得多说明收口失效
-        problems.append(f"成片 {dur:.2f}s 与音轨 {audio_s:.2f}s 相差超过 0.15s：收口失效")
+    problems = selfcheck_problems(st, geom, audio_s, fit)
     info["out"] = {
         "path": str(out), "duration_s": round(dur, 3), "bytes": out.stat().st_size,
         "video": None if v is None else {
@@ -605,6 +591,43 @@ def render(
     if problems:
         raise LectureVideoError("成片自检没过：" + "；".join(problems))
     return info
+
+
+def selfcheck_problems(st: dict, geom: dict, audio_s: float, fit: str) -> list[str]:
+    """成片复核：读回的媒体信息对照承诺 → 问题清单（空 = 通过）。
+
+    ★ 消息会经 course_video 原样透传到**用户界面**，所以只说人话：
+    不出现「收口」「muxer」「像素格式」这类内部黑话（2026-10-08 模拟用户反馈
+    「收口失效」看不懂）。内部黑话留在注释里，外部文案给现象 + 下一步。
+    """
+    v = next((s for s in st.get("streams", []) if s.get("codec_type") == "video"), None)
+    a = next((s for s in st.get("streams", []) if s.get("codec_type") == "audio"), None)
+    dur = float(st.get("format", {}).get("duration") or 0.0)
+    problems = []
+    if v is None:
+        problems.append("导出的视频里没有画面")
+    if a is None:
+        problems.append("导出的视频里没有声音")
+    if v is not None and v.get("pix_fmt") != "yuv420p":
+        problems.append(f"视频编码格式（{v.get('pix_fmt')}）多数播放器放不了，需要 yuv420p")
+    if v is not None and (int(v.get("width") or 0), int(v.get("height") or 0)) != (geom["width"], geom["height"]):
+        problems.append(
+            f"视频分辨率（{v.get('width')}×{v.get('height')}）和课件画面"
+            f"（{geom['width']}×{geom['height']}）对不上"
+        )
+    if fit != "none" and dur + MIN_COVER_S < audio_s - 0.25:
+        # 被剪掉的永远是最后一句 —— 这是本工具最不能接受的结果
+        problems.append(
+            f"视频（{dur:.2f}s）比旁白（{audio_s:.2f}s）短 —— 最后一句会被剪掉，"
+            "这条成片不能交给你"
+        )
+    if fit == "audio" and abs(dur - audio_s) > 0.15:
+        # 内部叫"收口失效"（plan_command 的三代结论），对外只说现象与下一步
+        problems.append(
+            f"视频（{dur:.2f}s）和旁白（{audio_s:.2f}s）长度对不上"
+            f"（差 {abs(dur - audio_s):.2f}s）—— 尾部拼接出了问题，请重试一次"
+        )
+    return problems
 
 
 def _print_summary(info: dict, out: Path) -> None:

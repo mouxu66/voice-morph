@@ -152,7 +152,7 @@ def _run_tool(cmd: list[str], label: str, on_line=None, timeout: int = _STEP_TIM
             f"{label}超时（{timeout}s 没结束）—— 多半卡在 PowerPoint 的弹窗上，已收掉子进程"
         )
     if rc != 0:
-        raise VideoError(f"{label}失败（退出码 {rc}）：{' | '.join(tail[-4:]) or '没有任何输出'}")
+        raise VideoError(f"{label}没有成功：{' | '.join(tail[-4:]) or '没有任何输出'}")
 
 
 def _slides_progress(total: list[int]):

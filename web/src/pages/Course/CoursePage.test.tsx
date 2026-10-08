@@ -153,6 +153,19 @@ describe("CoursePage 渲染", () => {
     expect(html).not.toMatch(/师范实训|诊断|疗效|健康监测/)
   })
 
+  it("★ 上传入口在无障碍树里：file input 用 sr-only 视觉隐藏，不许 display:none", () => {
+    // 2026-10-08 模拟用户实测：hidden（display:none）的 input 键盘 Tab 不到、
+    // 自动化只能 invoke 不能 click。sr-only 视觉同样不可见，但元素仍在、可聚焦。
+    const { container } = render(<CoursePage {...mkProps()} />)
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    expect(input).not.toBeNull()
+    expect(input.className).toContain("sr-only")
+    expect(input.className).not.toContain("hidden")
+    expect(input.getAttribute("aria-label")).toContain("上传讲稿")
+    // input 包在 label 里：点 label 一样能开文件框（触屏/自动化路径）
+    expect(input.closest("label")).not.toBeNull()
+  })
+
   it("★ 陈旧解析：讲稿改动后合成按钮禁用 + 提示重新解析", () => {
     // 不修的话：用户改完稿直接点合成，提交的是上一次的 pages ——
     // 录出来的旁白和眼前这份稿不是一回事。
@@ -273,7 +286,7 @@ describe("CoursePage · 导出成片", () => {
     expect(screen.getByText(/上传 \.pptx 重新解析/)).toBeDefined()
   })
 
-  it("运行中：进度按 step 区分「导出画面/合成视频」+ 可取消", () => {
+  it("运行中：进度按 step 区分「第 1/2 步 · 导出画面 / 第 2/2 步 · 合成视频」+ 可取消", () => {
     render(
       <CoursePage
         {...mkProps({
@@ -284,9 +297,24 @@ describe("CoursePage · 导出成片", () => {
         })}
       />
     )
-    expect(screen.getByText(/合成视频 · 正在把画面与旁白合成视频/)).toBeDefined()
+    expect(screen.getByText(/第 2\/2 步 · 合成视频 · 正在把画面与旁白合成视频/)).toBeDefined()
     expect(screen.getByText("72%")).toBeDefined()
     expect(screen.getByRole("button", { name: /取消导出/ })).toBeDefined()
+  })
+
+  it("★ 进度分阶段：两步长任务要露出「第几步」，首帧轮询前不许只给裸 0%", () => {
+    // 2026-10-08 模拟用户反馈：只有「准备中… 0%」直接跳失败，不知道卡在哪一步
+    render(
+      <CoursePage
+        {...mkProps({
+          sourcePptx: "course_src_abc.pptx",
+          canExportVideo: false,
+          videoRunning: true,
+          video: videoStatus({ running: true, status: "running", step: "slides", percent: 8, message: "正在从课件导出逐页画面…" }),
+        })}
+      />
+    )
+    expect(screen.getByText(/第 1\/2 步 · 导出课件画面 · 正在从课件导出逐页画面/)).toBeDefined()
   })
 
   it("error 态：报「导出成片失败」并把工具那一行的原文送到界面", () => {
@@ -294,7 +322,7 @@ describe("CoursePage · 导出成片", () => {
       <CoursePage
         {...mkProps({
           sourcePptx: "course_src_abc.pptx",
-          video: videoStatus({ status: "error", error: "导出画面失败（退出码 1）：PowerPoint 弹了模态框" }),
+          video: videoStatus({ status: "error", error: "导出画面没有成功：PowerPoint 弹了模态框" }),
         })}
       />
     )

@@ -327,3 +327,50 @@ class TestRenderEndToEnd:
         info = lv.render(tl, out, dry_run=True)
         assert info.get("dry_run") is True and not out.exists()
         assert "[dry-run]" in capsys.readouterr().out
+
+
+# ---------------- 自检文案（对用户说人话，2026-10-08） ----------------
+
+class TestSelfcheckCopy:
+    """`selfcheck_problems` 的消息会原样透传到**用户界面**（course_video 不加工）。
+
+    所以这里钉两条：现象说清楚（带数字 + 下一步），内部黑话不外泄 ——
+    2026-10-08 模拟用户反馈「收口失效」看不懂后改的口径。
+    """
+
+    @staticmethod
+    def _st(dur: float, *, video=True, audio=True, pix="yuv420p", size=(64, 64)) -> dict:
+        streams = []
+        if video:
+            streams.append({"codec_type": "video", "codec_name": "h264", "pix_fmt": pix,
+                            "width": size[0], "height": size[1], "r_frame_rate": "30/1"})
+        if audio:
+            streams.append({"codec_type": "audio", "codec_name": "aac",
+                            "sample_rate": "48000", "channels": 2})
+        return {"format": {"duration": str(dur)}, "streams": streams}
+
+    _geom = {"width": 64, "height": 64}
+
+    def test_tail_mismatch_says_plain(self):
+        """内部叫「收口失效」，对外只说「长度对不上 + 尾部拼接出了问题 + 重试」。"""
+        problems = lv.selfcheck_problems(self._st(47.6), self._geom, 42.87, "audio")
+        assert any("长度对不上" in p and "重试" in p for p in problems)
+        assert not any("收口" in p for p in problems), "内部黑话不许外泄"
+
+    def test_narration_cut_says_plain(self):
+        problems = lv.selfcheck_problems(self._st(0.4), self._geom, 1.2, "audio")
+        assert any("最后一句会被剪掉" in p for p in problems)
+
+    def test_missing_stream_says_plain(self):
+        st = self._st(1.0, video=False)
+        assert "导出的视频里没有画面" in lv.selfcheck_problems(st, self._geom, 1.0, "audio")
+        st = self._st(1.0, audio=False)
+        assert "导出的视频里没有声音" in lv.selfcheck_problems(st, self._geom, 1.0, "audio")
+
+    def test_resolution_mismatch_names_both_sides(self):
+        st = self._st(1.0, size=(1280, 720))
+        problems = lv.selfcheck_problems(st, self._geom, 1.0, "audio")
+        assert any("1280×720" in p and "64×64" in p for p in problems)
+
+    def test_pass_has_no_problems(self):
+        assert lv.selfcheck_problems(self._st(1.2), self._geom, 1.2, "audio") == []
