@@ -51,9 +51,10 @@
     python tools/lecture_video.py --demo-build outputs/lecture_demo/build --out a.mp4 --dry-run
 
 不做的
-    · **不生成画面**：本模块只负责"帧 → 成片"。画面从哪来是另一件事
-      （`render_slides.py` 那种按讲稿画要点卡，或 PowerPoint/LibreOffice 导出的
-      课件页）。见 docs 里的路线说明。
+    · **不生成画面**：本模块只负责"帧 → 成片"。画面从哪来是另一件事 ——
+      真课件用 `tools/pptx_to_png.py`（PowerPoint COM 导出，产物 `slides/page_%03d.png`
+      正好是 `--pages` 期望的命名与页号口径）；按讲稿生成的要点卡画面还没有通用实现
+      （`outputs/lecture_demo/render_slides.py` 那份是绑死一份讲稿的硬编码板书）。
     · **不改帧的几何**：奇数宽高直接报错让人去改，不偷偷 crop/scale 1px。
     · **不猜页间停顿**：`--gap-ms` 由调用方给（course 的 `gap_ms` 目前只在内存里，
       没进 manifest —— 这是已知缺口，所以这里不假装能读出来）。

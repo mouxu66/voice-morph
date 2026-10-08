@@ -201,6 +201,13 @@ FAST_TESTS = [
     # 只是"正常结束"）。2026-10-08 那两个成片就是靠一条没留档的手工命令做出来的，
     # 这个文件守住"它以后还能被复现"。放进 --fast：退化后没有任何报错。
     "m2_server/tests/test_lecture_video.py",
+    # PPTX → 逐页 PNG（约 6.9s，纯 zip/正则 + 假引擎，**不需要装 Office**）：
+    # 守的是**页号对齐**这个命门 —— `course_api` 用 `slideN.xml` 的 N 当页号，
+    # 而 PowerPoint 导出是按展示顺序；拖动调整过页序的课件上两者不同，
+    # 照导出顺序命名就是「第 3 页的画面配第 2 页的旁白」，成片看着完全正常。
+    # 另有"页数对不上就拒绝导出""半截 PNG 不许当成这页好了""失败也要收尾
+    # PowerPoint 实例"三条静默错法。放进 --fast：全都退化后不报错。
+    "m2_server/tests/test_pptx_to_png.py",
 ]
 
 
