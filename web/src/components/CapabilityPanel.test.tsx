@@ -462,6 +462,16 @@ describe("CapabilityPanel · 状态语言", () => {
     // ② 顶部常驻一条，并给一个可执行出口
     expect(screen.getByText(/1 项能力有改动待重启/)).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /立即重启/ })).toBeInTheDocument()
+
+    // ③ ★ 2026-10-08 事故：点「立即重启」会整页重载，而 ModeChooser 每次启动都弹 ——
+    //    用户刚在这一屏逐项开好的能力，回来就会被那个选择页一次点击整套覆盖。
+    //    所以重启前必须先写下「这次别弹」的一次性标记（非桌面端通道也照写，
+    //    纯网页调试下没有通道时同样受益）。
+    sessionStorage.clear()
+    fireEvent.click(screen.getByRole("button", { name: /立即重启/ }))
+    await waitFor(() =>
+      expect(sessionStorage.getItem("vm.modechooser.suppress-once")).toBe("1"),
+    )
   })
 
   it("★ 守卫给可执行出口：一并关闭依赖者，且顺序不能反", async () => {

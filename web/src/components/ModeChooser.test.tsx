@@ -96,6 +96,49 @@ describe("ModeChooser", () => {
     expect(navigate).toHaveBeenCalledWith("/live")
   })
 
+  /**
+   * 2026-10-08 事故：本组件每次启动都弹，卡片点下去是**整套重设** ——
+   * 用户在能力面板逐项开好的能力会在这里被一次点击清零。
+   * 现在只在**真会关掉东西**时先问一句，确认后才走原流程。
+   */
+  it("会关掉手动开启的能力 → 先确认；确认后才套套餐+重启", async () => {
+    hasBeenAsked.mockReturnValue(true)
+    const cat = readyCatalog("custom")
+    cat.state.catalog.plugins = [
+      { id: "sound.audiobook", name: "有声书", enabled: true, core: false },
+    ] as never
+    usePluginCatalog.mockReturnValue(cat)
+    render(<ModeChooser />)
+
+    fireEvent.click(screen.getByTitle(/启用 2 项能力，进入「声音保存」/))
+    expect(applyPluginPreset).not.toHaveBeenCalled()
+    const alert = screen.getByRole("alert")
+    expect(alert.textContent).toContain("关掉")
+    expect(alert.textContent).toContain("有声书")
+
+    fireEvent.click(screen.getByText("确认切换并重启"))
+    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("preserve"))
+    await waitFor(() => expect(restartBackend).toHaveBeenCalledTimes(1))
+    expect(reload).toHaveBeenCalled()
+  })
+
+  it("确认条可以取消 → 不套用、不重启、页面不重载", () => {
+    hasBeenAsked.mockReturnValue(true)
+    const cat = readyCatalog("custom")
+    cat.state.catalog.plugins = [
+      { id: "sound.audiobook", name: "有声书", enabled: true, core: false },
+    ] as never
+    usePluginCatalog.mockReturnValue(cat)
+    render(<ModeChooser />)
+
+    fireEvent.click(screen.getByTitle(/启用 2 项能力，进入「声音保存」/))
+    fireEvent.click(screen.getByText("取消"))
+    expect(screen.queryByRole("alert")).toBeNull()
+    expect(applyPluginPreset).not.toHaveBeenCalled()
+    expect(restartBackend).not.toHaveBeenCalled()
+    expect(reload).not.toHaveBeenCalled()
+  })
+
   it("重载后消费 pendingEntry → 跳目标页且不再弹；一次性 suppress 同样只不弹", () => {
     hasBeenAsked.mockReturnValue(true)
     localStorage.setItem("vm.pendingEntry", "/preserve")

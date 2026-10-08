@@ -43,6 +43,7 @@ function catalog(preset: string) {
 
 beforeEach(() => {
   vi.stubGlobal("location", { reload: vi.fn() })
+  sessionStorage.clear()
 })
 
 afterEach(() => {
@@ -83,6 +84,52 @@ describe("ModeSwitcher", () => {
     fireEvent.click(screen.getByText("立即重启"))
     await waitFor(() => expect(restartBackend).toHaveBeenCalledTimes(1))
     expect(location.reload).toHaveBeenCalled()
+    // ★ 2026-10-08 事故：这次重载必须压掉模式选择页，否则用户回来第一眼就是
+    //   「今天怎么用？」，随手一点就把刚调好的开关整套覆盖
+    expect(sessionStorage.getItem("vm.modechooser.suppress-once")).toBe("1")
+  })
+
+  /**
+   * 2026-10-08 事故的另一半：套餐是**整套重设**，用户逐项开过之后点模式会掉东西。
+   * 这里钉住「先问、确认后才动」这条路径 —— 以及不会掉东西时**不问**（不制造摩擦）。
+   */
+  it("会关掉手动开启的能力 → 先确认，确认后才套用", async () => {
+    getPlugins.mockResolvedValue({
+      ...catalog("custom"),
+      plugins: [
+        { id: "sound.tts", name: "输字变声", enabled: true, core: false },
+        { id: "sound.audiobook", name: "有声书", enabled: true, core: false },
+      ],
+    })
+    applyPluginPreset.mockResolvedValue({ ok: true, enabled: [] })
+    render(<ModeSwitcher />)
+    await waitFor(() => expect(screen.getByText("微信变声")).toBeTruthy())
+
+    fireEvent.click(screen.getByTitle(/切换到「游戏变声」/))
+    expect(applyPluginPreset).not.toHaveBeenCalled()
+    const alert = screen.getByRole("alert")
+    expect(alert.textContent).toContain("会")
+    expect(alert.textContent).toContain("关掉")
+    expect(alert.textContent).toContain("2 项")
+    expect(alert.textContent).toContain("输字变声")
+    expect(screen.queryByText("重启后生效")).toBeNull() // 还没套用，自然不该有重启横幅
+
+    fireEvent.click(screen.getByText("确认切换"))
+    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("game"))
+  })
+
+  it("确认条可以取消 → 不套用、也不出现重启横幅", async () => {
+    getPlugins.mockResolvedValue({
+      ...catalog("custom"),
+      plugins: [{ id: "sound.tts", name: "输字变声", enabled: true, core: false }],
+    })
+    render(<ModeSwitcher />)
+    await waitFor(() => expect(screen.getByText("微信变声")).toBeTruthy())
+    fireEvent.click(screen.getByTitle(/切换到「游戏变声」/))
+    fireEvent.click(screen.getByText("取消"))
+    expect(screen.queryByRole("alert")).toBeNull()
+    expect(screen.queryByText("重启后生效")).toBeNull()
+    expect(applyPluginPreset).not.toHaveBeenCalled()
   })
 
   it("后端没返回场景套餐（旧后端/清单损坏）→ 整块隐藏", async () => {

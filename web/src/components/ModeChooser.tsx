@@ -16,9 +16,14 @@
  */
 import { useCallback, useEffect, useState } from "react"
 import { useNavigate } from "react-router"
-import { ArrowRight, Check, Loader2 } from "lucide-react"
+import { AlertTriangle, ArrowRight, Check, Loader2 } from "lucide-react"
 import { applyPluginPreset } from "@/api/client"
 import { restartBackend } from "@/lib/electron"
+import {
+  MODE_SUPPRESS_ONCE_KEY as SUPPRESS_KEY,
+  capabilitiesLostBy,
+  describeLost,
+} from "@/lib/modeSwitch"
 import { usePluginCatalog } from "@/lib/pluginRoutes"
 import { hasBeenAsked } from "@/lib/useProfile"
 import { cn } from "@/lib/utils"
@@ -27,8 +32,9 @@ import { SCENE_META } from "@/components/layout/ModeSwitcher"
 const DONT_ASK_KEY = "vm.modechooser.dontask"
 /** 模式切换要**重启后端**才生效（路由/插件集在启动时挂载）——重载后由本组件消费、跳到目标页。 */
 const PENDING_ENTRY_KEY = "vm.pendingEntry"
-/** 重载后一次性不弹选择页（刚选完模式再弹一次等于骚扰）。sessionStorage：关掉应用就失效。 */
-const SUPPRESS_KEY = "vm.modechooser.suppress-once"
+/** 重载后一次性不弹选择页（刚选完模式再弹一次等于骚扰）。sessionStorage：关掉应用就失效。
+ *  键名/写法统一走 `lib/modeSwitch.ts` —— 能力面板与侧栏的「立即重启」也往这里写，
+ *  两处各写一份字面量就会「改一处忘一处」。 */
 
 export function shouldShowModeChooser(): boolean {
   try {
@@ -49,6 +55,8 @@ export function ModeChooser() {
   const [open, setOpen] = useState(shouldShowModeChooser)
   const [dontAsk, setDontAsk] = useState(false)
   const [switching, setSwitching] = useState<string | null>(null)
+  /** 待确认的模式 id：这一下会关掉用户手动开启的能力，先问一句 */
+  const [confirmId, setConfirmId] = useState<string | null>(null)
   const { state: catalogState } = usePluginCatalog()
   const navigate = useNavigate()
 
@@ -81,7 +89,8 @@ export function ModeChooser() {
    * 套套餐 → 记下目标页 → 重启后端 → 整页重载（catalog 全新、路由齐全）→ 落到目标页。
    * 已是当前模式则不折腾，直接跳页。
    */
-  const pick = useCallback(
+  /** 真正执行切换（确认后的路径）。 */
+  const doPick = useCallback(
     async (id: string) => {
       const cat = catalogState.status === "ready" ? catalogState.catalog : null
       const entry = MODE_ENTRY[id] ?? "/home"
@@ -91,6 +100,7 @@ export function ModeChooser() {
         navigate(entry)
         return
       }
+      setConfirmId(null)
       setSwitching(id)
       try {
         await applyPluginPreset(id)
@@ -109,20 +119,51 @@ export function ModeChooser() {
     [catalogState, dontAsk, navigate],
   )
 
+  /**
+   * 点卡片的入口：**会关掉用户手动开启的能力**时先停一步（2026-10-08）。
+   *
+   * 这一屏每次启动都弹，是「随手一点」发生得最多的地方，而套餐是整套重设 ——
+   * 用户刚在能力管理里逐项开的 17 项，在这里一次点击就会清零。不关东西的
+   * （含「已是当前模式」）照旧一步完成，不加摩擦。
+   */
+  const pick = useCallback(
+    (id: string) => {
+      const cat = catalogState.status === "ready" ? catalogState.catalog : null
+      const lost = cat && cat.preset !== id ? capabilitiesLostBy(cat, id) : []
+      if (!lost.length) {
+        void doPick(id)
+        return
+      }
+      setConfirmId(id)
+    },
+    [catalogState, doPick],
+  )
+
   // Esc = 直接进入（与 UseCasePicker 同款键盘出口约定）；切换中不给 Esc 出口
   useEffect(() => {
     if (!open || switching) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") finish()
+      if (e.key === "Escape") {
+        // 确认态下 Esc = 取消这一下（不是「直接进入」）——否则想撤回会顺手把弹窗也关掉
+        if (confirmId) {
+          setConfirmId(null)
+          return
+        }
+        finish()
+      }
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [open, switching, finish])
+  }, [open, switching, confirmId, finish])
 
   if (!open) return null
 
   const ready = catalogState.status === "ready"
   const scenes = ready ? catalogState.catalog.presets.filter((p) => p.id in SCENE_META) : []
+  const confirmLost = confirmId
+    ? capabilitiesLostBy(ready ? catalogState.catalog : null, confirmId)
+    : []
+  const confirmMeta = confirmId ? SCENE_META[confirmId] : null
 
   // 全屏**页面**而不是弹窗：不透明背景直接盖住侧栏/顶栏（用户要求「只保留三个模式卡片」，
   // 背后透出半截外壳反而像加载出错的残影）。z-50 与首启问答同层。
@@ -137,7 +178,8 @@ export function ModeChooser() {
         <p className="font-mono text-xs uppercase tracking-widest text-primary">今天怎么用？</p>
         <h2 className="mt-3 text-3xl font-semibold text-foreground">选择一个使用方式</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          选完直接进入对应页面，能力会按场景自动启用；选错了随时能在左侧「使用模式」里改。
+          选完直接进入对应页面，能力会按场景重新设定（不在这场里的会被关掉，你手动开过的会先问你一句）；
+          选错了随时能在左侧「使用模式」里改。
         </p>
 
         <div className="mt-10 grid gap-4 sm:grid-cols-3">
@@ -181,6 +223,41 @@ export function ModeChooser() {
             </p>
           ) : null}
         </div>
+
+        {/* 会关掉东西才出现的一次性确认。这一屏是「随手一点」发生得最多的地方，
+            而卡片点下去是**整套重设** —— 把将关闭的几项点名，而不是只问「确定吗？」 */}
+        {confirmId && confirmMeta ? (
+          <div
+            role="alert"
+            className="mx-auto mt-8 max-w-xl rounded-2xl border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-left"
+          >
+            <p className="flex items-start gap-2 text-sm leading-6 text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="mt-1 h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>
+                切到「{confirmMeta.label}」会<strong className="font-medium">关掉</strong>你手动开启的{" "}
+                {confirmLost.length} 项能力：{describeLost(confirmLost.map((p) => p.name))}
+              </span>
+            </p>
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={switching !== null}
+                onClick={() => setConfirmId(null)}
+                className="rounded-md border border-border px-3 py-1 text-xs text-muted-foreground transition hover:text-foreground disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={switching !== null}
+                onClick={() => void doPick(confirmId)}
+                className="rounded-md border border-amber-500/50 bg-amber-500/15 px-3 py-1 text-xs font-medium text-amber-700 transition hover:bg-amber-500/25 disabled:opacity-60 dark:text-amber-400"
+              >
+                确认切换并重启
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {switching ? (
           <p className="mt-6 flex items-center justify-center gap-2 text-sm text-primary" role="status">

@@ -8,11 +8,23 @@
  * 数据源：套餐清单仍由后端 /api/plugins 驱动（单一真相源），这里只按
  * 场景 id 过滤 + 配图标和一句话说明。当前模式 = catalog.preset（后端判定，
  * "custom" 表示用户逐项改过、不匹配任何套餐）。
+ *
+ * ---------------------------------------------------------------- 2026-10-08：先问一句
+ *
+ * 套餐是**整套重设**：切过去 = 把不在套餐里的能力全部关掉。这话在「一开始就是
+ * 某个模式」时无感，但用户如果在能力面板里逐项开过（`preset` 变成 `custom`），
+ * 这里点一下就会把那些开关全收走 —— 而按钮上写着「切换到…」，读起来像
+ * 「我要用这个模式」，不像「我要关掉 17 项能力」。
+ *
+ * 所以：**只在真的会关掉东西时**弹一条内联确认（把要关的几项点名），
+ * 不会关东西的切换照旧一键完成，不加摩擦。判据在 `lib/modeSwitch.ts`，
+ * 与 `ModeChooser` 共用同一份 —— 两处各写一遍必然漂。
  */
 import { useCallback, useEffect, useState } from "react"
-import { Check, Gamepad2, GraduationCap, Loader2, MessageCircle, RotateCcw } from "lucide-react"
+import { AlertTriangle, Check, Gamepad2, GraduationCap, Loader2, MessageCircle, RotateCcw } from "lucide-react"
 import { applyPluginPreset, getPlugins } from "@/api/client"
 import { restartBackend } from "@/lib/electron"
+import { capabilitiesLostBy, describeLost, suppressModeChooserOnce } from "@/lib/modeSwitch"
 import { cn } from "@/lib/utils"
 
 /** 场景套餐的本地配置：图标 + 一句话说明（标签以后端为准）。
@@ -31,6 +43,8 @@ export function ModeSwitcher() {
   const [busy, setBusy] = useState<string | null>(null)
   const [needRestart, setNeedRestart] = useState(false)
   const [error, setError] = useState("")
+  /** 待确认的模式 id：这一下会关掉用户手动开启的能力，先问一句再动 */
+  const [confirmId, setConfirmId] = useState<string | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -49,6 +63,7 @@ export function ModeSwitcher() {
   const apply = useCallback(async (id: string) => {
     setBusy(id)
     setError("")
+    setConfirmId(null)
     try {
       await applyPluginPreset(id)
       setNeedRestart(true)
@@ -61,8 +76,30 @@ export function ModeSwitcher() {
     }
   }, [])
 
+  /**
+   * 点模式的入口：会关掉东西就先停一步，不会就直接切。
+   *
+   * 注意「已是当前模式」也走这里 —— 重复点当前模式会重算出一模一样的禁用集，
+   * 关不掉任何东西（`lost` 为空），所以不会被确认条拦住，行为与以前一致。
+   */
+  const request = useCallback(
+    (id: string) => {
+      const lost = capabilitiesLostBy(catalog, id)
+      if (!lost.length) {
+        void apply(id)
+        return
+      }
+      setError("")
+      setConfirmId(id)
+    },
+    [apply, catalog],
+  )
+
   const restart = useCallback(async () => {
     setBusy("restart")
+    // ★ 关键：这次重载是「用户刚调完设置」，不该再被模式选择页拦一次 ——
+    //   否则用户点「立即重启」，回来迎面一个「今天怎么用？」，随手一点就把设置全废了。
+    suppressModeChooserOnce()
     try {
       await restartBackend()
     } catch {
@@ -75,6 +112,8 @@ export function ModeSwitcher() {
   const scenes = (catalog?.presets ?? []).filter((p) => p.id in SCENE_META)
   // 当前套餐不在场景三件套里（light/full/custom…）→ 没有高亮项，全部平铺展示
   const current = catalog?.preset ?? null
+  const confirmLost = confirmId ? capabilitiesLostBy(catalog, confirmId) : []
+  const confirmLabel = catalog?.presets.find((p) => p.id === confirmId)?.label ?? confirmId
 
   if (scenes.length === 0) return null
 
@@ -93,7 +132,7 @@ export function ModeSwitcher() {
               type="button"
               disabled={busy !== null}
               title={`切换到「${p.label}」：启用 ${p.plugins.length} 项能力${active ? "（当前）" : ""}，重启应用后生效`}
-              onClick={() => void apply(p.id)}
+              onClick={() => request(p.id)}
               className={cn(
                 "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition",
                 active
@@ -116,6 +155,41 @@ export function ModeSwitcher() {
           )
         })}
       </div>
+      {/* 会关掉东西才出现的一次性确认：把「将被收走的那几项」点名，而不是只问
+          「确定吗？」—— 用户此刻要判断的恰恰是「掉的是不是我想要的」。 */}
+      {confirmId ? (
+        <div
+          role="alert"
+          className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-[11px] leading-5"
+        >
+          <p className="flex items-start gap-1 text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+            <span>
+              切到「{confirmLabel}」会<strong className="font-medium">关掉</strong>你手动开启的{" "}
+              {confirmLost.length} 项：{describeLost(confirmLost.map((p) => p.name))}
+            </span>
+          </p>
+          <div className="mt-1.5 flex items-center gap-2">
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => void apply(confirmId)}
+              className="rounded-md border border-amber-500/50 bg-amber-500/15 px-2 py-0.5 font-medium text-amber-700 transition hover:bg-amber-500/25 disabled:opacity-60 dark:text-amber-400"
+            >
+              确认切换
+            </button>
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => setConfirmId(null)}
+              className="rounded-md border border-border px-2 py-0.5 text-muted-foreground transition hover:text-foreground disabled:opacity-60"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {needRestart ? (
         <div className="mt-2 flex items-center gap-1.5 rounded-md bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-600">
           <span className="min-w-0 flex-1">重启后生效</span>

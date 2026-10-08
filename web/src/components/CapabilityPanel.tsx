@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 import { applyPluginPreset, getPlugins, setPluginEnabled } from "@/api/client"
 import { restartBackend } from "@/lib/electron"
+import { suppressModeChooserOnce } from "@/lib/modeSwitch"
 import type { PluginCatalog, PluginEntry, PluginState } from "@/types"
 import { cn } from "@/lib/utils"
 import { ErrorPanel } from "@/components/ErrorPanel"
@@ -584,10 +585,17 @@ export function CapabilityPanel({ open, onClose }: { open: boolean; onClose: () 
    * 插件路由是后端**启动时**挂的，所以真正要重来的是后端，不是这个窗口 ——
    * 让用户「退出应用再打开」是把这个知识推给他。非桌面端（纯网页调试）没有这个通道，
    * 降级成手动提示，不假装成功。
+   *
+   * ★ **重启前先压掉模式选择页（2026-10-08 事故）**：整页重载会让 `ModeChooser`
+   * 重新挂载，而它是「每次启动都弹」的。用户在这一屏刚把 17 项逐个打开，点完
+   * 「立即重启」迎面就是一个全屏「今天怎么用？」—— 随手点一个场景就等于
+   * `applyPluginPreset`，**整套重设**，刚开的 17 项当场被写回 `disabled`。
+   * 一次性的 suppress 标记只影响这次重载，别的启动路径照旧会问。
    */
   const restart = useCallback(async () => {
     setBusy("restart")
     setNotice(null)
+    suppressModeChooserOnce()
     try {
       const r = await restartBackend()
       if (!r) {
