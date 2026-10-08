@@ -26,6 +26,8 @@
 """
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -411,6 +413,40 @@ def _row(sp: str, tag: str, cond: str, **metrics) -> dict:
     return {"sample_id": f"{sp}/{tag}/{cond}", "speaker": sp, "duration_tag": tag,
             "duration_s": ve._parse_dur_tag(tag), "condition": cond,
             "path": "", "metrics": metrics, "error": None, "note": None}
+
+
+class TestConsoleEncoding:
+    """本机默认控制台是 GBK（CP936）。报告正文里有 `↔` 这类字符，打印时
+    `UnicodeEncodeError` 会让**已经跑完**的 analyze 以非零退出收场 —— 报告文件都
+    写好了，用户看到的却是一条 traceback，读起来像"分析失败"（2026-10-08 实测）。
+
+    子进程 + `PYTHONIOENCODING=gbk` 是**唯一**能复现它的方式：进程内的 stdout
+    早被 pytest 接管，永远不会触发这个编码路径。
+    """
+
+    def _run_cli(self, args: list[str], tmp_path: Path) -> subprocess.CompletedProcess:
+        env = {**os.environ, "PYTHONIOENCODING": "gbk"}
+        env.pop("PYTHONUTF8", None)
+        return subprocess.run(
+            [sys.executable, str(_ROOT / "tools" / "voicebank_eval.py"), *args],
+            capture_output=True, env=env, cwd=str(tmp_path))
+
+    def test_analyze_survives_gbk_console(self, tmp_path):
+        rows = [_row("a", tag, "same", emb_sim=v)
+                for tag, v in (("3s", 0.50), ("10s", 0.80), ("30s", 0.85))]
+        _write_results(tmp_path, "vb01", rows)
+        proc = self._run_cli(["analyze", "--exp", "vb01", "--root", str(tmp_path)],
+                             tmp_path)
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")[-1500:]
+        # 报告确实落盘了（不能只靠退出码）
+        assert (tmp_path / "vb01" / "report.md").exists()
+        assert (tmp_path / "vb01" / "report.json").exists()
+
+    def test_corpus_survives_gbk_console(self, tmp_path):
+        """录音脚本是中文 —— `corpus` 是执行卡里第一个要跑的命令。"""
+        proc = self._run_cli(["corpus"], tmp_path)
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")[-1500:]
+        assert proc.stdout
 
 
 class TestAnalyze:

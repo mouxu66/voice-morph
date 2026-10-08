@@ -183,6 +183,13 @@ FAST_TESTS = [
     # 审计 fail-closed。上面三条退化它就全红，且它自己也有独立的
     # 「门被拆掉」变异用例 —— 这些守卫的共同特点是**改坏时不报错**。
     "m2_server/tests/test_ai_actions_api.py",
+    # 嗓音保存评测流水线（合成约 4s + 引擎约 9s，纯举 HTTP/纯算）：
+    # 这一层是申报书"现有结论"的唯一来源，而它的错法**全部不报错** ——
+    # 挑错参考音（自变量标签错）、矩阵缺格（错因指向统计）、临时音色漏删、
+    # 伪造 ref_text、报告在 GBK 控制台崩（命令非零退出，看着像"分析失败"）。
+    # 两轮真人试跑就在眼前，这种错必须在提交那一刻被拦住。
+    "m2_server/tests/test_voicebank_synth.py",
+    "m2_server/tests/test_voicebank_eval.py",
 ]
 
 

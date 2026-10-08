@@ -1406,6 +1406,15 @@ def _print_corpus():
 
 
 def main():
+    # 中文控制台（本机默认 GBK/CP936）下，报告正文里的 `↔` 之类的字符会让 print 抛
+    # UnicodeEncodeError —— 而它出现在**最后一步**：report.json / report.md 都写好了，
+    # 命令却以非零退出收场，看起来像"分析失败"（2026-10-08 实测）。
+    # 与 tools/check.py 的 `_console()` 同一处理。
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     p = argparse.ArgumentParser(
         description="嗓音保存复现质量评测引擎（矩阵 / 测量 / 统计）")
     sub = p.add_subparsers(dest="cmd")
