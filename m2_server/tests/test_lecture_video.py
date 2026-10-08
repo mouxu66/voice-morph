@@ -8,8 +8,12 @@
 
   1. **清单里少一个文件，ffmpeg 退出码仍是 0**（本项目实测踩过）→ 所以
      `precheck` 必须在起进程**之前**逐个 `exists()`，且不许留下半成品。
-  2. **旁白被剪**：`-shortest` 收口 + 末帧补齐 = 成片正好等于音轨长度。
+  2. **旁白被剪 / 收口失效**：末帧补齐 + 收口 = 成片正好等于音轨长度。
      缺了补齐，时间轴比音轨短时最后一句就没了 —— 听感上"正常结束"，没人报错。
+     收口选项有三代结论（`plan_command` 的 docstring 有全文）：demo 用例上
+     `-shortest` 就够；**页级时长 + cfr 下必须 `-t <音轨长>` 显式截断**
+     （course_1791453887573 实测 47.60s → 42.90s）；且 **`-t` 绝不与 `-shortest`
+     并用** —— 并用在秒级用例把成片截到 1 帧（0.033s，三变体矩阵实测）。
   3. **尾部重复行**：concat 解复用器**不给重复出现的最后一帧就不算它的 duration**
      （实测 17 帧 vs 43 帧）→ 有人"清理"掉那行，成片尾巴就短一截。
   4. **帧几何**：奇数宽高编不出 yuv420p、混尺寸出花屏 —— 都必须指名道姓地报错，
@@ -155,19 +159,35 @@ class TestPrecheck:
 # ---------------- 命令行（封口选项） ----------------
 
 class TestPlanCommand:
-    def _cmd(self, tmp_path, fit):
+    def _cmd(self, tmp_path, fit, target_s=None):
         return lv.plan_command("ffmpeg", tmp_path / "l.txt", tmp_path / "a.wav",
                                tmp_path / "o.mp4", {"width": 64, "height": 64},
-                               30, 20, "medium", fit, ["-fps_mode", "cfr"])
+                               30, 20, "medium", fit, ["-fps_mode", "cfr"],
+                               target_s=target_s)
 
-    def test_audio_fit_uses_shortest_and_never_dash_t(self, tmp_path):
-        """★ 收口只能用 `-shortest`：`-t` 与 concat 解复用器一起用会**变短**（实测）。"""
+    def test_no_target_s_falls_back_to_shortest(self, tmp_path):
+        """旧路径（没给 target_s，demo/最小用例）→ 退回 `-shortest`，且不许凭空截断。"""
         cmd = self._cmd(tmp_path, "audio")
         assert "-shortest" in cmd
         assert "-t" not in cmd
 
+    def test_target_s_adds_dash_t_and_bans_shortest(self, tmp_path):
+        """★ 第三代结论（三变体矩阵实测）：页级时长 + cfr 下 `-shortest` 收不干净
+        （多跑 4.73s），**`-t <音轨长>` 才是收口权威**；而 `-t` 与 `-shortest`
+        **并用**在秒级用例上把成片截到 1 帧（1.2s 音轨出 0.033s）、页级又正常 ——
+        行为随规模翻转，所以有权威长度时必须**只用 `-t`**。"""
+        cmd = self._cmd(tmp_path, "audio", target_s=42.87)
+        assert "-shortest" not in cmd
+        i = cmd.index("-t")
+        assert cmd[i + 1] == "42.870"
+
+    def test_no_target_s_means_no_dash_t(self, tmp_path):
+        """没给 target_s 就不许凭空截断 —— 长度权威只能来自 fit_to_audio 的实测值。"""
+        assert "-t" not in self._cmd(tmp_path, "audio")
+
     def test_fit_none_has_no_clamp(self, tmp_path):
-        assert "-shortest" not in self._cmd(tmp_path, "none")
+        cmd = self._cmd(tmp_path, "none", target_s=42.87)
+        assert "-shortest" not in cmd and "-t" not in cmd
 
     def test_output_is_player_compatible(self, tmp_path):
         cmd = self._cmd(tmp_path, "audio")
@@ -274,9 +294,10 @@ class TestRenderEndToEnd:
         assert info["out"]["video"]["pix_fmt"] == "yuv420p"
         assert info["out"]["video"]["size"] == "64×64"
         assert info["out"]["audio"]["codec"] == "aac"
-        # ★ fit=audio 的承诺：成片正好等于旁白长度（末帧补齐 + -shortest 收口）
+        # ★ fit=audio 的承诺：成片正好等于旁白长度（末帧补齐 + `-t` 收口）
         assert info["out"]["duration_s"] == pytest.approx(1.2, abs=0.1)
-        assert "-shortest" in info["command"]
+        assert "-t" in info["command"]
+        assert "-shortest" not in info["command"]
 
     def test_sidecar_records_the_exact_command(self, tmp_path, ffmpeg_bin, monkeypatch):
         """成片要能复现 —— 命令、cwd、ffmpeg 版本、逐帧来源都得留在凭据里。"""

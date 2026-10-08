@@ -468,17 +468,34 @@ def fit_to_audio(tl: Timeline, mode: str, ffprobe: str) -> tuple[float, str]:
 
 def plan_command(
     ffmpeg: str, list_path: Path, audio: Path, out: Path, geom: dict,
-    fps: int, crf: int, preset: str, fit: str, fps_args: list[str]
+    fps: int, crf: int, preset: str, fit: str, fps_args: list[str],
+    target_s: float | None = None,
 ) -> list[str]:
     """成片的 ffmpeg 命令行（逐字进 sidecar，也是 --dry-run 打印的东西）。
 
-    ★ 封口选项是这条链路最讲究的一处，三个候选**只有 `-shortest` 对**（实测）：
-        · 什么都不加：尾部重复行会让视频比时间轴长 0.43s（成片尾巴多停一帧）；
-        · `-t <秒>`：**反而更短**（1.0s 的用例只出 0.567s）—— concat 解复用器
-          与 `-t` 的相互作用会把末尾几帧丢掉，所以本工具**不用 `-t`**；
-        · `-shortest`：输出长度 = min(视频, 音轨)。配合"末帧补齐到音轨"
-          （`--fit audio` 的默认行为）就得到**正好等于旁白长度**的成片 ——
-          原成片 96.300s / 2889 帧就是这么做出来的。
+    ★ 封口是这条链路最讲究的一处，三代结论都在这（都以本仓实测为准）：
+
+    第一代（2026-10-08 上午，已被推翻）："`-shortest` + 末帧补齐 = 正好等于旁白"。
+        在 2 帧/1s 的 demo 用例上成立，但**页级时长（14s/帧）+ `-fps_mode cfr`**
+        下完全失效 —— 见第二代。
+
+    第二代（2026-10-08 晚，course_1791453887573 三页实测）：两个独立的坑叠加：
+        ① concat 清单末尾重复的最后一帧会**继承一个完整 clip 的 duration**
+          （实测 14.38s，且**显式写 `duration 0.034` 也被无视**）—— 它本来只是
+          "让末帧 duration 生效"的哨兵，不该贡献时长；
+        ② `-shortest` 与 `-fps_mode cfr` 的竞态：音频 EOS 后 muxer 的
+          interleave 缓冲里还压着若干视频包（实测多跑 4.73s），**收不干净**。
+        两者叠加：音轨 42.87s 的成片跑出 47.60s（视频流纯段 57.60s），被
+        自检（`收口失效`）拦下。
+        **修法 = `-t <音轨长>` 显式截断**（实测 video 42.90 / audio 42.87，
+        差 1 帧）。
+
+    第三代（同晚，秒级小用例三变体矩阵实测）："`-shortest` 保留作双保险"也错了 ——
+        **`-shortest` 与 `-t` 并用在秒级用例上把成片截到 1 帧**（1.2s 音轨出
+        0.03s，`-shortest` 单用 1.20 ✓ / `-t` 单用 1.20 ✓ / 并用 0.033 ✗），
+        而页级任务并用又正常（42.87 ✓）—— 行为随规模翻转，不可依赖。
+        定案：**给了 target_s（有权威长度）就只用 `-t`；`-shortest` 只留给
+        没有权威长度的旧路径**（demo/最小用例，那正是它第一代成立的域）。
     """
     cmd = [
         ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
@@ -490,7 +507,13 @@ def plan_command(
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
     ]
     if fit in ("audio", "trim"):
-        cmd.append("-shortest")
+        if target_s is not None and target_s > 0:
+            # 权威长度在手 → `-t` 独挑（★ 绝不与 -shortest 并用，见第三代结论）
+            cmd += ["-t", f"{target_s:.3f}"]
+        else:
+            # 没有权威长度（demo/最小用例）→ 退回 -shortest；页级时长下它收不
+            # 干净是已知缺陷（第二代②），但那个域里没有更好的选择
+            cmd.append("-shortest")
     cmd += ["-movflags", "+faststart", str(out)]
     return cmd
 
@@ -520,7 +543,7 @@ def render(
     list_path = frames_dir / f"{out.stem}.frames.txt"
     write_frames_list(tl.clips, list_path)
     cmd = plan_command(ffmpeg, list_path, tl.audio, out.resolve(), geom,
-                       tl.fps, crf, preset, fit, fps_mode_args(ffmpeg))
+                       tl.fps, crf, preset, fit, fps_mode_args(ffmpeg), target_s=target_s)
     info = {
         "tool": "tools/lecture_video.py",
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
