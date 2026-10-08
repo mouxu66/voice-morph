@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom"
-import { ArrowRight, Boxes, Camera, CloudDownload, Hammer, Headphones, Library, Mic2, Music4, Radio, ScanSearch, ShieldCheck, ShoppingBag, Sparkles, Volume2 } from "lucide-react"
+import { ArrowRight, Boxes, Camera, CloudDownload, Hammer, Headphones, Library, Mic2, Music4, Presentation, Radio, ScanSearch, ShieldCheck, ShoppingBag, Sparkles, Volume2 } from "lucide-react"
 import { Card, PageShell } from "@/components/layout/PageShell"
 import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
 import { RemoteQrCard } from "./RemoteQrCard"
@@ -38,6 +38,7 @@ export function CapabilityIndexRoute() {
     { to: "/tts?tab=single", name: "输字变声", desc: "打字它就说，还能在中间插音效（写 [爆炸]）", icon: Volume2, plugin: "sound.tts" },
     { to: "/tts?tab=wechat", name: "微信发送", desc: "合成好的语音一键发进微信 PC 版", icon: Camera, plugin: "hook.wechat" },
     { to: "/tts?tab=book", name: "录课 / 有声书", desc: "粘贴讲稿或长文，按句合成自动拼接成一整段音频", icon: Library, plugin: "sound.audiobook" },
+    { to: "/course", name: "讲稿录课", desc: "PPT 备注页写讲稿，逐页生成旁白，一键导出原课件画面 + 旁白的讲课视频", icon: Presentation, plugin: "sound.course" },
     { to: "/offlinevc", name: "离线变声", desc: "把录好的整段音频一次性变成目标音色", icon: Hammer, plugin: "sound.offline-vc" },
     { to: "/cover", name: "翻唱", desc: "整首歌拆开，只换人声的音色，再和原伴奏合回去", icon: Music4, plugin: "sound.cover" },
     { to: "/ytdlp", name: "在线扒歌", desc: "粘一条网易云/QQ音乐/B站链接，交给外部的 yt-dlp 取回音频", icon: CloudDownload, plugin: "sound.ytdlp" },

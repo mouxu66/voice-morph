@@ -395,7 +395,9 @@ PRESETS: dict[str, list[str] | None] = {
     # 微信变声：变声本体 + 微信发送 + 特效声板（[爆炸] 等音效标记只在微信链路生效）。
     # ★ sound.tts 必须带：微信发送 UI 是输字变声页的 tab（/tts?tab=wechat），
     #   不带 tts 等于 tab 宿主页整个下架（有声书同理挂在 /tts?tab=book）。
-    "wechat": ["sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board"],
+    # ★ sound.course 必须带（2026-10-08）：录课零额外依赖（python=[]，出片才要
+    #   PowerPoint），不该被场景切换埋掉 —— 用户三轮"开了又没"全是切模式所致。
+    "wechat": ["sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board", "sound.course"],
     # 声音保存（护嗓）：建档录老师的声音 → 输字让它说话 → 整篇有声书 → 录课出片。
     # 有声书 requires tts，闭包自动补上；不带实时变声/微信 —— 课堂场景用不上。
     # ★ sound.course 必须带（2026-10-08 用户拍板）：这个模式的目标用户就是录课老师，

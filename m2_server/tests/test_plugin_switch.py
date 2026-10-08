@@ -221,7 +221,7 @@ def test_default_preset_is_the_voice_morph_body():
 def test_scene_presets_are_pinned_literals():
     """三个场景套餐的**起点集**钉死：微信变声 / 声音保存（护嗓）/ 游戏变声。"""
     assert plugin_manifest.PRESETS["wechat"] == [
-        "sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board"]
+        "sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board", "sound.course"]
     assert plugin_manifest.PRESETS["preserve"] == [
         "sound.preserve", "sound.tts", "sound.audiobook", "sound.course"]
     # 游戏变声 = 变声本体本身（实时变声走虚拟声卡进游戏/直播/会议）
@@ -261,9 +261,10 @@ def test_scene_presets_expand_to_right_scopes():
     wechat = plugin_manifest.preset_ids("wechat")
     preserve = plugin_manifest.preset_ids("preserve")
     game = plugin_manifest.preset_ids("game")
-    # 微信：tab 宿主页（输字变声，/tts?tab=wechat）+ 发送 + 特效声板必须在；
+    # 微信：tab 宿主页（输字变声，/tts?tab=wechat）+ 发送 + 特效声板 + 录课
+    # （2026-10-08：course 零额外依赖，不加重装机，不该被场景切换埋掉）；
     # 实时变声 / 声音保存不该混进来
-    assert {"sound.tts", "hook.wechat", "sound.fx-board", "sound.offline-vc"} <= wechat
+    assert {"sound.tts", "hook.wechat", "sound.fx-board", "sound.offline-vc", "sound.course"} <= wechat
     assert "sound.rvc-live" not in wechat and "sound.preserve" not in wechat
     # 保存：三件套齐（有声书靠 requires 闭包带上 tts）+ 录课（2026-10-08：
     # preserve 的目标用户就是录课老师，PPT→讲课视频是主打闭环）；不碰微信 / 实时

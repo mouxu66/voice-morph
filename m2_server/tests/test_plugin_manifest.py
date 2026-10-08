@@ -543,6 +543,7 @@ _FROZEN_ROUTES: tuple[tuple[str, str, str], ...] = (
     ("/offlinevc", "OfflineVc", "OfflineVcRoute"),
     ("/live", "Live", "LiveRoute"),
     ("/tts", "Tts", "TtsRoute"),
+    ("/course", "Course", "CourseRoute"),  # 讲稿录课（fc541a1 补接路由）：PPT 备注页 → 逐页旁白 → 成片
     ("/cover", "Cover", "CoverRoute"),  # 翻唱（3a32d43）：整首歌只换人声再合回伴奏
     ("/ytdlp", "Ytdlp", "YtdlpRoute"),  # 在线扒歌：外部 yt-dlp 桥（可关）
     ("/workshop", "Workshop", "WorkshopRoute"),
@@ -572,6 +573,7 @@ _FROZEN_NAV: tuple[tuple[str, str, str, str, int], ...] = (
     ("/home", "首页", "Home", "start", 10),
     ("/live", "实时变声", "Radio", "vc", 10),
     ("/tts", "输字变声", "Speech", "vc", 20),
+    ("/course", "录课", "Presentation", "vc", 25),
     ("/cover", "翻唱", "Music4", "vc", 30),
     ("/ytdlp", "在线扒歌", "CloudDownload", "vc", 35),
     ("/offlinevc", "离线变声", "Wrench", "vc", 40),

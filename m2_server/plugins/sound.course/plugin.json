@@ -8,7 +8,14 @@
   "requires": ["sound.tts"],
   "routers": ["course_api", "course_video"],
   "hooks": [],
-  "routes": [],
+  "routes": [
+    {
+      "path": "/course",
+      "module": "Course",
+      "export": "CourseRoute",
+      "nav": { "label": "录课", "icon": "Presentation", "group": "vc", "order": 25 }
+    }
+  ],
   "legacy_routes": [],
   "extras": {
     "python": [],
