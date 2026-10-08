@@ -1,0 +1,518 @@
+{
+  "corpus": "AISHELL-3",
+  "license": "Apache-2.0",
+  "license_id": "apache-2.0",
+  "license_note": "允许商用与演绎，署名即可",
+  "license_source": "https://www.openslr.org/93/",
+  "attribution": "AISHELL-3: A Multi-speaker Mandarin TTS Corpus and the Baselines (Shi et al., 2020), Beijing Shell Shell Technology Co.,Ltd. Retrieved via the official HF mirror of the AISHELL/AISHELL-3 dataset.",
+  "base_url": "https://hf-mirror.com/datasets/AISHELL/AISHELL-3/resolve/main",
+  "split": "train",
+  "retrieved_at": "2026-10-08 12:00:20",
+  "clips_per_speaker": 26,
+  "gap_ms": 300,
+  "speakers": [
+    {
+      "speaker": "SSB0033",
+      "note": "B(14-25) female south —— 样本量 498 条",
+      "url_dir": "https://hf-mirror.com/datasets/AISHELL/AISHELL-3/resolve/main/train/wav/SSB0033",
+      "clips_ok": 25,
+      "clips_skipped": [
+        {
+          "file": "SSB00330015.wav",
+          "reason": "HTTP 404"
+        }
+      ],
+      "total_s": 85.46,
+      "samplerate": 44100,
+      "files": [
+        {
+          "file": "SSB00330001.wav",
+          "duration_s": 3.54,
+          "rms_db": -25.6,
+          "sha256": "c74ec68b097d785f5946693b3a444cdeec13742ffac2653a43a493852b04c277"
+        },
+        {
+          "file": "SSB00330002.wav",
+          "duration_s": 2.814,
+          "rms_db": -23.6,
+          "sha256": "d0713d5820d2913a5eec020961bf892f912942a53c92c651153cfc47927148cc"
+        },
+        {
+          "file": "SSB00330003.wav",
+          "duration_s": 2.13,
+          "rms_db": -24.4,
+          "sha256": "32779b0d6e145c2ca5aa530520e267432f1264fd3663495329c7f93a74c6ba44"
+        },
+        {
+          "file": "SSB00330004.wav",
+          "duration_s": 2.85,
+          "rms_db": -25.5,
+          "sha256": "9cfd21b1e7edfc37027a95e13ebd121dbd1f32beb6e0b4abd97513bdf814cd81"
+        },
+        {
+          "file": "SSB00330005.wav",
+          "duration_s": 2.998,
+          "rms_db": -25.0,
+          "sha256": "fb028e8d8bb4fe2b8479c5ddad6164c866265f21cb95c51ea15c2366b7384bc7"
+        },
+        {
+          "file": "SSB00330006.wav",
+          "duration_s": 3.63,
+          "rms_db": -23.8,
+          "sha256": "eab1ea83a52484e2e5d17253f808d0c02da97cd6da2e4e1209fc39e44e76b6dc"
+        },
+        {
+          "file": "SSB00330007.wav",
+          "duration_s": 3.247,
+          "rms_db": -24.7,
+          "sha256": "6c9885ca07f6179a0f2b70eeaad1f2f91255ed48d76936c9983af468404ec54d"
+        },
+        {
+          "file": "SSB00330008.wav",
+          "duration_s": 1.92,
+          "rms_db": -27.1,
+          "sha256": "8ac5de798ed835d5b5f1053f7eb24376f5369e30dd44aaed347bc72767b1c756"
+        },
+        {
+          "file": "SSB00330009.wav",
+          "duration_s": 3.3,
+          "rms_db": -26.7,
+          "sha256": "66cb8685bab06af117b889e3a337d451c6795a9fcc13a7ef3deb0f7b28f43e96"
+        },
+        {
+          "file": "SSB00330010.wav",
+          "duration_s": 2.28,
+          "rms_db": -26.0,
+          "sha256": "6cf0664059e448d0801d930ecc6c7e7932a113d7dc056a1adf0ac46bd0d3a1e2"
+        },
+        {
+          "file": "SSB00330011.wav",
+          "duration_s": 4.95,
+          "rms_db": -25.1,
+          "sha256": "5519a8cac414728b1d9eb2f63495ebc76cec319818fabf710f0dc2b488893c3d"
+        },
+        {
+          "file": "SSB00330012.wav",
+          "duration_s": 2.28,
+          "rms_db": -23.3,
+          "sha256": "5c373940f2cdc3c20ec4b6b9c87c9c7171af4e157a8635311748418bc91fec24"
+        },
+        {
+          "file": "SSB00330013.wav",
+          "duration_s": 3.45,
+          "rms_db": -25.9,
+          "sha256": "3c82c7d13bac0689868c33226efc2a4ead363309cd90c5dbb5a3e8d54c1bc47e"
+        },
+        {
+          "file": "SSB00330014.wav",
+          "duration_s": 3.57,
+          "rms_db": -23.0,
+          "sha256": "ff0d91126970ac2bd9f0d5566a853210a0496bb4b6de9a83142468070d4e3d62"
+        },
+        {
+          "file": "SSB00330016.wav",
+          "duration_s": 2.16,
+          "rms_db": -24.4,
+          "sha256": "972204b9b69a0cad1c9bd0058ab1250dda34ef8e7c9e92cc61a610b9fddf1144"
+        },
+        {
+          "file": "SSB00330017.wav",
+          "duration_s": 3.21,
+          "rms_db": -24.9,
+          "sha256": "aa67712e8d7581298242195c5569cc178bb2559cb1dbdd12282c316ef2b8f421"
+        },
+        {
+          "file": "SSB00330018.wav",
+          "duration_s": 2.321,
+          "rms_db": -22.9,
+          "sha256": "5d8f433a2bb38a4caf79bb6d6dd218320294db1398a2c436c9c3fe066b2463eb"
+        },
+        {
+          "file": "SSB00330019.wav",
+          "duration_s": 2.451,
+          "rms_db": -26.4,
+          "sha256": "a0c0cb96b3498f49eb73920456a7395d86fd9f80e645c9e658c2f58c88386366"
+        },
+        {
+          "file": "SSB00330020.wav",
+          "duration_s": 2.43,
+          "rms_db": -22.7,
+          "sha256": "30bfbab440b7fab5f5da868817aab85da42eaa5f4d09d91e4ccbfdde68e1f147"
+        },
+        {
+          "file": "SSB00330021.wav",
+          "duration_s": 3.45,
+          "rms_db": -25.5,
+          "sha256": "8133278ccedfbdb8401b65602be9ad2daac3934e7113cfc6f520d800cea6901d"
+        },
+        {
+          "file": "SSB00330022.wav",
+          "duration_s": 1.98,
+          "rms_db": -23.4,
+          "sha256": "e58da532c9a9d2ed4d21d6b9d9bb3c72383de4576ab84a10cf0879f632ad6ce8"
+        },
+        {
+          "file": "SSB00330023.wav",
+          "duration_s": 2.82,
+          "rms_db": -23.7,
+          "sha256": "f4c20dad06a82e623f29e49cf92c35b4fe7e71d288a0ac1721021c032c251cd8"
+        },
+        {
+          "file": "SSB00330024.wav",
+          "duration_s": 3.632,
+          "rms_db": -24.6,
+          "sha256": "6ddb70fe46053e6281ca846126b72200ea27b4e434935ec30af4dd9b17b7b3e8"
+        },
+        {
+          "file": "SSB00330025.wav",
+          "duration_s": 4.71,
+          "rms_db": -25.5,
+          "sha256": "f124dd036876d034be7f94b1966012bcb9eed76bd77696b245cdad38aa339930"
+        },
+        {
+          "file": "SSB00330026.wav",
+          "duration_s": 5.838,
+          "rms_db": -25.7,
+          "sha256": "2dc2a0ad98057fee4542699c35773603a7b187d9283cd16190317e682a5e70a7"
+        }
+      ]
+    },
+    {
+      "speaker": "SSB0603",
+      "note": "B(14-25) male north —— 样本量 489 条",
+      "url_dir": "https://hf-mirror.com/datasets/AISHELL/AISHELL-3/resolve/main/train/wav/SSB0603",
+      "clips_ok": 26,
+      "clips_skipped": [],
+      "total_s": 83.34,
+      "samplerate": 44100,
+      "files": [
+        {
+          "file": "SSB06030001.wav",
+          "duration_s": 3.485,
+          "rms_db": -27.0,
+          "sha256": "c9d682c35518b204692c69dcf98eb15834cb090f14d33864fb89f4f6869607d7"
+        },
+        {
+          "file": "SSB06030002.wav",
+          "duration_s": 2.69,
+          "rms_db": -26.5,
+          "sha256": "56ee05a399921e26e255289520ccd69aefd2d60e6504d8bab41bc2770b7d074c"
+        },
+        {
+          "file": "SSB06030003.wav",
+          "duration_s": 2.18,
+          "rms_db": -25.8,
+          "sha256": "14f0bc196f2f4ddc3ae2697b97fc2562dfa6fa4ebc2888f4c69349009193cbaa"
+        },
+        {
+          "file": "SSB06030004.wav",
+          "duration_s": 2.12,
+          "rms_db": -27.7,
+          "sha256": "5a2842ff91c2f606df3bd03350eea1b99298af898843513b70029a4eaea1acc2"
+        },
+        {
+          "file": "SSB06030005.wav",
+          "duration_s": 3.14,
+          "rms_db": -26.1,
+          "sha256": "4b931266ea21874c179964412af6fcb83d6f55a3a94d89a737f50338d6c7c209"
+        },
+        {
+          "file": "SSB06030006.wav",
+          "duration_s": 3.5,
+          "rms_db": -26.1,
+          "sha256": "574e402c3bf2d3ad701fffe4f8134941149c48105e511d272feff87a378685c0"
+        },
+        {
+          "file": "SSB06030007.wav",
+          "duration_s": 2.75,
+          "rms_db": -27.0,
+          "sha256": "e14cf4ee2d2ec50c7e366f99019654e579fde3f3632079dbc2cd185f1508f09f"
+        },
+        {
+          "file": "SSB06030008.wav",
+          "duration_s": 1.64,
+          "rms_db": -30.8,
+          "sha256": "9495528c36f9dad88b306087b5e7ce2c7b8e90ca01a138d83a860c75437a2cb9"
+        },
+        {
+          "file": "SSB06030009.wav",
+          "duration_s": 4.082,
+          "rms_db": -24.6,
+          "sha256": "d74e2815a2ef7a7b17a03e42a5577082a64f4705993abbcefbfb10fda202c32a"
+        },
+        {
+          "file": "SSB06030010.wav",
+          "duration_s": 3.23,
+          "rms_db": -29.8,
+          "sha256": "fc547a5227117d0756c92dee4ba81f16fc1278a99cdb77aaf3c288b424197b26"
+        },
+        {
+          "file": "SSB06030011.wav",
+          "duration_s": 1.85,
+          "rms_db": -27.0,
+          "sha256": "fa2112f2f3fd0c7c1f637e3cda4931eba2b6acf14fc7c13d43d4f1dbeed16820"
+        },
+        {
+          "file": "SSB06030012.wav",
+          "duration_s": 2.87,
+          "rms_db": -28.0,
+          "sha256": "2092cd8c8e3ecf06d2ef806d00ca382e164a285b6b7f20ad0f20092d838e1da1"
+        },
+        {
+          "file": "SSB06030013.wav",
+          "duration_s": 3.17,
+          "rms_db": -27.0,
+          "sha256": "67b3c53afa31e1e1cb79b5eff835c247e8f8202418b82d50bf6dd3d6a50efb3d"
+        },
+        {
+          "file": "SSB06030014.wav",
+          "duration_s": 2.6,
+          "rms_db": -27.6,
+          "sha256": "b49b0443b78d8bb5284d5aec7fc8d48a95fbc8a4f0efb99c4d49bec33e472a8c"
+        },
+        {
+          "file": "SSB06030015.wav",
+          "duration_s": 4.43,
+          "rms_db": -23.6,
+          "sha256": "32c0f2393a32cd359ff61ba442e11ba5e54382cedf89cda03cb7df238f6fe90a"
+        },
+        {
+          "file": "SSB06030016.wav",
+          "duration_s": 1.73,
+          "rms_db": -29.3,
+          "sha256": "b88b2b3cf3fc3f76b941406f87390e622d685fe27a50f9ebffbe0d672f9262f5"
+        },
+        {
+          "file": "SSB06030017.wav",
+          "duration_s": 2.81,
+          "rms_db": -27.0,
+          "sha256": "da274a27600ae6d3d97e3081a36e7f8fa6b4c1782e2e571027b971fd9eb1d89a"
+        },
+        {
+          "file": "SSB06030018.wav",
+          "duration_s": 2.84,
+          "rms_db": -24.9,
+          "sha256": "85bebbf2b13406c2eccced4efe832c1caa10be190e601670a2db22548bb4382e"
+        },
+        {
+          "file": "SSB06030019.wav",
+          "duration_s": 2.18,
+          "rms_db": -27.7,
+          "sha256": "467dd529474de1a9110a8d0ed4b775ec0eeb9591d156f6c3895513e798302c96"
+        },
+        {
+          "file": "SSB06030020.wav",
+          "duration_s": 3.02,
+          "rms_db": -23.6,
+          "sha256": "658213d27998b97d1e39576cb918a4236d84d49fe8ad6c43917e2ddf09712bc1"
+        },
+        {
+          "file": "SSB06030021.wav",
+          "duration_s": 5.46,
+          "rms_db": -25.2,
+          "sha256": "94ce9ecbf668713e2f7898259df9dce069ca5095905c2e17f5cc23f4bc3b75c8"
+        },
+        {
+          "file": "SSB06030022.wav",
+          "duration_s": 2.3,
+          "rms_db": -27.5,
+          "sha256": "bdb277a8ab592bbcc392ebb8c847e942fa9a780e976fd252fdafb86ed55b68cd"
+        },
+        {
+          "file": "SSB06030023.wav",
+          "duration_s": 2.54,
+          "rms_db": -26.7,
+          "sha256": "ea292932fb7aafbbc5d1673018ecdb1e7c78a6eab6d4a038a80442e3237422d6"
+        },
+        {
+          "file": "SSB06030024.wav",
+          "duration_s": 2.9,
+          "rms_db": -27.8,
+          "sha256": "0b2630ceff63b67dc6507da5cae64c9ce0da6552bd7ad0f2c25f58ed51d6b664"
+        },
+        {
+          "file": "SSB06030025.wav",
+          "duration_s": 2.4,
+          "rms_db": -28.7,
+          "sha256": "459b195268cfeedf2520d72bb26e1f212b4b8b7584d435825b9c90073038c445"
+        },
+        {
+          "file": "SSB06030026.wav",
+          "duration_s": 3.62,
+          "rms_db": -25.3,
+          "sha256": "dab29fe21c1a8f34d5ed8f7788a844961153a84974bcdbe5f20ecdf7d56f52dc"
+        }
+      ]
+    },
+    {
+      "speaker": "SSB0737",
+      "note": "D(>41) female north —— 样本量 489 条，年龄跨度",
+      "url_dir": "https://hf-mirror.com/datasets/AISHELL/AISHELL-3/resolve/main/train/wav/SSB0737",
+      "clips_ok": 23,
+      "clips_skipped": [
+        {
+          "file": "SSB07370005.wav",
+          "reason": "HTTP 404"
+        },
+        {
+          "file": "SSB07370007.wav",
+          "reason": "HTTP 404"
+        },
+        {
+          "file": "SSB07370021.wav",
+          "reason": "URLError"
+        }
+      ],
+      "total_s": 81.72,
+      "samplerate": 44100,
+      "files": [
+        {
+          "file": "SSB07370001.wav",
+          "duration_s": 6.77,
+          "rms_db": -35.9,
+          "sha256": "a1e0e98b6d4b0ab0d8d896c0098b15735019209c67d5151f9f9791040d84dc3b"
+        },
+        {
+          "file": "SSB07370002.wav",
+          "duration_s": 2.42,
+          "rms_db": -36.0,
+          "sha256": "49accec8512ad098dcfe8b005c111491044af57e53f729bb774023988dbe4eca"
+        },
+        {
+          "file": "SSB07370003.wav",
+          "duration_s": 4.01,
+          "rms_db": -35.9,
+          "sha256": "c50885b123f99d06a95371069bfaf26d95867066d5cb82c19df1bc78e0df6211"
+        },
+        {
+          "file": "SSB07370004.wav",
+          "duration_s": 3.41,
+          "rms_db": -36.8,
+          "sha256": "bb728b5b080a5bfc4941efa89db146cd63f6035ee0937c59e8be51defc38e34a"
+        },
+        {
+          "file": "SSB07370006.wav",
+          "duration_s": 1.79,
+          "rms_db": -39.1,
+          "sha256": "a5c7d59e7e5fc95b2728c568e8fdc31f1fc7ed7f55061ccf4be0b7eca32abeca"
+        },
+        {
+          "file": "SSB07370008.wav",
+          "duration_s": 2.96,
+          "rms_db": -38.3,
+          "sha256": "c5e0015e1870eeb3098812311dd467d554225b60f008bed4f1b4707c88eeea3e"
+        },
+        {
+          "file": "SSB07370009.wav",
+          "duration_s": 2.21,
+          "rms_db": -39.4,
+          "sha256": "9cd7321e2f90e0391393946b93ae8eb4c20aedc5888c1005f79216232b3cff67"
+        },
+        {
+          "file": "SSB07370010.wav",
+          "duration_s": 3.56,
+          "rms_db": -36.8,
+          "sha256": "940ace4bd6b8a6a9a4edb730b063da005236da6964f92955cd0ac6e6939851da"
+        },
+        {
+          "file": "SSB07370011.wav",
+          "duration_s": 4.52,
+          "rms_db": -36.1,
+          "sha256": "f35daf10e3671c2242443cb08eb7202e15aeafa0502f736ec8ce3cf396d6b34e"
+        },
+        {
+          "file": "SSB07370012.wav",
+          "duration_s": 3.11,
+          "rms_db": -39.5,
+          "sha256": "79e158633a5ccd69b83c19d1f6604f36b384dbc7b7c9defbdcc09cda4dc7c799"
+        },
+        {
+          "file": "SSB07370013.wav",
+          "duration_s": 4.73,
+          "rms_db": -32.5,
+          "sha256": "8903c747ec1ffe760abeff8ff134005e9bb9afde9494dff0af546c04947ba0e3"
+        },
+        {
+          "file": "SSB07370014.wav",
+          "duration_s": 3.203,
+          "rms_db": -35.5,
+          "sha256": "89591c2ab919c745952ee7aa9b0356a9866f5db6a6e1917f68a601335fef34c3"
+        },
+        {
+          "file": "SSB07370015.wav",
+          "duration_s": 3.59,
+          "rms_db": -36.0,
+          "sha256": "ed9b10c89cf4e692050c5b6980a42342edf9cd278c960aa0879b543f3ff967ff"
+        },
+        {
+          "file": "SSB07370016.wav",
+          "duration_s": 3.11,
+          "rms_db": -38.4,
+          "sha256": "1e7ceb52817f68373b7d56e415b2982455396228cb2e1ec081d4375c2a1271d2"
+        },
+        {
+          "file": "SSB07370017.wav",
+          "duration_s": 5.349,
+          "rms_db": -37.5,
+          "sha256": "1557a7747324dfe2ec74b5f6c6c24878eb64a5d26f983f1a0f4fc396b15e859f"
+        },
+        {
+          "file": "SSB07370018.wav",
+          "duration_s": 2.518,
+          "rms_db": -37.9,
+          "sha256": "2eb34aaa0075b62f32f393ca614169baf5e33e8c9ff816d68e0b381722815183"
+        },
+        {
+          "file": "SSB07370019.wav",
+          "duration_s": 2.659,
+          "rms_db": -38.0,
+          "sha256": "7b73a0197f0f02929ed567a98d44d7c637cb930e3ff7101c274e1466e2392f36"
+        },
+        {
+          "file": "SSB07370020.wav",
+          "duration_s": 2.466,
+          "rms_db": -33.5,
+          "sha256": "219150520e76dc0e5e2e74ba1e4dc2f9a375119e719dbc353affa615c0fa4d45"
+        },
+        {
+          "file": "SSB07370022.wav",
+          "duration_s": 1.76,
+          "rms_db": -41.0,
+          "sha256": "4cbe3deeb783063224f1a7e2eb3c9a0486323db50bda96680fed8b1da1184b55"
+        },
+        {
+          "file": "SSB07370023.wav",
+          "duration_s": 2.84,
+          "rms_db": -39.7,
+          "sha256": "cebc9bdb84a15393aed355ba77c19e92663406144d1da90b2bc69f4f64589258"
+        },
+        {
+          "file": "SSB07370024.wav",
+          "duration_s": 2.99,
+          "rms_db": -35.9,
+          "sha256": "b7d71c35be423b96c9227aad96ee80f80a324d7f44f510f5a804d4822e65be88"
+        },
+        {
+          "file": "SSB07370025.wav",
+          "duration_s": 3.08,
+          "rms_db": -30.6,
+          "sha256": "da81e3ccbfd1b0332ea457fe0cf8bf91b3f998da8694235c71d86358c629c725"
+        },
+        {
+          "file": "SSB07370026.wav",
+          "duration_s": 1.76,
+          "rms_db": -38.0,
+          "sha256": "aced453b14bf4c009ce225f6e866b6ea5aa6f76e2348a8ab4f2fdcf9b7683dde"
+        }
+      ]
+    }
+  ],
+  "note": "同一说话人、同一次录制的多条拼接 —— 保住同一说话人/麦/房间，丢掉'同一条 take'，故只能作链路与趋势验证",
+  "usage_limits": [
+    "可用于：链路验证与趋势观察（评测矩阵能跑满、指标能测出）。",
+    "不可用于：当作**被试数据** —— 没有知情同意流程，说话人也不是职业用嗓人群。",
+    "不可用于：ABX 相似度对照（语料里没有本项目复现文本的真实录音，缺 truth/）。",
+    "不可用于：任何训练集（袋鼠音素材铁律），也不得再分发原始音频。",
+    "报结论时必须写明来源与许可，并标注「公开许可语料，非被试」。"
+  ]
+}

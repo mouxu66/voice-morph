@@ -730,6 +730,25 @@ class TestSplitCommand:
             assert dev <= ve.ALIGN_MAX_DEVIATION + 1e-6, t
             assert t["bytes"] > 0
 
+    def test_per_speaker_split_log_is_kept(self, tmp_path):
+        """★ 实验级 `split.json` 是单说话人的：第二个人 split 时就把第一个覆盖掉。
+
+        2026-10-08 实测（pilotC 三人依次切档）：跑完只剩最后一个人的切点与静音观测，
+        而协议 §4.3 要求「切点留档」——切点丢了就追溯不了自变量当时到底是多少。
+        所以逐说话人另存一份；旧文件行为不变（仍是最后一次的）。
+        """
+        for sp in ("s01", "s02"):
+            src = _write_speech_like(tmp_path / f"{sp}.wav", segments=20,
+                                     seg_s=3.0, gap_s=0.5)
+            res = ve.split("e1", [sp], src, root=tmp_path, durations=[3.0, 10.0, 30.0, 60.0])
+            assert res.get("error") is None, res
+        per = tmp_path / "e1" / "split"
+        assert (per / "s01.json").exists() and (per / "s02.json").exists()
+        legacy = json.loads((tmp_path / "e1" / "split.json").read_text("utf-8"))
+        assert legacy["tiers"] == json.loads((per / "s02.json").read_text("utf-8"))["tiers"]
+        assert legacy["speaker"] == "s02"          # 旧文件仍是「最后一次」
+        assert json.loads((per / "s01.json").read_text("utf-8"))["speaker"] == "s01"
+
     def test_refuses_more_than_one_speaker(self, tmp_path):
         """★ 一条录音只能属于一个人 —— 写多个人就是复制同一份音频当多个被试。"""
         src = _write_speech_like(tmp_path / "rec.wav")

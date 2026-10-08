@@ -171,6 +171,17 @@ electron-builder 配置（`files` + `extraResources`）推出**真实打包面**
 | 袋鼠音色 / 自训模型（`logs/kangaroo_v2*`） | 项目自有，素材为**自录** | 与 §4.3 一致 |
 | 未接入的选型候选 | 见 `docs/product/research/m1e_语音模型选型调研_2026-09-14.md` §4 | IndexTTS2 = bilibili Model Use License（免版税可用；**§3.4(c) 不得用于改进其他 AI 模型**） |
 
+## 3.5 评测语料（运行时获取，不入仓库）
+
+> 与 §3 同性质：**本体不入库**，仓库里只留**统计结果 + 来源记录**（许可是署名义务，
+> 所以来源必须留；音频不留在仓库里 —— 既避免再分发，也避开 §4.3 那类素材引战）。
+
+| 语料 | 许可 | 说明 |
+|---|---|---|
+| **AISHELL-3**（嗓音保存评测 pilotC） | **Apache-2.0**（允许商用与演绎，署名即可；一手出处 <https://www.openslr.org/93/>，2026-10-08 核对） | 抓取与拼接走 `tools/voicebank_fetch_public.py`（**许可白名单是机器门禁**：写 `CC-BY-NC-ND` 之类直接拒绝执行）；本体落 `media/vocals/public_pilot/`（gitignore，**不入库、不入任何训练集、不再分发**）；入库的是 `docs/大创申报-2026-10/pilotC-公开语料证据/`（README + SOURCES.json + 统计与矩阵）。★ 引用其结论时必须写明来源与许可，并标注「公开许可语料，非被试」 |
+| ~~ST-CMDS~~ | CC BY-**NC-ND** 4.0 | ❌ **不可用**：NC 禁商用 + ND 禁演绎（切档/拼接就是演绎）—— 留档提醒「看起来免费的语料」也可能是这类 |
+| ~~B 站 / 影视 / 播客下载~~ | 无授权链 | ❌ 只能像 `outputs/voicebank/pilotB` 那样做**本机链路验证**，不得进任何结论、不得入库（与 §4.3 同一条红线） |
+
 ## 4 红线（违反即违规，改动前先看）
 
 1. **不得把 NC / Research License 权重打进任何发行物**（F5-TTS 权重 CC-BY-NC-4.0、MaskGCT / Llasa / E2、OpenAudio S1-mini NC-SA、Spark-TTS BY-NC-SA、XTTS-v2 CPML…）。清单见 m1e 报告 §4。「代码 MIT」≠「权重能用」。

@@ -1,0 +1,144 @@
+{
+  "exp": "pilotC",
+  "root": "D:\\变声\\outputs\\voicebank\\pilotC",
+  "error": null,
+  "error_stage": null,
+  "notes": [],
+  "rq1": {
+    "emb_sim": {
+      "direction": "higher_better",
+      "by_duration": {
+        "3s": 0.9815,
+        "10s": 0.9843,
+        "30s": 0.9854,
+        "60s": 0.9854
+      },
+      "saturation": {
+        "status": "saturated",
+        "duration_s": 30.0,
+        "duration_tag": "30s",
+        "gain_fraction": 0.0,
+        "note": null
+      }
+    },
+    "hnr": {
+      "direction": "higher_better",
+      "by_duration": {
+        "3s": 13.031,
+        "10s": 12.4225,
+        "30s": 12.3125,
+        "60s": 12.241
+      },
+      "saturation": null
+    },
+    "h1_h2": {
+      "direction": "lower_better",
+      "by_duration": {
+        "3s": 6.936,
+        "10s": 10.61,
+        "30s": 7.832,
+        "60s": 6.7865
+      },
+      "saturation": {
+        "status": "non_monotonic",
+        "duration_s": null,
+        "duration_tag": null,
+        "gain_fraction": null,
+        "note": "指标随档位非单调（出现回退），饱和点不可判定"
+      }
+    },
+    "spectral_tilt": {
+      "direction": "higher_better",
+      "by_duration": {
+        "3s": -7.2145,
+        "10s": -7.233,
+        "30s": -7.508,
+        "60s": -7.214
+      },
+      "saturation": {
+        "status": "non_monotonic",
+        "duration_s": null,
+        "duration_tag": null,
+        "gain_fraction": null,
+        "note": "指标随档位非单调（出现回退），饱和点不可判定"
+      }
+    },
+    "jitter_local": {
+      "direction": "lower_better",
+      "by_duration": {
+        "3s": 2.0925,
+        "10s": 2.0057,
+        "30s": 2.0303,
+        "60s": 2.0717
+      },
+      "saturation": {
+        "status": "non_monotonic",
+        "duration_s": null,
+        "duration_tag": null,
+        "gain_fraction": null,
+        "note": "指标随档位非单调（出现回退），饱和点不可判定"
+      }
+    },
+    "shimmer_local": {
+      "direction": "lower_better",
+      "by_duration": {
+        "3s": 10.0216,
+        "10s": 10.257,
+        "30s": 9.7593,
+        "60s": 10.1056
+      },
+      "saturation": null
+    },
+    "asr_overlap": {
+      "direction": "higher_better",
+      "by_duration": {},
+      "saturation": null
+    }
+  },
+  "rq2": {
+    "cross": {
+      "emb_sim": 0.9837,
+      "hnr": 12.013,
+      "h1_h2": 7.755,
+      "spectral_tilt": -8.1635,
+      "jitter_local": 2.0629,
+      "shimmer_local": 9.97,
+      "asr_overlap": null
+    },
+    "emotion": {
+      "emb_sim": 0.9851,
+      "hnr": 12.611,
+      "h1_h2": 4.6635,
+      "spectral_tilt": -7.218,
+      "jitter_local": 1.999,
+      "shimmer_local": 9.856,
+      "asr_overlap": null
+    },
+    "long": {
+      "emb_sim": 0.9887,
+      "hnr": 12.7395,
+      "h1_h2": 7.1365,
+      "spectral_tilt": -7.3385,
+      "jitter_local": 2.1246,
+      "shimmer_local": 10.3476,
+      "asr_overlap": null
+    },
+    "same": {
+      "emb_sim": 0.9821,
+      "hnr": 12.332,
+      "h1_h2": 9.8235,
+      "spectral_tilt": -6.819,
+      "jitter_local": 2.0937,
+      "shimmer_local": 10.1065,
+      "asr_overlap": null
+    }
+  },
+  "rq3": {
+    "subjective_rows": 0,
+    "matched": 0,
+    "correlations": {}
+  },
+  "n_samples": 48,
+  "measured": 48,
+  "errors": 0
+}

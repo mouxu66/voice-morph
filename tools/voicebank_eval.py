@@ -705,6 +705,11 @@ def split(exp: str, speakers: list[str], source: Path, *,
     res["silence_spans"] = [[round(s, 3), round(e, 3)] for s, e in silences]
     # 切完把「实际用了什么切点」落盘 —— 复现结论时要能查到自变量到底是多少
     _write_json(base / "split.json", dict(res))
+    # ★ 实验级 `split.json` 是**单说话人**的：第二个说话人 split 时就把第一个覆盖掉了。
+    # 2026-10-08 实测（pilotC，3 人依次切档）：跑完只剩最后一个人的切点与静音观测，
+    # 另两人的切点丢了 —— 而协议 §4.3 要求「切点留档」。所以逐说话人另存一份；
+    # 实验级那个文件保持原样，不破既有消费方。
+    _write_json(base / "split" / f"{speaker}.json", dict(res))
     return res
 
 
@@ -1508,7 +1513,7 @@ def main():
             print(f"[split] {t['tag']:>4s} 档 → 实际 {t['actual_s']:6.2f}s  "
                   f"（切点 {t['cut_s']:6.2f}s，{flag}）  {t['bytes']//1024}KB")
         print(f"[split] 落盘: {res['root']}/refs/{res['speaker']}/  "
-              f"＋ split.json（切点留档）")
+              f"＋ split.json 与 split/{res['speaker']}.json（切点留档）")
 
     elif args.cmd == "measure":
         res = measure(args.exp, root=root, with_emb=args.with_emb, with_asr=args.with_asr)

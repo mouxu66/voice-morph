@@ -1,0 +1,18 @@
+{
+  "corpus": "AISHELL-3",
+  "license": "Apache-2.0",
+  "license_source": "https://www.openslr.org/93/",
+  "license_verified_at": "2026-10-08",
+  "license_page_quote": "License: Apache License v.2.0",
+  "attribution": "AISHELL-3: A Multi-speaker Mandarin TTS Corpus and the Baselines (Shi et al., 2020), Beijing Shell Shell Technology Co.,Ltd. Retrieved via the official HF mirror of the AISHELL/AISHELL-3 dataset.",
+  "base_url": "https://hf-mirror.com/datasets/AISHELL/AISHELL-3/resolve/main",
+  "split": "train",
+  "clips_per_speaker": 26,
+  "gap_ms": 300,
+  "why_stitched": "AISHELL-3 单条 3-10s，凑不出 60s 档；同一说话人、同一次录制的多条拼接保住「同一说话人/同一麦/同一房间」，丢掉「同一条 take」——只能支撑链路与趋势验证，不能当被试数据",
+  "speakers": [
+    {"id": "SSB0033", "note": "B(14-25) female south —— 样本量 498 条"},
+    {"id": "SSB0603", "note": "B(14-25) male north —— 样本量 489 条"},
+    {"id": "SSB0737", "note": "D(>41) female north —— 样本量 489 条，年龄跨度"}
+  ]
+}

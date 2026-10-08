@@ -190,6 +190,10 @@ FAST_TESTS = [
     # 两轮真人试跑就在眼前，这种错必须在提交那一刻被拦住。
     "m2_server/tests/test_voicebank_synth.py",
     "m2_server/tests/test_voicebank_eval.py",
+    # 公开许可语料抓取（约 3s，纯举 HTTP）：这一层守的是**合规**，而合规的失效方式
+    # 恰恰是"跑得通"—— NC/ND 语料照样能下能拼能出漂亮报告，等到被问许可才炸；
+    # 另一条是把公开语料落进训练集（袋鼠音素材铁律，事后不可撤销）。
+    "m2_server/tests/test_voicebank_fetch_public.py",
 ]
 
 
