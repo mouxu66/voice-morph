@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """发声负荷测量 —— 把「用嗓减负」从口号变成可测指标（大创减负实测层，2026-10-09）。
 
 一句话
@@ -174,6 +173,160 @@ def synth_duration(path: Path) -> dict:
     return {"file": str(path), "total_s": round(dur, 3)}
 
 
+# ---------------- 批量收集（多人 pilot：一人一个目录，一条命令出总表） ----------------
+
+#: 电平警戒线（**警告行，不是否决行**：测量结果照实报，但汇总表必须能看见）。
+#: 录音协议 §4.1 要求峰值 ≤ −3 dBFS 留 headroom；太低则可能被自适应门限
+#: 整段吞成"没发声" → 占空比假低 → **节省率假高**（协议 §3.2 低电平陷阱）。
+LEVEL_WARN_HIGH_DBFS = -3.0
+LEVEL_WARN_LOW_DBFS = -18.0
+
+A_BASENAME = "lesson_A.wav"   # A 侧固定名：本人全程口播
+B_GLOB = "retake_*.wav"       # B 侧：本人在旁白流程里的开口录音（可多条）
+SYNTH_NAME = "synth.wav"      # 可选：合成旁白成品（只记时长）
+
+
+def level_flags(peak_dbfs: float) -> list[str]:
+    """电平警戒。只标记不拦截 —— 拦截该发生在录音现场，测量只负责如实报。"""
+    f: list[str] = []
+    if peak_dbfs > LEVEL_WARN_HIGH_DBFS:
+        f.append(f"峰值 {peak_dbfs}dBFS 高于 {LEVEL_WARN_HIGH_DBFS}（疑似贴满量程，防削波 headroom 不足）")
+    if peak_dbfs < LEVEL_WARN_LOW_DBFS:
+        f.append(f"峰值 {peak_dbfs}dBFS 低于 {LEVEL_WARN_LOW_DBFS}（疑似低电平，会被门限吞成假占空比 → 节省率假高）")
+    return f
+
+
+def collect_subjects(root: Path, *, noise_db: float | None = None,
+                     min_silence_s: float = PHONATION_MIN_SILENCE_S) -> list[dict]:
+    """扫描 root 下的被试子目录，逐人跑 A/B 测量并汇总。
+
+    目录约定（缺什么都**标记不吞**——批量工具不能因为一人数据不齐就静默丢人）：
+        <root>/<被试>/lesson_A.wav    A 侧本人全程口播（固定名）
+        <root>/<被试>/retake_*.wav    B 侧本人开口录音（补录/重录，可多条）
+        <root>/<被试>/synth.wav       可选：合成旁白成品
+    单个文件测量失败不阻断其他被试，但该行 flags 会写明原因。
+    """
+    root = Path(root)
+    subs = sorted(p for p in root.iterdir() if p.is_dir()) if root.exists() else []
+    if not subs:
+        raise FileNotFoundError(
+            f"{root} 下没有被试子目录。约定：<root>/s01/lesson_A.wav + retake_*.wav"
+            f"（+ 可选 synth.wav），一人一个目录")
+    rows: list[dict] = []
+    for sub in subs:
+        flags: list[str] = []
+        a_stats = None
+        a_path = sub / A_BASENAME
+        if not a_path.exists():
+            flags.append(f"缺 {A_BASENAME}（A 侧是节省率分母，缺了就没有节省率可言）")
+        else:
+            try:
+                a_stats = phonation_stats(a_path, noise_db=noise_db,
+                                          min_silence_s=min_silence_s)
+                flags.extend(level_flags(a_stats["peak_dbfs"]))
+            except Exception as exc:  # noqa: BLE001  一人失败不拖垮整批
+                flags.append(f"A 侧测量失败：{exc}")
+
+        b_stats: list[dict] = []
+        b_paths = sorted(sub.glob(B_GLOB))
+        if not b_paths:
+            flags.append(f"无 {B_GLOB}（B 侧开口 0 条——若流程里真的没开口，按协议 §8 "
+                         f"如实写「本人口腔发声 0 分钟」，别写成零负担；写稿/审听成本是真实的）")
+        for bp in b_paths:
+            try:
+                st = phonation_stats(bp, noise_db=noise_db, min_silence_s=min_silence_s)
+                b_stats.append(st)
+                flags.extend(f"B({bp.name})：{m}" for m in level_flags(st["peak_dbfs"]))
+            except Exception as exc:  # noqa: BLE001
+                flags.append(f"B 侧 {bp.name} 测量失败：{exc}")
+
+        saving = compare_load(a_stats, b_stats)["saving"] \
+            if (a_stats is not None and b_stats) else None
+        syn_path = sub / SYNTH_NAME
+        syn = synth_duration(syn_path) if syn_path.exists() else None
+        rows.append({"subject": sub.name, "a": a_stats, "b": b_stats,
+                     "synth": syn, "saving": saving, "flags": flags})
+    return rows
+
+
+def write_summary_csv(rows: list[dict], csv_path: str | Path) -> Path:
+    """全员汇总 CSV（utf-8-sig，Excel 直开）。节省率不做跨人平均 —— n 小不外推。"""
+    import csv
+
+    cols = ["subject", "a_total_s", "a_phonation_s", "a_duty_cycle", "a_longest_s",
+            "n_b_files", "b_total_s", "b_phonation_s", "b_longest_s",
+            "saving_s", "saving_rate", "peak_a_dbfs", "min_peak_b_dbfs", "flags"]
+    out = Path(csv_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.writer(fh)
+        w.writerow(cols)
+        for r in rows:
+            a, sv = r["a"], r["saving"]
+            peaks_b = [s["peak_dbfs"] for s in r["b"]] or [None]
+            w.writerow([
+                r["subject"],
+                a["total_s"] if a else "",
+                a["phonation_s"] if a else "",
+                a["duty_cycle"] if a else "",
+                a["longest_continuous_s"] if a else "",
+                len(r["b"]),
+                round(sum(s["total_s"] for s in r["b"]), 3) if r["b"] else "",
+                round(sum(s["phonation_s"] for s in r["b"]), 3) if r["b"] else "",
+                max((s["longest_continuous_s"] for s in r["b"]), default="") if r["b"] else "",
+                sv["saving_s"] if sv else "",
+                sv["saving_rate"] if sv else "",
+                a["peak_dbfs"] if a else "",
+                min(p for p in peaks_b if p is not None) if any(
+                    p is not None for p in peaks_b) else "",
+                "；".join(r["flags"]),
+            ])
+    return out
+
+
+def write_summary_md(rows: list[dict], md_path: str | Path) -> Path:
+    """Markdown 总表 —— 数字直接照申报书模板（协议 §9）往里抄。"""
+    out = Path(md_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# 发声负荷 pilot 汇总（voice_load collect）",
+        "",
+        "口径：能量法（ffmpeg silencedetect 自适应门限），测发声活动时长非生理 "
+        "phonation time；A 侧为分母，A 缺失/为 0 时节省率不定义。",
+        "",
+        "| 被试 | A 发声 | A 占空比 | B 发声（本人开口） | 节省 | 节省率 | 最长连续 A→B | 备注 |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        a, sv = r["a"], r["saving"]
+        b_ph = sum(s["phonation_s"] for s in r["b"])
+        a_ph = a["phonation_s"] if a else None
+        lines.append(
+            f"| {r['subject']} | {_fmt_dur(a_ph) if a_ph is not None else '—'}"
+            f" | {_pct(a['duty_cycle']) if a else '—'}"
+            f" | {_fmt_dur(b_ph)}"
+            f" | {_fmt_dur(sv['saving_s']) if sv else '—'}"
+            f" | {_pct(sv['saving_rate']) if sv else '—'}"
+            f" | {_fmt_dur(sv['a_longest_continuous_s']) if sv else '—'}→"
+            f"{_fmt_dur(sv['b_longest_continuous_s']) if sv else '—'}"
+            f" | {'；'.join(r['flags']) or '—'} |")
+    lines += ["", "> 警戒行仅标记电平/缺件，测量值照实报；结论口径与红线见 docs/减负实测协议.md。"]
+    out.write_text("\n".join(lines), encoding="utf-8")
+    return out
+
+
+def print_subject(r: dict) -> None:
+    a, sv = r["a"], r["saving"]
+    b_ph = sum(s["phonation_s"] for s in r["b"])
+    print(f"[{r['subject']}] "
+          f"A 发声 {_fmt_dur(a['phonation_s']) if a else '—（缺 lesson_A.wav）'}"
+          f" / 占空比 {_pct(a['duty_cycle']) if a else '—'}"
+          f" → B 发声 {_fmt_dur(b_ph)}"
+          f"  节省 {_pct(sv['saving_rate']) if sv else '—'}")
+    for m in r["flags"]:
+        print(f"  ⚠ {m}")
+
+
 # ---------------- 输出 ----------------
 
 def _fmt_dur(s: float) -> str:
@@ -233,6 +386,13 @@ def main(argv: list[str] | None = None) -> int:
     p_c.add_argument("--synth", default=None, help="合成旁白成品（可选，只记时长）")
     _add_common(p_c)
 
+    p_k = sub.add_parser("collect", help="批量收集：一人一个子目录，汇总全员节省率")
+    p_k.add_argument("--root", required=True,
+                     help=f"被试根目录（约定：<root>/s01/{A_BASENAME} + {B_GLOB}，可选 {SYNTH_NAME}）")
+    p_k.add_argument("--csv", default=None, help="汇总 CSV 输出路径（utf-8-sig，Excel 直开）")
+    p_k.add_argument("--md", default=None, help="Markdown 总表输出路径（数字照抄进申报书）")
+    _add_common(p_k)
+
     args = ap.parse_args(argv)
     try:
         if args.cmd == "measure":
@@ -242,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
                 print_stats("测量", st)
             _write_json({"tool": "voice_load", "params": _params(args),
                          "files": stats}, args.json)
-        else:
+        elif args.cmd == "compare":
             a = phonation_stats(Path(args.a), noise_db=args.noise_db,
                                 min_silence_s=args.min_silence)
             b = [phonation_stats(Path(w), noise_db=args.noise_db,
@@ -252,6 +412,17 @@ def main(argv: list[str] | None = None) -> int:
             print_compare(res)
             _write_json({"tool": "voice_load", "params": _params(args),
                          **res}, args.json)
+        else:  # collect
+            rows = collect_subjects(Path(args.root), noise_db=args.noise_db,
+                                    min_silence_s=args.min_silence)
+            for r in rows:
+                print_subject(r)
+            if args.csv:
+                print(f"  [CSV 已落盘] {write_summary_csv(rows, args.csv)}")
+            if args.md:
+                print(f"  [MD 已落盘] {write_summary_md(rows, args.md)}")
+            _write_json({"tool": "voice_load", "params": _params(args),
+                         "subjects": rows}, args.json)
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
         print(f"[voice_load] {exc}", file=sys.stderr)
         return 2

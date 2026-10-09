@@ -148,3 +148,76 @@ class TestCli:
     def test_cli_error_is_reported_not_crash(self, tmp_path):
         rc = vl.main(["measure", str(tmp_path / "nope.wav")])
         assert rc == 2
+
+
+class TestCollect:
+    """批量收集：一人一个目录，缺件/电平问题必须出现在 flags 里（标记不吞）。"""
+
+    def _make_subject(self, root: Path, name: str, *, a_segments=SEG_PATTERN,
+                      a_amp: float = 0.4, b_amps: tuple = (0.4,),
+                      b_durs=(2.0,), with_a: bool = True) -> Path:
+        sub = root / name
+        sub.mkdir(parents=True, exist_ok=True)
+        if with_a:
+            _write_wav(sub / vl.A_BASENAME, a_segments, amp=a_amp)
+        amps = list(b_amps) + [0.4] * (len(b_durs) - len(b_amps))  # zip 不会截断条数
+        for i, (dur, amp) in enumerate(zip(b_durs, amps), 1):
+            _write_wav(sub / f"retake_{i:02d}.wav", [(0.0, dur)],
+                       total=max(dur, 0.5), amp=amp)
+        return sub
+
+    def test_savings_across_subjects(self, tmp_path, ffmpeg_bin):
+        root = tmp_path / "pilot"
+        self._make_subject(root, "s01")                                   # A 6s / B 2s
+        self._make_subject(root, "s02", b_durs=(1.0, 1.0))                # A 6s / B 2s
+        rows = vl.collect_subjects(root)
+        assert [r["subject"] for r in rows] == ["s01", "s02"]
+        assert rows[0]["saving"]["saving_rate"] == pytest.approx(4.0 / 6.0, abs=0.08)
+        assert rows[1]["saving"]["b_phonation_s"] == pytest.approx(2.0, abs=0.5)
+        assert rows[0]["flags"] == [] and rows[1]["flags"] == []
+
+    def test_missing_a_is_flagged_not_dropped(self, tmp_path, ffmpeg_bin):
+        root = tmp_path / "pilot"
+        self._make_subject(root, "s03", with_a=False)
+        rows = vl.collect_subjects(root)
+        assert rows[0]["saving"] is None          # 缺分母 → 没有节省率，不给假数
+        assert any("缺" in f for f in rows[0]["flags"])
+
+    def test_no_b_recordings_flagged(self, tmp_path, ffmpeg_bin):
+        root = tmp_path / "pilot"
+        self._make_subject(root, "s04", b_durs=())
+        rows = vl.collect_subjects(root)
+        assert rows[0]["saving"] is None
+        assert any("无 retake" in f for f in rows[0]["flags"])
+
+    def test_low_and_high_level_flagged(self, tmp_path, ffmpeg_bin):
+        root = tmp_path / "pilot"
+        self._make_subject(root, "s05", b_amps=(0.005,))   # ≈ −46 dBFS 低电平
+        self._make_subject(root, "s06", a_amp=1.0)          # ≈ 0 dBFS 贴满量程
+        rows = vl.collect_subjects(root)
+        assert any("低电平" in f for f in rows[0]["flags"])
+        assert any("贴满量程" in f for f in rows[1]["flags"])
+        # 警戒行不拦截：测量值照实给出
+        assert rows[0]["saving"]["saving_rate"] is not None
+
+    def test_cli_writes_csv_md_json(self, tmp_path, ffmpeg_bin):
+        root = tmp_path / "pilot"
+        self._make_subject(root, "s01")
+        csv_out, md_out, json_out = (tmp_path / "sum.csv", tmp_path / "sum.md",
+                                     tmp_path / "sum.json")
+        rc = vl.main(["collect", "--root", str(root), "--csv", str(csv_out),
+                      "--md", str(md_out), "--json", str(json_out)])
+        assert rc == 0
+        lines = csv_out.read_text(encoding="utf-8-sig").strip().splitlines()
+        assert lines[0].startswith("subject,")
+        assert len(lines) == 2                       # 表头 + 1 名被试
+        assert "0.6" in lines[1]                     # s01 节省率 ≈ 0.667
+        md = md_out.read_text(encoding="utf-8")
+        assert "| s01 |" in md and "节省率" in md
+        data = json.loads(json_out.read_text(encoding="utf-8"))
+        assert data["params"]["min_silence_s"] == vl.PHONATION_MIN_SILENCE_S
+        assert data["subjects"][0]["saving"]["saving_rate"] is not None
+
+    def test_empty_root_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            vl.collect_subjects(tmp_path / "nothing")
