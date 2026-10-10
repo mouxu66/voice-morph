@@ -27,7 +27,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
 # ---------------- 工具 ----------------
 
 def _mk_pptx(slides: dict[int, str | None], bodies: dict[int, str] | None = None) -> bytes:
@@ -93,8 +92,8 @@ def fake_tts(monkeypatch):
     返回可调的 calls 计数器 + kwargs 记录（style_ref 透传就靠它断言，
     只数调用次数看不出"参数到底传没传"）。
     """
-    import soundfile as sf
     import numpy as np
+    import soundfile as sf
 
     state = {"calls": 0, "boom": "", "kwargs": []}
 
@@ -371,6 +370,79 @@ class TestRunSynthesis:
         # 非法音色
         r = client.post("/api/course/run", json={"pages": [{"page": 1, "text": "x"}], "voice_id": "nope"})
         assert r.status_code == 400
+
+
+# ---------------- PCM → AudioSegment 位级保真（2026-10-10 电音修复） ----------------
+
+class TestPcmToSegment:
+    """float32 PCM 必须经 int16 进 pydub。
+
+    旧写法 `AudioSegment(pcm.tobytes(), sample_width=4)` 把 float32 字节当 int32
+    样本逐位重解释：幅值 >0.06 的样本全被挤到 int32 满幅区（±0.47~0.496），波形
+    变成近似方波 → 录课成片全程"刺耳电音"（三页 peak 全为 -4.997549 dB、
+    RMS -6.4 dB、Flat factor ≈ 9.8；对照有声书 PCM_16 产物 Flat=0）。
+    修复用波形保真钉死：导出读回必须与源高度相关；旧写法必须不通过（对照钉子）。
+    """
+
+    @staticmethod
+    def _sine():
+        import numpy as np
+
+        sr = 24000
+        t = np.arange(sr) / sr
+        return (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+
+    def test_float32_roundtrip_is_faithful(self, tmp_path):
+        import numpy as np
+        import soundfile as sf
+
+        pcm = self._sine()
+        seg = course_api._pcm_to_segment(pcm, 24000)
+        out = tmp_path / "seg.wav"
+        seg.export(str(out), format="wav")
+        y, sr = sf.read(str(out), dtype="float32")
+        assert sr == 24000
+        # 峰值保真 + 波形保真（正负交替不被漂移）
+        assert abs(float(np.abs(y).max()) - float(np.abs(pcm).max())) < 0.01
+        assert abs(float(y.mean())) < 0.05
+        assert np.corrcoef(y, pcm)[0, 1] > 0.99
+
+    def test_old_bytes_misread_would_fail(self):
+        """对照钉子：旧写法（float32 字节直接 sample_width=4）样本被挤到满幅区。
+
+        用中位幅值断言而不是相关系数 —— IEEE754 位模式与数值单调对应，相关系数
+        不会掉到 0，但分布会被整体抬进满幅区（|y| 中位 ≈0.48 vs 源 ≈0.21），
+        这正是"电音"的物理形态。
+        """
+        import io
+
+        import numpy as np
+        import soundfile as sf
+        from pydub import AudioSegment
+
+        pcm = self._sine()
+        assert float(np.median(np.abs(pcm))) < 0.3
+        bad = AudioSegment(
+            pcm.tobytes(), frame_rate=24000, sample_width=pcm.dtype.itemsize, channels=1
+        )
+        buf = io.BytesIO()
+        bad.export(buf, format="wav")
+        buf.seek(0)
+        y, _ = sf.read(buf, dtype="float32")
+        assert float(np.median(np.abs(y[: len(pcm)]))) > 0.4
+
+    def test_int16_input_passes_through(self, tmp_path):
+        """已是 int16 的输入不做二次转换（链路兼容：worker 未来改吐 int16 也不坏）。"""
+        import numpy as np
+        import soundfile as sf
+
+        pcm16 = (self._sine() * 32767).astype(np.int16)
+        seg = course_api._pcm_to_segment(pcm16, 24000)
+        out = tmp_path / "seg16.wav"
+        seg.export(str(out), format="wav")
+        y, sr = sf.read(str(out), dtype="float32")
+        assert sr == 24000
+        assert np.corrcoef(y, pcm16.astype(np.float32) / 32767.0)[0, 1] > 0.99
 
 
 # ---------------- 风格参考 ICL（有情绪版旁白，2026-10-08 接入） ----------------

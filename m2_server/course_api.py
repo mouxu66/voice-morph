@@ -255,6 +255,27 @@ def _page_url(job_name: str, page: int) -> str:
     return f"/api/media/outputs/{job_name}/page_{page:03d}.wav"
 
 
+def _pcm_to_segment(pcm, sr: int):
+    """float32 PCM → pydub AudioSegment（经 int16 落地，内存内完成）。
+
+    为什么必须转：pydub 的 `sample_width` 只认**整数**字节宽，把 float32 的字节
+    直接按 `sample_width=4` 灌进去会被当 **int32 样本**逐位重解释 —— 低幅值的
+    float 位模式（0x3B~0x3F…）恰好落在 int32 满幅区，波形变成近似方波的数字
+    噪音，听感就是"刺耳电音"。2026-10-10 录课成片实测：三页 peak 全为
+    -4.997549 dB、RMS -6.4 dB、Flat factor ≈ 9.8（对照有声书 PCM_16 产物
+    Flat=0）。有声书链路是先 `sf.write(..., subtype="PCM_16")` 再 `from_wav`，
+    天然正确；这里做同样的事但不落盘。clip 只防 int16 回绕爆音，不放大、不归一。
+    """
+    import numpy as np
+    from pydub import AudioSegment
+
+    x = np.asarray(pcm)
+    if x.dtype != np.int16:
+        x = np.clip(x.astype(np.float32), -1.0, 1.0)
+        x = (x * 32767.0).astype(np.int16)
+    return AudioSegment(x.tobytes(), frame_rate=int(sr), sample_width=2, channels=1)
+
+
 def _course_worker(
     job_dir,
     job_name: str,
@@ -265,11 +286,10 @@ def _course_worker(
     style_ref_text: str = "",
 ) -> None:
     """合成 run_pages 里的每一页（其余页的 state 原样保留 —— retry 只跑失败页的落点）。"""
+    import audiobook as ab  # 函数内延迟：可关插件不做模块级依赖（见模块注释）
     import soundfile as sf
     from pydub import AudioSegment
     from qwen3_tts import tts as qwen_tts
-
-    import audiobook as ab  # 函数内延迟：可关插件不做模块级依赖（见模块注释）
 
     ref = voice_ref(voice_id)[0]
     gap = AudioSegment.silent(duration=gap_ms, frame_rate=24000)
@@ -301,7 +321,7 @@ def _course_worker(
             err = ""
             url = ""
             dur = 0.0
-            for attempt in range(1, _PAGE_ATTEMPTS + 1):
+            for _attempt in range(1, _PAGE_ATTEMPTS + 1):
                 try:
                     pieces = []
                     for si, sent in enumerate(sents):
@@ -309,9 +329,7 @@ def _course_worker(
                         pcm, sr = ab._synth_pieces(
                             texts, after, qwen_tts, ref, voice_id, **style_kw
                         )
-                        seg = AudioSegment(
-                            pcm.tobytes(), frame_rate=sr, sample_width=pcm.dtype.itemsize, channels=1
-                        )
+                        seg = _pcm_to_segment(pcm, sr)
                         pieces.append(seg)
                         if si < len(sents) - 1:
                             pieces.append(gap)
@@ -408,7 +426,6 @@ async def course_run(req: CourseRunRequest):
             style_ref, style_ref_text = str(sref), srtext
 
         import session_out  # noqa: F401 —— 会话目录语义的统一入口（本任务产物落 outputs 根子目录）
-
         from config import OUTPUTS_DIR
 
         stamp = int(time.time() * 1000)
