@@ -50,6 +50,29 @@ def _get_diar():
     return _DIAR
 
 
+def sv_cached() -> bool:
+    """CAM++ SV 权重**是否已在本机缓存**（`modelscope` 缓存根下的 `models/` 目录）。
+
+    ★ 调用方拿它决定「**要不要真的去算声纹**」：权重没缓存时 `pipeline(...)` 会**联网
+    下载**（~30MB + 首次拉配置）—— 在随访上传 / 质检这类**用户请求里的加分项**上
+    悄悄联网，断网机会直接失败、离线机上还会卡住主流程。所以没缓存就如实跳过，
+    由调用方降级成「未测」（未测 ≠ 不合格）。用户用「说话人分离 / 切片筛选」时会
+    把权重正常拉下来，之后这些判定自动生效。
+
+    缓存根：`MODELSCOPE_CACHE` > `~/.cache/modelscope`；目录名形如
+    `damo--speech_campplus_sv_zh-cn_16k-common`（2026-10-11 实测本机布局）。
+    """
+    import os
+
+    root = os.environ.get("MODELSCOPE_CACHE") or os.path.join(
+        os.path.expanduser("~"), ".cache", "modelscope")
+    try:
+        return any(_SV_MODEL.split("/")[-1] in name
+                   for name in os.listdir(os.path.join(root, "models")))
+    except OSError:
+        return False
+
+
 def _get_sv():
     """CAM++ 说话人验证（SV）pipeline 单例，用于把切片分派到说话人。"""
     global _SV

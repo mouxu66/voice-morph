@@ -1016,27 +1016,18 @@ def _emb_sim_vs_baseline(pid: str, wav: Path, timeout_s: int = 60) -> float | No
         return None
 
 
-#: CAM++ SV（说话人验证）模型目录名 —— 判「这段音频还是不是本人」的**独立尺子**。
-#: 主模型与许可见 `speaker_sep.py`（Apache-2.0，免认证）。
-_CAM_SV_MODEL = "speech_campplus_sv_zh-cn_16k-common"
-
-
 def _cam_cache_ready() -> bool:
-    """CAM++ SV 权重是否**已在本机缓存**。
+    """CAM++ SV 权重是否**已在本机缓存**（判断见 `speaker_sep.sv_cached`）。
 
-    ★ 门禁的独立声纹是主判，但它**不在用户请求里联网下载模型**：
-    权重 ~30MB、首跑还要拉配置，让一次「上传随访」卡在网络上（断网机必失败）
-    不值得。没缓存就如实降级成「未测」（判词 `unknown`，**不是不合格**）；
-    用户用「说话人分离 / 切片筛选」时会把这份权重正常拉下来，之后门禁自动生效。
-
-    缓存根：`MODELSCOPE_CACHE` > `~/.cache/modelscope`；目录名形如
-    `damo--speech_campplus_sv_zh-cn_16k-common`（2026-10-11 实测本机布局）。
+    ★ 门禁的独立声纹是主判，但它**不在用户请求里联网下载模型**：没缓存就如实降级成
+    「未测」（判词 `unknown`，**不是不合格**）；用户用「说话人分离 / 切片筛选」时会把
+    权重正常拉下来，之后门禁自动生效。
     """
-    root = os.environ.get("MODELSCOPE_CACHE") or os.path.join(
-        os.path.expanduser("~"), ".cache", "modelscope")
     try:
-        return any(_CAM_SV_MODEL in name for name in os.listdir(os.path.join(root, "models")))
-    except OSError:
+        import speaker_sep
+
+        return speaker_sep.sv_cached()
+    except Exception:  # noqa: BLE001 —— 判不了就当没缓存（降级，不抛）
         return False
 
 
