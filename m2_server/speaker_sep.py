@@ -73,6 +73,27 @@ def sv_cached() -> bool:
         return False
 
 
+#: 参考音时长下限（秒）：短于此的参考音算出来的 CAM++ 声纹不稳，判定要提示。
+#: ★ 口径唯一实现 —— `tools/voice_qc.py`（RVC 变声验收）与 `voicepreserve.py`（嗓音随访）
+#: 都调用下面的 `short_ref_warning`，别在各自那边再写一遍常量。
+MIN_REF_SECONDS = 5.0
+
+
+def short_ref_warning(seconds: float | None) -> str | None:
+    """参考音过短的提示文案（够长或量不到都返回 None）。
+
+    ★ 依据：2026-10-11 RVC 验收标定 —— 4.2s 的市场音色 preview 是**同人/异人簇重叠**
+    的主因（同人最低的 0.2659 就出自它）；时长越短，CAM++ 的声纹估计越不可靠。
+
+    ⚠️ **只提示，不作废判定**：实测 4.2s 的参考在相对判据下仍能排中，结论只是更脆。
+    证据：`docs/大创申报-2026-10/rvc-qc-判据标定/`。
+    """
+    if seconds is None or seconds >= MIN_REF_SECONDS:
+        return None
+    return (f"参考音只有 {seconds:.1f}s（< {MIN_REF_SECONDS:.0f}s）：声纹判定的时间信息偏少，"
+            f"结论更脆；建议换更长的参考音")
+
+
 def _get_sv():
     """CAM++ 说话人验证（SV）pipeline 单例，用于把切片分派到说话人。"""
     global _SV

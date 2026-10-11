@@ -24,6 +24,7 @@ for _p in (_ROOT / "tools", _ROOT / "m2_server"):
         sys.path.insert(0, str(_p))
 
 import pytest  # noqa: E402
+import speaker_sep  # noqa: E402  参考音时长口径的**唯一实现**（验收与随访共用）
 import voice_qc  # noqa: E402
 
 
@@ -141,7 +142,7 @@ def test_reference_and_source_are_both_compared_against_the_output(monkeypatch):
 # ---------------- 3. 短参考音只提示 ---------------- 
 
 def test_short_reference_gets_a_warning_with_the_number():
-    warn = voice_qc._short_ref_warning(4.2)     # 市场音色 preview 的真实时长
+    warn = speaker_sep.short_ref_warning(4.2)   # 市场音色 preview 的真实时长
     assert warn and "4.2s" in warn and "5s" in warn
 
 
@@ -194,6 +195,17 @@ def test_evidence_reproduces_the_shipped_criterion(monkeypatch):
 
 
 def test_long_enough_reference_stays_silent():
-    assert voice_qc._short_ref_warning(4.9) is not None   # 边界内侧
-    assert voice_qc._short_ref_warning(5.0) is None       # 正好到下限就不啰嗦
-    assert voice_qc._short_ref_warning(30.0) is None
+    assert speaker_sep.short_ref_warning(4.9) is not None   # 边界内侧
+    assert speaker_sep.short_ref_warning(5.0) is None       # 正好到下限就不啰嗦
+    assert speaker_sep.short_ref_warning(30.0) is None
+    assert speaker_sep.short_ref_warning(None) is None      # 量不到 ≠ 过短
+
+
+def test_the_rule_lives_in_one_place_and_both_paths_use_it():
+    """★ 口径只能有一份：验收（`voice_qc`）与嗓音随访（`voicepreserve`）必须都指向
+    `speaker_sep.short_ref_warning` —— 两边各写一份，迟早一个改了一个没改。"""
+    import voicepreserve as vp
+
+    assert voice_qc.speaker_sep is speaker_sep
+    assert vp._short_ref_warning(2.0) == speaker_sep.short_ref_warning(2.0)
+    assert vp._short_ref_warning(20.0) is None

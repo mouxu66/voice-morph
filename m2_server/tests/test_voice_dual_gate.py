@@ -306,6 +306,37 @@ class TestFollowupGateWiring:
         assert rec["dual"]["verdict"] == dg.UNKNOWN
         assert rec["emb_sim"] == 0.985, "自空间分照旧记录（保底/历史口径都在）"
 
+    def test_short_baseline_reference_is_flagged_in_the_followup_record(
+            self, iso_media, monkeypatch):
+        """★ 短参考音（`_profile_with_ref` 的基线是 2.0s）要**看得见**：
+        判定照旧做（实测 4.2s 在相对判据下仍能排中），但记录里必须带上时长与提示 ——
+        否则「结论更脆」这件事在 UI 上完全不可见。"""
+        pid = _profile_with_ref(iso_media, monkeypatch)
+        _stub_metrics(monkeypatch)
+        rec = vp.add_followup(pid, _wav(iso_media / "f.wav"))
+        assert rec.get("error") is None, rec
+        assert rec["reference_seconds"] == pytest.approx(2.0, abs=0.05)
+        assert rec["warnings"] and "参考音只有" in rec["warnings"][0]
+        assert vp.read_followups(pid)[0]["warnings"] == rec["warnings"]
+
+    def test_long_baseline_reference_stays_silent(self, iso_media, monkeypatch):
+        """长参考音不啰嗦 —— 提示只对「过短」出现，否则它就是噪音（会被无视）。"""
+        _stub_convert(monkeypatch)
+        _stub_metrics(monkeypatch)
+        pid = vp.create_profile("李老师")["id"]
+        vp.add_reference(pid, _wav(iso_media / "ref.wav", seconds=20.0),
+                         vp.REF_DURATIONS[-1])
+        a = vp.assess_sample(pid, _wav(iso_media / "s.wav"))
+        assert a["warnings"] == []
+        assert a["reference_seconds"] is not None and a["reference_seconds"] >= 5.0
+
+    def test_no_baseline_reference_means_no_length_and_no_warning(
+            self, iso_media, monkeypatch):
+        _stub_convert(monkeypatch)
+        pid = vp.create_profile("乙")["id"]          # 刻意不加参考音
+        a = vp.assess_sample(pid, _wav(iso_media / "s.wav"))
+        assert a["reference_seconds"] is None and a["warnings"] == []
+
     def test_uncached_weights_are_skipped_with_a_reason_and_no_download(
             self, iso_media, monkeypatch):
         pid = _profile_with_ref(iso_media, monkeypatch)

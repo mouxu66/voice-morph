@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "m2_server"))
 sys.path.insert(0, str(ROOT / "tools"))
 import config as cfg  # noqa: E402
+import speaker_sep  # noqa: E402  独立声纹（CAM++）+ 参考音时长口径（唯一实现）
 import voice_metrics  # noqa: E402  嗓音客观指标（HNR/H1-H2/tilt/jitter/shimmer）
 import voice_report  # noqa: E402  三灯合成（用户可见的体检）
 
@@ -48,10 +49,8 @@ QC_DIR = cfg.OUTPUTS_DIR / "qc"
 # 语速警告阈值（字/秒）：素材语速过快会直接劣化模型可懂度（作者踩过的坑）
 SPEED_WARN = 6.0
 
-#: 目标参考音的时长下限（秒）：短于此就在验收结果里提示。
-#: 依据：2026-10-11 标定里 4.2s 的市场音色 preview 是同人/异人**簇重叠**的主因
-#: （同人最低 0.2659 就出自它）；时长越短，CAM++ 的声纹估计越不可靠。
-MIN_REF_SECONDS = 5.0
+# 目标参考音时长下限（`speaker_sep.MIN_REF_SECONDS` + `short_ref_warning`）在 speaker_sep 里
+# 唯一定义 —— 验收与嗓音随访共用同一条，别在这儿再写一遍数字。
 
 
 def _get_json(url: str, timeout: int = 10) -> dict:
@@ -184,17 +183,6 @@ def _emb_sim_item(out_wav: Path, test_in: Path, emb_ref: Path,
     return {"value": round(sim, 4), "pass": ok,
             "score": round(ITEM_SCORE_MAX * f, 1), "detail": detail,
             "margin": None if margin is None else round(float(margin), 4)}
-
-
-def _short_ref_warning(dur_s: float) -> str | None:
-    """目标参考音太短时的提示（< `MIN_REF_SECONDS`）；够长返回 None。
-
-    只提示，**不作废判定** —— 实测 4.2s 参考在相对判据下仍能排中，只是结论更脆。
-    """
-    if dur_s >= MIN_REF_SECONDS:
-        return None
-    return (f"目标参考音只有 {dur_s:.1f}s（< {MIN_REF_SECONDS:.0f}s）：声纹判定的"
-            f"时间信息偏少，结论更脆；建议换更长的参考音后重跑")
 
 
 def _overall_pass(items: dict) -> bool:
@@ -482,13 +470,14 @@ def run_voice(exp: str, ref: str = "") -> dict:
     res.update(input=str(test_in), self_convert=self_convert,
                emb_ref=str(emb_ref) if emb_ref else "")
 
-    # 目标参考音时长：<MIN_REF_SECONDS 就提示（标定证据：短参考是簇重叠的主因）。
+    # 目标参考音时长：短于 speaker_sep.MIN_REF_SECONDS 就提示（标定证据：短参考是簇重叠主因）。
     # 只提示，**不作废判定** —— 实测 4.2s 参考在相对判据下仍能排中，结论只是更脆。
     if emb_ref is not None and not self_convert:
         try:
             ref_dur, _ = _wav_info(emb_ref)
             res["emb_ref_seconds"] = round(ref_dur, 2)
-            warn = _short_ref_warning(ref_dur)
+            # 口径唯一实现在 speaker_sep（随访路径用同一条）
+            warn = speaker_sep.short_ref_warning(ref_dur)
             if warn:
                 res["warnings"].append(warn)
         except Exception:  # noqa: BLE001 —— 量不了时长不该让验收失败

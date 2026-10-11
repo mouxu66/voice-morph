@@ -1067,6 +1067,25 @@ def _cam_sim_vs_baseline(pid: str, wav: Path) -> tuple[float | None, str]:
         return None, f"声纹对比失败（{type(e).__name__}）"
 
 
+def _reference_seconds(pid: str) -> float | None:
+    """基线参考音的时长（秒；量不到返回 None）—— 声纹判定可靠性的前提条件。"""
+    try:
+        ref = reference_path(pid)
+        return None if ref is None else round(_wav_seconds(ref), 2)
+    except Exception:  # noqa: BLE001 —— 量不到时长不该影响评估
+        return None
+
+
+def _short_ref_warning(ref_s: float | None) -> str | None:
+    """参考音过短的提示文案（口径唯一实现在 `speaker_sep.short_ref_warning`）。"""
+    try:
+        import speaker_sep
+
+        return speaker_sep.short_ref_warning(ref_s)
+    except Exception:  # noqa: BLE001 —— 提示算不出来不该影响评估
+        return None
+
+
 def assess_sample(pid: str, wav: Path) -> dict:
     """对一段音频跑**双门槛**评估：CAM++ 主判 + 自空间（Qwen `/emb`）保底。
 
@@ -1092,8 +1111,11 @@ def assess_sample(pid: str, wav: Path) -> dict:
     except Exception as e:  # noqa: BLE001 —— 判据模块坏了也只是「未测」
         dual = {"verdict": "unknown", "decided_by": None,
                 "reasons": [f"双门槛判据不可用（{type(e).__name__}）"], "thresholds": None}
+    ref_s = _reference_seconds(pid)
+    warn = _short_ref_warning(ref_s)
     return {"cam_sim": cam_sim, "cam_error": cam_err,
-            "qwen_sim": qwen_sim, "dual": dual}
+            "qwen_sim": qwen_sim, "dual": dual,
+            "reference_seconds": ref_s, "warnings": [warn] if warn else []}
 
 
 def add_followup(pid: str, src: Path, note: str = "") -> dict:
@@ -1162,6 +1184,8 @@ def add_followup(pid: str, src: Path, note: str = "") -> dict:
         "cam_sim": cam_sim,
         "cam_sim_error": assess["cam_error"],
         "dual": assess["dual"],
+        "reference_seconds": assess.get("reference_seconds"),
+        "warnings": assess.get("warnings") or [],
         "metrics_error": calc.get("error") or "",
     }
     try:
