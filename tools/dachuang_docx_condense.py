@@ -245,6 +245,10 @@ def set_para_text(p: Paragraph, text: str) -> None:
 
 
 def main() -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     doc = Document(str(DOCX))
     missed = []
 

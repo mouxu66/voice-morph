@@ -132,6 +132,10 @@ def iter_paras(shapes):
 
 
 def main() -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     prs = Presentation(str(PPTX))
     hit = set()
     for si, slide in enumerate(prs.slides, 1):

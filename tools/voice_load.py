@@ -372,6 +372,10 @@ def _write_json(payload: dict, json_path: str | None) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="发声负荷测量（减负实测层）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

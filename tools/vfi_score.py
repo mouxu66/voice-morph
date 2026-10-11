@@ -162,6 +162,10 @@ def write_scores(scores: list[dict], out: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="VFI/VAS 计分（探索性指标）")
     ap.add_argument("--in", dest="inputs", nargs="+", default=None,
                     help="回收的问卷 CSV（可多份合并）")
