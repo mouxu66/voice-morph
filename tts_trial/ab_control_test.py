@@ -17,7 +17,12 @@ import numpy as np
 import soundfile as sf
 import torch
 from peft import PeftModel
-from transformers import BitsAndBytesConfig
+
+# skip 名单必须与训练同源（transformers≥5 裸名会漏过命门模块），见 qlora_quant_config.py。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+from qlora_quant_config import build_bnb_config
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -25,8 +30,6 @@ BASE = "D:/变声/tts_models/qwen3-tts-1.7b-base"
 OUT = "D:/变声/media/ft_work/ppt12/out_ab/ctrl"
 os.makedirs(OUT, exist_ok=True)
 SPK_ID = 3000
-SKIP = ["speaker_encoder", "codec_embedding", "text_embedding",
-        "codec_head", "text_projection", "lm_head"]
 
 CASES = [
     {"name": "aug_v2", "adapter": "D:/变声/tts_trial/Qwen3-TTS/finetuning/output_qlora_aligned_v2/adapter-final",
@@ -51,9 +54,7 @@ def log(m):
 def main():
     from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
 
-    bnb = BitsAndBytesConfig(
-        load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.bfloat16, llm_int8_skip_modules=SKIP)
+    bnb = build_bnb_config()
 
     results = []
     for case in CASES:

@@ -15,10 +15,12 @@ import numpy as np
 import soundfile as sf
 import torch
 from peft import PeftModel
-from transformers import BitsAndBytesConfig
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, r"D:\变声\tts_trial\Qwen3-TTS\finetuning")
+
+# 4bit 分支 skip 名单与训练同源（bf16 对照分支不传 quantization_config）。
+from qlora_quant_config import build_bnb_config
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -27,8 +29,6 @@ PPT = r"D:\变声\media\ft_work\ppt12"
 OUT = os.path.join(PPT, "out_ab", "diag")
 os.makedirs(OUT, exist_ok=True)
 SPK_ID = 3000
-SKIP = ["speaker_encoder", "codec_embedding", "text_embedding",
-        "codec_head", "text_projection", "lm_head"]
 TEXT = "这一节我们讲三个概念，先看第一个。"
 
 
@@ -93,14 +93,13 @@ def gen(model, qwen3tts, tag, spk="spk"):
     tc.spk_id = {spk: SPK_ID}
     tc.spk_is_dialect = {spk: False}
     base.supported_speakers = tc.spk_id.keys()
-    iid = qwen3tts._tokenize_texts([qwen3tts._build_assistant_text(TEXT)])[0]
-    if not torch.is_tensor(iid):
-        iid = torch.tensor(iid, dtype=torch.long)
-    iid = iid.to(dev)
-    if iid.dim() == 2:
-        iid = iid[0]
-    iid = iid.unsqueeze(0)
-    codes, _ = model.generate(input_ids=iid, languages=["Auto"], speakers=[spk],
+    # generate() 的 input_ids 签名是 Optional[list[Tensor]]，逐条按【2D [1,T]】处理：
+    # 内部 enumerate 取出后直接 input_id[:, :3]，传 1D 会报维度错。
+    # 故直接用 _tokenize_texts 的整条输出（list[Tensor[1,T]]），只搬到设备，不取 [0]。
+    tk = qwen3tts._tokenize_texts([qwen3tts._build_assistant_text(TEXT)])
+    iid_list = [(x.to(dev) if torch.is_tensor(x) else torch.tensor(x, dtype=torch.long, device=dev))
+                for x in tk]
+    codes, _ = model.generate(input_ids=iid_list, languages=["Auto"], speakers=[spk],
                               non_streaming_mode=True, do_sample=True, temperature=0.8,
                               top_p=0.95, repetition_penalty=1.1, max_new_tokens=400)
     c = codes[0]
@@ -119,9 +118,7 @@ def load(use_bnb, adapter=None, merge=False):
     from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
     kw = dict(torch_dtype=torch.bfloat16, attn_implementation="sdpa")
     if use_bnb:
-        kw["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.bfloat16, llm_int8_skip_modules=SKIP)
+        kw["quantization_config"] = build_bnb_config()
     q = Qwen3TTSModel.from_pretrained(BASE, **kw)
     b = q.model
     b = b.to("cuda")          # 显式搬到 GPU（from_pretrained 的 device_map 未必下传）

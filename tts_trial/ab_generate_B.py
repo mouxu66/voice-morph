@@ -21,15 +21,21 @@ import os
 import sys
 import time
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)  # 保证从任意 cwd 都能导入同目录的 qlora_quant_config
+
 import librosa
 import numpy as np
 import soundfile as sf
 import torch
-from bitsandbytes.nn import Linear4bit
 from peft import PeftModel
-from transformers import BitsAndBytesConfig
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# 量化配置单一来源：skip 名单与 BitsAndBytesConfig 必须与训练脚本逐字段一致，
+# 禁止在本脚本另抄裸名清单（transformers≥5 前缀/结尾语义下会漏过命门模块，
+# 已造成三次 4bit↔fp 错配事故）。详见 qlora_quant_config.py 顶部说明。
+from qlora_quant_config import build_bnb_config
+
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 WORK = os.path.join(ROOT, "media", "ft_work", "ppt12")
 AB = os.path.join(WORK, "out_ab")
@@ -37,11 +43,6 @@ BASE = "D:/变声/tts_models/qwen3-tts-1.7b-base"
 REF = os.path.join(WORK, "ref_24k.wav")
 SPK = "ppt12_speaker"
 SPK_ID = 3000
-
-MODULES_TO_NOT_CONVERT = [
-    "speaker_encoder", "codec_embedding", "text_embedding",
-    "codec_head", "text_projection", "lm_head",
-]
 
 TEST_TEXTS = [
     "这一节我们讲三个概念，先看第一个。",
@@ -70,10 +71,7 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
 
-    bnb = BitsAndBytesConfig(
-        load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        llm_int8_skip_modules=MODULES_TO_NOT_CONVERT)
+    bnb = build_bnb_config()
 
     log("[load] base (4-bit，与训练一致) ...")
     qwen3tts = Qwen3TTSModel.from_pretrained(

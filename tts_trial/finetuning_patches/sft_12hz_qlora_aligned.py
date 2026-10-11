@@ -38,6 +38,25 @@ if _HERE not in sys.path:
 _override = os.environ.get("VM_QWEN_TTS_ROOT")
 if _override and _override not in sys.path:
     sys.path.insert(0, _override)
+# tts_trial/ 根放 sys.path【末尾】，只为导入训练/推理共用的量化配置单一来源
+# qlora_quant_config（放末尾避免遮蔽 site-packages）。本脚本有两份同内容拷贝：
+#   Qwen3-TTS/finetuning/（现役）与 finetuning_patches/（仓库内受版本管理副本），
+# 两者目录深度不同，故从本文件位置向上查找含 qlora_quant_config.py 的目录，
+# 而不是写死 dirname 层数 —— 这样两份逐字节相同、各自也都能直接运行。
+def _find_shared_config_dir(start):
+    cur = start
+    while True:
+        if os.path.exists(os.path.join(cur, "qlora_quant_config.py")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+_shared_dir = _find_shared_config_dir(_HERE)
+if _shared_dir and _shared_dir not in sys.path:
+    sys.path.append(_shared_dir)
 
 import librosa
 import numpy as np
@@ -47,29 +66,17 @@ from bitsandbytes.nn import Linear4bit  # 仅 dry_run 判定
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
 from torch.optim import AdamW
-from transformers import AutoConfig, BitsAndBytesConfig
+from transformers import AutoConfig
 
-# 必须保持全精度（不量化、不进 LoRA target）的模块
-MODULES_TO_NOT_CONVERT = [
-    "speaker_encoder", "codec_embedding", "text_embedding",
-    "codec_head", "text_projection", "lm_head",
-]
-LORA_TARGET_MODULES = [
-    "q_proj", "k_proj", "v_proj", "o_proj",
-    "gate_proj", "up_proj", "down_proj",
-]
+# 训练/推理量化配置单一来源：skip 名单 + LoRA target + BitsAndBytesConfig 都从这里取，
+# 禁止在本脚本另抄一份（否则改一处漏一处，已经造成三次 4bit/fp 错配事故）。
+from qlora_quant_config import (
+    LORA_TARGET_MODULES,
+    MODULES_TO_NOT_CONVERT,
+    build_bnb_config,
+)
+
 SPK_ID = 3000  # custom_voice 锚点落到的 codec_embedding 行
-
-
-def build_bnb_config():
-    return BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        # transformers 4.57.3 只有 llm_int8_skip_modules 字段（无 modules_to_not_convert）
-        llm_int8_skip_modules=MODULES_TO_NOT_CONVERT,
-    )
 
 
 def compute_anchor(base, ref_audio_path: str) -> torch.Tensor:
@@ -121,7 +128,13 @@ def build_prefill_embeds(base, input_id, speaker_embed, non_streaming_mode=True)
     talker_input_embed = torch.cat((role, head), dim=1)                      # [1,8,d]
 
     # 非 icl 分支
-    talker_input_embed = talker_input_embed[:, :-1]                          # 去掉末尾 bos+codec_pad
+    # ★ 2026-10-12 修复：原先这里多截了一行 `[:, :-1]`，导致 head 只剩 7 行、
+    #   丢掉了末尾的 (tts_bos + codec_pad)，训练 prefill 比推理短 1 行
+    #   （实测 train P=20 vs infer P=21，余弦 0.9146 → LoRA 学到的修正套不上推理）。
+    #   generate()（modeling_qwen3_tts.py:2209-2213）的真实流程是：
+    #     role(3) + head(5) = 8 行 → 追加 text 首 token+codec_bos = 9 行
+    #     → `[:, :-1]` 截掉**刚追加的那行** → 回到 8 行（末尾仍是 tts_bos+codec_pad）。
+    #   所以这里必须**保留全部 8 行**，不能再截。
     text_part = torch.cat(
         (talker.text_projection(talker.get_text_embeddings()(input_id[:, 3:-5])), tts_eos_embed),
         dim=1) + talker.get_input_embeddings()(

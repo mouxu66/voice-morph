@@ -20,15 +20,18 @@ import soundfile as sf
 import torch
 from bitsandbytes.nn import Linear4bit
 from peft import PeftModel
-from transformers import BitsAndBytesConfig
+
+# 4bit 分支的 skip 名单必须与训练同源（本脚本另保留 bf16 分支作对照，故意不量化）。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+from qlora_quant_config import build_bnb_config
 
 sys.stdout.reconfigure(encoding="utf-8")
 
 BASE = "D:/变声/tts_models/qwen3-tts-1.7b-base"
 OUT = "D:/变声/media/ft_work/ppt12/out_ab/quant_test"
 os.makedirs(OUT, exist_ok=True)
-SKIP = ["speaker_encoder", "codec_embedding", "text_embedding",
-        "codec_head", "text_projection", "lm_head"]
 SPK_ID = 3000
 
 CASES = [
@@ -63,9 +66,7 @@ def run(use_bnb, adapter, ref, text, tag):
 
     kwargs = dict(torch_dtype=torch.bfloat16, attn_implementation="sdpa")
     if use_bnb:
-        kwargs["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.bfloat16, llm_int8_skip_modules=SKIP)
+        kwargs["quantization_config"] = build_bnb_config()
     qwen3tts = Qwen3TTSModel.from_pretrained(BASE, **kwargs)
     base = qwen3tts.model
     probe_layers(base, f"{tag}/base(加载后)")

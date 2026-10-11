@@ -69,7 +69,7 @@ check_untyped_defs = false
 [tool.pytest.ini_options]
 minversion = "8.0"
 addopts = "-ra -q --cov=m2_server --cov-report=term-missing --cov-report=html --cov-report=json"
-testpaths = ["m2_server/tests"]
+testpaths = ["m2_server/tests", "tts_trial/tests"]
 # 这里**故意没有** asyncio_mode / asyncio_default_fixture_loop_scope：
 # 它们是 pytest-asyncio 的配置，而本项目没有任何 async 用例、也没把该插件写进
 # requirements-dev.txt —— 留着就是一份**看着像已接好、实际是惰性**的配置
