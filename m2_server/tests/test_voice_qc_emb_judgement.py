@@ -67,6 +67,45 @@ def test_flag_prints_untested_instead_of_fail():
         ("PASS", "FAIL", "未测")
 
 
+# ---------------- 1b. 声纹项的形态（value/score 不动，pass 三态） ----------------
+
+def test_emb_sim_item_keeps_the_self_space_value_and_awards_the_score(monkeypatch):
+    """★ `value` 仍是**自空间余弦**、25 分制照旧折算 —— 只有 `pass` 换了判法。
+    把 value 也换成 CAM++ 分，历史 JSON 就与新 JSON 不可比了（100 分制口径）。"""
+    monkeypatch.setattr(voice_qc, "_emb", lambda p: [1.0, 0.0])
+    monkeypatch.setattr(voice_qc, "_cam_sim",
+                        lambda a, b: 0.7 if b.name == "ref.wav" else 0.1)
+    item = voice_qc._emb_sim_item(Path("out.wav"), Path("in.wav"),
+                                  Path("ref.wav"), self_convert=False)
+    assert item["value"] == pytest.approx(1.0)
+    assert item["pass"] is True
+    assert item["margin"] == pytest.approx(0.6)
+    assert item["score"] == pytest.approx(25.0)      # f = clamp01((1.0-0.90)/0.07) → 1.0
+    assert "余量 +0.6000" in item["detail"]
+
+
+def test_emb_sim_item_flags_an_output_that_still_sounds_like_the_source(monkeypatch):
+    monkeypatch.setattr(voice_qc, "_emb", lambda p: [1.0, 0.0])
+    monkeypatch.setattr(voice_qc, "_cam_sim",
+                        lambda a, b: 0.2 if b.name == "ref.wav" else 0.6)
+    item = voice_qc._emb_sim_item(Path("out.wav"), Path("in.wav"),
+                                  Path("ref.wav"), self_convert=False)
+    assert item["pass"] is False and item["margin"] < 0
+    assert "更像源说话人" in item["detail"]
+
+
+def test_emb_sim_item_is_untested_but_still_scored_when_the_margin_is_unavailable(monkeypatch):
+    """未测**不额外扣分**：value/score 仍按自空间算（否则「未测」会被二次惩罚：
+    既不计入判定、又白手扣掉 25 分，白分制就不再是 100 分制了）。"""
+    monkeypatch.setattr(voice_qc, "_emb", lambda p: [0.6, 0.8])
+    monkeypatch.setattr(voice_qc, "_cam_sim", lambda a, b: None)
+    item = voice_qc._emb_sim_item(Path("out.wav"), Path("in.wav"),
+                                  Path("ref.wav"), self_convert=False)
+    assert item["pass"] is None and item["margin"] is None
+    assert item["score"] == pytest.approx(25.0)
+    assert "未测" in item["detail"]
+
+
 # ---------------- 2. 余量的符号 ---------------- 
 
 def test_positive_margin_when_the_output_is_closer_to_the_target(monkeypatch):

@@ -154,6 +154,38 @@ def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
+#: 单项满分：4 指标 × 25 = 100 分制（改它等于改验收口径与历史 JSON 的可比性）。
+ITEM_SCORE_MAX = 25.0
+
+
+def _emb_sim_item(out_wav: Path, test_in: Path, emb_ref: Path,
+                  self_convert: bool) -> dict:
+    """声纹项的**取值 + 三态判定**（拆出来是为了不让嵌套 try 污染 `run_voice`）。
+
+    - `value` 仍是**自空间余弦**、`score` 仍按同一公式折算 —— 分制与历史 JSON 口径不变
+      （分数换个尺子就不可比了）；
+    - `pass` 由**相对余量**决定：`CAM++(输出, 目标参考) > CAM++(输出, 输入者本人)`
+      （2026-10-11 标定：本批 12/12 成立，而任何绝对阈值都有错判）；
+    - 相对判据**问不出来**（自转换 / CAM++ 权重未缓存）→ `pass=None`（未测 ≠ 不合格）。
+    """
+    import numpy as np
+
+    v1, v2 = np.asarray(_emb(out_wav)), np.asarray(_emb(emb_ref))
+    sim = float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+    f = _clamp01((sim - 0.90) / 0.07)
+    ref_name = "输入自身" if self_convert else Path(emb_ref).name
+    margin, why = _voice_margin(out_wav, test_in, emb_ref, self_convert)
+    if margin is None:
+        detail, ok = f"声纹余弦 {sim:.4f}（vs {ref_name}）；相对判据未测：{why}", None
+    else:
+        ok = margin > 0
+        detail = (f"声纹余弦 {sim:.4f}（vs {ref_name}）；独立声纹余量 {margin:+.4f}"
+                  f"（{why}）→ {'认得出目标音色' if ok else '更像源说话人'}")
+    return {"value": round(sim, 4), "pass": ok,
+            "score": round(ITEM_SCORE_MAX * f, 1), "detail": detail,
+            "margin": None if margin is None else round(float(margin), 4)}
+
+
 def _short_ref_warning(dur_s: float) -> str | None:
     """目标参考音太短时的提示（< `MIN_REF_SECONDS`）；够长返回 None。
 
@@ -501,7 +533,7 @@ def run_voice(exp: str, ref: str = "") -> dict:
         相对判据问不出来时（自转换 / CAM++ 权重未缓存）不能假装它不合格。"""
         items[key] = {"value": None if value is None else round(float(value), 4),
                       "pass": None if ok is None else bool(ok),
-                      "score": round(25.0 * score_f, 1), "detail": detail}
+                      "score": round(ITEM_SCORE_MAX * score_f, 1), "detail": detail}
 
     # 1) 时长比（输出/输入）：RVC 忠实保速，偏离 1 说明引擎或素材异常
     dur_in, _ = _wav_info(in_16k)
@@ -544,27 +576,15 @@ def run_voice(exp: str, ref: str = "") -> dict:
     #    在同一批 12/12 份输出上都成立。证据：docs/大创申报-2026-10/rvc-qc-判据标定/
     try:
         if emb_ref is None:
-            raise RuntimeError("没有目标音色参考音频（voicebank/数据集都缺）")
-        import numpy as np
-
-        v1, v2 = np.asarray(_emb(out_path)), np.asarray(_emb(emb_ref))
-        sim = float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
-        # 分数仍按自空间折算（25 分制与历史 JSON 口径不变 —— 分制换个尺子就不可比了）
-        f = _clamp01((sim - 0.90) / 0.07)
-        ref_name = "输入自身" if self_convert else Path(emb_ref).name
-        margin, why = _voice_margin(out_path, test_in, emb_ref, self_convert)
-        if margin is None:
-            _item("emb_sim", sim, None, f,
-                  f"声纹余弦 {sim:.4f}（vs {ref_name}）；相对判据未测：{why}")
+            # ★ 没有目标参考音是**配置问题**（要用户去补齐），不是「测不出来」→ 仍判负。
+            # 它与下面「取了数但取不到」的未测要分开，否则会悄悄放行一个根本没比过的音色。
+            _item("emb_sim", None, False, 0.0, "没有目标音色参考音频（voicebank/数据集都缺）")
         else:
-            ok = margin > 0
-            _item("emb_sim", sim, ok, f,
-                  f"声纹余弦 {sim:.4f}（vs {ref_name}）；独立声纹余量 {margin:+.4f}"
-                  f"（{why}）→ {'认得出目标音色' if ok else '更像源说话人'}")
-        items["emb_sim"]["margin"] = None if margin is None else round(float(margin), 4)
+            items["emb_sim"] = _emb_sim_item(out_path, test_in, emb_ref, self_convert)
     except Exception as e:
+        # 取数失败（worker /emb 报错、零向量…）= 「没测到」，不是「不合格」
         _item("emb_sim", None, None, 0.0, f"声纹对比失败（未测）: {e}")
-        items["emb_sim"]["margin"] = None
+    items["emb_sim"].setdefault("margin", None)
 
     res["items"] = items
     res["score"] = round(sum(it["score"] for it in items.values())) if items else None
