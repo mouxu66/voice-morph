@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""大创申报材料数字同步（2026-10-10）——申报书/PPT 的工程体量数字对齐当前代码库实测。
+"""大创申报材料数字同步（2026-10-10，2026-10-11 起含 md 只读检查）——申报书/PPT 的工程体量数字对齐当前代码库实测。
 
 实测口径（与 2026-10-05 对齐会话一致）：
 - 后端行数 = m2_server/**/*.py 排除 tests/（含空行）        -> 39,627
@@ -60,6 +60,31 @@ PPTX_PARAS = [
     ("工程体量：后端 37,872 行 · 前端 40,169 行 · 自动化测试 2,847 个（149 文件） · 能力插件 27 个 · CI 门禁与发布流程齐全 · 已在 GitHub 开源",
      "工程体量：后端 39,627 行 · 前端 41,867 行 · 自动化测试 3,113 个（163 文件） · 能力插件 28 个 · CI 门禁与发布流程齐全 · 已在 GitHub 开源"),
 ]
+
+
+# ---------- md 材料：只查不改 ----------
+# 讲稿是要念出声的稿子：屏幕上写 39,627、嘴里念 37,872，就是事故。
+# 所以这里不进“同步”逻辑，只做硬检查 —— 缺新值或残留旧值任一命中，退出码 1。
+# 注：README / 导师沟通等材料里的旧数字是历史记录，故意保留，不进此表。
+MD_FILES = {
+    "答辩讲稿-19页.md": (("39,627", "41,867", "3,113"), ("37,872", "40,169", "2,847")),
+    "01-申报书正文.md": (("39,627", "41,867", "3,113"), ("37,872", "40,169", "2,847")),
+}
+
+
+def check_md() -> list:
+    folder = ROOT / "docs" / "大创申报-2026-10"
+    problems: list = []
+    for name, (must, must_not) in MD_FILES.items():
+        p = folder / name
+        if not p.exists():
+            problems.append(f"{name}: 文件不存在")
+            continue
+        text = p.read_text(encoding="utf-8")
+        problems += [f"{name}: 缺新值 {t}" for t in must if t not in text]
+        problems += [f"{name}: 残留旧值 {t}" for t in must_not if t in text]
+    print(f"md: 检查 {len(MD_FILES)} 份，问题={'；'.join(problems) if problems else '无'}")
+    return problems
 
 
 def set_docx_para(p, text: str) -> None:
@@ -155,4 +180,5 @@ if __name__ == "__main__":
     except ModuleNotFoundError:
         print("docx 跳过：当前解释器无 python-docx（用系统 python 跑）")
     m2 = patch_pptx()
-    sys.exit(1 if (m1 or m2) else 0)
+    m3 = check_md()
+    sys.exit(1 if (m1 or m2 or m3) else 0)
