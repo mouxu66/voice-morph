@@ -1,0 +1,241 @@
+{
+ "n_same": 12,
+ "n_cross": 84,
+ "rulers": {
+  "qwen_cos": {
+   "label": "自空间（Qwen /emb）",
+   "same": {
+    "n": 12,
+    "mean": 0.9454,
+    "std": 0.0228,
+    "min": 0.9108,
+    "max": 0.9752
+   },
+   "cross": {
+    "n": 84,
+    "mean": 0.9231,
+    "std": 0.0139,
+    "min": 0.8934,
+    "max": 0.9534
+   },
+   "auc": 0.7728174603174603,
+   "eer": 0.3333333333333333,
+   "dprime": 1.1770255190544523,
+   "same_pass_at_legacy": 0.5,
+   "cross_pass_at_legacy": 0.0238
+  },
+  "cam_cos": {
+   "label": "独立声纹（CAM++）",
+   "same": {
+    "n": 12,
+    "mean": 0.5692,
+    "std": 0.144,
+    "min": 0.2659,
+    "max": 0.7539
+   },
+   "cross": {
+    "n": 84,
+    "mean": 0.1245,
+    "std": 0.1368,
+    "min": -0.1414,
+    "max": 0.4859
+   },
+   "auc": 0.9821428571428571,
+   "eer": 0.08333333333333333,
+   "dprime": 3.166779675753819,
+   "same_pass_at_legacy": 0.0,
+   "cross_pass_at_legacy": 0.0
+  }
+ },
+ "legacy_decision": {
+  "verdict": "switch",
+  "margin_low": -0.0392,
+  "margin_high": -0.0034,
+  "floor": 0.95
+ },
+ "dual_derived": {
+  "cam_cos": {
+   "error": "两簇重叠，无阈值可推：同人最低 0.2659 ≤ 异人最高 0.4859"
+  },
+  "qwen_cos": {
+   "error": "两簇重叠，无阈值可推：同人最低 0.9108 ≤ 异人最高 0.9534"
+  }
+ },
+ "dual_audit": {
+  "n_same": 12,
+  "n_cross": 84,
+  "same": {
+   "pass": 2,
+   "review": 8,
+   "reject": 2,
+   "unknown": 0
+  },
+  "cross": {
+   "pass": 0,
+   "review": 4,
+   "reject": 80,
+   "unknown": 0
+  },
+  "same_pass_rate": 0.1667,
+  "cross_pass_rate": 0.0,
+  "thresholds": {
+   "cam_pass": 0.53,
+   "cam_warn": 0.38,
+   "qwen_floor": 0.97
+  }
+ },
+ "rank": {
+  "n_outputs": 12,
+  "qwen_rank1_rate": 0.6667,
+  "cam_rank1_rate": 1.0,
+  "qwen_margin_min": -0.0207,
+  "qwen_margin_max": 0.0225,
+  "cam_margin_min": 0.0243,
+  "cam_margin_max": 0.5161,
+  "rows": [
+   {
+    "exp": "kangaroo_v2",
+    "input": "aishell3_ssb0407",
+    "refs": 8,
+    "qwen_rank": 1,
+    "qwen_margin": 0.0195,
+    "cam_rank": 1,
+    "cam_margin": 0.3182
+   },
+   {
+    "exp": "kangaroo_v2",
+    "input": "teacher_voice",
+    "refs": 8,
+    "qwen_rank": 1,
+    "qwen_margin": 0.0225,
+    "cam_rank": 1,
+    "cam_margin": 0.5161
+   },
+   {
+    "exp": "kangaroo_v2",
+    "input": "vbsyn_trial_ssb0033",
+    "refs": 8,
+    "qwen_rank": 1,
+    "qwen_margin": 0.017,
+    "cam_rank": 1,
+    "cam_margin": 0.2811
+   },
+   {
+    "exp": "kangaroo_v2_40k",
+    "input": "aishell3_ssb0407",
+    "refs": 8,
+    "qwen_rank": 1,
+    "qwen_margin": 0.0174,
+    "cam_rank": 1,
+    "cam_margin": 0.3101
+   },
+   {
+    "exp": "kangaroo_v2_40k",
+    "input": "teacher_voice",
+    "refs": 8,
+    "qwen_rank": 1,
+    "qwen_margin": 0.02,
+    "cam_rank": 1,
+    "cam_margin": 0.5044
+   },
+   {
+    "exp": "kangaroo_v2_40k",
+    "input": "vbsyn_trial_ssb0033",
+    "refs": 8,
+    "qwen_rank": 1,
+    "qwen_margin": 0.0108,
+    "cam_rank": 1,
+    "cam_margin": 0.2585
+   },
+   {
+    "exp": "katoong_lanyangyang",
+    "input": "aishell3_ssb0407",
+    "refs": 8,
+    "qwen_rank": 1,
+    "qwen_margin": 0.0056,
+    "cam_rank": 1,
+    "cam_margin": 0.1313
+   },
+   {
+    "exp": "katoong_lanyangyang",
+    "input": "teacher_voice",
+    "refs": 8,
+    "qwen_rank": 6,
+    "qwen_margin": -0.0207,
+    "cam_rank": 1,
+    "cam_margin": 0.0401
+   },
+   {
+    "exp": "katoong_lanyangyang",
+    "input": "vbsyn_trial_ssb0033",
+    "refs": 8,
+    "qwen_rank": 1,
+    "qwen_margin": 0.0082,
+    "cam_rank": 1,
+    "cam_margin": 0.1744
+   },
+   {
+    "exp": "katoong_manbo",
+    "input": "aishell3_ssb0407",
+    "refs": 8,
+    "qwen_rank": 3,
+    "qwen_margin": -0.0056,
+    "cam_rank": 1,
+    "cam_margin": 0.0442
+   },
+   {
+    "exp": "katoong_manbo",
+    "input": "teacher_voice",
+    "refs": 8,
+    "qwen_rank": 6,
+    "qwen_margin": -0.0186,
+    "cam_rank": 1,
+    "cam_margin": 0.0243
+   },
+   {
+    "exp": "katoong_manbo",
+    "input": "vbsyn_trial_ssb0033",
+    "refs": 8,
+    "qwen_rank": 2,
+    "qwen_margin": -0.0014,
+    "cam_rank": 1,
+    "cam_margin": 0.0936
+   }
+  ]
+ },
+ "inputs": {
+  "aishell3_ssb0407": "outputs\\qc_calib\\in\\aishell3_ssb0407.wav",
+  "teacher_voice": "outputs\\qc_calib\\in\\teacher_voice.wav",
+  "vbsyn_trial_ssb0033": "outputs\\qc_calib\\in\\vbsyn_trial_ssb0033.wav"
+ },
+ "targets": [
+  {
+   "exp": "kangaroo_v2",
+   "speaker": "kangaroo",
+   "weight": "D:\\RVC\\assets\\weights\\kangaroo_v2.pth",
+   "index": "D:\\RVC\\logs\\kangaroo_v2\\added_IVF230_Flat_nprobe_1_kangaroo_v2_v2.index",
+   "ref": "media/voicebank/kangaroo/reference.wav"
+  },
+  {
+   "exp": "kangaroo_v2_40k",
+   "speaker": "kangaroo",
+   "weight": "D:\\RVC\\assets\\weights\\kangaroo_v2_40k.pth",
+   "index": null,
+   "ref": "media/voicebank/kangaroo/reference.wav"
+  },
+  {
+   "exp": "katoong_lanyangyang",
+   "speaker": "katoong_lanyangyang",
+   "weight": "D:\\RVC\\assets\\weights\\katoong_lanyangyang.pth",
+   "index": "D:\\RVC\\logs\\katoong_lanyangyang\\added_katoong_lanyangyang.index",
+   "ref": "outputs/market/katoong_lanyangyang_preview.wav"
+  },
+  {
+   "exp": "katoong_manbo",
+   "speaker": "katoong_manbo",
+   "weight": "D:\\RVC\\assets\\weights\\katoong_manbo.pth",
+   "index": "D:\\RVC\\logs\\katoong_manbo\\added_katoong_manbo.index",
+   "ref": "outputs/market/katoong_manbo_preview.wav"
+  }
+ ]
+}
