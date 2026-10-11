@@ -111,3 +111,16 @@ done
 .venv/Scripts/python.exe tools/voicebank_eval.py measure --exp pilotC --with-emb
 .venv/Scripts/python.exe tools/voicebank_eval.py listen --exp pilotC
 ```
+
+---
+
+## 7 双空间判别最小实验（2026-10-11）
+
+- 同一批 48 条合成样本上对比两把声纹尺子：**Qwen 自空间余弦**（评测引擎的 `emb_sim` 用的就是它）
+  vs **CAM++ 独立声纹**。结论：两者都能分开“同人/异人”（AUC 均 1.0，3 说话人任务本来就容易），
+  但自空间把**同人区间压到 0.978–0.991（87.5% ≥0.98，30s 起 100%）**，阈值型门禁几乎没有
+  分辨空间；CAM++ 分布 0.65–0.83、对时长的敏感度约为自空间的 **12 倍**。
+  → **门禁应以独立声纹为主、自空间为辅（或双门槛）。**
+- 证据：`dual_embed/README.md` + `report.md` + `results.json` + `pairs.csv`；工具
+  `tools/voicebank_dual_embed.py`（复跑：`--exp pilotC`，worker 8001 需在跑）。
+- ★ 引用时必须带 `dual_embed/README.md` 的边界：n=3、公开语料拼接参考音、**非被试**、不外推。
