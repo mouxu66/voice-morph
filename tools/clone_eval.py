@@ -2,8 +2,15 @@
 """克隆音色客观评测：相似度(SECS) + 自然度(NatScore) + 能量/时长硬指标 -> 评分 CSV。
 
 设计要点（与项目现有设施对齐，不重复造轮子）：
-    - 说话人相似度 SECS：复用 m2_server worker 8001 的 /emb 接口（底层即 CAM++，
-      项目已有，无需本地再加载）。worker 未启动则 SECS 列留空并提示。
+    - 说话人相似度 SECS：复用 m2_server worker 8001 的 /emb 接口。
+      ★ **这把尺子是 Qwen3-TTS 自己的说话人编码器（自空间），不是 CAM++**
+      （`qwen3_tts_service._speaker_embedding` → `create_voice_clone_prompt(x_vector_only_mode=True)`
+      → `ref_spk_embedding`）。与克隆条件同源 = 出题人自己判卷，实测会**饱和**：
+      pilotC 48 条样本上同人分 87.5% 挤在 ≥0.98、30s 起 100%，整把尺子只有 ~0.07 行程。
+      真正独立的 CAM++ 声纹在 `m2_server/speaker_sep._sv_embed`（16k / 192 维），
+      由 `audition_score.py` 那套 harness 使用 —— **两个工具的列都叫 secs，尺子不同，
+      阈值不可互用**（门禁一律走 `tools/voice_dual_gate.py` 的双门槛）。
+      worker 未启动则 SECS 列留空并提示。
     - 自然度 NatScore：本地重建的 natscore_local 包（tools/natscore_local），
       读取已下载的 models/natscore/final.pt + 已缓存的 openai/whisper-small 编码器，
       完全离线、不依赖被墙的 git/pip 安装。
@@ -147,7 +154,7 @@ def main():
     if not args.no_secs:
         try:
             secs_ref = _get_emb(Path(args.ref).resolve())
-            print("[secs] 已取原声嵌入（worker 8001 / CAM++）", flush=True)
+            print("[secs] 已取原声嵌入（worker 8001 / Qwen 自空间，非 CAM++）", flush=True)
         except Exception as e:
             print(f"[secs] 警告：原声嵌入失败（worker 未启动？）：{e}", flush=True)
             secs_ref = None
