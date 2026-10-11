@@ -203,6 +203,87 @@
    }
   ]
  },
+ "prod_margin": {
+  "n": 12,
+  "n_measured": 12,
+  "passed": 12,
+  "min": 0.2137,
+  "rows": [
+   {
+    "out_rel": "outputs\\qc_calib\\out\\kangaroo_v2__aishell3_ssb0407.wav",
+    "exp": "kangaroo_v2",
+    "input": "aishell3_ssb0407",
+    "margin": 0.4749
+   },
+   {
+    "out_rel": "outputs\\qc_calib\\out\\kangaroo_v2__teacher_voice.wav",
+    "exp": "kangaroo_v2",
+    "input": "teacher_voice",
+    "margin": 0.5173
+   },
+   {
+    "out_rel": "outputs\\qc_calib\\out\\kangaroo_v2__vbsyn_trial_ssb0033.wav",
+    "exp": "kangaroo_v2",
+    "input": "vbsyn_trial_ssb0033",
+    "margin": 0.4206
+   },
+   {
+    "out_rel": "outputs\\qc_calib\\out\\kangaroo_v2_40k__aishell3_ssb0407.wav",
+    "exp": "kangaroo_v2_40k",
+    "input": "aishell3_ssb0407",
+    "margin": 0.3824
+   },
+   {
+    "out_rel": "outputs\\qc_calib\\out\\kangaroo_v2_40k__teacher_voice.wav",
+    "exp": "kangaroo_v2_40k",
+    "input": "teacher_voice",
+    "margin": 0.5601
+   },
+   {
+    "out_rel": "outputs\\qc_calib\\out\\kangaroo_v2_40k__vbsyn_trial_ssb0033.wav",
+    "exp": "kangaroo_v2_40k",
+    "input": "vbsyn_trial_ssb0033",
+    "margin": 0.3999
+   },
+   {
+    "out_rel": "outputs\\qc_calib\\out\\katoong_lanyangyang__aishell3_ssb0407.wav",
+    "exp": "katoong_lanyangyang",
+    "input": "aishell3_ssb0407",
+    "margin": 0.4838
+   },
+   {
+    "out_rel": "outputs\\qc_calib\\out\\katoong_lanyangyang__teacher_voice.wav",
+    "exp": "katoong_lanyangyang",
+    "input": "teacher_voice",
+    "margin": 0.2137
+   },
+   {
+    "out_rel": "outputs\\qc_calib\\out\\katoong_lanyangyang__vbsyn_trial_ssb0033.wav",
+    "exp": "katoong_lanyangyang",
+    "input": "vbsyn_trial_ssb0033",
+    "margin": 0.3877
+   },
+   {
+    "out_rel": "outputs\\qc_calib\\out\\katoong_manbo__aishell3_ssb0407.wav",
+    "exp": "katoong_manbo",
+    "input": "aishell3_ssb0407",
+    "margin": 0.2793
+   },
+   {
+    "out_rel": "outputs\\qc_calib\\out\\katoong_manbo__teacher_voice.wav",
+    "exp": "katoong_manbo",
+    "input": "teacher_voice",
+    "margin": 0.2709
+   },
+   {
+    "out_rel": "outputs\\qc_calib\\out\\katoong_manbo__vbsyn_trial_ssb0033.wav",
+    "exp": "katoong_manbo",
+    "input": "vbsyn_trial_ssb0033",
+    "margin": 0.3882
+   }
+  ],
+  "criterion": "CAM++ 余量 > 0（相比输入者本人，更像自己的目标参考）"
+ },
  "inputs": {
   "aishell3_ssb0407": "outputs\\qc_calib\\in\\aishell3_ssb0407.wav",
   "teacher_voice": "outputs\\qc_calib\\in\\teacher_voice.wav",

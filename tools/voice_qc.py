@@ -15,9 +15,13 @@
     - 测试输入优先用「其他音色」的参考音频（跨音色转换才检验泛化），音色库只有
       一个音色时回退该音色自己的数据集样本（自转换，记 self_convert=true）；
     - RVC 推理走 offline_vc_infer.py（与离线变声页同一文件级链路，pitch=0）；
-    - 声纹余弦 = 变声输出 vs 目标音色参考（voicebank reference.wav，缺失回退数据集
-      样本），阈值 ≥0.95；ASR 字符重合度阈值 ≥0.6（whisper 逐次转写有噪声，与
-      tools/cascade_acceptance.py 同口径）。
+    - 声纹：**相对余量判据**（2026-10-11 本机标定）—— 独立声纹（CAM++）比「输出离目标参考」
+      与「输出离输入者本人」：前者更大才算认得出目标音色；自空间余弦仍记录在 value 里
+      （历史口径可比），但**不再当准入线**（实测 ≥0.95 会误杀一半同人，且两把尺子的
+      同人/异人簇都重叠 ⇒ 任何绝对阈值都有错判）。证据：
+      `docs/大创申报-2026-10/rvc-qc-判据标定/`；ASR 字符重合度阈值 ≥0.6（whisper 逐次
+      转写有噪声，与 tools/cascade_acceptance.py 同口径）。
+      相对判据**问不出来**时如实记「未测」（自转换、CAM++ 权重未缓存）—— 未测 ≠ 不合格。
 任何一步失败都会把 error 写进 JSON、绝不裸崩（rvc_live 训练完成回调依赖此约定）。
 """
 import argparse
@@ -43,6 +47,11 @@ QC_DIR = cfg.OUTPUTS_DIR / "qc"
 
 # 语速警告阈值（字/秒）：素材语速过快会直接劣化模型可懂度（作者踩过的坑）
 SPEED_WARN = 6.0
+
+#: 目标参考音的时长下限（秒）：短于此就在验收结果里提示。
+#: 依据：2026-10-11 标定里 4.2s 的市场音色 preview 是同人/异人**簇重叠**的主因
+#: （同人最低 0.2659 就出自它）；时长越短，CAM++ 的声纹估计越不可靠。
+MIN_REF_SECONDS = 5.0
 
 
 def _get_json(url: str, timeout: int = 10) -> dict:
@@ -143,6 +152,75 @@ def _f0_median(path: Path) -> float:
 
 def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
+
+
+def _short_ref_warning(dur_s: float) -> str | None:
+    """目标参考音太短时的提示（< `MIN_REF_SECONDS`）；够长返回 None。
+
+    只提示，**不作废判定** —— 实测 4.2s 参考在相对判据下仍能排中，只是结论更脆。
+    """
+    if dur_s >= MIN_REF_SECONDS:
+        return None
+    return (f"目标参考音只有 {dur_s:.1f}s（< {MIN_REF_SECONDS:.0f}s）：声纹判定的"
+            f"时间信息偏少，结论更脆；建议换更长的参考音后重跑")
+
+
+def _overall_pass(items: dict) -> bool:
+    """验收总判定：**只有明确判负（pass is False）才拦**，未测（None）不算不合格。
+
+    ★ 三态是声纹项引入的：相对判据在自转换 / CAM++ 权重未缓存时**问不出来**，
+    那时“未测”与“不合格”是两回事 —— 把未测打成 FAIL，用户会去修一个不存在的问题。
+    """
+    return bool(items) and all(it["pass"] is not False for it in items.values())
+
+
+def _cam_sim(a: Path, b: Path) -> float | None:
+    """CAM++ 独立声纹余弦（两段音频各自重采样到 16k 后取嵌入）；拿不到就返回 None。
+
+    ★ 权重**没缓存就直接返回 None**（见 `speaker_sep.sv_cached`）：验收是用户请求里的
+    一环，不能因为要算这个加分项而**联网下载 ~30MB** 模型（断网机必失败）。
+    与 `m2_server/voicepreserve._cam_sim_vs_baseline` 同一口径 —— 失败只是「未测」。
+    """
+    try:
+        import numpy as np
+        import speaker_sep
+
+        if not speaker_sep.sv_cached():
+            return None
+        v1 = speaker_sep._sv_embed(speaker_sep._read16k(a))
+        v2 = speaker_sep._sv_embed(speaker_sep._read16k(b))
+        if v1 is None or v2 is None:
+            return None
+        denom = float(np.linalg.norm(v1) * np.linalg.norm(v2))
+        if denom <= 0:
+            return None
+        return float(np.dot(v1, v2)) / denom
+    except Exception:  # noqa: BLE001 —— 判据算不出来不该拖垮验收（同 voicepreserve）
+        return None
+
+
+def _voice_margin(out_wav: Path, test_in: Path, emb_ref: Path | None,
+                  self_convert: bool) -> tuple[float | None, str]:
+    """相对判据：`CAM++(输出, 目标参考) − CAM++(输出, 输入者本人)`。
+
+    返回 `(margin, 说明)`；`margin is None` = **问不出来**（未测 ≠ 不合格）：
+      - **自转换**：目标参考就是输入本身，两侧是同一段音 → 余量恒 0，没有信息；
+      - CAM++ 权重未缓存 / 嵌入失败 —— 不联网、不编数字（同 `voicepreserve`）。
+
+    ★ 为什么比的是「输入者本人」而不是某个固定阈值：输出是拿这段音转出来的，天然带着
+    源说话人的痕迹，它是最难的异人对照。2026-10-11 标定里这一对照在 12/12 份输出上
+    都被 CAM++ 正确地排在目标参考之后（余量 +0.024~+0.516），而**同一批上任何绝对
+    阈值都有错判**（两簇重叠）。见 `docs/大创申报-2026-10/rvc-qc-判据标定/`。
+    """
+    if self_convert or emb_ref is None:
+        return None, "自转换（目标参考即输入本身），相对余量无信息"
+    sim_target = _cam_sim(out_wav, emb_ref)
+    if sim_target is None:
+        return None, "独立声纹不可用（CAM++ 权重未缓存或嵌入失败）"
+    sim_input = _cam_sim(out_wav, test_in)
+    if sim_input is None:
+        return None, "输入者本人的声纹算不出，相对余量无法比较"
+    return sim_target - sim_input, f"目标 {sim_target:.4f} vs 输入者 {sim_input:.4f}"
 
 
 # ---------------- 数据集预检 ----------------
@@ -334,7 +412,8 @@ def _pick_emb_ref(exp: str, test_in: Path, self_convert: bool) -> Path | None:
 def run_voice(exp: str, ref: str = "") -> dict:
     res = {"items": {}, "score": None, "pass": None, "input": "", "output": "",
            "emb_ref": "", "self_convert": False, "error": None,
-           "error_stage": None, "hint": None}
+           "error_stage": None, "hint": None, "warnings": [],
+           "emb_ref_seconds": None}
 
     try:
         _get_json(WORKER + "/health", timeout=10)
@@ -371,6 +450,18 @@ def run_voice(exp: str, ref: str = "") -> dict:
     res.update(input=str(test_in), self_convert=self_convert,
                emb_ref=str(emb_ref) if emb_ref else "")
 
+    # 目标参考音时长：<MIN_REF_SECONDS 就提示（标定证据：短参考是簇重叠的主因）。
+    # 只提示，**不作废判定** —— 实测 4.2s 参考在相对判据下仍能排中，结论只是更脆。
+    if emb_ref is not None and not self_convert:
+        try:
+            ref_dur, _ = _wav_info(emb_ref)
+            res["emb_ref_seconds"] = round(ref_dur, 2)
+            warn = _short_ref_warning(ref_dur)
+            if warn:
+                res["warnings"].append(warn)
+        except Exception:  # noqa: BLE001 —— 量不了时长不该让验收失败
+            pass
+
     QC_DIR.mkdir(parents=True, exist_ok=True)
     in_16k = QC_DIR / f"{exp}_vc_in_16k.wav"
     out_path = QC_DIR / f"{exp}_vc_out.wav"
@@ -405,9 +496,12 @@ def run_voice(exp: str, ref: str = "") -> dict:
 
     items: dict[str, dict] = {}
 
-    def _item(key: str, value, ok: bool, score_f: float, detail: str):
+    def _item(key: str, value, ok, score_f: float, detail: str):
+        """`ok` 允许 **None = 未测**（不是不合格）：目前只有声纹项会用到 ——
+        相对判据问不出来时（自转换 / CAM++ 权重未缓存）不能假装它不合格。"""
         items[key] = {"value": None if value is None else round(float(value), 4),
-                      "pass": bool(ok), "score": round(25.0 * score_f, 1), "detail": detail}
+                      "pass": None if ok is None else bool(ok),
+                      "score": round(25.0 * score_f, 1), "detail": detail}
 
     # 1) 时长比（输出/输入）：RVC 忠实保速，偏离 1 说明引擎或素材异常
     dur_in, _ = _wav_info(in_16k)
@@ -444,7 +538,10 @@ def run_voice(exp: str, ref: str = "") -> dict:
     except Exception as e:
         _item("asr_overlap", None, False, 0.0, f"转写失败: {e}")
 
-    # 4) 声纹余弦：变声输出 vs 目标音色参考，阈值 ≥0.95
+    # 4) 声纹：**相对余量**判 pass（2026-10-11 标定），自空间余弦仍记录在 value。
+    #    ★ 现役「自空间 ≥0.95」在这条链路上会误杀一半同人；而两把尺子的同人/异人簇
+    #    都重叠 ⇒ 没有任何绝对阈值可用。相对问法（比目标参考更近还是比源说话人更近）
+    #    在同一批 12/12 份输出上都成立。证据：docs/大创申报-2026-10/rvc-qc-判据标定/
     try:
         if emb_ref is None:
             raise RuntimeError("没有目标音色参考音频（voicebank/数据集都缺）")
@@ -452,15 +549,27 @@ def run_voice(exp: str, ref: str = "") -> dict:
 
         v1, v2 = np.asarray(_emb(out_path)), np.asarray(_emb(emb_ref))
         sim = float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+        # 分数仍按自空间折算（25 分制与历史 JSON 口径不变 —— 分制换个尺子就不可比了）
         f = _clamp01((sim - 0.90) / 0.07)
         ref_name = "输入自身" if self_convert else Path(emb_ref).name
-        _item("emb_sim", sim, sim >= 0.95, f, f"声纹余弦 {sim:.4f}（vs {ref_name}）")
+        margin, why = _voice_margin(out_path, test_in, emb_ref, self_convert)
+        if margin is None:
+            _item("emb_sim", sim, None, f,
+                  f"声纹余弦 {sim:.4f}（vs {ref_name}）；相对判据未测：{why}")
+        else:
+            ok = margin > 0
+            _item("emb_sim", sim, ok, f,
+                  f"声纹余弦 {sim:.4f}（vs {ref_name}）；独立声纹余量 {margin:+.4f}"
+                  f"（{why}）→ {'认得出目标音色' if ok else '更像源说话人'}")
+        items["emb_sim"]["margin"] = None if margin is None else round(float(margin), 4)
     except Exception as e:
-        _item("emb_sim", None, False, 0.0, f"声纹对比失败: {e}")
+        _item("emb_sim", None, None, 0.0, f"声纹对比失败（未测）: {e}")
+        items["emb_sim"]["margin"] = None
 
     res["items"] = items
     res["score"] = round(sum(it["score"] for it in items.values())) if items else None
-    res["pass"] = all(it["pass"] for it in items.values()) if items else False
+    # 未测（pass is None）不算不合格 —— 只有**明确判负**才拦（声纹项会用到这个三态）
+    res["pass"] = _overall_pass(items)
 
     # 5) 嗓音客观指标 + 三灯（2026-09-29 新增）。
     #    ⚠️ 刻意**不进 items、不进 score** —— 现有 4 指标 ×25 = 100 分制是
@@ -577,6 +686,11 @@ def _lamp_icon(lamp: str | None) -> str:
             voice_report.RED: "● 红"}.get(lamp, "○ 未测")
 
 
+def _flag(passed) -> str:
+    """三态：True→PASS、False→FAIL、**None→未测**（未测 ≠ 不合格，不能打成 FAIL）。"""
+    return "未测" if passed is None else ("PASS" if passed else "FAIL")
+
+
 def _print_lamps(lamps: dict | None):
     """打印三灯。lamps 为 None 说明体检没跑成 —— 明确说出来，不静默跳过。"""
     if not lamps:
@@ -618,8 +732,10 @@ def _print_summary(exp: str, data: dict):
                 print(f"  → 排查建议: {v['hint']}")
         else:
             for k, it in v.get("items", {}).items():
-                print(f"  {k}: {it['detail']}  ->  {'PASS' if it['pass'] else 'FAIL'}")
-            print(f"  score {v.get('score')}/100  ->  {'PASS' if v.get('pass') else 'FAIL'}")
+                print(f"  {k}: {it['detail']}  ->  {_flag(it['pass'])}")
+            print(f"  score {v.get('score')}/100  ->  {_flag(v.get('pass'))}")
+            for w in v.get("warnings", []):
+                print(f"  警告: {w}")
             _print_lamps(v.get("lamps"))
 
 

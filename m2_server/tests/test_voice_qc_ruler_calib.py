@@ -150,6 +150,8 @@ def test_committed_pairs_reproduce_the_committed_decision():
     # 相对排序这一节也是结论的一部分，同样不许与代码脱钩
     assert fresh["rank"] == committed["rank"], \
         "排序分析算不出入库那份 —— 改了 rank 逻辑没重标，或改了证据没改结论"
+    assert fresh["prod_margin"] == committed["prod_margin"], \
+        "上线判据的重放算不出入库那份 —— 改了 prod_margin/rules 没重标"
 
 
 # ---------------- 4. rank_analysis()：绝对阈值之外的相对判据 ----------------
@@ -214,3 +216,11 @@ def test_committed_evidence_is_actually_decisive():
     assert committed["rank"]["n_outputs"] > 0, "排序分析没入库"
     assert committed["rank"]["cam_rank1_rate"] == 1.0, \
         "独立声纹在这条链路上排不出第 1 —— 那它也没法当相对判据"
+    # ★ 上线判据（`voice_qc` 的 emb_sim pass = 相对余量）在这批证据上必须全过，
+    #   否则「换成它」就没有依据 —— 这也把「报告里的建议」与「代码里的实现」钉在一起
+    m = committed["prod_margin"]
+    assert m["n_measured"] == committed["n_same"], \
+        f"还有 {m['n'] - m['n_measured']} 份输出的余量算不出来（找不到输入者参考？）"
+    assert m["passed"] == m["n_measured"], \
+        f"上线判据在标定数据上就挂了 {m['n_measured'] - m['passed']} 份同人"
+    assert m["min"] > 0

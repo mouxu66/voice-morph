@@ -451,6 +451,39 @@ def rank_analysis(scored: list[dict]) -> dict:
     }
 
 
+def prod_margin(scored: list[dict]) -> dict:
+    """按**已落地的验收判据**重算余量（口径必须与 `tools/voice_qc.py` 的
+    `_voice_margin` 一致）：
+
+        margin = CAM++(输出, 目标参考) − CAM++(输出, 输入者本人的参考)
+
+    ★ 它能**只从逐对分数算出来**，所以可以把「上线的判据在这批数据上成不成立」
+    写进 committed 证据并逐次重算 —— 而不是只活在报告文字里。
+    与 `voice_qc._voice_margin` 的等价性由
+    `m2_server/tests/test_voice_qc_emb_judgement.py::test_evidence_reproduces_the_shipped_criterion`
+    交叉验证（拿本函数的输出喂给生产函数比数）。
+    """
+    rows: list[dict] = []
+    for p in scored:
+        if p["role"] != "same":
+            continue
+        # 输入者本人的参考：`INPUTS` 的参考音是以**输入 id** 命名的（ref_id == input）
+        rival = next((q for q in scored
+                      if q["out_rel"] == p["out_rel"] and q["ref_id"] == p["input"]), None)
+        if rival is None:
+            rows.append({"out_rel": p["out_rel"], "margin": None,
+                         "error": "找不到输入者本人的参考配对"})
+            continue
+        rows.append({"out_rel": p["out_rel"], "exp": p.get("exp"),
+                     "input": p.get("input"),
+                     "margin": round(p["cam_cos"] - rival["cam_cos"], 4)})
+    vals = [r["margin"] for r in rows if r["margin"] is not None]
+    return {"n": len(rows), "n_measured": len(vals),
+            "passed": sum(v > 0 for v in vals),
+            "min": min(vals) if vals else None, "rows": rows,
+            "criterion": "CAM++ 余量 > 0（相比输入者本人，更像自己的目标参考）"}
+
+
 def analyze(scored: list[dict]) -> dict:
     """两把尺子的分布/AUC/EER/d′ + 现役 0.95 的表现 + 若改双门槛会是哪三个数。"""
     same = [p for p in scored if p["role"] == "same"]
@@ -483,7 +516,8 @@ def analyze(scored: list[dict]) -> dict:
 
     return {"n_same": len(same), "n_cross": len(cross), "rulers": rulers,
             "legacy_decision": decision, "dual_derived": derived,
-            "dual_audit": audit, "rank": rank_analysis(scored)}
+            "dual_audit": audit, "rank": rank_analysis(scored),
+            "prod_margin": prod_margin(scored)}
 
 
 # ---------------- 报告 ----------------
@@ -540,6 +574,10 @@ def write_report(results: dict, out_path: Path) -> Path:
         *_rank_rows(r.get("rank") or {}),
         "",
         *_rank_note(r.get("rank") or {}),
+        "",
+        "### 5.1 已落地判据在这批证据上的重放（`prod_margin`）",
+        "",
+        *_prod_note(r.get("prod_margin") or {}),
         "",
         "## 6 边界（照抄，别藏）",
         "",
@@ -614,6 +652,20 @@ def _rank_rows(rank: dict) -> list[str]:
                      f"{row['qwen_rank']} | {_f4(row['qwen_margin'])} | "
                      f"{row['cam_rank']} | {_f4(row['cam_margin'])} |")
     return lines
+
+
+def _prod_note(m: dict) -> list[str]:
+    if not m:
+        return ["（无 `prod_margin`：这份证据是旧版脚本产出的，重新跑一遍标定）"]
+    missing = m["n"] - m["n_measured"]
+    out = [
+        f"- 判据：{m['criterion']}",
+        f"- 结果：**{m['passed']}/{m['n_measured']}** 份输出通过（最小余量 "
+        f"{_f4(m['min'])}）" + (f"；另有 {missing} 份算不出来（见 rows 的 error）" if missing else ""),
+        "- 核算口径与 `tools/voice_qc.py` 的 `_voice_margin` 一致（单测交叉验证），"
+        "且**只从逐对分数就能重算** —— 所以它能跟着证据一起入库、每次重标自动验一次。",
+    ]
+    return out
 
 
 def _rank_note(rank: dict) -> list[str]:

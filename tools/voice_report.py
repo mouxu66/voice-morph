@@ -66,8 +66,11 @@ GREEN, YELLOW, RED = "green", "yellow", "red"
 # 语义：绿 = 在你自己的素材基线内；黄 = 越过 P25；红 = 越过 P5（尾部）。
 # 每个阈值都给了出处，改之前先回去看 distribution。
 _THRESHOLDS = {
-    # 相似度：沿用 voice_qc.py 既有口径（≥0.95 PASS），黄档留缓冲区。
-    # 注：它测的是**单次变声的余弦**，不是中位数，所以锚在既有验收口径上。
+    # 相似度：锚在**素材基线的像度**（≥0.95 绿、≥0.90 黄）。
+    # ⚠️ 2026-10-11 起它与 `voice_qc` 的**验收 pass 判据解耦**：验收那一项改成了
+    # 相对余量（CAM++ 比「目标参考 vs 输入者本人」，见 `tools/voice_qc.py` 与
+    # `docs/大创申报-2026-10/rvc-qc-判据标定/`），而这个阈值仍是自空间像度的基线锚点。
+    # 拿它当验收准入线会误杀一半同人（实测）——**别把两者拉齐**。
     "emb_sim":  {"green": 0.95, "yellow": 0.90, "higher_better": True},
     # 自然度：中位数分布 P25=11.39 / P5=11.09
     "hnr":      {"green": 11.39, "yellow": 11.09, "higher_better": True},
@@ -123,7 +126,8 @@ def similarity_lamp(emb_sim: float | None = None, cam_sim: float | None = None) 
       - 给了 `cam_sim` → 走**双门槛**：CAM++ 主判 + 自空间（`emb_sim`）保底；
         pass / review / reject 对应 绿 / 黄 / 红，且 detail 把两把尺子的值都写出来
         （矛盾时用户能看见「为什么是黄的」）。
-      - 只给 `emb_sim` → **单尺口径**（沿用既有 ≥0.95）。⚠️ 它量的是 Qwen 自空间，
+      - 只给 `emb_sim` → **单尺口径**（锚在 ≥0.95 的**素材基线像度**上，不是验收准入线：
+        `voice_qc` 的验收 pass 自 2026-10-11 起是相对余量，两者已解耦）。⚠️ 它量的是自空间，
         与克隆同一编码器（自证）：实测异人上界 0.9534 离 0.95 只差 0.0034、
         同人分又全挤在 0.978 以上 —— 几乎没有分辨余量。**新代码请传 `cam_sim`。**
 
@@ -145,7 +149,7 @@ def similarity_lamp(emb_sim: float | None = None, cam_sim: float | None = None) 
     if emb_sim is None:
         det = "未测：需要先完成一次变声验收（依赖 worker 8001 与可推理权重）"
     else:
-        det = (f"声纹余弦 {emb_sim:.4f}（单尺阈值 ≥0.95；它是自空间分，"
+        det = (f"声纹余弦 {emb_sim:.4f}（单尺参考线 ≥0.95＝素材基线像度；它是自空间分，"
                f"与克隆同一编码器 —— 有独立声纹时应改用双门槛）")
     return Lamp("similarity", "相似度", emb_sim, lamp, det, ["emb_sim"])
 
