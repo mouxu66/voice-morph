@@ -87,7 +87,7 @@ def probe_quant(base, tag):
     return ok, total_m
 
 
-def build(adapter, use_4bit, ref):
+def build(adapter, use_4bit, ref, lora_scale=2.0):
     from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
 
     kw = dict(torch_dtype=torch.bfloat16, attn_implementation="sdpa")
@@ -100,6 +100,16 @@ def build(adapter, use_4bit, ref):
     probe_quant(b, "4bit" if use_4bit else "bf16")
     set_anchor(b, ref)
     m = PeftModel.from_pretrained(b, adapter) if adapter else b
+    # ★ LoRA 有效缩放 = lora_alpha/r=32/16=2.0 默认过冲（#343），≤1.0 才稳定。
+    #   通过改各 lora 模块 scaling[active] 直接生效，无需重训/重存 adapter。
+    if adapter is not None and lora_scale != 2.0:
+        n = 0
+        for mod in m.modules():
+            if hasattr(mod, "scaling") and isinstance(getattr(mod, "scaling"), dict):
+                for k in mod.scaling:
+                    mod.scaling[k] = float(lora_scale)
+                n += 1
+        log(f"  [lora] 已把 {n} 个 lora 模块 scaling 覆盖为 {lora_scale}")
     m.eval()
     tc = b.config.talker_config
     tc.spk_id, tc.spk_is_dialect = {SPK: SPK_ID}, {SPK: False}
@@ -123,6 +133,8 @@ def main():
     ap.add_argument("--ref", default=REF, help="参考音（决定锚点声纹）")
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--texts", default="", help="逗号分隔，覆盖默认 3 条评测文本")
+    ap.add_argument("--lora-scale", type=float, default=2.0,
+                    help="LoRA 有效缩放（默认 alpha/r=2.0；#343 实测需 ≤1.0）")
     args = ap.parse_args()
     ref, out_dir = args.ref, args.out
     os.makedirs(out_dir, exist_ok=True)
@@ -141,11 +153,11 @@ def main():
     for arm in args.arms.split(","):
         arm = arm.strip()
         use_4bit = (arm == "4bit")
-        tag = "nf4_train_parity" if use_4bit else "bf16_control"
+        tag = ("nf4" if use_4bit else "bf16") + f"_scale{args.lora_scale:g}"
         log(f"\n########## arm = {tag} ##########")
         q = b = m = None
         try:
-            q, b, m = build(args.adapter, use_4bit, ref)
+            q, b, m = build(args.adapter, use_4bit, ref, lora_scale=args.lora_scale)
             for i, t in enumerate(texts, 1):
                 try:
                     tk = q._tokenize_texts([q._build_assistant_text(t)])
@@ -187,10 +199,11 @@ def main():
     log("\n" + "=" * 84)
     log(f"{'臂':<20}{'平均可懂度':>12}{'平均peak':>11}{'削波%':>9}  判读")
     log("-" * 84)
-    for tag in ("nf4_train_parity", "bf16_control"):
-        rs = [r for r in rows if r["arm"] == tag and "overlap" in r]
+    for pref in ("nf4", "bf16"):
+        rs = [r for r in rows if r["arm"].startswith(pref) and "overlap" in r]
         if not rs:
             continue
+        tag = rs[0]["arm"]
         o = float(np.mean([r["overlap"] for r in rs]))
         pk = float(np.mean([r["peak"] for r in rs]))
         cl = float(np.mean([r["clip_pct"] for r in rs]))

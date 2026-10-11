@@ -34,7 +34,7 @@ from peft import PeftModel
 # 量化配置单一来源：skip 名单与 BitsAndBytesConfig 必须与训练脚本逐字段一致，
 # 禁止在本脚本另抄裸名清单（transformers≥5 前缀/结尾语义下会漏过命门模块，
 # 已造成三次 4bit↔fp 错配事故）。详见 qlora_quant_config.py 顶部说明。
-from qlora_quant_config import build_bnb_config
+from qlora_quant_config import LORA_INFERENCE_SCALE, apply_lora_scale, build_bnb_config
 
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 WORK = os.path.join(ROOT, "media", "ft_work", "ppt12")
@@ -65,6 +65,8 @@ def main():
     ap.add_argument("--out", default=os.path.join(AB, "B"))
     ap.add_argument("--tag", default="")
     ap.add_argument("--max-new-tokens", type=int, default=400)
+    ap.add_argument("--lora-scale", type=float, default=LORA_INFERENCE_SCALE,
+                    help="LoRA 有效缩放；默认 0.5（alpha/r=2.0 会满幅饱和，见 qlora_quant_config）")
     args = ap.parse_args()
 
     from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
@@ -89,7 +91,10 @@ def main():
     base.set_input_embeddings = _si.__get__(base)
 
     log(f"[load] 挂 adapter {args.adapter}")
+    log(f"[load] 挂 adapter {args.adapter}")
     model = PeftModel.from_pretrained(base, args.adapter)
+    n = apply_lora_scale(model, args.lora_scale)
+    log(f"[load] {n} 个 lora 模块有效缩放 -> {args.lora_scale}（默认 alpha/r=2.0 会满幅饱和）")
     model.eval()
 
     # 锚点

@@ -39,6 +39,21 @@ LORA_TARGET_MODULES = [
     "gate_proj", "up_proj", "down_proj",
 ]
 
+# 训练侧 LoRA 超参（adapter_config.json 里就是 r=16 / alpha=32）。
+LORA_R = 16
+LORA_ALPHA = 32
+
+# ★ 推理侧有效 LoRA 缩放（2026-10-12 实测定位，见 docs 犯错指南 #160）：
+#   Peft 实际缩放 = lora_alpha / r = 32/16 = 2.0。在 Qwen3-TTS 这个「talker +
+#   code_predictor」两级、逐帧自回归的自定义模型上，2.0 的 LoRA 增量在自由生成时
+#   逐 token 累积，把 logits/波形推到满幅饱和（peak 钉死 1.00、跑到 token 上限、
+#   ASR 全空）。teacher-forcing 只走一次前向不累积，所以 loss 好看（≈4.0）极具迷惑性。
+#   把有效缩放降到 ≤1.0 立即恢复：实测 scale=0.5 时现成 adapter（无需重训/降级）
+#   3/3 可懂度 0.87/0.79/0.94、peak 0.21~0.23、零削波；4.57.3 与 5.16.1 两栈一致。
+#   社区同款：QwenLM/Qwen3-TTS issue #343（merge at lora_scale≈0.4）。
+#   推理时用 apply_lora_scale() 覆盖各 lora 模块的 scaling[active] 即可，不必重存 adapter。
+LORA_INFERENCE_SCALE = 0.5
+
 # 8 月验收口径的参数量指纹（修复量化名单后必须回到这两个值）。
 AUGUST_BASELINE_TOTAL_M = 1202.9
 AUGUST_BASELINE_TRAINABLE_PCT = 1.599
@@ -66,3 +81,20 @@ def build_bnb_config():
         # 拷贝一份，避免调用方误改这里的全局名单。
         llm_int8_skip_modules=list(MODULES_TO_NOT_CONVERT),
     )
+
+
+def apply_lora_scale(peft_model, scale=LORA_INFERENCE_SCALE):
+    """把 PeftModel 里每个 lora 模块的有效缩放 scaling[active] 覆盖为 `scale`。
+
+    必须在 PeftModel.from_pretrained() 之后、generate() 之前调用。返回被改写的模块数。
+    默认 2.0（alpha/r）会让 Qwen3-TTS 自由生成满幅饱和；见模块顶部 LORA_INFERENCE_SCALE。
+    只改运行时缩放，不动磁盘上的 adapter，因此无需重训/重存，且可随时扫描找最优值。
+    """
+    n = 0
+    for mod in peft_model.modules():
+        scaling = getattr(mod, "scaling", None)
+        if isinstance(scaling, dict):
+            for key in scaling:
+                scaling[key] = float(scale)
+            n += 1
+    return n

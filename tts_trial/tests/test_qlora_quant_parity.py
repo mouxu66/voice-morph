@@ -149,6 +149,37 @@ def test_bnb_config_matches_training():
     assert list(cfg.llm_int8_skip_modules) == Q.MODULES_TO_NOT_CONVERT
 
 
+class _FakeLoraLayer:
+    """最小 lora 模块替身：只有 scaling dict。"""
+    def __init__(self):
+        self.scaling = {"default": 2.0}
+
+
+class _FakeModel:
+    def __init__(self, layers):
+        self._layers = layers
+
+    def modules(self):
+        return iter(self._layers)
+
+
+def test_apply_lora_scale_overwrites_every_lora_layer():
+    """apply_lora_scale 必须把每个 lora 模块的每个 active 缩放都改成给定值。
+
+    守护的是本次真根因：默认 alpha/r=2.0 会让 Qwen3-TTS 自由生成满幅饱和，
+    推理必须统一降到 LORA_INFERENCE_SCALE（0.5）。
+    """
+    a, b, other = _FakeLoraLayer(), _FakeLoraLayer(), object()
+    model = _FakeModel([a, b, other])
+    n = Q.apply_lora_scale(model, Q.LORA_INFERENCE_SCALE)
+    assert n == 2
+    assert a.scaling == {"default": Q.LORA_INFERENCE_SCALE}
+    assert b.scaling == {"default": Q.LORA_INFERENCE_SCALE}
+    # 默认推理缩放必须 ≤1（2.0 已实测饱和崩坏），且与 adapter r/alpha 自洽。
+    assert 0.0 < Q.LORA_INFERENCE_SCALE <= 1.0
+    assert Q.LORA_ALPHA / Q.LORA_R == 2.0
+
+
 def test_skip_semantics_under_transformers_v5():
     """在 transformers≥5 上实测匹配语义：长路径跳过命门模块、裸名漏过、q_proj 仍量化。"""
     transformers = pytest.importorskip("transformers")

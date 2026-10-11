@@ -280,11 +280,12 @@ def train():
                 codec_emb = inner.talker.get_input_embeddings()(codec0.unsqueeze(0))  # [1,N,d]
                 input_embeds = torch.cat([prefill, codec_emb], dim=1)      # [1,P+N,d]
                 P = prefill.shape[1]; N = codec0.shape[0]
+                # ★ 2026-10-12 实验修正（#371/#278 double-shift）：labels 与输入【同位】，
+                # 交给 talker 的 ForCausalLMLoss 内部做【唯一一次】 shift（logits[j]→labels[j+1]）。
+                # 旧写法先手写 shift（labels[P-1]=c0[0]、labels[P:P+N-1]=c0[1:]）再被内部 shift
+                # 一次 → 模型被教成预测 j+2。数据本身不含 EOS（81/81 末尾皆非 eos），停句靠 base 先验。
                 labels = torch.full((1, P + N), -100, dtype=torch.long, device=device)
-                labels[0, P - 1] = codec0[0]
-                if N > 1:
-                    labels[0, P:P + N - 1] = codec0[1:]
-                labels[0, P + N - 1] = inner.config.talker_config.codec_eos_token_id
+                labels[0, P:P + N] = codec0
                 attn = torch.ones((1, P + N), dtype=torch.long, device=device)
 
                 outputs = inner.talker(
