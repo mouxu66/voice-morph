@@ -99,11 +99,18 @@ tts_trial/_archive/
 # ===== 临时垃圾（删除脚本时的临时产物，不入库）=====
 _trash_20260831/
 
+# ===== 申报素材大文件（177.9MB 录音原片，只在本机用，不入库）=====
+docs/大创申报-2026-10/*.mp4
+
 # ===== 社区参考仓库（克隆下来仅供本地阅读，不入库）=====
 _ref/
 
 # ===== Qwen3-TTS 官方仓库（第三方 clone）=====
 tts_trial/Qwen3-TTS/
+
+# ===== 微调脚本的本地补丁副本（源目录被上面那条忽略，补丁必须单独留痕）=====
+# 见 docs/犯错指南.md §157（repo 根插 sys.path 会遮蔽 site-packages 的 qwen_tts）
+!tts_trial/finetuning_patches/
 
 # ===== MeanVC2 官方仓库（第三方 clone + 大权重 WavLM/fastu2pp/vocos，不入库；
 # 本地补丁 _jit_load_cn 中文路径 fallback 见 docs/犯错指南.md §3.12）=====
