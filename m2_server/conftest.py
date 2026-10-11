@@ -51,6 +51,14 @@ os.environ.setdefault("VM_SOUNDBOARD", "0")
 # 而不是把这个开关打开。
 os.environ.setdefault("VM_PASSTHROUGH", "0")
 
+# 测试环境关掉 CAM++ 独立声纹打分（2026-10-11）：它是随访/双门槛门禁的**主判**
+# （`voicepreserve._cam_sim_vs_baseline`），真跑要 import modelscope + torch、
+# 加载模型并对每个用例做一次推理（几秒起步），而单测要的是**判词逻辑**、
+# 不是模型推理。要覆盖「真算一遍余弦」的用例自己 monkeypatch `speaker_sep._sv_embed`
+# / `speaker_sep._read16k`，或 monkeypatch.setenv("VM_CAM_SIM", "1") 后 stub 掉推理。
+# 生产环境不设这个变量（默认 "1"，且只在权重已缓存时才会真跑）。
+os.environ.setdefault("VM_CAM_SIM", "0")
+
 # ★ 数据目录（outputs/ 与 media/）必须在**任何 m2_server 模块被导入之前**切到临时目录
 # （2026-09-22）。
 #

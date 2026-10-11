@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import shutil
@@ -1015,6 +1016,95 @@ def _emb_sim_vs_baseline(pid: str, wav: Path, timeout_s: int = 60) -> float | No
         return None
 
 
+#: CAM++ SV（说话人验证）模型目录名 —— 判「这段音频还是不是本人」的**独立尺子**。
+#: 主模型与许可见 `speaker_sep.py`（Apache-2.0，免认证）。
+_CAM_SV_MODEL = "speech_campplus_sv_zh-cn_16k-common"
+
+
+def _cam_cache_ready() -> bool:
+    """CAM++ SV 权重是否**已在本机缓存**。
+
+    ★ 门禁的独立声纹是主判，但它**不在用户请求里联网下载模型**：
+    权重 ~30MB、首跑还要拉配置，让一次「上传随访」卡在网络上（断网机必失败）
+    不值得。没缓存就如实降级成「未测」（判词 `unknown`，**不是不合格**）；
+    用户用「说话人分离 / 切片筛选」时会把这份权重正常拉下来，之后门禁自动生效。
+
+    缓存根：`MODELSCOPE_CACHE` > `~/.cache/modelscope`；目录名形如
+    `damo--speech_campplus_sv_zh-cn_16k-common`（2026-10-11 实测本机布局）。
+    """
+    root = os.environ.get("MODELSCOPE_CACHE") or os.path.join(
+        os.path.expanduser("~"), ".cache", "modelscope")
+    try:
+        return any(_CAM_SV_MODEL in name for name in os.listdir(os.path.join(root, "models")))
+    except OSError:
+        return False
+
+
+def _cam_sim_vs_baseline(pid: str, wav: Path) -> tuple[float | None, str]:
+    """音频 vs 基线参考音（当前最长档）的 **CAM++ 独立声纹**余弦 —— 双门槛的主判。
+
+    与 `_emb_sim_vs_baseline`（自空间，保底）的三处刻意差异：
+      - **不依赖 worker**：CAM++ 跑在主进程环境（`speaker_sep` 单例），
+        随访不必等 GPU 服务起来；
+      - **不联网**：权重没缓存直接跳过（见 `_cam_cache_ready`）；
+      - 返回 `(None, 原因)` 而非只返回 None —— 原因要进随访记录，
+        否则「没测到」与「测出来不合格」在 UI 上长得一样。
+
+    失败一律不抛：与随访「加分项不许拖垮主流程」同一条约定。
+    `VM_CAM_SIM=0` 可关掉（测试环境默认关，见 `conftest.py`）。
+    """
+    if os.environ.get("VM_CAM_SIM", "1") == "0":
+        return None, "已关闭（VM_CAM_SIM=0）"
+    try:
+        ref = reference_path(pid)
+        if ref is None:
+            return None, "档案还没有参考音（没有基线可比）"
+        if not _cam_cache_ready():
+            return None, "CAM++ 权重未在本机缓存（不在请求里联网下载）"
+        import numpy as np
+        import speaker_sep
+
+        v1 = speaker_sep._sv_embed(speaker_sep._read16k(wav))
+        v2 = speaker_sep._sv_embed(speaker_sep._read16k(ref))
+        if v1 is None or v2 is None:
+            return None, "声纹提取失败（CAM++ 返回空）"
+        denom = float(np.linalg.norm(v1) * np.linalg.norm(v2))
+        if denom <= 0:
+            return None, "声纹向量为零向量"
+        return round(float(np.dot(v1, v2)) / denom, 4), ""
+    except Exception as e:  # noqa: BLE001 —— 加分项不许拖垮主流程（同 _emb_sim_vs_baseline）
+        return None, f"声纹对比失败（{type(e).__name__}）"
+
+
+def assess_sample(pid: str, wav: Path) -> dict:
+    """对一段音频跑**双门槛**评估：CAM++ 主判 + 自空间（Qwen `/emb`）保底。
+
+    这是质量门禁的**取数口** —— 随访（`add_followup`）用它；将来给「合成结果 vs
+    参考音」打分也用它。判据本身全在 `tools/voice_dual_gate.py`（纯函数、有回归），
+    这里只负责「把两把尺子的分算出来」。
+
+    为什么是两把尺子：自空间与克隆同源（自己出题自己判卷），实测同人分被压在
+    0.978–0.991、异人上界 0.9534 —— 单用它做阈值门禁几乎没有分辨空间；CAM++ 是
+    独立模型，分布铺得开（同人 0.649–0.835 / 异人 -0.013–0.274）。证据与边界：
+    `docs/大创申报-2026-10/pilotC-公开语料证据/dual_embed/README.md`。
+
+    返回 `{cam_sim, cam_error, qwen_sim, dual}`；两把尺子都拿不到时 `dual.verdict
+    == "unknown"`（未测 ≠ 不合格，绝不编数字顶上）。
+    """
+    cam_sim, cam_err = _cam_sim_vs_baseline(pid, wav)
+    qwen_sim = _emb_sim_vs_baseline(pid, wav)
+    try:
+        ensure_tools_path()  # ← 同 _metrics_for：不接就是 ModuleNotFoundError
+        import voice_dual_gate
+
+        dual = voice_dual_gate.verdict(cam_sim=cam_sim, qwen_sim=qwen_sim)
+    except Exception as e:  # noqa: BLE001 —— 判据模块坏了也只是「未测」
+        dual = {"verdict": "unknown", "decided_by": None,
+                "reasons": [f"双门槛判据不可用（{type(e).__name__}）"], "thresholds": None}
+    return {"cam_sim": cam_sim, "cam_error": cam_err,
+            "qwen_sim": qwen_sim, "dual": dual}
+
+
 def add_followup(pid: str, src: Path, note: str = "") -> dict:
     """追加一次「声音随访」：录音 → wav 归一 → 现算门禁指标 → 按时间入库。
 
@@ -1024,7 +1114,12 @@ def add_followup(pid: str, src: Path, note: str = "") -> dict:
       - **不检查 consent**：与 `add_reference` 同一语义 —— 录制与给自己建档不是克隆。
       - **指标算不出来不是失败**（与 gate() 的 partial 同哲学）：录音照样入库，
         metrics / lamps 记 None 并留 error 说明 —— 编一个数字顶上去比留白危险得多。
-      - **相似度是加分项**：worker 没跑 / 没有基线都降级 None（见 `_emb_sim_vs_baseline`）。
+      - **相似度是加分项**：worker 没跑 / 没有基线 / 权重没缓存都降级成
+        「未测」（见 `assess_sample`），判词记 `unknown` —— **未测 ≠ 不合格**。
+      - **相似度走双门槛**（2026-10-11）：CAM++ 独立声纹**主判**、Qwen 自空间**保底**，
+        判词与阈值取自 `tools/voice_dual_gate.py`（pass / review / reject / unknown）。
+        记录里多三个字段：`cam_sim` / `cam_sim_error` / `dual`（`emb_sim` 保持原语义，
+        历史记录与读取方不受影响）。
 
     返回记录 dict；失败返回 `{"error": ..., "error_stage": ...}`，不抛。
     """
@@ -1044,17 +1139,21 @@ def add_followup(pid: str, src: Path, note: str = "") -> dict:
         return {"error": why, "error_stage": "音频转换"}
 
     calc = _metrics_for(dest)
-    emb_sim = _emb_sim_vs_baseline(pid, dest)
+    assess = assess_sample(pid, dest)
+    emb_sim = assess["qwen_sim"]
+    cam_sim = assess["cam_sim"]
     lamps = calc.get("lamps")
-    if emb_sim is not None and calc.get("metrics"):
+    if calc.get("metrics") and (cam_sim is not None or emb_sim is not None):
         # 相似度拿到了就把三灯重算一遍，让「相似度」灯从「未测」变成有值。
-        # 阈值函数还是 voice_report 那一份 —— 不存在第二套标准。
+        # ★ 判据只有一份：voice_dual_gate（CAM++ 主判 + 自空间保底），灯只负责翻译颜色。
+        #   没有 cam_sim 时灯退回旧的单尺口径（见 voice_report.similarity_lamp）。
         try:
             import voice_report
 
             m = calc["metrics"]
             lamps = voice_report.three_lamps(
-                emb_sim=emb_sim, hnr=m.get("hnr"), h1_h2=m.get("h1_h2"),
+                emb_sim=emb_sim, cam_sim=cam_sim,
+                hnr=m.get("hnr"), h1_h2=m.get("h1_h2"),
                 spectral_tilt=m.get("spectral_tilt"))
         except Exception:
             pass
@@ -1069,6 +1168,9 @@ def add_followup(pid: str, src: Path, note: str = "") -> dict:
         "metrics": calc.get("metrics"),
         "lamps": lamps,
         "emb_sim": emb_sim,
+        "cam_sim": cam_sim,
+        "cam_sim_error": assess["cam_error"],
+        "dual": assess["dual"],
         "metrics_error": calc.get("error") or "",
     }
     try:
@@ -1081,7 +1183,8 @@ def add_followup(pid: str, src: Path, note: str = "") -> dict:
         except Exception:
             pass
         return {"error": f"随访记录写入失败（{type(e).__name__}）", "error_stage": "写入"}
-    log_event(pid, "followup", file=rec["file"], has_metrics=rec["metrics"] is not None)
+    log_event(pid, "followup", file=rec["file"], has_metrics=rec["metrics"] is not None,
+              verdict=(rec.get("dual") or {}).get("verdict"))
     return rec
 
 

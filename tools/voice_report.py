@@ -9,8 +9,15 @@
     质量」第一次在 UI 上可见，并且**训练前就能给预期**。
 
 三个灯的数据来源（每一个都有明确出处，不是拍脑袋）：
-    相似度   CAM++ 声纹余弦（变声输出 vs 目标音色参考）—— 现役判据，
-             阈值 ≥0.95（与 `tools/voice_qc.py` 既有口径一致）。
+    相似度   **两把尺子**（2026-10-11 起）：
+             ① 独立声纹 CAM++ 余弦 = **主判**，走双门槛（`tools/voice_dual_gate.py`）；
+             ② Qwen `/emb` 自空间余弦 = **保底**（只当下限，不单独放行）。
+             ⚠️ 历史遗留：原注释写「CAM++ 余弦，阈值 ≥0.95」，但**实际传进来的
+             `emb_sim` 一直是自空间分**（`voice_qc.py` 的 `_emb` 与
+             `voicepreserve._emb_sim_vs_baseline` 都打 worker `/emb`），
+             而自空间实测异人上界 0.9534 离 0.95 只差 0.0034 —— 单尺门槛
+             没有余量。只给 `emb_sim` 的调用方仍走旧口径（不破行为），
+             但新代码应把 `cam_sim` 一起传进来。
     自然度   HNR（谐噪比，浊音帧中位数）。伪影/电音/底噪都会压低它。
     夹嗓子   H1-H2（主判据）+ 谱倾斜（印证）。方向：**越大/越负 = 越挤压**，
              这个方向是合成信号实测标定的，见 `tools/voice_metrics.py` 的
@@ -47,6 +54,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+# 双门槛判据（CAM++ 主判 + 自空间保底）。判据本身在这个纯函数模块里，
+# 灯只负责把它翻译成颜色 —— 阈值不在这里再写一遍（§双尺标定见 voice_dual_gate）。
+import voice_dual_gate as dual_gate
 
 # ---------------- 灯的三档 ----------------
 GREEN, YELLOW, RED = "green", "yellow", "red"
@@ -105,14 +116,38 @@ def _grade(key: str, value: float | None) -> str | None:
         return YELLOW if value <= y else RED
 
 
-def similarity_lamp(emb_sim: float | None) -> Lamp:
-    """灯 1：相似度（CAM++ 声纹余弦）。数据来自变声验收，**训练后才有**。"""
+def similarity_lamp(emb_sim: float | None = None, cam_sim: float | None = None) -> Lamp:
+    """灯 1：相似度。
+
+    ★ **两把尺子，以独立声纹为主**（2026-10-11 实测，判据见 `tools/voice_dual_gate.py`）：
+      - 给了 `cam_sim` → 走**双门槛**：CAM++ 主判 + 自空间（`emb_sim`）保底；
+        pass / review / reject 对应 绿 / 黄 / 红，且 detail 把两把尺子的值都写出来
+        （矛盾时用户能看见「为什么是黄的」）。
+      - 只给 `emb_sim` → **单尺口径**（沿用既有 ≥0.95）。⚠️ 它量的是 Qwen 自空间，
+        与克隆同一编码器（自证）：实测异人上界 0.9534 离 0.95 只差 0.0034、
+        同人分又全挤在 0.978 以上 —— 几乎没有分辨余量。**新代码请传 `cam_sim`。**
+
+    `value` 给的是**主判值**（有 `cam_sim` 就是它）；两把都缺 = `None`（未测，不是红）。
+    """
+    if cam_sim is not None:
+        v = dual_gate.verdict(cam_sim=cam_sim, qwen_sim=emb_sim)
+        grade = {dual_gate.PASS: GREEN, dual_gate.REVIEW: YELLOW,
+                 dual_gate.REJECT: RED}.get(v["verdict"])
+        t = v["thresholds"]
+        q = "未测" if emb_sim is None else f"{float(emb_sim):.4f}"
+        det = (f"独立声纹 {float(cam_sim):.4f}（≥{t['cam_pass']} 通过 / "
+               f"<{t['cam_warn']} 否决）｜自空间 {q}（下限 {t['qwen_floor']}）："
+               + "；".join(v["reasons"]))
+        return Lamp("similarity", "相似度", cam_sim, grade, det,
+                    ["cam_cos", "qwen_cos"])
+
     lamp = _grade("emb_sim", emb_sim)
     if emb_sim is None:
         det = "未测：需要先完成一次变声验收（依赖 worker 8001 与可推理权重）"
     else:
-        det = f"声纹余弦 {emb_sim:.4f}（阈值 ≥0.95）"
-    return Lamp("similarity", "相似度", emb_sim, lamp, det)
+        det = (f"声纹余弦 {emb_sim:.4f}（单尺阈值 ≥0.95；它是自空间分，"
+               f"与克隆同一编码器 —— 有独立声纹时应改用双门槛）")
+    return Lamp("similarity", "相似度", emb_sim, lamp, det, ["emb_sim"])
 
 
 def naturalness_lamp(hnr: float | None) -> Lamp:
@@ -170,14 +205,18 @@ def verdict(lamps: list[Lamp]) -> str:
 
 
 def three_lamps(emb_sim: float | None = None, hnr: float | None = None,
-                h1_h2: float | None = None, spectral_tilt: float | None = None) -> dict:
+                h1_h2: float | None = None, spectral_tilt: float | None = None,
+                cam_sim: float | None = None) -> dict:
     """合成三灯。返回可直接 JSON 化的 dict（给前端音色卡片用）。
 
     参数全部可选 —— 训练前只有 HNR/H1-H2（能算，只需音频），
     相似度要等变声验收。**这个「部分可用」是刻意支持的**，因为
     「训练前给预期质量」正是这个功能最值钱的用法。
+
+    `cam_sim`（独立声纹余弦）给了就走**双门槛**（CAM++ 主判 + `emb_sim` 保底）；
+    只给 `emb_sim` 仍是旧的单尺口径（见 `similarity_lamp`）。
     """
-    lamps = [similarity_lamp(emb_sim),
+    lamps = [similarity_lamp(emb_sim, cam_sim),
              naturalness_lamp(hnr),
              strain_lamp(h1_h2, spectral_tilt)]
     return {
