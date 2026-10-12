@@ -11,7 +11,7 @@
 
 用法：
     python offline_vc_infer.py --pth <模型.pth> --index <added_*.index> \
-        --input <16k以下任意wav> --output <48k wav> [--pitch 0] [--index-rate 0.5]
+        --input <16k以下任意wav> --output <48k wav> [--pitch 0] [--index-rate 0.5] [--seed 1234]
     python offline_vc_infer.py --serve            # 常驻 worker，见 serve() 文档
 """
 
@@ -44,6 +44,34 @@ def setup_env() -> str:
     os.environ.setdefault("index_root", "logs")
     os.environ.setdefault("rmvpe_root", "assets/rmvpe")
     return rvc_root
+
+
+#: RVC 推理随机种子（2026-10-13 新增）。
+#:
+#: RVC v2 的 NSF 声源里带两个**未播种**的随机项（`infer/module/models.py`）：
+#:   · `SineGen._f02sine`: `rand_ini = torch.rand(1, 1, dim)`      —— 谐波初始相位
+#:   · `SineGen.forward` : `noise = noise_amp * torch.randn_like(..)` —— 噪声激励
+#: 它们是"生成"的一部分，不是测量误差：同一输入 / 同一权重 / 同一参数，每次转换
+#: 得到的波形都不同。实测同一命令跑两次，CAM++ 差 **0.0212** —— 比同一张
+#: index_rate 扫描表的全部极差（0.0039）还大，即**不播种时那张表的差异根本读不出来**
+#: （旧版表的 0.0151 同理）。播种后两次输出**逐字节一致**（md5 相同），于是
+#: "只改一个变量跑一次"的对照从此可信。想恢复"每次不同"就显式传别的 `--seed`；
+#: 想平均多次采样就换 seed 各跑一遍再取均值。
+INFER_SEED = 1234
+
+
+def apply_infer_seed(seed: int = INFER_SEED) -> int:
+    """把 RVC 推理的随机源钉死（SineGen 的谐波初相 + 噪声激励），返回实际用的 seed。
+
+    只在 `convert_audio()` 入口调用 —— 三条链路（CLI / 常驻 worker / 级联实时）
+    共用它，所以收敛在这一处，别在各调用点各写一遍。
+    """
+    import torch
+
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    return seed
 
 
 @dataclass
@@ -227,12 +255,20 @@ def load_vc(pth: str, index: str = "") -> RvcEngine:
 
 
 def convert_audio(
-    engine: RvcEngine, audio: "np.ndarray", pitch: int = 0, index_rate: float = 0.5
+    engine: RvcEngine,
+    audio: "np.ndarray",
+    pitch: int = 0,
+    index_rate: float = 0.5,
+    seed: int = INFER_SEED,
 ) -> "np.ndarray":
     """把 16k float 音频转成目标音色，返回后处理后的 float32 数组（engine.tgt_sr）。
 
     级联实时链路对每一句 TTS 输出调用一次；模型常驻，故无逐次加载开销。
+
+    ★ 入口先 `apply_infer_seed(seed)`（2026-10-13）：三条链路都汇到这里，
+    播种只需要这一处。
     """
+    apply_infer_seed(seed)
     import numpy as np
 
     audio_in = np.asarray(audio, dtype=np.float32)
@@ -267,6 +303,12 @@ def main():
     p.add_argument("--output", required=True)
     p.add_argument("--pitch", type=int, default=0, help="变调半音数，男转女 +12")
     p.add_argument("--index-rate", type=float, default=0.5)
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=INFER_SEED,
+        help="RVC 推理随机种子（NSF 声源带随机项；默认固定值 ⇒ 同一输入可复现）",
+    )
     args = p.parse_args()
 
     # 必须先 setup_env()：infer 模块在 RVC 根下，而 load_vc() 内部才做 chdir +
@@ -280,11 +322,13 @@ def main():
 
     engine = load_vc(args.pth, args.index)
     audio_in = load_audio(args.input, 16000)
-    y = convert_audio(engine, audio_in, args.pitch, args.index_rate)
+    y = convert_audio(engine, audio_in, args.pitch, args.index_rate, args.seed)
 
     import soundfile as sf
 
     sf.write(args.output, y, engine.tgt_sr)
+    # seed 单独一行打到 "OK ..." 之前 —— 那行是别的脚本在看的稳定格式（别改它）
+    print(f"seed={args.seed}")
     print(f"OK {len(y) / engine.tgt_sr:.2f}s @{engine.tgt_sr}Hz")
 
 
@@ -327,9 +371,10 @@ def serve() -> int:
     协议（全部 JSON，ensure_ascii=True 输出，避开 Windows 控制台编码问题）：
       先打 {"ready":true,"pid":N}
       任务行 {"id":1,"cmd":"convert"|"warmup"|"ping","pth":..,"index":..,
-              "input":..,"output":..,"pitch":0,"index_rate":0.5}
+              "input":..,"output":..,"pitch":0,"index_rate":0.5,"seed":1234}
       结果行 {"id":1,"ok":true,"duration":4.7,"sr":48000,
-              "load_s":18.2,"convert_s":0.9}        失败时 {"ok":false,"error":..}
+              "load_s":18.2,"convert_s":0.9,"seed":1234}  失败时 {"ok":false,"error":..}
+      （`seed` 缺省 = INFER_SEED；回包里带上实际生效值，便于产物溯源）
     模型按 (pth, index) 缓存。stdin 关闭（父进程退出）即正常退出。
     """
     import json
@@ -378,9 +423,14 @@ def serve() -> int:
                 src = os.path.abspath(task["input"])
                 dst = os.path.abspath(task["output"])
                 audio_in = load_audio(src, 16000)
+                seed = int(task.get("seed", INFER_SEED))
                 t1 = time.time()
                 y = convert_audio(
-                    engine, audio_in, int(task.get("pitch", 0)), float(task.get("index_rate", 0.5))
+                    engine,
+                    audio_in,
+                    int(task.get("pitch", 0)),
+                    float(task.get("index_rate", 0.5)),
+                    seed,
                 )
                 conv_s = time.time() - t1
                 import soundfile as sf
@@ -395,6 +445,7 @@ def serve() -> int:
                         "sr": engine.tgt_sr,
                         "load_s": round(load_s, 2),
                         "convert_s": round(conv_s, 2),
+                        "seed": seed,
                     }
                 )
             except Exception as e:  # 单个任务失败不得拖垮 worker

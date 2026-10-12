@@ -9,8 +9,12 @@ RVC 推理时 index_rate 控制 FAISS 检索特征与模型输出特征的混合
 
 本脚本对同一批输入跑多个 index_rate，输出 CAM++ / ASR / peak，用数据决定取值。
 
-用法（必须 D:\\RVC\\.venv，`offline_vc_infer.py` 依赖 ffmpeg 模块）：
-    D:\\RVC\\.venv\\Scripts\\python.exe tts_trial\\sweep_index_rate.py
+⚠️ 推理随机种子：默认由 `offline_vc_infer.INFER_SEED` 固定（见其注释）——
+不固定时同一命令两次的 CAM++ 差可达 0.02，比本表的全部极差还大（2026-10-13 实测）。
+
+用法（必须项目 `.venv`：本脚本自己要 `faster_whisper` + `modelscope`(CAM++) + `zhconv`；
+子进程里那个 `offline_vc_infer.py` 由脚本自己用 `D:\\RVC\\.venv` 的 python 拉起）：
+    .venv\\Scripts\\python.exe tts_trial\\sweep_index_rate.py
 """
 import argparse
 import json
@@ -26,6 +30,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from ab_evaluate import cam_emb  # noqa: E402
 from asr_cer import accuracy as asr_accuracy  # noqa: E402
+from offline_vc_infer import INFER_SEED as DEFAULT_SEED  # noqa: E402
 from faster_whisper import WhisperModel  # noqa: E402
 import soundfile as sf  # noqa: E402
 
@@ -75,6 +80,8 @@ def main():
     ap.add_argument("--rates", default="0.0,0.3,0.5,0.75,1.0")
     ap.add_argument("--pitch", type=int, default=0)
     ap.add_argument("--outdir", default=os.path.join(WORK, "index_sweep"))
+    ap.add_argument("--seed", type=int, default=None,
+                    help="RVC 推理随机种子；不传则用 offline_vc_infer 的固定默认值")
     ap.add_argument("--pth", default=PTH, help="RVC 推理权重（.pth）")
     ap.add_argument("--index", default=INDEX, help="FAISS 索引（.index）")
     ap.add_argument("--work", default=WORK, help="输入 wav 所在目录")
@@ -84,6 +91,12 @@ def main():
     outdir = os.path.abspath(args.outdir)
     work = os.path.abspath(args.work)
     os.makedirs(outdir, exist_ok=True)
+    seed = args.seed if args.seed is not None else DEFAULT_SEED
+    # ★ 这个 seed 必须固定（2026-10-13）：RVC v2 的 NSF 声源带两个未播种随机项
+    # （`infer/module/models.py` 的 `torch.rand` 谐波初相 + `torch.randn_like` 噪声激励），
+    # 不固定时**每次转换都是新抽样** —— 实测同一命令两次 CAM++ 差 0.0212，
+    # 比本表任何两个 rate 之间的差还大，即整张表会被随机性吃掉。
+    print(f"RVC 推理 seed = {seed}（固定 ⇒ 各 rate 的差异只来自检索混合比例）")
 
     # 1) 转换（每个 rate × 每条输入）
     jobs = []
@@ -103,6 +116,8 @@ def main():
         cmd = [RVC_PY, INFER, "--pth", args.pth, "--index", args.index,
                "--input", os.path.join(work, src), "--output", dst,
                "--pitch", str(args.pitch), "--index-rate", str(r)]
+        if args.seed is not None:
+            cmd += ["--seed", str(args.seed)]
         p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if p.returncode != 0:
             print(f"[FAIL] ir={r} {src}\n{(p.stderr or '')[-800:]}")

@@ -7,6 +7,7 @@
 
 import os
 import random
+import sys
 
 import numpy as np
 import pytest
@@ -265,3 +266,95 @@ def test_load_checkpoint_accepts_genuine_shape(tmp_path):
     payload = {"weight": {"a": 1}, "config": [1, 2, 3], "f0": 1, "version": "v2"}
     torch = _FakeTorchReturns(payload)
     assert offline_vc_infer.load_checkpoint(str(p), torch) is payload
+
+
+# ============== 推理随机性必须被播种（2026-10-13 补） ==============
+#
+# 由来：RVC v2 的 NSF 声源里有两个**未播种**的随机项（`infer/module/models.py`）：
+#   · `SineGen._f02sine`: `rand_ini = torch.rand(1, 1, dim)`        —— 谐波初始相位
+#   · `SineGen.forward` : `noise = noise_amp * torch.randn_like(..)` —— 噪声激励
+# 所以「同一输入 / 同一权重 / 同一参数」每次转换都不同：实测同一命令跑两次，
+# CAM++ 差 **0.0212**，比当时那张 index_rate 扫描表的**全部极差 0.0039** 还大
+# —— 那张表的差异根本读不出来。播种后两次输出逐字节一致（md5 相同），
+# 「只改一个变量跑一次」的对照才可信。
+#
+# 本文件在 FAST_TESTS 里（约定不 import torch，见上方说明），故这里用**桩 torch**。
+
+
+class _FakeTorchSeed:
+    """桩 torch：只记录 manual_seed / cuda.manual_seed_all 收到的值。"""
+
+    def __init__(self, cuda_available=True):
+        self.seeds = {}
+        outer = self
+
+        class _Cuda:
+            @staticmethod
+            def is_available():
+                return cuda_available
+
+            @staticmethod
+            def manual_seed_all(s):
+                outer.seeds["cuda"] = s
+
+        self.cuda = _Cuda()
+
+    def manual_seed(self, s):
+        self.seeds["cpu"] = s
+
+
+def test_apply_infer_seed_seeds_cpu_and_cuda_with_the_constant(monkeypatch):
+    fake = _FakeTorchSeed()
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    assert offline_vc_infer.apply_infer_seed() == offline_vc_infer.INFER_SEED
+    assert fake.seeds == {"cpu": offline_vc_infer.INFER_SEED, "cuda": offline_vc_infer.INFER_SEED}
+
+
+def test_apply_infer_seed_respects_explicit_seed(monkeypatch):
+    """想平均多次采样时显式换 seed 必须能透传（默认值不是写死的唯一选项）。"""
+    fake = _FakeTorchSeed()
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    assert offline_vc_infer.apply_infer_seed(7) == 7
+    assert fake.seeds == {"cpu": 7, "cuda": 7}
+
+
+def test_apply_infer_seed_skips_cuda_when_unavailable(monkeypatch):
+    """无 GPU 环境（CI）不得去调 cuda API 而崩掉。"""
+    fake = _FakeTorchSeed(cuda_available=False)
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    offline_vc_infer.apply_infer_seed()
+    assert "cuda" not in fake.seeds
+    assert fake.seeds["cpu"] == offline_vc_infer.INFER_SEED
+
+
+class _FakePipe:
+    """桩 Pipeline：不加载模型，只回一小段波形（本条只测「播种有没有发生」）。"""
+
+    def pipeline(self, *_a, **_kw):
+        return np.zeros(4000, dtype=np.float32)
+
+
+class _FakeVC:
+    def __init__(self):
+        self.pipeline = _FakePipe()
+        self.hubert_model = None
+        self.net_g = None
+
+
+def _fake_engine():
+    return offline_vc_infer.RvcEngine(
+        vc=_FakeVC(), tgt_sr=48000, index="", if_f0=1, version="v2", pth="fake.pth"
+    )
+
+
+def test_convert_audio_seeds_before_running(monkeypatch):
+    """★ 三条链路只在 convert_audio 里播种一次：钉死它确实被调、默认值与透传都对。"""
+    calls = []
+    monkeypatch.setattr(
+        offline_vc_infer,
+        "apply_infer_seed",
+        lambda seed=offline_vc_infer.INFER_SEED: calls.append(seed) or seed,
+    )
+    offline_vc_infer.convert_audio(_fake_engine(), np.zeros(16000, dtype=np.float32))
+    offline_vc_infer.convert_audio(_fake_engine(), np.zeros(16000, dtype=np.float32), seed=99)
+    assert calls == [offline_vc_infer.INFER_SEED, 99]
