@@ -16,7 +16,6 @@ except ImportError:
     zhconv = None
 
 REF = r"D:\变声\media\ft_work\ppt12\ref_24k.wav"
-D = r"D:\变声\media\ft_work\ppt12\out_ab\ab_effect_multi"
 TEXTS = [
     "这一节我们讲三个概念，先看第一个。",
     "把步骤拆开，一步一步做就不会乱。",
@@ -24,7 +23,16 @@ TEXTS = [
     "我们下节课继续讲第二部分的内容。",
     "这道题的关键是先判断函数的单调性。",
 ]
-ARMS = ["base", "lr2e5_ep10", "lr2e6_ep10", "v2fix"]
+import argparse
+
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--arms", default="base,lr2e5_ep10,lr2e6_ep10,v2fix",
+                 help="逗号分隔，base 必须在第一位（作为 Δ 基准）")
+_ap.add_argument("--dir", default=r"D:\变声\media\ft_work\ppt12\out_ab\ab_effect_multi")
+ARGS = _ap.parse_args()
+ARMS = [a.strip() for a in ARGS.arms.split(",") if a.strip()]
+ARGS = _ap.parse_args()
+ARMS = [a.strip() for a in ARGS.arms.split(",") if a.strip()]
 
 
 def emb(p):
@@ -53,7 +61,7 @@ res = {}
 for arm in ARMS:
     sims, ovs, peaks, durs = [], [], [], []
     for i in range(1, 6):
-        p = os.path.join(D, f"{arm}_{i}.wav")
+        p = os.path.join(ARGS.dir, f"{arm}_{i}.wav")
         if not os.path.exists(p):
             print(f"missing {p}")
             continue
