@@ -31,6 +31,8 @@ import soundfile as sf  # noqa: E402
 
 RVC_PY = r"D:\RVC\.venv\Scripts\python.exe"
 INFER = r"D:\变声\m2_server\offline_vc_infer.py"
+#: 默认模型/索引/工作目录。换模型（如 12 分钟版 myvoice_ppt12_full）时用 CLI 覆盖，
+#: 别再改源码 —— 2026-10-12 就因为这里写死路径，新模型扫不了。
 PTH = r"D:\RVC\assets\weights\myvoice_ppt12.pth"
 INDEX = r"D:\RVC\logs\myvoice_ppt12\added_IVF263_Flat_nprobe_1_myvoice_ppt12_v2.index"
 WORK = r"D:\变声\media\ft_work\ppt12\myvoice_rvc"
@@ -73,15 +75,21 @@ def main():
     ap.add_argument("--rates", default="0.0,0.3,0.5,0.75,1.0")
     ap.add_argument("--pitch", type=int, default=0)
     ap.add_argument("--outdir", default=os.path.join(WORK, "index_sweep"))
+    ap.add_argument("--pth", default=PTH, help="RVC 推理权重（.pth）")
+    ap.add_argument("--index", default=INDEX, help="FAISS 索引（.index）")
+    ap.add_argument("--work", default=WORK, help="输入 wav 所在目录")
+    ap.add_argument("--ref", default=REF, help="参考音（算 CAM++ 用）")
     args = ap.parse_args()
     rates = [float(x) for x in args.rates.split(",") if x.strip()]
-    os.makedirs(args.outdir, exist_ok=True)
+    outdir = os.path.abspath(args.outdir)
+    work = os.path.abspath(args.work)
+    os.makedirs(outdir, exist_ok=True)
 
     # 1) 转换（每个 rate × 每条输入）
     jobs = []
     for r in rates:
         for src in TEXTS:
-            dst = os.path.join(args.outdir, out_name(r, src))
+            dst = os.path.join(outdir, out_name(r, src))
             jobs.append((r, src, dst))
     for r, src, dst in jobs:
         if os.path.exists(dst):
@@ -92,8 +100,8 @@ def main():
             os.replace(legacy, dst)
             print(f"[cache] ir={r:g} {os.path.basename(dst)}")
             continue
-        cmd = [RVC_PY, INFER, "--pth", PTH, "--index", INDEX,
-               "--input", os.path.join(WORK, src), "--output", dst,
+        cmd = [RVC_PY, INFER, "--pth", args.pth, "--index", args.index,
+               "--input", os.path.join(work, src), "--output", dst,
                "--pitch", str(args.pitch), "--index-rate", str(r)]
         p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if p.returncode != 0:
@@ -102,7 +110,7 @@ def main():
         print(f"[ok] ir={r:g} {src} -> {os.path.basename(dst)}")
 
     # 2) 打分
-    ref = emb(REF)
+    ref = emb(args.ref)
     wm = WhisperModel("small", device="cuda", compute_type="float16")
     print(f"\n{'index_rate':<12}{'CAM++':>9}{'ASR':>8}{'peak':>8}{'削波%':>8}{'RMS dB':>9}")
     print("-" * 54)
@@ -110,7 +118,7 @@ def main():
     for r in rates:
         sims, ovs, peaks, clips, rmss = [], [], [], [], []
         for src in TEXTS:
-            p = os.path.join(args.outdir, out_name(r, src))
+            p = os.path.join(outdir, out_name(r, src))
             sims.append(cos(emb(p), ref))
             segs, _ = wm.transcribe(p, language="zh", vad_filter=False)
             ovs.append(overlap("".join(s.text for s in segs).replace(" ", ""), TEXTS[src]))
@@ -131,7 +139,7 @@ def main():
 
     best = max(rates, key=lambda r: (table[r]["campp"], table[r]["asr"]))
     print(f"CAM++ 最优 index_rate = {best:g}（{table[best]['campp']:.4f}）")
-    with open(os.path.join(args.outdir, "sweep.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(outdir, "sweep.json"), "w", encoding="utf-8") as f:
         json.dump({str(k): v for k, v in table.items()}, f, ensure_ascii=False, indent=2)
     return 0
 

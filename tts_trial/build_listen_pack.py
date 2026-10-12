@@ -79,7 +79,11 @@ def main():
     ap.add_argument("--index-rate", type=float, default=0.3,
                     help="用哪个 index_rate 的 RVC 产物进对照包（默认 0.3，见 sweep_index_rate.py）")
     ap.add_argument("--outdir", default=OUT_DIR)
+    ap.add_argument("--src-dir", default=SRC_DIR,
+                    help="输入/A/B 产物目录（换模型时指向新目录，别再改源码常量）")
     args = ap.parse_args()
+    src_dir = os.path.abspath(args.src_dir)
+    sweep_dir = os.path.join(src_dir, "index_sweep")
 
     os.makedirs(args.outdir, exist_ok=True)
     ir_tag = f"ir{args.index_rate:g}"
@@ -87,10 +91,10 @@ def main():
     groups = []
 
     for i, text in TEXTS.items():
-        a_path = os.path.join(SRC_DIR, f"in_tts0{i}_40k.wav")
-        b_path = os.path.join(SWEEP_DIR, f"{ir_tag}_tts0{i}.wav.wav")
-        if not os.path.exists(b_path):  # 扫描脚本产物名带重复后缀，兼容两种
-            b_path = os.path.join(SWEEP_DIR, f"{ir_tag}_tts0{i}.wav")
+        a_path = os.path.join(src_dir, f"in_tts0{i}_40k.wav")
+        b_path = os.path.join(sweep_dir, f"{ir_tag}_tts0{i}.wav.wav")
+        if not os.path.exists(b_path):  # 扫描脚本曾产出带重复后缀的旧名，兼容两种
+            b_path = os.path.join(sweep_dir, f"{ir_tag}_tts0{i}.wav")
         if not (os.path.exists(a_path) and os.path.exists(b_path)):
             missing.append((i, a_path, b_path))
             continue
@@ -123,7 +127,7 @@ def main():
     sf.write(os.path.join(args.outdir, "AB_all_in_one.wav"), allseq, TARGET_SR)
 
     # 真人原音过 RVC = 该模型音色上限（无 TTS 误差），单独放，供判断"瓶颈在哪"
-    real = os.path.join(SRC_DIR, "out_real.wav")
+    real = os.path.join(src_dir, "out_real.wav")
     if os.path.exists(real):
         sf.write(os.path.join(args.outdir, "C_rvc_ceiling_real.wav"),
                  norm(ramp(load(real))), TARGET_SR)
