@@ -1,18 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
+  coverClip,
   fetchCoverUrl,
   getCoverStatus,
   listRvcVoices,
   mediaUrl,
   runCover,
   suggestCoverPitch,
+  wechatSendVoice,
   type CoverStatus,
   type RvcVoice,
 } from "@/api/client"
+import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
 import { friendlyError } from "@/lib/errors"
 import { formatDuration } from "@/lib/formatDuration"
 
 const POLL_MS = 2000
+/**
+ * 微信语音的音频预算（秒）：单条 60s 硬上限，算式见
+ * `docs/微信语音-长文分段发送方案.md` §2（PLAY_LEAD 0.35 + 音频 + TAIL 0.3 ≤ 60）。
+ * 超预算的语音会被录成 60" 静音长条 —— 必须先截再发，与后端 `/cover/clip` 同一口径。
+ */
+const WECHAT_AUDIO_BUDGET_S = 54
 
 /**
  * 「翻唱」页的状态机。
@@ -243,6 +252,54 @@ export function useCover() {
   const running = Boolean(status?.running) || submitting
   const resultUrl = status?.url ? mediaUrl(status.url) : ""
 
+  // ---------------- B 档「翻唱直发」：成品直接当一条微信语音发出去 ----------------
+
+  const { state: plugState } = usePluginCatalog()
+  const wechatOn = pluginVisible(
+    plugState.status === "ready" ? plugState.catalog : null,
+    "hook.wechat",
+  )
+  const [sendingToWechat, setSendingToWechat] = useState(false)
+
+  /**
+   * 成品 ≤54s 直接发；超了先 `/cover/clip` 截前 54s 再发（钳制由后端如实回报）。
+   * 截与发是两步，但中间态不可见 —— 所以这里一步做完并把"截了多少"说进 feedback，
+   * 别让用户对着 3 分钟的成品以为整首都发出去了。
+   */
+  const sendToWechat = useCallback(async () => {
+    const u = status?.url
+    if (!u || sendingToWechat) return
+    const bare = decodeURIComponent(u.split("/").pop() ?? "")
+    if (!bare) {
+      setErrorMessage("拿不到成品的会话文件名，没法发送")
+      return
+    }
+    setSendingToWechat(true)
+    setErrorMessage("")
+    setFeedback("")
+    try {
+      let wav = bare
+      let clipped = ""
+      const dur = status?.duration_s ?? 0
+      if (dur > WECHAT_AUDIO_BUDGET_S) {
+        const r = await coverClip(bare)
+        wav = r.wav
+        // 后端的钳制说明（截到几秒/为什么）一并列进最终 feedback，别被下面的成功文案盖掉。
+        clipped = [`整首 ${dur.toFixed(0)}s 超出微信语音单条上限，已截前 ${r.seconds.toFixed(0)}s 发送。`, ...(r.notes ?? [])].join(" ")
+      }
+      const res = await wechatSendVoice(wav)
+      if (!res.ok) {
+        setErrorMessage(res.error || "发送没有成功")
+      } else {
+        setFeedback(clipped + (res.hint || "已交给微信发送流程"))
+      }
+    } catch (e) {
+      setErrorMessage(friendlyError(e, "发送到微信失败"))
+    } finally {
+      setSendingToWechat(false)
+    }
+  }, [status, sendingToWechat])
+
   return {
     voices, voiceId, setVoiceId,
     file, pickFile,
@@ -251,6 +308,8 @@ export function useCover() {
     indexRate, setIndexRate, vocalGain, setVocalGain, accompGain, setAccompGain, autoGain, setAutoGain,
     submitting, analyzing, errorMessage, feedback, status, running, resultUrl, resultStale,
     analyzePitch, start,
+    /** B 档「翻唱直发」：成品发到微信（>54s 自动先截）。 */
+    wechatOn, sendingToWechat, sendToWechat,
     /** 有来源（本地文件或已下好的直链）才允许开跑/分析音域 */
     hasSource: Boolean(file || srcName),
   }

@@ -1,5 +1,5 @@
 import { useRef } from "react"
-import { CircleAlert, Link2, Loader2, Music4, Sparkles, Upload, Wand2 } from "lucide-react"
+import { CircleAlert, Link2, Loader2, Music4, Send, Sparkles, Upload, Wand2 } from "lucide-react"
 import type { useCover } from "@/pages/Cover/useCover"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { PageShell } from "@/components/layout/PageShell"
@@ -314,6 +314,20 @@ export function CoverPage(p: ReturnType<typeof useCover>) {
                   <Upload className="h-3.5 w-3.5 rotate-180" />
                   下载成品
                 </a>
+                {/* B 档「翻唱直发」：成品本身就是"人声+伴奏混好"的歌，走现有发送即可。
+                    >54s 自动先截（hook 里做），微信门控在 hook（插件关了就不显示，防 404）。 */}
+                {p.wechatOn && (
+                  <button
+                    type="button"
+                    disabled={p.sendingToWechat}
+                    onClick={() => void p.sendToWechat()}
+                    title="把这首翻唱当一条微信语音发出去；超过 54 秒会自动截前 54 秒（微信单条 60s 上限）"
+                    className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-600 transition hover:bg-emerald-500/20 disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    {p.sendingToWechat ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                    {p.sendingToWechat ? "发送中…" : "发到微信"}
+                  </button>
+                )}
                 <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
                   成品只在本次会话里，退出应用会自动清掉 —— 要留就先下载。
                 </p>

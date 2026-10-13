@@ -17,6 +17,7 @@ import { StudioAudioPlayer } from "@/components/voice-studio/StudioAudioPlayer"
 import { ErrorPanel } from "@/components/ErrorPanel"
 import { mediaUrl } from "@/api/client"
 import { SoundboardPanel } from "@/pages/Tts/SoundboardPanel"
+import { BgmPanel } from "@/pages/Tts/BgmPanel"
 import type { useSoundboard } from "@/pages/Tts/useSoundboard"
 import type { useWechatSend } from "@/pages/Tts/useWechatSend"
 
@@ -233,6 +234,21 @@ export function WechatSendPage(
                     })
                   }
                 />
+                {/* 歌声垫底（A 档）：把一首歌全程垫进这条语音，发送目标随之换成 bgmmix_*。
+                    与音效预混共用 premix 通道（inserts=0，只是"叠的素材"不同）。 */}
+                <BgmPanel
+                  mode="premix"
+                  wav={p.lastTts?.wav}
+                  sourceSeconds={p.lastTts?.duration_s}
+                  onPremixed={(r) =>
+                    p.setPremix({
+                      source: p.lastTts?.wav ?? "",
+                      wav: r.wav,
+                      inserts: 0,
+                      seconds: r.seconds,
+                    })
+                  }
+                />
               </div>
 
               {/* ③ 手动实时 */}
@@ -263,6 +279,8 @@ export function WechatSendPage(
                 </div>
                 {/* 按住 Alt 说话时点格子：音效与变声人声一起被录进同一条语音。 */}
                 <SoundboardPanel sb={p.soundboard} hint="按住 Alt 说话时点一下，音效会一起被录进去" />
+                {/* 实时垫歌（C 档）：边说边唱 —— 歌在 CABLE 里与人声混在一起被微信录走。 */}
+                <BgmPanel mode="layer" />
               </div>
             </div>
 

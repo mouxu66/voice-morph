@@ -54,6 +54,8 @@ vi.mock("@/api/client", async () => {
     runCover: vi.fn(),
     fetchCoverUrl: vi.fn(),
     suggestCoverPitch: vi.fn(),
+    wechatSendVoice: vi.fn(),
+    coverClip: vi.fn(),
     mediaUrl: (u: string) => u,
   }
 })
@@ -63,6 +65,8 @@ const listRvcVoices = vi.mocked(client.listRvcVoices)
 const getCoverStatus = vi.mocked(client.getCoverStatus)
 const runCover = vi.mocked(client.runCover)
 const fetchCoverUrl = vi.mocked(client.fetchCoverUrl)
+const wechatSendVoice = vi.mocked(client.wechatSendVoice)
+const coverClip = vi.mocked(client.coverClip)
 
 beforeEach(() => {
   listRvcVoices.mockResolvedValue({
@@ -73,6 +77,8 @@ beforeEach(() => {
     rvc_ready: true,
   })
   getCoverStatus.mockResolvedValue(IDLE_STATUS)
+  wechatSendVoice.mockResolvedValue({ ok: true, hint: "已交给微信发送流程" })
+  coverClip.mockClear()
 })
 
 /** 等挂载 effect（音色清单）跑完再动手，避免断言打在初始态上 */
@@ -241,6 +247,9 @@ function fakeProps(over: Partial<ReturnType<typeof useCover>> = {}): ReturnType<
     resultStale: false,
     analyzePitch: async () => {},
     start: async () => {},
+    wechatOn: false,
+    sendingToWechat: false,
+    sendToWechat: async () => {},
     hasSource: false,
     ...over,
   }
@@ -313,5 +322,93 @@ describe("CoverPage · 完成面板的上一次标记", () => {
     )
 
     expect(screen.queryByText("上一次的结果")).not.toBeInTheDocument()
+  })
+})
+
+// ------------------------------------------------ B 档「翻唱直发」（sendToWechat）
+
+describe("useCover · 翻唱直发到微信", () => {
+  it("★ ≤54s 直接发整条（不截），发出的是会话裸名", async () => {
+    getCoverStatus.mockResolvedValue({
+      ...IDLE_STATUS,
+      status: "done",
+      url: "/media/session/cover_x.wav",
+      duration_s: 42,
+    })
+
+    const { result } = await mounted()
+    await act(async () => {
+      await result.current.sendToWechat()
+    })
+
+    expect(coverClip).not.toHaveBeenCalled()
+    expect(wechatSendVoice).toHaveBeenCalledWith("cover_x.wav")
+    expect(result.current.errorMessage).toBe("")
+  })
+
+  it("★ >54s 先截前 54s 再发，feedback 把「截了多少」说明白", async () => {
+    getCoverStatus.mockResolvedValue({
+      ...IDLE_STATUS,
+      status: "done",
+      url: "/media/session/cover_long.wav",
+      duration_s: 180,
+    })
+    coverClip.mockResolvedValue({
+      ok: true,
+      wav: "clip_cover_long.wav",
+      seconds: 54,
+      total_s: 180,
+      url: "/media/session/clip_cover_long.wav",
+      notes: [],
+    })
+
+    const { result } = await mounted()
+    await act(async () => {
+      await result.current.sendToWechat()
+    })
+
+    expect(coverClip).toHaveBeenCalledWith("cover_long.wav")
+    expect(wechatSendVoice).toHaveBeenCalledWith("clip_cover_long.wav")
+    expect(result.current.feedback).toContain("已截前 54s")
+    expect(result.current.errorMessage).toBe("")
+  })
+
+  it("发送失败 → 错误进错误区，不假装发出去了", async () => {
+    getCoverStatus.mockResolvedValue({
+      ...IDLE_STATUS,
+      status: "done",
+      url: "/media/session/cover_x.wav",
+      duration_s: 42,
+    })
+    wechatSendVoice.mockResolvedValueOnce({ ok: false, error: "微信没开" })
+
+    const { result } = await mounted()
+    await act(async () => {
+      await result.current.sendToWechat()
+    })
+
+    expect(result.current.errorMessage).toBe("微信没开")
+  })
+})
+
+describe("CoverPage · 发到微信按钮", () => {
+  const DONE_PROPS = {
+    status: DONE_STATUS,
+    resultUrl: "/media/session/x.wav",
+  }
+
+  it("wechat 开着 → 完成面板里有「发到微信」，点击走 hook 的发送", () => {
+    const send = vi.fn()
+    render(<CoverPage {...fakeProps({ ...DONE_PROPS, wechatOn: true, sendToWechat: send })} />)
+
+    const btn = screen.getByRole("button", { name: /发到微信/ })
+    fireEvent.click(btn)
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it("wechat 插件关着 → 不显示按钮（端点不存在，显示了只会 404）", () => {
+    render(<CoverPage {...fakeProps({ ...DONE_PROPS, wechatOn: false })} />)
+
+    expect(screen.queryByRole("button", { name: /发到微信/ })).not.toBeInTheDocument()
   })
 })

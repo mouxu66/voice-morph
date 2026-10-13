@@ -25,6 +25,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import type { useLive } from "@/pages/Live/useLive"
 import type { useSoundboard } from "@/pages/Tts/useSoundboard"
 import { SoundboardPanel } from "@/pages/Tts/SoundboardPanel"
+import { BgmPanel } from "@/pages/Tts/BgmPanel"
 import { PageShell } from "@/components/layout/PageShell"
 import { AuditionEntry } from "@/components/AuditionEntry"
 import { ErrorPanel } from "@/components/ErrorPanel"
@@ -498,6 +499,10 @@ export function LivePage(
               sb={p.soundboard}
               hint="点一下即出声，和你变声后的声音一起进微信/游戏；开「自我监听」你自己也听得到"
             />
+
+            {/* 实时垫歌（C 档）：边变声边垫一首歌 —— 与变声人声、one-shot 音效都在
+                CABLE 里由系统混音，互不抢占（board_worker 的独立垫底层）。 */}
+            <BgmPanel mode="layer" />
 
             {/* 自我监听：变声运行中可随时开关，让自己在耳机里听到变声效果 */}
             {p.liveOn && p.liveReady && (

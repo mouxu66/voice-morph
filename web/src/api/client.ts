@@ -1842,6 +1842,81 @@ export async function soundboardPremix(
   })
 }
 
+// ------------------------------------------------ BGM 垫底（歌声垫底三档，端点属 sound.fx-board）
+
+/** 上传一首歌当 BGM 素材：服务端转成单声道 PCM16 wav 落会话目录，返回裸名。 */
+export async function bgmUpload(
+  file: File,
+): Promise<{ ok: boolean; name: string; duration_s: number; url: string }> {
+  const fd = new FormData()
+  fd.append("file", file)
+  return jsonFetch("/soundboard/bgm/upload", { method: "POST", body: fd })
+}
+
+/**
+ * A 档「歌声垫底预混」：把一首歌全程垫进一条合成产物，产出 `bgmmix_<原名>.wav`。
+ * 人声是时间轴（输出长度=人声长度）；`lead_db` = BGM 比人声低多少 dB（配平目标）；
+ * `start_s` 用来跳前奏。notes 是提示（循环补满/电平量不出），不是失败。
+ */
+export async function bgmPremix(params: {
+  wav?: string
+  bgm: string
+  lead_db?: number
+  fade_in_s?: number
+  fade_out_s?: number
+  start_s?: number
+}): Promise<{ ok: boolean; wav: string; seconds: number; url: string; notes: string[] }> {
+  return jsonFetch("/soundboard/bgm/premix", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  })
+}
+
+/** C 档「实时垫歌」：往 CABLE 垫一层 BGM，与说话/变声/one-shot 音效并行不抢占。 */
+export async function bgmStart(
+  bgm: string,
+  gain?: number,
+  loop = true,
+): Promise<{ ok: boolean; playing: boolean; id: string; duration_s: number | null; loop: boolean }> {
+  return jsonFetch("/soundboard/bgm/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bgm, gain: gain ?? null, loop }),
+  })
+}
+
+/** 停掉垫底层（不影响 one-shot 音效 —— 两条独立的流）。 */
+export async function bgmStop(): Promise<{ ok: boolean }> {
+  return jsonFetch("/soundboard/bgm/stop", { method: "POST" })
+}
+
+/** 实时调垫底层音量（流里读的是同一个变量，不用重开）。 */
+export async function bgmGain(gain: number): Promise<{ ok: boolean; gain: number }> {
+  return jsonFetch("/soundboard/bgm/gain", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ gain }),
+  })
+}
+
+/**
+ * B 档「翻唱直发」：把一条会话产物截成 ≤54s 的一段（微信语音 60s 硬上限，
+ * 音频预算 54s，见 `docs/微信语音-长文分段发送方案.md` §2）。端点属翻唱插件
+ * （cover 路由），产物 `clip_<原名>.wav`，`seconds` 是实际截到的时长。
+ */
+export async function coverClip(
+  srcName: string,
+  startS = 0,
+  seconds = 54,
+): Promise<{ ok: boolean; wav: string; seconds: number; total_s: number; url: string; notes: string[] }> {
+  return jsonFetch("/cover/clip", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ src_name: srcName, start_s: startS, seconds }),
+  })
+}
+
 /** 装一个本地 zip 音效包（离线路径：别人发你的包、或你自己打的包）。 */
 export async function soundboardPackInstall(
   file: File,
