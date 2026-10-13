@@ -208,6 +208,15 @@ FAST_TESTS = [
     # 另有"页数对不上就拒绝导出""半截 PNG 不许当成这页好了""失败也要收尾
     # PowerPoint 实例"三条静默错法。放进 --fast：全都退化后不报错。
     "m2_server/tests/test_pptx_to_png.py",
+    # ★ 「克隆自己的声音：千问微调 vs RVC」的裁决守卫（约 0.3s，纯读 JSON + 纯算，不 import torch）：
+    # 裁决书写在 `docs/product/research/m1f_…` 里，而**文档不会自己报错** ——
+    # 这里从归档的原始分重算三条已发布事实（RVC 逐句 3/3 赢且跨 seed 区间不重叠 /
+    # 千问微调增益落在自身波动内 / 自然度尺子在本批不可用）。数字被重新生成或
+    # 覆盖时会立刻变红，而不是让结论静默过期。
+    "tts_trial/tests/test_qwen_vs_rvc_verdict.py",
+    # 验「自然度尺子」的探针（约 0.2s，纯 numpy）：它是用来判**别的尺子能不能用**的，
+    # 自己必须先可信 —— SNR 配平 / 砖墙低通 / 单调性判定（加容差就等于往结论上调）。
+    "tts_trial/tests/test_probe_natscore_domain.py",
 ]
 
 
