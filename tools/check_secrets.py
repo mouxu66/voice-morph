@@ -171,6 +171,11 @@ def scan_paths(paths) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     argv = sys.argv[1:] if argv is None else argv
     staged = "--staged" in argv
     try:

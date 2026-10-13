@@ -428,6 +428,11 @@ def write_report(results: dict, out_dir: Path) -> Path:
 
 
 def main(argv=None) -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="双空间声纹最小实验（Qwen 自空间 vs CAM++）")
     ap.add_argument("--exp", required=True, help="实验名（voicebank root 下的目录，如 pilotC）")
     ap.add_argument("--root", type=Path, default=None, help="实验根（默认 OUTPUTS/voicebank）")

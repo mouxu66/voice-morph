@@ -14,6 +14,7 @@ import re
 import wave
 
 import numpy as np
+import sys
 
 #: 帧能量门限的自适应余量（相对 10 分位噪声底）。
 SNR_MARGIN_DB = 12.0
@@ -145,6 +146,11 @@ def compute_frame_db(audio, sr, frame_ms=25, hop_ms=10):
 
 
 def main():
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     audio, sr = read_wav(SRC)
     dur = len(audio) / sr
     log(f"[audio] {SRC}")

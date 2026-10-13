@@ -346,6 +346,11 @@ def build(exp: str, *, pack: Path, out: Path, root: Path | None = None,
 
 
 def main() -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="把发放包打成离线听测页（点一下就能打分）")
     ap.add_argument("--exp", required=True, help="实验名（用于身份泄漏扫描）")
     ap.add_argument("--root", default=None, help="实验根目录（默认 outputs/voicebank）")

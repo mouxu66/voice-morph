@@ -593,6 +593,11 @@ def render(result: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="第三方许可登记审计（离线）")
     ap.add_argument("--root", default=None, help="仓库根（默认脚本上一级）")
     ap.add_argument("--json", action="store_true", help="输出 JSON")

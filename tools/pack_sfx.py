@@ -152,6 +152,11 @@ def build(src: Path, pack_id: str, name: str, license_: str, author: str,
 
 
 def main() -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="打一个音效包（zip）+ 打印市场清单条目")
     ap.add_argument("--from", dest="src", help="素材目录（*.wav）")
     ap.add_argument("--demo", metavar="ID", help="生成演示包（程序化合成，ID 作为包 id）")

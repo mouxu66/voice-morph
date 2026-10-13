@@ -749,6 +749,11 @@ def _print_summary(exp: str, data: dict):
 
 
 def main():
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     p = argparse.ArgumentParser(description="音色入库自动质检")
     p.add_argument("--dataset", help="数据集预检：切片数/时长分布/响度/语速")
     p.add_argument("--voice", help="变声验收：测试音频经离线变声后四项指标 + score")

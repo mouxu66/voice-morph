@@ -175,6 +175,11 @@ def _shoot(port: int, base: str, route: str, width: int, height: int,
 
 
 def main() -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="无头 Chrome 页面走查（截图 + 溢出量测）")
     ap.add_argument("--route", default="/home", help="前端路由，如 /audition")
     ap.add_argument("--base", default="http://127.0.0.1:5199", help="预览服务地址")

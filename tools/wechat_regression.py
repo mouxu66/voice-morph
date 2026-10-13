@@ -212,6 +212,11 @@ def _one_round(wav: Path, audio_secs: float, *, with_tts: bool) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="微信语音发送链路自动回归")
     ap.add_argument("--secs", type=float, default=3.0, help="测试音频时长（默认 3s；须 >1s，微信最短 1 秒）")
     ap.add_argument("--repeat", type=int, default=1, help="连发几次（验稳定性，默认 1）")

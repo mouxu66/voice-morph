@@ -133,6 +133,11 @@ def step3_slice(vocal: Path, prefix: str, cancel_event=None):
 
 
 def main():
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     # 视频与音频素材统一处理（音频文件 ffmpeg -vn 提轨同样有效）
     suffixes = (".mp4", ".mkv", ".mov", ".flv", ".webm", ".avi",
                 ".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac", ".wma")

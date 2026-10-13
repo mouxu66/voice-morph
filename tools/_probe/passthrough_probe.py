@@ -93,6 +93,11 @@ def _load_wav(path: Path) -> tuple[np.ndarray, int]:
 
 
 def main() -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     out_idx = _resolve_device()
     if out_idx is None:
         print("✗ 找不到 CABLE 渲染端（VB-Audio Virtual Cable）")

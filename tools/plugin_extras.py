@@ -193,6 +193,11 @@ def _print_human(rep: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="按启用集算插件 extras")
     ap.add_argument("--preset", choices=sorted(_manifest().PRESETS), default=None)
     ap.add_argument("--plugins", nargs="*", default=None, help="显式指定启用的插件 id")

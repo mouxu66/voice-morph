@@ -89,6 +89,11 @@ def synth(text: str, ref: str) -> Path:
 
 
 def main() -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--text", default=DEFAULT_TEXT)
     ap.add_argument("--ref", default=DEFAULT_REF)

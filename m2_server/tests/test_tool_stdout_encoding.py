@@ -18,13 +18,18 @@ pytest 子进程、CI 日志、`> out.txt`）时现形：
 也成立），**测试自己**钉 `encoding="utf-8"`（这样子进程怎么输出都成立）。
 `tools/check.py` 的 `_console()`、`tools/verify_backend_sync.py`、
 `test_githooks._run()`、`test_plugin_loader` / `test_plugin_manifest` 早就是这么写的；
-本文件的守卫只是把「靠人记得」换成「忘了就红」。
+但**只靠「会不会崩」会漏掉半边**：`⚠️` 这类字是「崩」的那一半；被重定向时按 cp936
+写出的**纯中文**不崩，却在任何 UTF-8 消费方（Git Bash、编辑器、CI 日志、`subprocess`
+捕获）里显示成乱码（`��Ƶ�豸`）。2026-10-13 起规则改成**不看待打印的字符**：
+`_ENTRY_DIRS` 下有 `def main()` 的入口一律自己钉 stdout，见
+`_entry_scripts_missing_utf8_stdout`。
 """
 
 from __future__ import annotations
 
 import ast
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -36,89 +41,118 @@ TOOLS = ROOT / "tools"
 TESTS = Path(__file__).resolve().parent
 
 
-def _chars_outside_gbk(text: str) -> list[str]:
-    """挑出 text 里**编码不进 GBK** 的字符（去重保序）。
+#: 需要「入口脚本自己钉 stdout 编码」的目录 -> 是否递归。
+#: 刻意不含：`*/tests/`（测试由下面那条 AST 规则管）、`tts_trial/_archive` 与
+#: `tts_trial/MeanVC2`（归档 / 第三方）、`m2_server/tools`（另一套流水线）。
+_ENTRY_DIRS: dict[str, bool] = {
+    "tools": True,          # 含 desktop-control / _probe
+    "m2_server": False,     # 顶层入口；子目录是 tests 与 plugins
+    "tts_trial": False,
+    "experiments": False,
+    "m1_workshop": False,
+}
 
-    判据就是崩溃机制本身：cp936 编不出的字，一旦真的走到被重定向的 stdout 上，
-    `print` 就会抛 `UnicodeEncodeError`。比"看到就猜"精确 —— 中文/全角标点
-    （`；`、`——`）在 GBK 里，不报；`⚠️` / `✓` / `✗` / `→` 里只有后三个在（`→` 在），
-    `⚠` 与 `✓` 不在。
+
+def _entry_scripts_missing_utf8_stdout(root: Path = ROOT) -> list[str]:
+    """有 `main()` 却没把 stdout 钉成 UTF-8 的入口脚本。
+
+    判据**故意不看「它打印了什么」**：Windows 上 Python 的 stdout 一旦被重定向
+    （管道 / `> out.txt` / Git Bash 的 pty），编码就退回 `locale`（cp936）；
+    写**纯中文**不抛异常，但按 UTF-8 解码的消费方（Git Bash、编辑器、CI 日志、
+    `subprocess` 捕获）看到的就是 `��Ƶ�豸` —— 与「崩在半截」是两个症状、同一条根因。
+    按字符类筛会整条漏掉这条路径：2026-10-13 实测，按「GBK 编不出的字」筛只查出
+    33 个，按「入口必须自己钉」查出 47 个。
     """
-    bad: list[str] = []
-    for ch in text:
-        try:
-            ch.encode("gbk")
-        except UnicodeEncodeError:
-            if ch not in bad:
-                bad.append(ch)
-    return bad
-
-
-def _tools_printing_gbk_unsafe_chars(root: Path = TOOLS) -> list[str]:
-    """`root` 下「有 `def main(`、print 行含 GBK 之外的字、却没 reconfigure」的清单。"""
     offenders: list[str] = []
-    for path in sorted(root.glob("*.py")):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        if "def main(" not in text:
+    for name, recursive in _ENTRY_DIRS.items():
+        base = root / name
+        if not base.is_dir():
             continue
-        if "reconfigure" in text:
-            continue  # 已经自己把 stdout 切 UTF-8 了
-        for i, line in enumerate(text.splitlines(), 1):
-            if "print(" not in line or line.strip().startswith("#"):
-                continue  # 注释里提到某段代码不算（本仓库注释里到处是反例）
-            bad = _chars_outside_gbk(line)
-            if bad:
-                offenders.append(f"{path.name}:{i}: {' '.join(bad)}")
-                break
+        found = base.rglob("*.py") if recursive else base.glob("*.py")
+        for path in sorted(found):
+            if "tests" in path.parts or "_archive" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if not re.search(r"(?m)^(async )?def main[(]", text):
+                continue
+            if "reconfigure" in text:
+                continue
+            offenders.append(path.relative_to(root).as_posix())
     return offenders
-
-
 def test_the_detector_actually_bites(tmp_path):
-    """守卫自己要先有牙：造两个假工具，验它分别**报出**与**放过**。
+    """守卫自己要先有牙：造一棵假仓库，验它分别**报出**与**放过**。
 
-    没有这一条，上面那个「清单为空」的断言在**规则本身写坏**时也会绿
+    没有这一条，下面那个「清单为空」的断言在**规则本身写坏**时也会绿
     （`docs/犯错档案-工程.md` §8.21 的病：两边都空 = 白绿）。
     """
-    bad = tmp_path / "bad_tool.py"
-    bad.write_text('def main():\n    print("⚠️ 没门\n")\n', encoding="utf-8")
-    good = tmp_path / "good_tool.py"
-    good.write_text(
-        "import sys\n"
-        "def main():\n"
-        "    sys.stdout.reconfigure(encoding='utf-8')\n"
-        "    print('⚠️ 有门')\n",
-        encoding="utf-8",
+    def put(rel: str, body: str) -> None:
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+
+    # 该报：有入口、打印中文、没钉编码
+    put("tools/bad_tool.py", """def main():
+    print("⚠️ 没门")
+""")
+    # 该报：**纯中文也算** —— 它不崩，但在任何 UTF-8 消费方那里是乱码（本规则的理由）
+    put("tools/plain_tool.py", """def main():
+    print("全角；中文 —— 这些在 GBK 里")
+""")
+    # 该报：tools 是递归的
+    put("tools/desktop-control/deep.py", """def main():
+    print("中文")
+""")
+    # 该报：其它入口目录的顶层
+    put("m1_workshop/pipeline_x.py", """def main():
+    print("中文")
+""")
+    # 放过：已经钉了编码（写法不限）
+    put("tools/good_tool.py", """import sys
+def main():
+    sys.stdout.reconfigure(encoding="utf-8")
+    print("⚠️ 有门")
+""")
+    # 放过：没有 main()（模块级脚本不参与；也防止把 conftest 之类卷进来）
+    put("tools/no_main.py", """print("⚠️ 模块级打印，没有 main")
+""")
+    # 放过：测试由下面那条 AST 规则管，这里不重复报
+    put("tools/tests/test_x.py", """def main():
+    print("中文")
+""")
+    # 放过：归档 / 第三方树
+    put("tts_trial/_archive/scratch/old.py", """def main():
+    print("中文")
+""")
+    put("tts_trial/MeanVC2/run.py", """def main():
+    print("中文")
+""")
+
+    found = set(_entry_scripts_missing_utf8_stdout(tmp_path))
+    assert found == {
+        "tools/bad_tool.py",
+        "tools/plain_tool.py",
+        "tools/desktop-control/deep.py",
+        "m1_workshop/pipeline_x.py",
+    }, found
+def test_every_entry_script_pins_its_stdout():
+    """真实仓库必须零缺口。
+
+    2026-10-13：按「入口脚本自己钉 UTF-8」这条统一口径补齐 47 个（此前只按
+    「会崩的字符」补了 8 个）—— 规则是「入口必须钉」，不是「钉了几个」。
+    """
+    offenders = _entry_scripts_missing_utf8_stdout()
+    detail = chr(10).join("  " + o for o in offenders)
+    hint = (
+        "入口脚本（有 def main()）必须自己把 stdout 钉成 UTF-8。"
+        "症状：stdout 被重定向（管道 / `> out.txt` / Git Bash / pytest 子进程捕获）时"
+        "Python 按 cp936 写、读的人按 UTF-8 解，中文变乱码；"
+        "若还打了 GBK 编不出的字（⚠️ ✓），更会直接 UnicodeEncodeError，"
+        "报告断在半截、退出码变 1（门禁假红）。"
+        "修法：在 main() 开头（docstring 之后）加 try 块，参照 tools/check.py 的 _console()："
+        "try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')"
+        " except (AttributeError, OSError, ValueError): pass"
     )
-    plain = tmp_path / "plain_tool.py"
-    plain.write_text('def main():\n    print("全角；中文 —— 这些在 GBK 里")\n', encoding="utf-8")
-    helper = tmp_path / "no_main.py"
-    helper.write_text('print("⚠️ 模块级打印，没有 main")\n', encoding="utf-8")
-
-    found = _tools_printing_gbk_unsafe_chars(tmp_path)
-    assert any(f.startswith("bad_tool.py:") for f in found), found
-    assert not any(f.startswith("good_tool.py:") for f in found), found
-    # 纯中文/全角标点不是问题：不报，免得把「真会炸」淹掉
-    assert not any(f.startswith("plain_tool.py:") for f in found), found
-    # 只扫有 `def main(` 的（没有入口的模块不参与；也防止把 conftest 之类卷进来）
-    assert not any(f.startswith("no_main.py:") for f in found), found
-
-
-def test_every_tool_with_gbk_unsafe_output_reconfigures_its_stdout():
-    """真实仓库必须零缺口 —— 8 个工具在 2026-09-21 都补上了 reconfigure。"""
-    offenders = _tools_printing_gbk_unsafe_chars()
-    detail = "\n  ".join(offenders)
-    assert not offenders, (
-        "以下 tools/*.py 会打印 GBK 之外的字（`⚠️`/`✓`/`✗`…），但没把 stdout 切 UTF-8。\n"
-        "症状是 stdout 被重定向（管道 / `> out.txt` / pytest 子进程）时崩在 print 上，\n"
-        "报告断在半截、退出码变 1（门禁假红）。修法：在 `main()` 开头加\n"
-        "    try:\n"
-        '        sys.stdout.reconfigure(encoding="utf-8", errors="replace")\n'
-        "    except (AttributeError, OSError, ValueError):\n"
-        "        pass\n"
-        f"（照 tools/check.py 的 `_console()` 抄）\n  {detail}"
-    )
-
-
+    assert not offenders, hint + chr(10) + detail
 #: check.py 当门禁跑的脚本 + 它们「报告打到一半就崩」时最有说服力的那行。
 #: `audit_plugin_deps.py --ownership-only` 没有无条件打的收尾行（唯一那行在
 #: 被跳过的 `_print_third_party` 里），所以它只靠「退出码 + 无 traceback」判定。

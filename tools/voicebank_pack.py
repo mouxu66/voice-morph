@@ -282,6 +282,11 @@ def _resolve_sample(base: Path, sample: str) -> Path | None:
 
 
 def main() -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(
         description="打盲听发放包（盲号命名 + 防泄题 + 预命名评分表）")
     ap.add_argument("--exp", required=True, help="实验名（如 pilotC）")

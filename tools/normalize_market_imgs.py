@@ -323,6 +323,11 @@ def run(
 
 
 def main() -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="市场配图留白归一化")
     ap.add_argument("--src", default=str(DEFAULT_SRC), help="配图目录（默认打包 assets）")
     ap.add_argument("--out", default=None, help="输出目录（默认就地改写 --src）")

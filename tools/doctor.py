@@ -262,6 +262,11 @@ def run_checks() -> list[Check]:
 
 
 def main() -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     as_json = "--json" in sys.argv
     checks = run_checks()
     missing_required = [c for c in checks if c.required and not c.ok]

@@ -31,6 +31,11 @@ def scan(box, tag):
 
 
 def main():
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     hwnd = wv._foreground_wechat()
     wv._ensure_onscreen(hwnd)
     rect = wv._window_rect(hwnd)

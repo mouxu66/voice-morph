@@ -83,6 +83,11 @@ def f0_stats(path: Path) -> dict:
 
 
 def main():
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     sys.path.insert(0, str(M2))
     import speaker_sep
     import soundfile as sf

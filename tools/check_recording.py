@@ -136,6 +136,11 @@ def fmt_dur(sec: float) -> str:
 
 
 def main():
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="录音素材客观质检")
     ap.add_argument("inputs", nargs="+", help="wav 文件路径 / 目录 / glob 模式")
     ap.add_argument("--json", help="可选：把汇总结果写成 JSON 文件", default=None)

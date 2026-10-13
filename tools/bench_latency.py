@@ -262,6 +262,11 @@ def bench(profile: str = "balanced", *, log: Path | None = None,
 
 
 def main() -> None:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     p = argparse.ArgumentParser(
         description="实时变声链路延迟基准（端到端 = 分块缓冲 + 推理 + 驱动缓冲）")
     p.add_argument("--profile", default="balanced",

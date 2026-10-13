@@ -15,6 +15,7 @@ import argparse
 from pathlib import Path
 
 from pydub import AudioSegment
+import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIPS = ROOT / "media" / "clips"
@@ -35,6 +36,11 @@ def resolve_clip(name: str) -> Path:
 
 
 def main():
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     parser = argparse.ArgumentParser(description="构建/追加音色参考音频")
     parser.add_argument("voice_id", help="音色ID，如 meituan_rat")
     parser.add_argument("clips", nargs="+", help="片段名，如 clip_001")

@@ -330,6 +330,11 @@ def export_pptx_to_png(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="PPTX → 逐页 PNG（讲课视频的画面，文件名对齐 course 页号）")
     ap.add_argument("pptx", help="源 .pptx")
     ap.add_argument("--out-dir", required=True, help="输出目录（page_%03d.png + slides.json）")

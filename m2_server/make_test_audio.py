@@ -14,6 +14,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 SR = 22050
@@ -40,6 +41,11 @@ def write_wav(path: Path, audio: np.ndarray):
 
 
 def main():
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     # 1. 目标音色：一段"不同音高"的连续音节（模拟目标音色的参考素材）
     target_freqs = [180, 220, 260, 300, 340, 300, 260, 220]  # 低沉、有辨识倾向
     ref = []

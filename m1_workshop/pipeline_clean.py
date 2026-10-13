@@ -68,6 +68,11 @@ def step3_slice(vocal, prefix):
     return count
 
 def main():
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     videos = [f for f in RAW.iterdir() if f.suffix.lower() in (".mp4",".mkv",".mov",".flv",".webm",".avi")]
     if not videos:
         print("media/raw_videos_clean/ 没有视频！"); sys.exit(1)

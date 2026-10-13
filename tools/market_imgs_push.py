@@ -41,6 +41,7 @@ import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "m2_server" / "assets" / "market_imgs"
@@ -84,6 +85,11 @@ def plan_mirror(desired: dict[str, str], existing: list[str]) -> list[str]:
 
 
 def main() -> None:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True, help="GitHub 仓库 user/name（public）")
     ap.add_argument("--branch", default="main")

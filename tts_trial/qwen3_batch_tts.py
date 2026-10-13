@@ -8,6 +8,7 @@ from pathlib import Path
 
 import soundfile as sf
 from qwen_tts import Qwen3TTSModel
+import sys
 
 MODEL_DIR = r"D:/变声/tts_models/qwen3-tts-1.7b-base"
 REF_AUDIO = r"D:/变声/tts_models/ref/meituan_rat_002.wav"
@@ -40,6 +41,11 @@ TEXTS = [
 
 
 def main():
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=len(TEXTS), help="生成多少句")
     ap.add_argument("--start", type=int, default=0, help="从第几句开始")

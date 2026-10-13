@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 from pathlib import Path
+import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 HOOKS_DIR = ".githooks"
@@ -61,6 +62,11 @@ def verify() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="安装/检查本仓库自带的 git 钩子")
     ap.add_argument("--check", action="store_true", help="只检查当前状态")
     ap.add_argument("--uninstall", action="store_true", help="取消挂载")

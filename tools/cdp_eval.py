@@ -33,6 +33,11 @@ JSON.stringify({
 
 
 def main() -> None:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     expr = sys.argv[1] if len(sys.argv) > 1 else SNAPSHOT
     targets = json.load(urllib.request.urlopen(CDP, timeout=5))
     pet = next((t for t in targets if t.get("title") == "桌宠"), None)

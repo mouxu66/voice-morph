@@ -724,6 +724,11 @@ def run(*, reuse: bool = False, force: bool = False) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="RVC 变声验收 emb_sim 项的双空间标定")
     ap.add_argument("--reuse", action="store_true", help="已产出的变声输出直接复用（不推理）")
     ap.add_argument("--force", action="store_true", help="忽略嵌入缓存，全部重算")
