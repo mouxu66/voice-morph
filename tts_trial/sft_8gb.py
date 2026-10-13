@@ -237,8 +237,26 @@ def train():
                 talker_hidden_states = hidden_states[codec_mask[:, :-1]]
                 talker_codec_ids = codec_ids[codec_mask]
 
-                sub_talker_logits, sub_talker_loss = model.talker.forward_sub_talker_finetune(
+                # ★ 2026-10-14 修复：sub_talker 的损失**不能用 vendor 的返回值**。
+                #   `forward_sub_talker_finetune()`（第三方包 modeling_qwen3_tts.py:1609）
+                #   内部把 `labels=codec_ids[:, 1:]` 交给 self.loss_function，
+                #   而 loss_function = ForCausalLMLoss **内部还会再 shift 一次**
+                #   （loss_utils.py:61-64）⇒ 实际在教模型预测 **k+2**，错位一格。
+                #
+                #   用真模型当裁判实测（probe_subtalker_oracle.py，3 条真实样本）：
+                #       对齐 A（logits[k] → codec_{k+1}）: 7.4167  ← 低于随机线 7.6246 ✅
+                #       对齐 B（codec_{k+2}，= 现行双重 shift）: 9.2917
+                #       对齐 C（codec_k）                    : 9.2500
+                #       vendor 内部返回的 loss               : 9.2614 ≈ B ⇒ 确认错位
+                #   所以这里只取 logits，自己按 A 算交叉熵。
+                #   （talker 主损失那处已同步修，见上面 labels=codec_0_labels[:, :-1]。）
+                sub_talker_logits, _ = model.talker.forward_sub_talker_finetune(
                     talker_codec_ids, talker_hidden_states)
+                sub_logits_flat = sub_talker_logits.reshape(-1, sub_talker_logits.shape[-1])
+                sub_targets = talker_codec_ids[:, 1:].reshape(-1)
+                sub_talker_loss = torch.nn.functional.cross_entropy(
+                    sub_logits_flat[: sub_targets.numel()], sub_targets
+                )
 
                 loss = outputs.loss + 0.3 * sub_talker_loss
 
