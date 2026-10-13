@@ -423,6 +423,223 @@ def soundboard_premix(req: PremixReq):
     }
 
 
+# --------------------------------------------------------------- 歌声垫底（BGM）
+
+# 「边唱边说」三档的后端（调研：docs/调研-微信语音边唱边说-2026-10-13.md）：
+#   · /bgm/upload + /bgm/premix   —— A 档「垫歌预混」：把一首歌全程混进一条合成产物，
+#     产出 bgmmix_*.wav，发送目标换成它（发送链路零改动）；
+#   · /bgm/start /bgm/stop /bgm/gain —— C 档「实时垫歌」：往 CABLE 垫一层长 BGM，
+#     走声板 worker 的「垫底层」（独立流，不抢占 one-shot，见 board_worker.py）。
+# 歌的来源统一走**会话目录**（cover 产物、/cover/fetch 下好的、这里上传的都在那）：
+# 一条 `session_out.find(bare_name)` 就能定位，且天然「退出即删」。
+
+#: BGM 素材上限（秒）：垫底是"一首歌"的量级，10 分钟以上的多半是下错了东西
+MAX_BGM_S = 600.0
+#: 上传 BGM 的大小上限（与翻唱上传同一口径；10 分钟 44.1k 单声道 PCM16 ≈ 50MB）
+_MAX_BGM_BYTES = 50 * 1024 * 1024
+#: 实时垫底的默认增益（≈ -10dB）：与 sfx 的 0.9 不是一回事——BGM 是长播放，
+#: 要一直压在人声（实时变声/说话）下面，默认就按配平目标给。
+BGM_DEFAULT_GAIN = 0.3
+
+
+def _bgm_path(bgm: str) -> Path:
+    """会话产物裸名 → 绝对路径（预混与实时垫底共用）。找不到/非法都当场报错。"""
+    p = session_out.find(bgm)
+    if p is None:
+        n = str(bgm or "").strip()
+        if not n or n in (".", "..") or any(c in n for c in "/\\"):
+            raise HTTPException(status_code=400, detail=f"非法的音频名：{bgm!r}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"找不到这首歌：{n}（翻唱产物/上传的歌都在本次会话里，退出应用会清空）",
+        )
+    return p
+
+
+class BgmPremixReq(BaseModel):
+    wav: str | None = None  # 要垫的人声（缺省=最近一次合成产物，与 /premix 同口径）
+    bgm: str  # 会话里的歌（裸名）
+    lead_db: float = sfx_lib.BGM_LEAD_DB  # BGM 比人声低多少 dB
+    fade_in_s: float = sfx_lib.BGM_FADE_DEFAULTS[0]
+    fade_out_s: float = sfx_lib.BGM_FADE_DEFAULTS[1]
+    start_s: float = 0.0  # 从歌的哪一秒开始垫（跳前奏直取副歌）
+
+
+@router.post("/bgm/upload")
+async def bgm_upload(file: UploadFile = File(...)):
+    """上传一首歌当 BGM 素材：解码成单声道 PCM16 wav 落会话目录，返回裸名。
+
+    为什么先转码而不是存原始文件：垫底/垫层两侧都直接读数组或喂 worker，
+    mp3/m4a 的解码能力不能赌用户机器上的 libsndfile —— ffmpeg 兜一次底就稳了
+    （与翻唱链路 `_cover_worker` ① 同一做法）。失败时 soundfile 能读的格式
+    （wav/flac/ogg）不依赖 ffmpeg 也能过。
+    """
+    import io
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="空文件")
+    if len(raw) > _MAX_BGM_BYTES:
+        raise HTTPException(status_code=413, detail="文件过大：>50MB 拒绝")
+    data = sr = None
+    try:
+        data, sr = sf.read(io.BytesIO(raw), dtype="float32", always_2d=False)
+    except Exception:
+        pass  # soundfile 不认识的格式 → 落到 ffmpeg 兜底
+    if data is None:
+        import common
+        import subprocess as _sp
+
+        ff = common.find_ffmpeg()
+        if not ff:
+            raise HTTPException(status_code=400, detail="音频解码失败：既不是 wav/flac/ogg，也没装 ffmpeg")
+        tmp = session_out.new_path("bgm_dec", Path(file.filename or "s.mp3").suffix or ".mp3")
+        dst = session_out.new_path("bgm_dec", ".wav")
+        try:
+            tmp.write_bytes(raw)
+            r = _sp.run(
+                [ff, "-y", "-loglevel", "error", "-i", str(tmp), "-ar", "44100", "-ac", "1", str(dst)],
+                capture_output=True, text=True, timeout=600, encoding="utf-8", errors="replace",
+            )
+            if r.returncode != 0 or not dst.exists():
+                raise HTTPException(
+                    status_code=400, detail="音频解码失败：" + (r.stderr or "").strip()[:300]
+                )
+            data, sr = sf.read(str(dst), dtype="float32", always_2d=False)
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                dst.unlink(missing_ok=True)
+    if getattr(data, "ndim", 1) > 1:
+        data = data.mean(axis=1)
+    dur = len(data) / int(sr or 1)
+    if dur < 1.0:
+        raise HTTPException(status_code=400, detail=f"太短了：{dur:.1f}s（垫底至少要 1s）")
+    if dur > MAX_BGM_S:
+        raise HTTPException(
+            status_code=400,
+            detail=f"太长了：{dur:.0f}s > {MAX_BGM_S:.0f}s —— 先用翻唱页/别的工具截一段",
+        )
+
+    out = session_out.new_path("bgm")
+    sf.write(str(out), np.asarray(data, dtype=np.float32), int(sr), subtype="PCM_16")
+    return {
+        "ok": True,
+        "name": out.name,
+        "duration_s": round(dur, 2),
+        "url": f"/api/media/outputs/{session_out.rel_url(out.name)}",
+    }
+
+
+@router.post("/bgm/premix")
+def bgm_premix(req: BgmPremixReq):
+    """把一首歌**全程垫进**一条合成产物（A 档「歌声垫底预混」）。
+
+    输出 `bgmmix_<原名>.wav`，发送目标换成它 —— 与 `/premix` 同一套产物语义
+    （不劫持"最近一条 TTS 产物"的口径 + 原子替换）。混音本体在 `sfx_lib.mix_bgm`：
+    人声是时间轴（输出长度=人声长度）、RMS 自动配平、首尾淡入淡出。
+
+    与 `/premix` 的一个刻意差别：这是**明确的用户动作**但 DSP 侧没有"部分失败"的
+    形态（一首歌要么垫得上要么整单失败），所以不需要 `skipped` 列表——notes 里的
+    是**提示**（循环补满/电平量不出），不是失败。
+    """
+    lead_db = min(30.0, max(0.0, float(req.lead_db)))
+    fade_in = min(10.0, max(0.0, float(req.fade_in_s)))
+    fade_out = min(10.0, max(0.0, float(req.fade_out_s)))
+    start_s = min(3600.0, max(0.0, float(req.start_s)))
+
+    bgm_path = _bgm_path(req.bgm)
+    bgm, bgm_sr = _read_mono(bgm_path)
+    if bgm.size / max(1, bgm_sr) > MAX_BGM_S:
+        raise HTTPException(status_code=400, detail="这首歌太长，先截一段再用（≤600s）")
+
+    src = _outputs_wav(req.wav) if req.wav else _latest_tts()
+    voice, sr = _read_mono(src)
+    dur = voice.size / max(1, sr)
+    if dur > sfx_lib.MAX_SECONDS:
+        raise HTTPException(status_code=400, detail=f"音频太长：{dur:.0f}s > {sfx_lib.MAX_SECONDS:.0f}s")
+
+    try:
+        mixed, notes = sfx_lib.mix_bgm(
+            voice, sr, bgm, bgm_sr,
+            lead_db=lead_db, fade_in_s=fade_in, fade_out_s=fade_out, start_s=start_s,
+        )
+    except SfxError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    out = session_out.derived_dir(src) / f"bgmmix_{src.stem}.wav"
+    tmp = out.with_name(f".{out.stem}.{os.getpid()}_{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        sf.write(str(tmp), mixed, sr, subtype="PCM_16", format="WAV")
+        os.replace(tmp, out)
+    except OSError as e:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise HTTPException(status_code=503, detail=f"混音结果写不进去：{e}") from e
+    return {
+        "ok": True,
+        "wav": out.name,
+        "seconds": round(mixed.size / max(1, sr), 2),
+        "url": f"/api/media/outputs/{session_out.rel_url(out.name)}",
+        "notes": notes,  # 提示（循环补满/电平量不出），不是失败——如实带给前端
+    }
+
+
+class BgmStartReq(BaseModel):
+    bgm: str  # 会话里的歌（裸名）
+    gain: float = BGM_DEFAULT_GAIN
+    loop: bool = True  # 歌比说话短时循环补满（与预混同一语义）
+
+
+@router.post("/bgm/start")
+def bgm_start(req: BgmStartReq):
+    """往 CABLE **实时垫一层 BGM**（C 档）：说话/实时变声的同时垫歌。
+
+    走声板 worker 的「垫底层」——独立音频流，与 one-shot 音效互不抢占：
+    垫上歌之后点"爆炸"，炸的是音效，歌继续（这正是"垫"与"插播"的区别，
+    见 board_worker.py 头注释）。不获取 `_send_lock`，理由与 /play 相同。
+    """
+    path = _bgm_path(req.bgm)
+    gain = min(1.5, max(0.0, float(req.gain)))
+    try:
+        msg = _command({"bgm": str(path), "id": path.stem, "gain": gain, "loop": bool(req.loop)})
+    except (RuntimeError, OSError) as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    return {
+        "ok": True,
+        "playing": True,
+        "id": path.stem,
+        "duration_s": msg.get("duration_s"),
+        "loop": bool(req.loop),
+    }
+
+
+@router.post("/bgm/stop")
+def bgm_stop():
+    """停掉垫底层（one-shot 音效不受影响 —— 它们是两条独立的流）。"""
+    try:
+        _command({"bgm_stop": True})
+    except (RuntimeError, OSError) as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    return {"ok": True}
+
+
+class BgmGainReq(BaseModel):
+    gain: float
+
+
+@router.post("/bgm/gain")
+def bgm_gain(req: BgmGainReq):
+    """实时调垫底层的音量（不用重开 —— 流里读的是同一个变量）。"""
+    gain = min(1.5, max(0.0, float(req.gain)))
+    try:
+        _command({"bgm_gain": gain})
+    except (RuntimeError, OSError) as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    return {"ok": True, "gain": gain}
+
+
 @router.post("/import")
 async def soundboard_import(file: UploadFile = File(...)):
     """导入用户自己的音效（wav/flac/ogg…）：≤5s、≤2MB，转单声道 PCM16 wav。"""

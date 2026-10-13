@@ -32,6 +32,7 @@ id 规则：出厂与导入用**裸 stem**，包内素材用 `"<pack_id>/<stem>"
 from __future__ import annotations
 
 import json
+import math
 import threading
 from pathlib import Path
 
@@ -403,3 +404,111 @@ def assemble(
     if not out:
         return np.zeros(0, dtype=np.float32), notes
     return _peak_norm(np.concatenate(out), peak), notes
+
+
+# --------------------------------------------------------------- 歌声垫底（BGM）
+
+#: 垫底默认：BGM 比人声低多少 dB（RMS 实测配平的目标差）。
+#: 声板的 `gain=0.9` 是"音效与人声同量级"的语义；垫 BGM 要的是"听得见但压得住"
+#: （KTV 伴奏听感），-10dB 是常用起点——量出来配，不让用户对着滑块盲猜。
+BGM_LEAD_DB = 10.0
+
+#: 配平增益夹紧。测量会被纯伴奏段/爆音段带偏，夹住防 BGM 被推飞（盖过人声）或压没。
+BGM_GAIN_LIMITS = (0.05, 1.5)
+
+#: 垫底淡入淡出默认（秒）：layer 硬贴一首歌，开头结尾是硬切——必须给淡变。
+BGM_FADE_DEFAULTS = (1.5, 2.0)
+
+
+def _rms_db(x: np.ndarray) -> float | None:
+    """整段 RMS 电平（dBFS）；全静音/空返回 None —— 调用方按"量不出就不配"处理。
+
+    与 `cover_api.rms_db` 同一判据（RMS 描述"响"、峰值只防削波），但那是文件版的
+    （要 import soundfile 再读盘）；这里是数组版，服务垫底混音这种"两轨都在内存里"的场景。
+    """
+    if x.size == 0:
+        return None
+    m = float(np.sqrt(np.mean(np.asarray(x, dtype=np.float64) ** 2)))
+    if m <= 1e-9:
+        return None
+    return 20.0 * math.log10(m)
+
+
+def _fade_edges(x: np.ndarray, sr: int, fade_in_s: float, fade_out_s: float) -> np.ndarray:
+    """首尾线性淡入淡出（就地修改并返回）。fade 长度超过音频本身时取全长。"""
+    n = x.size
+    fi = min(n, max(0, int(round(fade_in_s * sr))))
+    fo = min(n, max(0, int(round(fade_out_s * sr))))
+    if fi:
+        x[:fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)
+    if fo:
+        x[n - fo :] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)
+    return x
+
+
+def mix_bgm(
+    voice: np.ndarray,
+    sr: int,
+    bgm: np.ndarray,
+    bgm_sr: int,
+    *,
+    lead_db: float = BGM_LEAD_DB,
+    fade_in_s: float = BGM_FADE_DEFAULTS[0],
+    fade_out_s: float = BGM_FADE_DEFAULTS[1],
+    start_s: float = 0.0,
+    peak: float = 0.97,
+) -> tuple[np.ndarray, list[str]]:
+    """把一段歌/BGM **全程垫进人声下面**（"边唱边说"的离线版）。返回 (结果, notes)。
+
+    与 `mix_into(mode=layer)` 的差别（为什么单独一个函数而不是塞个参数）：
+
+        · **人声是时间轴**：输出长度恒等于人声长度——BGM 更长就截断、更短就循环补满。
+          "垫底"的语义是"人声说到哪、歌垫到哪"，总时长不该被歌拖长
+          （微信发送的 60s 预算按人声算，混完变长 = 白白吃掉预算）。
+        · **按 RMS 自动配平**：目标"BGM 比人声低 `lead_db`"，增益从两轨实测电平算出
+          （`cover_api.auto_vocal_gain` 同一思路），夹在 `BGM_GAIN_LIMITS` 内；
+          任一轨量不出电平（接近静音）→ 退化为固定衰减 `10^(-lead_db/20)` 并记 notes。
+        · **淡入淡出**：硬贴的开头/结尾必须给淡变，`fade_out` 恰好落在**人声结束**处
+          （不是歌自己的结尾）——人声停、歌跟着淡出，这才是"垫"的听感。
+
+    `start_s`：从歌的哪一秒开始垫（用户常想跳过前奏直取副歌）。越过歌长直接抛
+    `SfxError`——与 `mix_into` "越界贴尾"的宽容不同：这里用户给的是**素材内位置**，
+    错了就是没有这一段，静默改成从 0 开始等于发了另一首歌。
+
+    坏素材不静默：空 BGM / 起点越界都抛 `SfxError`（调用方翻译成 400）。
+    """
+    v = _mono(voice)
+    b = _resample(_mono(bgm), int(bgm_sr), int(sr))
+    if b.size == 0:
+        raise SfxError("BGM 是空的")
+    sr_i = int(sr)
+    start_n = int(round(max(0.0, start_s) * sr_i))
+    if start_n >= b.size:
+        raise SfxError(
+            f"起点超出歌长：第 {start_s:.1f}s，但歌只有 {b.size / sr_i:.1f}s"
+        )
+    used = b[start_n:].copy()
+
+    notes: list[str] = []
+    if used.size < v.size and used.size > 0:
+        reps = -(-v.size // used.size)  # ceil
+        used = np.tile(used, reps)[: v.size]
+        notes.append(
+            f"BGM（{b.size / sr_i:.1f}s）比人声（{v.size / sr_i:.1f}s）短，已循环补满"
+        )
+    used = used[: v.size]
+
+    vdb, bdb = _rms_db(v), _rms_db(used)
+    if vdb is None or bdb is None:
+        gain = 10.0 ** (-float(lead_db) / 20.0)
+        notes.append(
+            f"有一方接近静音、量不出电平，按固定 {20 * math.log10(gain):.1f}dB 垫入"
+        )
+    else:
+        need_db = (vdb - float(lead_db)) - bdb
+        lo, hi = BGM_GAIN_LIMITS
+        gain = min(hi, max(lo, 10.0 ** (need_db / 20.0)))
+
+    used = _fade_edges(used * np.float32(gain), sr_i, fade_in_s, fade_out_s)
+    out = v + used  # v 未被修改：+ 产生新数组
+    return _peak_norm(out, peak), notes

@@ -35,10 +35,12 @@ import asyncio
 import contextlib
 import logging
 import math
+import os
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import config as cfg
@@ -503,6 +505,87 @@ def _cover_worker(
 @router.get("/cover/status")
 def cover_status():
     return COVER_STATE
+
+
+#: 微信语音单条音频预算（`docs/微信语音-长文分段发送方案.md` §2）：
+#: PLAY_LEAD(0.35) + 音频 + TAIL(0.3) + 余量 ≤ 60s → 音频 ≤ 54s。
+#: 翻唱直发按**不分段**走（切段会把歌切碎），所以截取默认一次拿到预算内的整段。
+WECHAT_AUDIO_BUDGET_S = 54.0
+
+
+class CoverClipReq(BaseModel):
+    src_name: str  # 会话里的成品（裸名，/cover/run 产出的 cover_*.wav）
+    start_s: float = 0.0  # 从哪一秒开始截（默认整首开头；想直接发副歌就往后挪）
+    seconds: float = WECHAT_AUDIO_BUDGET_S
+
+
+@router.post("/cover/clip")
+def cover_clip(req: CoverClipReq):
+    """把一条会话产物**截成 ≤54s 的一段**（B 档「翻唱直发」的截取入口）。
+
+    为什么截而不是直接发整首：微信语音单条 60s 硬上限，发送预算给音频留 54s
+    （算式见 `docs/微信语音-长文分段发送方案.md` §2）；超预算的语音会被截断成
+    60" 的静音长条（本项目踩过的最贵的坑）。产物本来就是"人声+伴奏混好"的完整
+    歌曲，截一段直接走现有 `send_voice` 即可 —— 发送链路零改动。
+
+    输出 `clip_<原名>.wav` 落会话目录（与源同目录，退出即删）。秒数**钳到预算内**
+    并在 `notes` 里如实说明（不静默改语义）；起点越过歌长报 400。
+    """
+    import soundfile as sf
+
+    src = session_out.find(req.src_name)
+    if src is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"找不到音频：{req.src_name!r}（翻唱成品在本次会话里，退出应用会清空）",
+        )
+    try:
+        data, sr = sf.read(str(src), dtype="float32", always_2d=False)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"音频读取失败：{e}") from e
+    n = data.shape[0] if getattr(data, "ndim", 1) > 1 else data.size
+    total_s = n / max(1, int(sr))
+    if total_s < 0.1:
+        raise HTTPException(status_code=400, detail="这条音频几乎是空的")
+
+    notes: list[str] = []
+    seconds = float(req.seconds)
+    if seconds > WECHAT_AUDIO_BUDGET_S:
+        notes.append(
+            f"请求 {seconds:.0f}s 超出发送预算，已钳到 {WECHAT_AUDIO_BUDGET_S:.0f}s"
+        )
+        seconds = WECHAT_AUDIO_BUDGET_S
+    seconds = max(1.0, seconds)
+    start_n = int(round(max(0.0, float(req.start_s)) * int(sr)))
+    if start_n >= n:
+        raise HTTPException(
+            status_code=400,
+            detail=f"起点超出音频长度：第 {req.start_s:.1f}s，但全长 {total_s:.1f}s",
+        )
+    take = min(int(round(seconds * int(sr))), n - start_n)
+    if take < int(round(seconds * int(sr))):
+        notes.append(
+            f"从第 {req.start_s:.1f}s 起不足 {seconds:.1f}s，已取到结尾（共 {take / max(1, int(sr)):.1f}s）"
+        )
+
+    clip = data[start_n : start_n + take]
+    out = session_out.derived_dir(src) / f"clip_{src.stem}.wav"
+    tmp = out.with_name(f".{out.stem}.{os.getpid()}_{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        sf.write(str(tmp), clip, int(sr), subtype="PCM_16", format="WAV")
+        os.replace(tmp, out)
+    except OSError as e:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise HTTPException(status_code=503, detail=f"截取结果写不进去：{e}") from e
+    return {
+        "ok": True,
+        "wav": out.name,
+        "seconds": round(take / max(1, int(sr)), 2),
+        "total_s": round(total_s, 1),
+        "url": f"/api/media/outputs/{session_out.rel_url(out.name)}",
+        "notes": notes,
+    }
 
 
 @router.post("/cover/pitch_suggest")
