@@ -2,8 +2,19 @@
 """Qwen3-TTS 官方 sft_12hz.py 的 8GB 显存适配版，改动点：
 1. flash_attention_2 -> sdpa（本机未装 flash-attn）
 2. AdamW -> Adafactor（全参 AdamW 状态需 ~14GB，8GB 卡放不下）
-3. 训练时逐 step 打显存峰值日志，写 ft_train_out.txt 供评估
-其余逻辑与官方一致。
+3. **lr 按优化器换算**（2026-10-13 修复，见下）
+4. 训练时逐 step 打显存峰值日志，写 ft_train_out.txt 供评估
+
+★ lr 为什么必须换（2026-10-13 定位，docs/犯错指南.md #170）：
+  改动 2 换了优化器，却**沿用了官方的 lr=2e-5**，而两者步长语义不同：
+      AdamW      绝对步长 ≈ lr
+      Adafactor  绝对步长 ≈ RMS(θ) · min(lr, 1/√t)     （torch/optim/_adafactor.py:376）
+  RMS(θ) 实测 0.001~0.2 ⇒ Adafactor 实际步长比 AdamW 小 1~2 个数量级。
+  再叠加全参权重是 **bf16 存储**（8 位尾数，相对精度 2^-8≈3.9e-3），
+  单步相对变化 2e-5 比它还小两个数量级 ⇒ **权重舍入后原地不动，loss 冻结**。
+  实测：lr=2e-5 跑满 1940 步（=10 epoch）loss 从 14.56 只到 14.51；
+        换成 Adafactor 原生尺度 lr=1e-2，1 epoch 就从 13.46 降到 8.47。
+  详见 `tts_trial/finetune_lr.py`（唯一事实来源）与 `tts_trial/tests/test_finetune_lr.py`。
 """
 import argparse
 import json
@@ -14,7 +25,9 @@ import sys
 import torch
 from accelerate import Accelerator
 sys.path.insert(0, r"D:\变声\tts_trial\Qwen3-TTS\finetuning")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 为了 import finetune_lr
 from dataset import TTSDataset
+from finetune_lr import ADAFACTOR_LR, check_lr
 from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
 from safetensors.torch import save_file
 from torch.optim import Adafactor
@@ -33,23 +46,21 @@ def _save_ckpt(output_dir: str, base_dir: str, args, accelerator, model):
 
     硬链接同卷零额外磁盘占用；跨卷/失败时退回 copy2。基座的 model.safetensors
     与 config.json 跳过（前者被训练权重替换，后者要打 custom_voice 补丁）。
+
+    ★ 2026-10-13 修复：铺文件改走 `ckpt_utils.link_base_tree()`。
+      旧写法直接 `os.link` + `except OSError: shutil.copy2`，在**目标已存在**时
+      （同一音色第 2 次训练 / C2 续训，输出目录里还留着上一轮的 checkpoint-epoch-*）
+      会 FileExistsError → 落到 copy2 → Windows 报 WinError 32 → 异常冒出本函数
+      ⇒ 训练进程 rc=1，尽管权重已训好，状态机（finetune.py:448）把整轮判成 error。
+      复现脚本 `tts_trial/probe_ckpt_save.py`，回归测试 `tests/test_ckpt_utils.py`。
     """
     from pathlib import Path
+
+    from ckpt_utils import link_base_tree
+
     src, dst = Path(base_dir), Path(output_dir)
     dst.mkdir(parents=True, exist_ok=True)
-
-    for f in src.rglob("*"):
-        rel = f.relative_to(src)
-        target = dst / rel
-        if f.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-            continue
-        if rel.parent == Path(".") and f.name in ("model.safetensors", "config.json"):
-            continue  # 仅顶层的这两个是差异文件；子目录里同名文件照常链接
-        try:
-            os.link(f, target)
-        except OSError:
-            shutil.copy2(f, target)
+    link_base_tree(src, dst)
 
     # 1) 打补丁的 config.json（custom_voice + spk_id）
     with open(src / "config.json", "r", encoding="utf-8") as f:
@@ -105,7 +116,12 @@ def train():
     parser.add_argument("--output_model_path", type=str, default=os.path.join(here, "ft_output"))
     parser.add_argument("--train_jsonl", type=str, required=True)
     parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--lr", type=float, default=2e-5)
+    # ★ 默认值 = Adafactor 的原生尺度（1e-2），**不是**官方的 AdamW 值 2e-5。
+    #   8 月那次生产微调就是被 2e-5 冻住的（loss 10 epoch 只动 0.05），见文件头说明。
+    parser.add_argument("--lr", type=float, default=ADAFACTOR_LR,
+                        help=f"Adafactor 学习率；默认 {ADAFACTOR_LR:g}（其原生尺度）。"
+                             f"官方 sft_12hz.py 的 2e-5 是 AdamW 尺度，配 Adafactor 会"
+                             f"因步长被 bf16 舍入吃掉而完全不收敛。")
     parser.add_argument("--num_epochs", type=int, default=3)
     parser.add_argument("--speaker_name", type=str, default="feidudu")
     # speaker 锚点参考音频：单说话人微调必须固定，否则随 batch 随机漂移
@@ -113,6 +129,14 @@ def train():
                         default=os.path.join(here, "ft_data", "feidudu_full.wav"))
     parser.add_argument("--keep_ckpts", type=int, default=2, help="只保留最近 N 个检查点")
     args = parser.parse_args()
+
+    # ★ 把「lr 与优化器量纲不匹配」显式打出来。历史上它不报错、不警告，
+    #   只是 loss 不动 —— 10 epoch 白跑、42GB 磁盘白占，全靠人事后翻日志才发现。
+    warn = check_lr(args.lr, "Adafactor")
+    if warn:
+        log(f"[lr][警告] {warn}")
+    else:
+        log(f"[lr] Adafactor lr={args.lr:g}（原生尺度 {ADAFACTOR_LR:g}）OK")
 
     accelerator = Accelerator(gradient_accumulation_steps=4, mixed_precision="bf16")
 
@@ -196,7 +220,16 @@ def train():
                 outputs = model.talker(
                     inputs_embeds=input_embeddings[:, :-1, :],
                     attention_mask=attention_mask[:, :-1],
-                    labels=codec_0_labels[:, 1:],
+                    # ★ labels 与输入【同位】，交给 ForCausalLMLoss 内部做唯一一次 shift
+                    #   （2026-10-13 修复）。官方 sft_12hz.py 这里写的是 `[:, 1:]`，
+                    #   而 transformers 5.x 的 ForCausalLMLoss **内部已经 shift 一次**
+                    #   （loss_utils.py:61-64 `labels[..., 1:]`）⇒ 两者叠加会教成预测
+                    #   **j+2**（跳过 audio_codec_0[0]、整体错一格）。
+                    #   数值复验见 tts_trial/probe_shift_check.py：同位 labels 的交叉熵
+                    #   = 0.000000（与手工 next-token 参照一致），而 `[:, 1:]` = 60.0。
+                    #   同族修复 2026-10-12 已在 QLoRA 脚本做过（见犯错指南 #160、
+                    #   官方 issue #278/#371 —— 官方 sft 脚本也有这个双重 shift）。
+                    labels=codec_0_labels[:, :-1],
                     output_hidden_states=True
                 )
 
