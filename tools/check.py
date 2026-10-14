@@ -236,6 +236,11 @@ FAST_TESTS = [
     # 漏 `vm-use-asked` → `/preserve` 截出用途问答；补上后**反而触发**了每次启动的
     # `vm.modechooser.dontask`（它的条件是 `hasBeenAsked() && dontask !== '1'`）。
     "m2_server/tests/test_web_shot_seed.py",
+    # 翻唱防削波修复（#174）的守卫（约 1.5s，真 ffmpeg 造满刻度素材）：
+    # 核心是**成对**的两条 —— 「修前对照确实削波」与「产品路径零削波」，缺一条就
+    # 什么都证明不了（只跑后者：素材本来就不过顶也全绿 = 装饰）。前置那条尤其值钱：
+    # 谁把对照也改成防削波，它就立刻红。
+    "m2_server/tests/test_cover_mix_fix_verify.py",
 ]
 
 

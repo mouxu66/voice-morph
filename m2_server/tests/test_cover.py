@@ -54,13 +54,15 @@ def test_mix_back_keeps_both_tracks(cover, tmp_path, monkeypatch):
 
     monkeypatch.setattr(cover.subprocess, "run", fake_run)
     monkeypatch.setattr(cover, "find_ffmpeg", lambda: "ffmpeg")
+    # 探测那遍要读真峰值，喂 b"RIFF" 会炸 —— 本用例只验 argv，峰值用桩顶掉
+    monkeypatch.setattr(cover, "_true_peak", lambda p: 0.5)
 
     v = tmp_path / "vocals.wav"
     a = tmp_path / "no_vocals.wav"
     out = tmp_path / "mixed.wav"
     cover.mix_back(v, a, out)
 
-    assert len(calls) == 1
+    assert calls, "没有调用 ffmpeg"
     cmd = calls[0]
     assert str(v) in cmd and str(a) in cmd, "人声与伴奏都必须作为输入"
     fc = cmd[cmd.index("-filter_complex") + 1]
@@ -68,6 +70,38 @@ def test_mix_back_keeps_both_tracks(cover, tmp_path, monkeypatch):
     assert "duration=longest" in fc, "伴奏通常比人声长，按 longest 才不会切掉尾巴"
     # ★ normalize=0：默认 amix 会把两轨各降一半音量，听感像"伴奏被压扁了"
     assert "normalize=0" in fc
+    # 最后一遍写的是成品（不带 float 开关）
+    assert "pcm_f32le" not in calls[-1], "成品不该写成 float32"
+    assert str(out) == calls[-1][-1]
+
+
+def test_mix_back_probe_is_float32(cover, tmp_path, monkeypatch):
+    """★ 探测那一遍**必须**要求 float32 —— 这不是风格问题，是能不能防住削波的前提。
+
+    pcm_s16 落盘时超过满刻度的和**先被削到 1.000**，于是"量到的峰永远 = 1.000"、
+    缩放永不生效（本轮实测踩过：改完第二遍混音仍有 47,608 个削波点）。
+    float32 保留真实幅度（可以 >1.0）才算得出正确的缩放系数。
+
+    ⚠️ 这条断言的是**argv**（与 ffmpeg 的契约）。行为上的证明在
+    `test_mix_back_scales_proportional_when_probe_clips`：那里的桩会**照着
+    s16 的语义钳位**，所以漏了这个 flag 就必然算出错的缩放。
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        Path(cmd[-1]).write_bytes(b"RIFF")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cover.subprocess, "run", fake_run)
+    monkeypatch.setattr(cover, "find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(cover, "_true_peak", lambda p: 0.5)
+
+    cover.mix_back(tmp_path / "v.wav", tmp_path / "a.wav", tmp_path / "o.wav")
+
+    assert len(calls) == 2, f"应跑两遍（探测 + 成品），实际 {len(calls)}"
+    probe = calls[0]
+    assert "pcm_f32le" in probe, "探测那遍必须是 float32，否则量到的峰永远是被削平的 1.000"
 
 
 def test_mix_back_applies_gains(cover, tmp_path, monkeypatch):
@@ -81,11 +115,98 @@ def test_mix_back_applies_gains(cover, tmp_path, monkeypatch):
 
     monkeypatch.setattr(cover.subprocess, "run", fake_run)
     monkeypatch.setattr(cover, "find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(cover, "_true_peak", lambda p: 0.5)
 
-    cover.mix_back(tmp_path / "v.wav", tmp_path / "a.wav", tmp_path / "o.wav", gains=(1.5, 0.8))
-    fc = calls[0][calls[0].index("-filter_complex") + 1]
+    _, applied = cover.mix_back(tmp_path / "v.wav", tmp_path / "a.wav", tmp_path / "o.wav",
+                                gains=(1.5, 0.8))
+    fc = calls[-1][calls[-1].index("-filter_complex") + 1]
     assert "volume=1.5" in fc
     assert "volume=0.8" in fc
+    assert applied == (1.5, 0.8), "不过顶时增益必须原样用"
+
+
+def test_mix_back_scales_proportional_when_probe_clips(cover, tmp_path, monkeypatch):
+    """★ 超顶时两侧增益**等比缩小**，而不是硬削波。
+
+    桩**照 s16 的语义钳位**（超过 1.0 的样本被削平）—— 所以如果探测那遍漏了
+    `pcm_f32le`，量到的峰就变成 1.0，缩放系数趋近 1，这条必红。这就是那个
+    静默失效模式的行为级证明（同族：`test_cover_my_voice.py` 的真 ffmpeg 版）。
+    """
+    import numpy as np
+
+    seen_gains: list[tuple[float, float]] = []
+
+    def fake_run(cmd, **kw):
+        fc = cmd[cmd.index("-filter_complex") + 1]
+        vg = float(fc.split("[0:a]volume=")[1].split("[v]")[0])
+        ag = float(fc.split("[1:a]volume=")[1].split("[a]")[0])
+        seen_gains.append((vg, ag))
+        # amix normalize=0 是**相加**：两轨各 0.9 幅度 ⇒ 真峰 = (vg + ag) × 0.9
+        peak = (vg + ag) * 0.9
+        if "pcm_f32le" not in cmd:          # ← 成品那遍 / 漏了 flag 的探测那遍
+            peak = min(peak, 1.0)           # s16 的硬削波语义：顶到 1.000 就不再高
+        out_p = Path(cmd[-1])
+        out_p.write_bytes(b"RIFF")          # _mix_once 会查 out.exists()
+        np.save(str(out_p) + ".npy", np.asarray([peak], dtype="float64"))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    # _true_peak 走内存里的 npy，复刻"读回落盘文件"的语义
+    def fake_peak(path):
+        return float(np.abs(np.load(str(path) + ".npy")).max())
+
+    monkeypatch.setattr(cover.subprocess, "run", fake_run)
+    monkeypatch.setattr(cover, "find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(cover, "_true_peak", fake_peak)
+
+    _, applied = cover.mix_back(tmp_path / "v.wav", tmp_path / "a.wav", tmp_path / "o.wav",
+                                gains=(3.0, 1.0))
+
+    # 真峰 3.0×0.9 + 1.0×0.9 = 3.6 ⇒ k = 0.98/3.6
+    assert applied[0] < 3.0 and applied[1] < 1.0, f"超顶时应等比缩小，实际 {applied}"
+    assert applied[0] / applied[1] == pytest.approx(3.0, rel=1e-3), "配比必须保持不变"
+    assert seen_gains[-1] == applied, "成品那遍必须用缩放后的增益"
+    # 若探测漏了 float32：量到 1.0 ⇒ k≈0.98 ⇒ applied≈(2.94, 0.98)，上面的断言会红
+    assert applied[0] == pytest.approx(3.0 * 0.98 / 3.6, rel=1e-3), (
+        f"缩放系数不对（{applied}）—— 探测那遍是不是没写 float32？"
+    )
+
+
+def test_mix_back_leaves_quiet_material_untouched(cover, tmp_path, monkeypatch):
+    """本来就不过顶的素材**不许动增益** —— 缩放是"救命"，不是常规操作。
+
+    防的是"防削波"被写成"一律缩一点"：那会让所有正常翻唱平白变轻。
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        Path(cmd[-1]).write_bytes(b"RIFF")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cover.subprocess, "run", fake_run)
+    monkeypatch.setattr(cover, "find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(cover, "_true_peak", lambda p: 0.4)
+
+    _, applied = cover.mix_back(tmp_path / "v.wav", tmp_path / "a.wav", tmp_path / "o.wav",
+                                gains=(2.0, 1.0))
+    assert applied == (2.0, 1.0), f"不该动增益，实际 {applied}"
+    assert len(calls) == 2, "仍然要跑两遍（探测 + 成品），只是第二遍的增益没变"
+
+
+def test_mix_back_cleans_up_its_probe_file(cover, tmp_path, monkeypatch):
+    """探测文件是临时垃圾，必须清掉 —— 否则每跑一首歌就在会话目录里留一个 float wav。"""
+    def fake_run(cmd, **kw):
+        Path(cmd[-1]).write_bytes(b"RIFF")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cover.subprocess, "run", fake_run)
+    monkeypatch.setattr(cover, "find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(cover, "_true_peak", lambda p: 0.5)
+
+    out = tmp_path / "mixed.wav"
+    cover.mix_back(tmp_path / "v.wav", tmp_path / "a.wav", out)
+    leftovers = [p.name for p in tmp_path.iterdir() if "probe" in p.name]
+    assert not leftovers, f"探测文件没清掉：{leftovers}"
 
 
 def test_mix_back_raises_when_ffmpeg_fails(cover, tmp_path, monkeypatch):
@@ -296,3 +417,52 @@ def test_cover_state_is_shared_not_rebound(cover):
     cover.COVER_STATE.update(status="running", percent=42.0)
     assert id(cover.COVER_STATE) == before
     assert cover.COVER_STATE["percent"] == 42.0
+
+
+# ---------------------------------------------------------------- 完成面板如实性
+
+
+def test_worker_reports_the_gain_actually_applied(cover, tmp_path, monkeypatch):
+    """★ 完成面板显示的必须是**真的用到的**增益，而不是自动配平算出来的那个。
+
+    `mix_back` 会在和超满刻度时**等比缩小**两侧增益（防硬削波，2026-10-14 /
+    犯错指南 #174）。若 `_cover_worker` 仍把缩放**前**的 `gains` 写进状态，面板就会
+    显示"人声 ×2.71"而实际听到的是 ×1.44 —— 而这正是 `vocal_gain_applied` 这个字段
+    存在的理由（2026-09-27：用户对不上滑块与听感）。
+
+    退化形态是静默的：数值看着是个正经数字，成品也完全正常，只有"界面数字与声音不符"。
+    """
+    import soundfile as sf
+    import numpy as np
+
+    # 让会话目录落在 tmp_path 下（session_out 每次现读 cfg → cover 夹具已 patch）
+    fake = tmp_path / "cover_in.wav"
+    sf.write(str(fake), np.zeros(4410, dtype="float32"), 44100)
+    monkeypatch.setattr(cover.session_out, "new_path", lambda stem: tmp_path / f"{stem}.wav")
+
+    vocal = tmp_path / "rvc.wav"
+    accomp = tmp_path / "acc.wav"
+    for p in (vocal, accomp):
+        sf.write(str(p), (0.3 * np.sin(np.linspace(0, 90, 4410))).astype("float32"), 44100)
+
+    monkeypatch.setattr(cover, "separate_song", lambda src, stamp: (vocal, accomp))
+    monkeypatch.setattr(cover, "rms_db", lambda p: -20.0)
+    monkeypatch.setattr(cover, "auto_vocal_gain", lambda v, a: 3.0)
+    # ★ mix_back 返回"缩放后"的增益（真实行为）；这里模拟超顶缩到 1.5
+    def fake_mix_back(v, a, o, gains):
+        sf.write(str(o), np.zeros(4410, dtype="float32"), 44100)  # ⑥ 会用 sf.read 读它
+        return Path(o), (1.5, 0.5)
+
+    monkeypatch.setattr(cover, "mix_back", fake_mix_back)
+    rvc_mod = types.ModuleType("rvc_convert")
+    rvc_mod.rvc_convert = lambda *a, **k: vocal
+    monkeypatch.setitem(sys.modules, "rvc_convert", rvc_mod)
+
+    cover._cover_worker(fake, "v1", tmp_path / "v.pth", -12, 0.5, 1.0, 1.0, False, True, 1)
+
+    assert cover.COVER_STATE["status"] == "done", cover.COVER_STATE.get("error")
+    assert cover.COVER_STATE["vocal_gain_applied"] == 1.5, (
+        f"面板应显示 mix_back 实际用的 1.5，实际 {cover.COVER_STATE['vocal_gain_applied']}"
+        "（用缩放前的 3.0 就是界面与听感不符）"
+    )
+    assert "×1.50" in cover.COVER_STATE["message"], cover.COVER_STATE["message"]

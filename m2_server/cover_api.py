@@ -145,12 +145,21 @@ def separate_song(src: Path, stamp: int) -> tuple[Path, Path]:
     return vocals, accomp
 
 
-def mix_back(vocals: Path, accomp: Path, out: Path, gains: tuple[float, float] = (1.0, 1.0)) -> Path:
-    """把换好声的人声与伴奏合成一条立体声 wav。
+#: 混音后允许的最高真峰值。0.98 而不是 1.0：给 pcm_s16 的量化与下游重采样留余量。
+MIX_CEILING = 0.98
 
-    `gains` = (人声增益, 伴奏增益)。默认不动（1.0/1.0）—— 但**翻唱链路实际传进来的
-    是 `auto_vocal_gain` 的实测配平值**（见 `_cover_worker` ⑤），用户显式关掉
-    自动配平时才是这里这个 1.0 默认。
+
+def _mix_once(
+    vocals: Path,
+    accomp: Path,
+    gains: tuple[float, float],
+    out: Path,
+    *,
+    float_out: bool = False,
+) -> None:
+    """把人声与伴奏混一遍写进 `out`。
+
+    ★ `float_out=True` 时写 float32 —— **探测那一遍必须用它**，理由见 `mix_back`。
     """
     vg, ag = gains
     cmd = [
@@ -168,13 +177,72 @@ def mix_back(vocals: Path, accomp: Path, out: Path, gains: tuple[float, float] =
         "44100",
         "-ac",
         "2",
-        str(out),
-    ]
+    ] + (["-c:a", "pcm_f32le"] if float_out else []) + [str(out)]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=900, encoding="utf-8", errors="replace")
     if r.returncode != 0 or not out.exists():
         tail = (r.stderr or "").strip().splitlines()[-3:]
         raise RuntimeError("合成失败: " + " | ".join(tail)[-400:])
-    return out
+
+
+def _true_peak(path: Path) -> float:
+    """读一条 wav 的真峰值（可为 >1.0 —— 探测那遍写的是 float32）。"""
+    import numpy as np
+    import soundfile as sf
+
+    d, _ = sf.read(str(path), dtype="float64")
+    if d.size == 0:
+        return 0.0
+    return float(np.abs(d).max())
+
+
+def mix_back(
+    vocals: Path,
+    accomp: Path,
+    out: Path,
+    gains: tuple[float, float] = (1.0, 1.0),
+) -> tuple[Path, tuple[float, float]]:
+    """把换好声的人声与伴奏合成一条立体声 wav，**并防削波**。
+
+    `gains` = (人声增益, 伴奏增益)。默认不动（1.0/1.0）—— 但**翻唱链路实际传进来的
+    是 `auto_vocal_gain` 的实测配平值**（见 `_cover_worker` ⑤），用户显式关掉
+    自动配平时才是这里这个 1.0 默认。
+
+    返回 `(产物路径, 实际使用的增益)` —— 超顶时会等比缩小，调用方要知道**真的用了多少**
+    才能在界面上如实显示（见 COVER_STATE 的 `vocal_gain_applied`）。
+
+    ### 为什么不能只跑一遍（2026-10-14 实测，犯错指南 #174）
+
+    `amix normalize=0` 是**相加**，而自动配平常顶到夹紧上限 ×3.00（RVC 换声输出电平
+    普遍远低于 demucs 伴奏）。和超过满刻度时写 pcm_s16 就是**硬削波** —— 实测
+    Lorezo-Feed the One 峰值顶到 1.000、47,608 个采样点被削（0.35%），而**链路全程
+    不报错、时长与格式全对**，只听得出"副歌偶尔刺"。
+
+    ★ 探测那一遍**必须写 float32**：s16 落盘时超过 1.0 的和**先被削到 1.000**，
+    于是"量到的峰永远 = 1.000"、缩放永不生效（本轮实测踩过：改完仍有 47,608 个削波点）。
+
+    ### 为什么是等比缩放而不是限幅器
+
+    两种都试过：`alimiter` 一遍完事，但实测**把峰值压到 0.726** —— 鼓点密集处增益衰减
+    几乎不间断，整轨被压扁（动态损失听得出来）。**两遍等比缩放**（本实现）先按原配比
+    混一遍量真峰，超顶就整体等比缩再混：配比与动态完全保留，代价只是整体轻一点
+    （听者把音量调大即可），多跑一遍 ffmpeg（实测 3 分钟的歌约 0.6s）。
+    """
+    probe = out.with_name(f".{out.stem}.probe.f32.wav")
+    try:
+        _mix_once(vocals, accomp, gains, probe, float_out=True)
+        true_peak = _true_peak(probe)
+    finally:
+        probe.unlink(missing_ok=True)
+    applied = gains
+    if true_peak > MIX_CEILING:
+        k = MIX_CEILING / true_peak
+        applied = (round(gains[0] * k, 4), round(gains[1] * k, 4))
+        LOG.info(
+            "混音真峰值 %.3f 超上限 %.2f —— 两侧增益按 ×%.4f 等比缩放（%s → %s）",
+            true_peak, MIX_CEILING, k, gains, applied,
+        )
+    _mix_once(vocals, accomp, applied, out)
+    return out, applied
 
 
 # ---- 人声/伴奏自动配平（2026-09-26）----
@@ -468,7 +536,10 @@ def _cover_worker(
             gains = (vg, 1.0)
         else:
             gains = (vocal_gain, accomp_gain)
-        mix_back(rvc_out, accomp, voice_path, gains=gains)
+        # mix_back 会在和超满刻度时**等比缩小**两侧增益（防硬削波，见其 docstring），
+        # 所以它返回的才是"真的用了多少" —— 界面显示必须用这个值，否则面板上的
+        # "人声 ×3.00"会与实际听到的比例不符（§ 状态里那个字段存在的理由）。
+        _, gains = mix_back(rvc_out, accomp, voice_path, gains=gains)
 
         # ⑥ 输出：搬到会话目录下带正式名字的文件，避免成品是个 `cover_时间戳/stem_voice` 这种怪名
         out_path.write_bytes(voice_path.read_bytes())

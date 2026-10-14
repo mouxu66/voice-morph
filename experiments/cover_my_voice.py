@@ -122,17 +122,10 @@ def _peak(path: Path) -> tuple[float, int]:
 def mix_peak_safe(vocal: Path, accomp: Path, out: Path, gains: tuple[float, float]) -> tuple[float, int, tuple[float, float]]:
     """合回伴奏，**并防削波** —— 返回 (峰值, ≥0.99 的采样数, 实际使用的增益)。
 
-    为什么不能直接用 `cover_api.mix_back`：它写的是 pcm_s16，而 `amix normalize=0`
-    是**相加**。本项目实测（2026-10-14，Lorezo-Feed the One）：换声输出比伴奏安静得多，
-    自动配平顶到夹紧上限 ×3.00，相加后 **0.35% 的采样点顶到 1.000**（硬削波，听感是
-    副歌/鼓点上偶发的刺耳感）。而链路里没有任何环节会报错 —— 正是本项目最贵的那类失效。
-
-    两种防法的取舍（都试过了，这版留的是第二种）：
-      · 限幅器 `alimiter`：一遍完事，但实测把峰值压到 **0.726** —— 鼓点密集处
-        增益衰减几乎不间断，整轨被压扁（动态损失听得出来）；
-      · **两遍等比缩放**（本实现）：先按原配比混一遍量峰，超顶就**整体等比缩**再混。
-        配比与动态完全保留，代价只是整体轻一点（听者把音量调大即可）；
-        多跑一遍 ffmpeg，实测 3 分钟的歌只要 ~0.6s。
+    ⚠️ 2026-10-14：`cover_api.mix_back` **已经修好**（同一条防削波逻辑已进产品，
+    见犯错指南 #174）。本函数保留有两个理由：① 它是当初验证修法的**对照实现**
+    （两种修法的取舍就是在这里比出来的）；② 试听页要拿到"削波点数"这个量，
+    而产品函数不返回它。**别再往这里加新逻辑** —— 再改就与产品漂移了。
     """
     probe = out.with_name(f".{out.stem}.probe.f32.wav")
     _mix_once(vocal, accomp, gains, probe, float_out=True)  # ← float 探测，见 _mix_once 的注释
