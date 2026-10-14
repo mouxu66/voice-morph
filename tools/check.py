@@ -214,6 +214,12 @@ FAST_TESTS = [
     # 千问微调增益落在自身波动内 / 自然度尺子在本批不可用）。数字被重新生成或
     # 覆盖时会立刻变红，而不是让结论静默过期。
     "tts_trial/tests/test_qwen_vs_rvc_verdict.py",
+    # `experiments/cover_my_voice.py`（把歌声换成自己的声音）的守卫（约 1.4s，真 ffmpeg 两次混音）：
+    # 这条链路的两处退化都是**静默的** —— 变调算错一个八度（RVC 照拄 F0 曲线）
+    # 与混音削波（自动配平顶到 ×3.0 时，实测 0.35% 采样点硬削，链路不报错）。
+    # 后者尤其值钱：“先量峰再缩放”若用 pcm_s16 探测，量到的永远是削平后的 1.000，
+    # 缩放永不生效 —— 用例里写了前置断言让这个失效方式必红。
+    "m2_server/tests/test_cover_my_voice.py",
     # 验「自然度尺子」的探针（约 0.2s，纯 numpy）：它是用来判**别的尺子能不能用**的，
     # 自己必须先可信 —— SNR 配平 / 砖墙低通 / 单调性判定（加容差就等于往结论上调）。
     "tts_trial/tests/test_probe_natscore_domain.py",
