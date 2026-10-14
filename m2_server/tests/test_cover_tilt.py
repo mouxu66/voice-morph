@@ -181,7 +181,10 @@ def test_abs_bands_detects_a_real_high_shelf(absb, tmp_path):
 
 
 def test_real_tilt_arms_are_brighter_in_absolute_terms():
-    """真产物回归：本机跑过的两组，t03 的 4-8k **净变化**都必须为正。
+    """真产物回归：本机跑过的**三组**，t03 的 4-8k **净变化**都必须为正。
+
+    三组分别是：同一首歌的两段时间（各配一个 seed）+ **换一首歌**（《唯一》）。
+    ★ 换歌那一组是"结论只对这一首成立吗"的答案（2026-10-14 补跑）。
 
     产物在 `media/`（gitignore），没有就跳过 —— 但不能因为跳过就假装通过。
     """
@@ -192,11 +195,46 @@ def test_real_tilt_arms_are_brighter_in_absolute_terms():
     by = {r["label"]: r for r in rows}
     pairs = [("t00 原样（对照）", "t03 预加重 +3dB/oct"),
              ("[段2] t00 原样", "[段2] t03 预加重")]
+    checked = 0
     for ak, bk in pairs:
         if ak not in by or bk not in by:
             continue
         a, b = by[ak], by[bk]
         net = (b["4-8k_dbfs"] - a["4-8k_dbfs"]) - (b["rms_dbfs"] - a["rms_dbfs"])
+        checked += 1
         assert net > 2.0, (
             f"{ak} → {bk} 的 4-8k 净变化只有 {net:+.2f} dB —— "
             "报告 m1j 的结论（高频被练进去了）不再成立，请复核后再改文档")
+    assert checked >= 1, "一条对照都没跑到 —— 键名变了？"
+
+
+def test_second_song_reproduces_the_tilt_gain():
+    """★ 换歌也要复现 —— 这是"结论不是只对一首歌成立"的守卫。
+
+    第三组用《唯一》（用户 2026-09-27 自己扒的那首，比 Lorezo 高得多：
+    中位 275.5Hz vs 259、最高 **1187.8Hz**）。本机实测该组净变化：
+    4-8k **+2.71 dB**、8-11k **+7.86 dB**，且「像你」升（0.5529→0.5754）。
+
+    门槛取 1.5（该组实测 2.71，留余量但不至于宽松到放过"没效果"）。
+    """
+    import importlib.util
+
+    pa = _ROOT / "media/covers/song2/tilt_eval/tilt__myvoice_tilt_t00.wav"
+    pb = _ROOT / "media/covers/song2/tilt_eval/tilt__myvoice_tilt_t03.wav"
+    if not (pa.exists() and pb.exists()):
+        pytest.skip("本机没有第二首歌的预加重产物（media/ 不进仓库）")
+
+    spec = importlib.util.spec_from_file_location(
+        "tilt_absb_t", _ROOT / "experiments" / "cover_tilt_absbands.py")
+    ab = importlib.util.module_from_spec(spec)
+    sys.modules["tilt_absb_t"] = ab
+    spec.loader.exec_module(ab)
+
+    a, b = ab.abs_bands(pa), ab.abs_bands(pb)
+    rms = b["rms_dbfs"] - a["rms_dbfs"]
+    net4 = (b["4-8k_dbfs"] - a["4-8k_dbfs"]) - rms
+    net8 = (b["8-11k_dbfs"] - a["8-11k_dbfs"]) - rms
+    assert net4 > 1.5, f"第二首歌 4-8k 净变化只有 {net4:+.2f} dB —— 换歌没复现"
+    assert net8 > 2.0, f"第二首歌 8-11k 净变化只有 {net8:+.2f} dB —— 换歌没复现"
+    # 反向：总电平**不该**显著上涨（否则"变亮"可能只是"变响"）
+    assert rms < 1.0, f"总电平涨了 {rms:+.2f} dB —— 得重新确认这不是响度效应"
