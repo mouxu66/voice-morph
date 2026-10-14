@@ -133,7 +133,8 @@ def _launch(port: int, width: int, height: int) -> subprocess.Popen:
 
 
 def _shoot(port: int, base: str, route: str, width: int, height: int,
-           theme: str, settle: float, probe_expr: str | None = None) -> tuple[Path, dict]:
+           theme: str, settle: float, usecase: str = "skip",
+           probe_expr: str | None = None) -> tuple[Path, dict]:
     tab = Tab(_page_target(port)["webSocketDebuggerUrl"])
     try:
         tab.call("Page.enable")
@@ -144,9 +145,20 @@ def _shoot(port: int, base: str, route: str, width: int, height: int,
         tab.call("Emulation.setEmulatedMedia", {"features": [
             {"name": "prefers-reduced-motion", "value": "reduce"},
         ]})
+        # ⚠️ 播种要盖住**所有**首启拦截层，否则截到的是弹窗不是页面。
+        # 2026-10-08 实测：漏了用途问答（`vm-use-asked` / `vm-use-profile`，
+        # 见 web/src/lib/useProfile.ts），`/preserve` 截出来是「你打算用它做什么？」；
+        # 补上后又暴露出**每次启动**的「今天怎么用」（`vm.modechooser.dontask`，
+        # 见 components/ModeChooser.tsx 的 shouldShowModeChooser）——它的条件是
+        # `hasBeenAsked() && dontask !== '1'`，所以播了用途反而**触发**了它。
+        # 四者独立：首启引导 / 用途问答 / 每次启动的模式选择 / 主题。
         seed = (f"localStorage.setItem('vm_first_launch_done','1');"
                 f"localStorage.setItem('vm-theme','{theme}');"
-                f"localStorage.setItem('vm-simple-mode','1');")
+                f"localStorage.setItem('vm-simple-mode','1');"
+                f"localStorage.setItem('vm-use-asked','1');"
+                f"localStorage.setItem('vm-use-profile','{usecase}');"
+                f"localStorage.setItem('vm.modechooser.dontask','1');"
+                f"sessionStorage.setItem('vm.modechooser.suppress-once','1');")
         tab.call("Page.addScriptToEvaluateOnNewDocument", {"source": seed})
         tab.call("Page.navigate", {"url": f"{base}/#{route}"})
         time.sleep(settle)
@@ -188,6 +200,9 @@ def main() -> int:
                     help="视口高度；太高时 headless 分配渲染表面易失败（本机实测）")
     ap.add_argument("--themes", default="light,dark")
     ap.add_argument("--settle", type=float, default=5.0, help="导航后等待秒数")
+    ap.add_argument("--usecase", default="skip",
+                    help="播种的用途档案（game/wechat/dubbing/skip）——"
+                         "不播会让用途问答弹窗挡住页面，截出来是弹窗不是页面")
     ap.add_argument("--probe", default=None,
                     help="额外在页面里求值的 JS 表达式（结果随截图一起打印）；"
                          "用来量「侧栏有几项」「有没有落到占位页」这类看图看不准的事")
@@ -218,7 +233,7 @@ def main() -> int:
                 err = None
                 try:
                     shot = _shoot(port, args.base, args.route, width, args.height,
-                                  theme, args.settle, args.probe)
+                                  theme, args.settle, args.usecase, args.probe)
                     break
                 except NotLoaded as exc:
                     # 不是瞬时故障：别重试三次装样子，直接说清楚

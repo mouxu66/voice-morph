@@ -229,6 +229,13 @@ FAST_TESTS = [
     # 验「自然度尺子」的探针（约 0.2s，纯 numpy）：它是用来判**别的尺子能不能用**的，
     # 自己必须先可信 —— SNR 配平 / 砖墙低通 / 单调性判定（加容差就等于往结论上调）。
     "tts_trial/tests/test_probe_natscore_domain.py",
+    # `tools/web_shot.py` 播种的 localStorage 键（约 0.1s，纯文件读）：
+    # 这个工具靠"预先顶掉首启拦截层"才能截到页面，而**弹窗同样有尺寸、同样不横向溢出、
+    # 同样能截图** —— 键名拼错或漏播时它不报错，只是截图里变成弹窗，工具照报「全部通过」。
+    # 本项目最危险的那类假绿（让"今天没验"看起来像"验过了"）。2026-10-08 实测撞过两次：
+    # 漏 `vm-use-asked` → `/preserve` 截出用途问答；补上后**反而触发**了每次启动的
+    # `vm.modechooser.dontask`（它的条件是 `hasBeenAsked() && dontask !== '1'`）。
+    "m2_server/tests/test_web_shot_seed.py",
 ]
 
 
