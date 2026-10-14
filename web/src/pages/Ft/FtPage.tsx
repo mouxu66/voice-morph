@@ -49,7 +49,16 @@ export function FtPage(props: ReturnType<typeof useFt>) {
           <p className="text-xs font-medium text-primary">微调工坊</p>
           <h2 className="mt-1 font-display text-xl font-semibold">音色微调工坊</h2>
           <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-            朗读一篇短句（约 12~15 分钟），训练出「音色 + 说话习惯」都属于你的专属音色——比 3 秒克隆更像本人。全程本地训练，约 20~40 分钟。
+            朗读一篇短句（约 12~15 分钟），训练出「音色 + 说话习惯」都属于你的专属音色。全程本地训练，约 20~40 分钟。
+          </p>
+          {/* ★ 2026-10-14：这里原写「比 3 秒克隆更像本人」——已被实测证伪（同素材同文本同参考音下
+              微调相对未微调仅 +0.0024，落在自身波动内；RVC +0.035~+0.044 且逐句 3/3）。
+              微调现在是停用路线（plugin_manifest.RETIRED），只会在设置页手动开启后出现，
+              所以这句话必须说清它**不提升音色像度**，否则就是在给用户指错路。
+              依据：docs/product/research/m1f_千问微调vsRVC-声音克隆裁决_2026-10-14.md */}
+          <p className="mt-2 max-w-xl rounded-lg border border-border/70 bg-muted/40 px-3 py-2 text-xs leading-5 text-muted-foreground">
+            若你的目标是「声音更像本人」，请用「音色训练」(RVC)：实测里它的像度明显更高。
+            微调影响的是念字的味道，不提升音色像度。
           </p>
         </div>
         {voiceId && (

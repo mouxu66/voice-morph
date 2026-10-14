@@ -4,7 +4,7 @@
   "kind": "builtin",
   "category": "sound",
   "order": 160,
-  "summary": "音色微调：用自己的录音继续训练 TTS 音色（QLoRA），让合成语音更像本人",
+  "summary": "音色微调（已停用路线）：用录音继续训练 TTS 音色（QLoRA）；不提升音色像度，要克隆自己的声音请用「音色训练」(RVC)",
   "requires": ["core.voices", "sound.workshop"],
   "routers": ["finetune"],
   "hooks": [],
@@ -23,5 +23,8 @@
     "models": []
   },
   "health": null,
-  "disable": { "note": "关闭后「训练变声」里的微调标签消失（含语料体检）；不影响实时变声与离线变声" }
+  "disable": {
+    "retired": "2026-10-14 起不再作为默认路线：任何预设（含「全能」）都不带它，克隆声音统一走「音色训练」(RVC)。设定在 plugin_manifest.RETIRED，依据 docs/product/research/m1f_千问微调vsRVC-声音克隆裁决_2026-10-14.md。代码与端点全部保留，设置页手动开启仍可用（可逆）。",
+    "note": "关闭后「训练变声」里的微调标签消失（含语料体检）；不影响实时变声与离线变声"
+  }
 }

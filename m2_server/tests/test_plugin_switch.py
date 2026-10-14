@@ -156,6 +156,71 @@ def test_presets_are_closed_under_requires():
             assert set(plugins[pid].requires) <= on, f"{name}: {pid} 的依赖没被一起启用"
 
 
+# ---------------------------------------------------------------- 1.5 停用路线（RETIRED）
+#
+# 2026-10-14 用户拍板：克隆自己的声音**统一走「音色训练」(RVC)**，千问微调不再用
+# （依据 `docs/product/research/m1f_千问微调vsRVC-声音克隆裁决_2026-10-14.md`）。
+#
+# 这一节把那个产品决定钉成断言，因为它的失效方式**全是静默的**：
+#   ① 停用清单里 id 拼错一个字母 → 什么都没停用，但没有任何报错；
+#   ② 某个预设（尤其「全能」）留个后门 → 用户换个套餐，那条路线又悄悄回来；
+#   ③ 有人给停用路线加了硬依赖 → "停用"与"被依赖则保留"两条语义打架，
+#      结果是它被复活，而界面上看着像开关坏了。
+
+
+def test_retired_ids_are_real_plugins():
+    """① 停用清单里的 id 必须真实存在 —— 拼错一个字母等于什么都没停。"""
+    unknown = set(plugin_manifest.RETIRED) - _ids()
+    assert not unknown, f"RETIRED 里有不存在的插件 id：{sorted(unknown)}"
+
+
+def test_no_preset_ships_a_retired_route():
+    """② 任何预设（**含「全能」**）都不带停用路线 —— 留个后门等于口径没落地。"""
+    for name in plugin_manifest.PRESETS:
+        leaked = plugin_manifest.preset_ids(name) & set(plugin_manifest.RETIRED)
+        assert not leaked, f"预设 {name} 带上了停用路线 {sorted(leaked)}"
+
+
+def test_retired_is_never_a_hard_dependency():
+    """③ 停用路线不能被任何人 `requires` —— 否则它会在启用侧被复活。"""
+    plugins = plugin_manifest.by_id()
+    for pid in plugin_manifest.RETIRED:
+        depended = [q.id for q in plugins.values() if pid in q.requires]
+        assert not depended, (
+            f"{pid} 被 {depended} 硬依赖，无法停用（先解依赖，或把停用决定收回）"
+        )
+
+
+def test_retired_route_is_still_manually_enableable():
+    """停用是**默认口径**，不是封杀：设置页手动开启仍然可用（可逆）。
+
+    这条守住「不删代码」那一半 —— 若哪天有人把 RETIRED 接进 `disabled_ids()`，
+    这里会红：那样写会让"用户手动开回来"变成不可能，而这个决定本来是错的。
+    """
+    pid = next(iter(plugin_manifest.RETIRED))
+    plugin_manifest.set_enabled(pid, False)
+    assert pid not in plugin_manifest.enabled_ids()
+    plugin_manifest.set_enabled(pid, True)
+    assert pid in plugin_manifest.enabled_ids(), f"{pid} 停用后应当仍能被手动开回来"
+
+
+def test_plugin_json_retired_flag_matches_manifest():
+    """`disable.retired`（插件自己的声明）与 `RETIRED`（逻辑）必须点名同一批 —— 防漂移。
+
+    两处是两个读者：`plugin.json` 是给人看的（为什么停用），`RETIRED` 是给
+    `preset_ids()` 用的。只改一处会让"文档说停了、代码还在装"。
+    """
+    declared: set[str] = set()
+    plugins_dir = Path(plugin_manifest.__file__).parent / "plugins"
+    for p in sorted(plugins_dir.glob("*/plugin.json")):
+        entry = json.loads(p.read_text(encoding="utf-8"))
+        if (entry.get("disable") or {}).get("retired"):
+            declared.add(entry["id"])
+    assert declared == set(plugin_manifest.RETIRED), (
+        f"声明侧 {sorted(declared)} ≠ 逻辑侧 {sorted(plugin_manifest.RETIRED)}"
+    )
+
+
 def test_unknown_preset_raises():
     with pytest.raises(KeyError, match="未知预设"):
         plugin_manifest.preset_ids("standrad")

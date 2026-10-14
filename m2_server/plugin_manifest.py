@@ -406,7 +406,8 @@ PRESETS: dict[str, list[str] | None] = {
     "preserve": ["sound.preserve", "sound.tts", "sound.audiobook", "sound.course"],
     # 游戏变声：游戏 / 直播 / 会议里实时变声 —— 就是变声本体本身（rvc-live 走虚拟声卡）。
     "game": ["sound.offline-vc", "sound.rvc-live", "sound.audition"],
-    # 全能：全开
+    # 全能：全开**除停用路线**（`RETIRED`，见下）—— 停用是产品口径，不是用户的一时开关，
+    # 所以连「全能」也不带它；想用回可以逐项开启（`set_enabled`，可逆）。
     "full": None,
     # 仅核心：连离线变声都不要（跑测试 / CI 用）
     "core": [],
@@ -417,6 +418,22 @@ PRESETS: dict[str, list[str] | None] = {
 BODY_IDS: tuple[str, ...] = ("sound.offline-vc", "sound.rvc-live", "sound.audition")
 
 DEFAULT_PRESET = "standard"
+
+#: 已停用路线：**产品口径上不再提供**的能力。任何预设（含「全能」）都不带它 ——
+#: 但**不删代码、不碰用户的开关**：`RETIRED` 只作用在 `preset_ids()` 这一处，
+#: 用户依旧可以在设置页把它手动开回来（走 `set_enabled`），已发布产物照旧可用。
+#:
+#: 为什么要有这一个概念（而不是直接把插件删掉）：删掉不可逆，而「不再作为默认路线」
+#: 可逆；两者的证据强度不同 —— 停用只需要一个产品决定，删除需要一条长期没人再用的记录。
+#:
+#: 2026-10-14 用户拍板：克隆自己的声音**统一走「音色训练」(RVC)**，千问微调不再用 ——
+#: 依据 `docs/product/research/m1f_千问微调vsRVC-声音克隆裁决_2026-10-14.md`：
+#: 同素材同文本同参考音下，微调相对未微调仅 +0.0024（落在自身 σ=0.0361 内），
+#: 而 RVC +0.035~+0.044 且逐句 3/3、跨 seed 区间不重叠。
+RETIRED: dict[str, str] = {
+    "sound.ft": "克隆统一走「音色训练」(RVC)：千问微调不提升音色像度（2026-10-14 裁决）",
+}
+
 
 PRESET_LABELS: dict[str, str] = {
     "light": "轻量",
@@ -458,11 +475,17 @@ def expand(ids) -> set[str]:
 
 
 def preset_ids(name: str = DEFAULT_PRESET) -> set[str]:
-    """预设展开成启用集。未知预设**直接抛**（拼错预设名应当当场炸，不是静默全开）。"""
+    """预设展开成启用集。未知预设**直接抛**（拼错预设名应当当场炸，不是静默全开）。
+
+    ★ 停用路线（`RETIRED`）**在这里被剔除**，`full`（`None` = 全开）也一样 ——
+    "不再作为默认路线"是一句产品口径，不能在某个预设上留个后门。
+    用户手动开启走 `set_enabled`，不经过这里，所以可逆性不受影响。
+    """
     if name not in PRESETS:
         raise KeyError(f"未知预设 {name!r}，可选：{sorted(PRESETS)}")
     start = PRESETS[name]
-    return expand(by_id().keys() if start is None else start)
+    base = by_id().keys() if start is None else start
+    return expand([pid for pid in base if pid not in RETIRED])
 
 
 def enabled_ids(disabled: set[str] | None = None) -> set[str]:
