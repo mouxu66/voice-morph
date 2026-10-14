@@ -59,6 +59,18 @@ def setup_env() -> str:
 #: 想平均多次采样就换 seed 各跑一遍再取均值。
 INFER_SEED = 1234
 
+#: 推理旋钮的**现役值**（2026-10-14 从 `convert_audio` 的位置参数里提出来的，只提不改）。
+#:
+#: 提出来是为了让「同一个输入、只换一个旋钮」成为可测实验
+#: （`experiments/cover_knobs.py`）。旋钮写成调用里的位置参数时，任何扫描都只能
+#: 复制一份 `convert_audio` 到实验脚本里，而副本会与产品路径悄悄漂移 ——
+#: 那就等于"测的不是产品跑的那条路"。
+#:
+#: `POST_LOWPASS_HZ`：RVC 输出后处理里的低通截止（理由见 `postprocess_audio`）。
+PROTECT = 0.33
+RMS_MIX_RATE = 0.25
+POST_LOWPASS_HZ = 11000.0
+
 
 def apply_infer_seed(seed: int = INFER_SEED) -> int:
     """把 RVC 推理的随机源钉死（SineGen 的谐波初相 + 噪声激励），返回实际用的 seed。
@@ -260,6 +272,9 @@ def convert_audio(
     pitch: int = 0,
     index_rate: float = 0.5,
     seed: int = INFER_SEED,
+    protect: float = PROTECT,
+    rms_mix_rate: float = RMS_MIX_RATE,
+    lowpass_hz: float = POST_LOWPASS_HZ,
 ) -> "np.ndarray":
     """把 16k float 音频转成目标音色，返回后处理后的 float32 数组（engine.tgt_sr）。
 
@@ -267,6 +282,9 @@ def convert_audio(
 
     ★ 入口先 `apply_infer_seed(seed)`（2026-10-13）：三条链路都汇到这里，
     播种只需要这一处。
+
+    后三个旋钮（2026-10-14 加）默认即现役值，**默认路径的行为逐字节不变**；
+    它们只是让实验能扫它们，而不是复制一份 `convert_audio`。
     """
     apply_infer_seed(seed)
     import numpy as np
@@ -288,11 +306,13 @@ def convert_audio(
         engine.if_f0,
         engine.tgt_sr,
         0,
-        0.25,
+        rms_mix_rate,
         engine.version,
-        0.33,
+        protect,
     )
-    return postprocess_audio(audio_out.astype("float32"), engine.tgt_sr)
+    return postprocess_audio(
+        audio_out.astype("float32"), engine.tgt_sr, lowpass_hz=lowpass_hz
+    )
 
 
 def main():
@@ -332,13 +352,16 @@ def main():
     print(f"OK {len(y) / engine.tgt_sr:.2f}s @{engine.tgt_sr}Hz")
 
 
-def postprocess_audio(y, out_sr):
+def postprocess_audio(y, out_sr, lowpass_hz: float = POST_LOWPASS_HZ):
     """RVC 输出后处理：RMS 锚定 + 去刺耳高频 + 峰值安全化。
 
-    历史坑：结尾原来是 np.clip(y, -0.99, 0.99) 硬削波——RVC 输出瞬态 + IIR
-    低通过冲后大量样本顶到限幅沿（实测 0.17% 样本被削），听感刺耳、NatScore
+    历史坑：结尾原来是 np.clip(y, -0.99, 0.99) 硬削波——RVC 输出瞬态 + IIR 低通过冲后大量样本顶到限幅沿（实测 0.17% 样本被削），听感刺耳、NatScore
     直接掉到负值区。改为「只衰减」的峰值归一到 -1.5 dBFS：够响的段不动，
     超限的段整体缩，绝不再产生平顶削波。
+
+    `lowpass_hz`（2026-10-14）：11 kHz 那个低通的截止。它原是硬编码的，
+    现提成参数只为让实验能测「去掉它会不会更清亮」——**默认值没变**。
+    传 0（或负数）表示**不做低通**。
     """
     import numpy as np
     from scipy.signal import butter, sosfilt
@@ -349,9 +372,10 @@ def postprocess_audio(y, out_sr):
     if rms > 1e-9:
         y = y / rms * (10 ** (-18 / 20))
     # 轻微低通去刺耳高频；低采样率模型（如 22.05k）时截止不得贴 Nyquist
-    cutoff = min(11000.0, out_sr * 0.45)
-    sos = butter(4, cutoff, fs=out_sr, btype="lowpass", output="sos")
-    y = sosfilt(sos, y)
+    cutoff = min(lowpass_hz, out_sr * 0.45) if lowpass_hz > 0 else 0.0
+    if cutoff > 0:
+        sos = butter(4, cutoff, fs=out_sr, btype="lowpass", output="sos")
+        y = sosfilt(sos, y)
     # 峰值安全化：只衰减到 -1.5 dBFS，不放大（保留 RMS 锚定的响度关系）
     peak = float(np.abs(y).max())
     target = 10 ** (-1.5 / 20)

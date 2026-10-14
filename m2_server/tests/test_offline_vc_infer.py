@@ -86,6 +86,121 @@ def test_silence_and_dc_safe():
     assert np.isfinite(out2).all() and float(np.abs(out2).max()) <= TARGET + 1e-6
 
 
+# ============== 后处理旋钮的默认值（2026-10-14 加） ==============
+#
+# 由来：为了让「同一个输入、只换一个旋钮」成为可测实验（`experiments/cover_knobs.py`），
+# 把写死在那段 15 个位置参数调用里的 `0.33` / `0.25` / `11000.0` 提成了模块级常量 + 关键字参数。
+# 纯搬运，但它带来一个新的失败方式：**默认值被顺手改掉** —— 那时三条链路（CLI /
+# 常驻 worker / 级联实时）的输出都变了，而每一条都还是“能出声”，没有任何测试会变色。
+#
+# 所以这里钉三件事：
+#   ① 三个常量就是字面量 0.33 / 0.25 / 11000.0（改它必须来改这里）；
+#   ② `convert_audio` 的**签名默认值** = 那三个常量（防“提了参数但默认值写歪”）；
+#   ③ 旋钮真的走进了 `pipeline()` 的**对应位置** —— 那个调用有 15 个位置参数，
+#      错一位就会把 rms_mix_rate 当成 version 传进去，而且不会报错。
+
+
+def test_knob_constants_are_pinned():
+    assert offline_vc_infer.PROTECT == 0.33
+    assert offline_vc_infer.RMS_MIX_RATE == 0.25
+    assert offline_vc_infer.POST_LOWPASS_HZ == 11000.0
+
+
+def test_convert_audio_defaults_are_the_constants():
+    import inspect
+
+    sig = inspect.signature(offline_vc_infer.convert_audio)
+    assert sig.parameters["protect"].default == offline_vc_infer.PROTECT
+    assert sig.parameters["rms_mix_rate"].default == offline_vc_infer.RMS_MIX_RATE
+    assert sig.parameters["lowpass_hz"].default == offline_vc_infer.POST_LOWPASS_HZ
+
+
+def test_postprocess_default_lowpass_is_unchanged():
+    """提参数前后，默认调用必须逐样本一致（不是"差不多"）。"""
+    y = _speech_like()
+    a = offline_vc_infer.postprocess_audio(y, 48000)
+    b = offline_vc_infer.postprocess_audio(y, 48000, lowpass_hz=11000.0)
+    assert np.array_equal(a, b)
+
+
+def _two_tone(n: int = 48000, sr: int = 48000, hi_hz: float = 15000.0) -> np.ndarray:
+    """1kHz + 15kHz 等幅双音：低通是否生效看两者的**幅度比**（对整体缩放不敏感）。"""
+    t = np.arange(n) / sr
+    y = 0.2 * np.sin(2 * np.pi * 1000 * t) + 0.2 * np.sin(2 * np.pi * hi_hz * t)
+    return y.astype(np.float32)
+
+
+def _tone_ratio(y: np.ndarray, sr: int, lo_hz: float = 1000.0, hi_hz: float = 15000.0) -> float:
+    n = min(len(y), sr)
+    seg = y[:n] * np.hanning(n)
+    Y = np.abs(np.fft.rfft(seg))
+    fr = np.fft.rfftfreq(n, 1 / sr)
+    lo = Y[np.argmin(np.abs(fr - lo_hz))]
+    hi = Y[np.argmin(np.abs(fr - hi_hz))]
+    return float(hi / max(lo, 1e-12))
+
+
+def test_lowpass_attenuates_11k_above_and_zero_means_off():
+    """两件事一起查：默认低通**确实**压 11k 以上；而传 0 是**真的不低通**。
+
+    两者缺一条，`cover_knobs` 里那个「去掉低通」的对照就成了假对照 ——
+    若 `0` 被当成“用默认值”，两臂会完全相同（而脚本不会报错，只是听不出区别）。
+    实测（本机）：默认 0.28、传 0 时 1.00 —— 所以断言取 0.5 / 0.8 的宽裕位置。
+    """
+    y = _two_tone()
+    assert _tone_ratio(offline_vc_infer.postprocess_audio(y, 48000), 48000) < 0.5
+    off = offline_vc_infer.postprocess_audio(y, 48000, lowpass_hz=0)
+    assert _tone_ratio(off, 48000) > 0.8
+
+
+class _RecordingPipeline:
+    """把 `pipeline()` 的位置参数原样记下来 —— 位置漂移只能这么查。"""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def pipeline(self, *args, **_kwargs):
+        self.calls.append(args)
+        return np.zeros(4096, dtype=np.float32)
+
+
+def _stub_engine(monkeypatch):
+    """桩引擎：不 import torch，也不碰真模型。
+
+    `apply_infer_seed` 必须替换 —— 它内部 `import torch`，而本文件在 FAST_TESTS 里
+    （该文件顶部已说明：不 import torch，2.5s 会挤掉 pre-commit 预算）。
+    """
+    import types
+
+    monkeypatch.setattr(offline_vc_infer, "apply_infer_seed", lambda seed=0: seed)
+    pipe = _RecordingPipeline()
+    vc = types.SimpleNamespace(pipeline=pipe, hubert_model=None, net_g=None)
+    # index 给非空值：`convert_audio` 里写的是 `index_rate if engine.index else 0.0`
+    # —— 空 index 会把 rate 归零（无检索可用），那样就查不出"rate 有没有传错位置"。
+    engine = offline_vc_infer.RvcEngine(
+        vc=vc, tgt_sr=48000, index="added_stub.index", if_f0=1, version="v2", pth="stub"
+    )
+    return engine, pipe
+
+
+def test_knobs_reach_the_pipeline_in_the_right_positions(monkeypatch):
+    engine, pipe = _stub_engine(monkeypatch)
+    offline_vc_infer.convert_audio(
+        engine, np.zeros(16000, dtype=np.float32), 0, 0.5, protect=0.5, rms_mix_rate=0.7
+    )
+    args = pipe.calls[-1]
+    assert args[8] == 0.5  # index_rate
+    assert args[12] == 0.7  # rms_mix_rate
+    assert args[14] == 0.5  # protect
+
+
+def test_defaults_reach_the_pipeline_unchanged(monkeypatch):
+    engine, pipe = _stub_engine(monkeypatch)
+    offline_vc_infer.convert_audio(engine, np.zeros(16000, dtype=np.float32), 0, 0.5)
+    args = pipe.calls[-1]
+    assert args[12] == 0.25 and args[14] == 0.33
+
+
 # ============== 权重加载失败的判读（2026-09-21 补） ==============
 #
 # 由来：本机 `auto_rb` 音色报「PyTorch 2.6 weights_only」，于是被记成「PyTorch 版本问题」。

@@ -220,6 +220,12 @@ FAST_TESTS = [
     # 后者尤其值钱：“先量峰再缩放”若用 pcm_s16 探测，量到的永远是削平后的 1.000，
     # 缩放永不生效 —— 用例里写了前置断言让这个失效方式必红。
     "m2_server/tests/test_cover_my_voice.py",
+    # 翻唱体检脚本（`experiments/cover_metrics.py` / `cover_knobs.py`）的守卫（约 0.2s，纯 tmp_path）：
+    # 这两个脚本是**给人下判断用的**（闷不闷 / 撞没撞原唱 / 这个旋钮有没有用），
+    # 所以它自己错了比产品错了更危险 —— 结论会带着一个假数字写进文档并被后人引用。
+    # 本轮实测踩到：频段 dB 用了四舍五入后的比值 ⇒ 近乎为空的频段报出**假的 -120 dB**
+    # （同一个文件用未舍入的值是 -75.5 dB，两个数都"看着像正经数字"）。
+    "m2_server/tests/test_cover_metrics.py",
     # 验「自然度尺子」的探针（约 0.2s，纯 numpy）：它是用来判**别的尺子能不能用**的，
     # 自己必须先可信 —— SNR 配平 / 砖墙低通 / 单调性判定（加容差就等于往结论上调）。
     "tts_trial/tests/test_probe_natscore_domain.py",
