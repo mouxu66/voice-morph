@@ -444,6 +444,109 @@ def test_find_green_send_miss(monkeypatch):
     assert wv._find_green_send((0, 0, 1938, 1609), retries=1) is None
 
 
+# ---------------- §2.19 绿钮判据：波形虚线不得把质心拉偏（2026-10-14 修） ----------------
+#
+# 实测依据（docs/犯错档案-微信.md §2.19，2026-09-18 离线量 83 张真实截图）：
+#   钮真实 x 范围 466–504（**半径只有 19px**）；
+#   带波形虚线那族：全局质心 x = 466 → 偏差 −19px ≈ **0.97 个半径**，落在圆最左边缘。
+# 下面的用例就是把这个已量过的偏差钉成回归。
+
+
+def _overlay_scene(with_waveform: bool) -> np.ndarray:
+    """造一帧浮层右下角：绿钮在右侧 x=480..518（39px 宽，半径 19）。
+
+    with_waveform=True 时在左侧铺一串**断续的窄绿列**（波形虚线，同色域），
+    这正是 09-18 实测里把全局质心往左拉的那个干扰源。
+    """
+    scene = np.full((140, 560, 3), 247, dtype=np.uint8)
+    scene[100:120, 480:519] = (18, 199, 125)  # 发送钮（39px 宽）
+    if with_waveform:
+        # 断续竖条：每 6px 一根、每根 2px 宽 —— 单根过不了 MIN_BUTTON_W 的 20px 门槛
+        for x in range(360, 460, 6):
+            scene[105:115, x : x + 2] = (18, 199, 125)
+    return scene
+
+
+def test_green_button_center_without_waveform(monkeypatch):
+    """无虚线：取到钮中心（这条在旧实现下也是绿的，作为基线）。"""
+    from PIL import Image
+
+    _fake_user32_screen(monkeypatch)
+    scene = _overlay_scene(with_waveform=False)
+    monkeypatch.setattr("PIL.ImageGrab.grab", lambda **k: Image.fromarray(scene))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    gx, _ = wv._find_green_send((0, 0, 1938, 1609), retries=1)
+    assert 1378 + 480 <= gx <= 1378 + 519
+
+
+def test_green_button_center_ignores_waveform(monkeypatch):
+    """★ 有波形虚线时仍必须落在钮内（旧实现的全局质心会被拉到钮左边缘）。
+
+    变异验证：把 `_pick_green_button` 换回 `int(xs.mean())`（旧的全局质心），
+    本用例必须变红 —— 质心会被 18 根虚线列拉到 x≈466，即钮的最左一列。
+    """
+    from PIL import Image
+
+    _fake_user32_screen(monkeypatch)
+    scene = _overlay_scene(with_waveform=True)
+    monkeypatch.setattr("PIL.ImageGrab.grab", lambda **k: Image.fromarray(scene))
+    monkeypatch.setattr(wv.time, "sleep", lambda s: None)
+    got = wv._find_green_send((0, 0, 1938, 1609), retries=1)
+    assert got is not None
+    gx, _ = got
+    # 钮真实屏幕范围：1378+480 .. 1378+519
+    assert 1378 + 480 <= gx <= 1378 + 519, f"偏出钮外：gx={gx}"
+    # 更强的一条：必须靠近钮心（±0.5 半径 = ±10px），而不只是"勉强在钮内"
+    assert abs(gx - (1378 + 499)) <= 10, f"不是钮心：gx={gx}"
+
+
+def test_pick_green_button_prefers_rightmost_wide_block():
+    """判据单元测试：够宽的块里取最右；窄的虚线块一律忽略。"""
+    mask = np.zeros((40, 200), dtype=bool)
+    mask[10:20, 20:28] = True  # 窄块（8px < 20）→ 虚线，忽略
+    mask[10:20, 100:130] = True  # 宽块（31px）→ 这才是钮
+    mask[10:20, 60:70] = True  # 中间窄块 → 忽略
+    pt = wv._pick_green_button(mask)
+    assert pt is not None
+    assert 100 <= pt[0] <= 130
+
+
+def test_pick_green_button_falls_back_to_rightmost_when_no_wide_block():
+    """没有成形钮时退回**最右那簇**，而不是全局质心（方向必须对）。"""
+    mask = np.zeros((40, 200), dtype=bool)
+    mask[10:20, 10:16] = True
+    mask[10:20, 150:158] = True  # 最右
+    pt = wv._pick_green_button(mask)
+    assert pt is not None
+    assert pt[0] > 100  # 绝不能落回左边的 10..16
+
+
+def test_pick_green_button_respects_min_pixels():
+    """绿像素太少（浮层没起来）→ None，不给一个"看起来像钮"的位置。"""
+    mask = np.zeros((40, 200), dtype=bool)
+    mask[10:12, 100:104] = True  # 8 个像素 < MIN_GREEN_PIXELS(50)
+    assert wv._pick_green_button(mask) is None
+
+
+def test_green_mask_is_the_single_source_of_truth():
+    """色域必须与 tools/wx_green_judge_check.py 常量一致（两处漂了会互相打脸）。
+
+    那个工具是 09-18 用来量 §2.19 偏差的，判据必须同源才能继续互相验证。
+    """
+    from PIL import Image
+
+    img = np.zeros((1, 6, 3), dtype=int)
+    img[0, 0] = (18, 199, 125)  # 微信绿 → 命中
+    img[0, 1] = (200, 199, 125)  # R 过高 → 不命中
+    img[0, 2] = (18, 100, 125)  # G 过低 → 不命中
+    img[0, 3] = (18, 199, 200)  # B 过高 → 不命中
+    img[0, 4] = (18, 199, 50)  # B 过低 → 不命中
+    img[0, 5] = (255, 255, 255)  # 白 → 不命中
+    m = wv._green_mask(img)
+    assert list(m[0]) == [True, False, False, False, False, False]
+    del Image  # 仅为保持 import 语义与同文件其他用例一致
+
+
 def test_cancel_point_offset():
     cx, cy = wv._cancel_point((0, 0, 1938, 1609))
     assert (cx, cy) == (1938 - 157 - 218, 1609 - 63)

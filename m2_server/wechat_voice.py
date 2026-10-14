@@ -1328,9 +1328,81 @@ def _trigger_record(ui: dict | None = None) -> None:
     _send_input_kb(vk, scan, False)
 
 
-def _find_green_send(rect: tuple[int, int, int, int], retries: int = 4) -> tuple[int, int] | None:
-    """录音浮层上的绿色 ↑ 发送按钮：按微信绿 (18,199,125) 色域找质心。
+def _green_mask(img: np.ndarray) -> np.ndarray:
+    """微信绿 (18,199,125) 色域掩码。**判据的唯一来源**，工具与主代码都从这里取。
 
+    色域 `G>150 & R<120 & 80<B<180` 是 2026-09-09 真机标定的，别改单边。
+    """
+    return (img[:, :, 1] > 150) & (img[:, :, 0] < 120) & (img[:, :, 2] > 80) & (img[:, :, 2] < 180)
+
+
+def _green_column_clusters(xs: np.ndarray) -> list[tuple[int, int]]:
+    """把绿像素按列切成连续块，返回 `[(x0, x1), ...]`（列号，含两端）。
+
+    允许 1px 断缝（抗锯齿会把圆边缘打散成两三列），断缝 >2 才认为换块。
+    """
+    if not len(xs):
+        return []
+    cols = np.unique(xs)
+    out: list[tuple[int, int]] = []
+    start = prev = int(cols[0])
+    for c in cols[1:]:
+        c = int(c)
+        if c - prev > 2:
+            out.append((start, prev))
+            start = c
+        prev = c
+    out.append((start, prev))
+    return out
+
+
+# 发送钮宽度下限：用来把"按钮"与"波形虚线"分开。
+# 实测（§2.19）：钮 x 范围 466–504 = 39px 宽；波形虚线是断续的窄列。
+MIN_BUTTON_W = 20
+# 判据要求的最小绿像素总数（低于此认为浮层没起来）
+MIN_GREEN_PIXELS = 50
+
+
+def _pick_green_button(mask: np.ndarray) -> tuple[int, int] | None:
+    """从绿掩码里取**发送钮**中心（掩码坐标系，非屏幕坐标）。找不到返回 None。
+
+    ★ 为什么不是"全部绿像素的质心"（2026-09-18 离线量 83 张真实截图，§2.19）：
+    浮层里的**波形虚线同样是绿色**、同样落进这个色域，于是全局质心被往左拉。
+    实测：带虚线那族质心 x = 466，而钮的真实 x 范围是 466–504（**半径只有 19px**）
+    → 偏差 −19px ≈ **0.97 个半径**，正好落在圆的最左边缘（那一列只有极小一段高度，
+    等于赌运气）。83 张汇总：18 张 CENTER / 18 张 EDGE / 4 张 OUTSIDE。
+
+    对策取「**最右侧那个够宽的连通块**」：
+      · 发送钮在浮层最右（× 取消在左、波形在中），所以取最右；
+      · 虚线是断续窄列，过不了 `MIN_BUTTON_W` 的宽度门槛；
+      · 取该块中心而不是它的左侧外沿 —— 圆心就在块的水平中心。
+    这条与 `tools/wx_green_judge_check.py` 的 `analyse()` 判据**完全同源**
+    （那个工具是 09-18 用来量这个偏差的，本函数就是把它的结论搬进生产路径）。
+    """
+    ys, xs = np.nonzero(mask)
+    if len(xs) < MIN_GREEN_PIXELS:
+        return None
+    clusters = _green_column_clusters(xs)
+    # 只看"够宽"的块，然后取最右那个 = 发送钮
+    wide = [c for c in clusters if c[1] - c[0] + 1 >= MIN_BUTTON_W]
+    if wide:
+        x0, x1 = wide[-1]
+        cx = (x0 + x1) // 2
+    else:
+        # 没有成形钮（极端渲染/DPI 下钮被切碎）：退回**最右侧那簇**的中心，
+        # 而不是全局质心 —— 至少方向是对的（钮在右，虚线在左）。
+        x0, x1 = clusters[-1]
+        cx = (x0 + x1) // 2
+    # 纵坐标取该块内的绿像素均值（钮是圆的，块内均值≈圆心）
+    sel = (xs >= x0) & (xs <= x1)
+    cy = int(ys[sel].mean())
+    return int(cx), cy
+
+
+def _find_green_send(rect: tuple[int, int, int, int], retries: int = 4) -> tuple[int, int] | None:
+    """录音浮层上的绿色 ↑ 发送按钮：取**最右侧够宽的绿连通块**中心。
+
+    判据见 `_pick_green_button()`（为什么不是全局质心：§2.19）。
     浮层渲染有延迟，重试几次；找不到返回 None（调用方点 × 取消兜底）。
     """
     from PIL import ImageGrab
@@ -1350,12 +1422,9 @@ def _find_green_send(rect: tuple[int, int, int, int], retries: int = 4) -> tuple
         return None
     for _ in range(retries):
         img = np.asarray(ImageGrab.grab(bbox=box).convert("RGB")).astype(int)
-        green = (
-            (img[:, :, 1] > 150) & (img[:, :, 0] < 120) & (img[:, :, 2] > 80) & (img[:, :, 2] < 180)
-        )
-        ys, xs = np.nonzero(green)
-        if len(xs) > 50:
-            return int(xs.mean()) + box[0], int(ys.mean()) + box[1]
+        pt = _pick_green_button(_green_mask(img))
+        if pt is not None:
+            return pt[0] + box[0], pt[1] + box[1]
         time.sleep(0.4)
     return None
 
