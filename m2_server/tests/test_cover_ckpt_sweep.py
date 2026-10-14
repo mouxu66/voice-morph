@@ -19,6 +19,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parents[2]
 _CKPT = _ROOT / "experiments" / "cover_ckpt_sweep.py"
 _METRICS = _ROOT / "experiments" / "cover_metrics.py"
@@ -80,8 +82,41 @@ def test_normalize_configs_handles_both_report_shapes(tmp_path):
     a = cm.normalize_configs(knobs_shape)
     b = cm.normalize_configs(ckpt_shape)
     assert [r["name"] for r in a] == ["A"], a
-    assert [r["name"] for r in b] == ["v_e10"], b
+    # 权重扫描的名字带组名前缀（同一 voice 可能合法地出现在多个组里）
+    assert [r["name"] for r in b] == ["g__v_e10"], b
     assert all(r["wav"] for r in a + b)
+
+
+def test_normalize_configs_allows_same_voice_in_two_groups(tmp_path):
+    """★ 同一个 voice 出现在**两个组**里是合法的，不许被重名守卫判错。
+
+    `cover_ckpt_sweep.GROUPS` 刻意让 `myvoice_ppt12_full_e40_s3960` 同时进
+    `epochs_12min`（当 epoch 组最后一档）与 `dur_4_8_12min`（当 12min 档）——
+    那是同一权重的两个用途。2026-10-14 我加的重名守卫第一版把这种合法情形
+    判成了 ValueError（全量门禁当场红），所以这里钉住它必须被放过。
+    """
+    cm = _load("cover_metrics_t5", _METRICS)
+    w = tmp_path / "a.wav"
+    w.write_bytes(b"x")
+    rep = {"rows": [
+        {"voice": "v_e40", "group": "g1", "wav": str(w)},
+        {"voice": "v_e40", "group": "g2", "wav": str(w)},
+    ]}
+    got = [r["name"] for r in cm.normalize_configs(rep)]
+    assert got == ["g1__v_e40", "g2__v_e40"], got
+
+
+def test_normalize_configs_still_catches_true_duplicates(tmp_path):
+    """但**真的**重名（同组同名两条）仍必须抛 —— 那才会让测量互相覆盖。"""
+    cm = _load("cover_metrics_t6", _METRICS)
+    w = tmp_path / "a.wav"
+    w.write_bytes(b"x")
+    rep = {"rows": [
+        {"voice": "v1", "group": "g", "wav": str(w)},
+        {"voice": "v1", "group": "g", "wav": str(w)},
+    ]}
+    with pytest.raises(ValueError, match="重复"):
+        cm.normalize_configs(rep)
 
 
 def test_normalize_configs_drops_missing_files(tmp_path):

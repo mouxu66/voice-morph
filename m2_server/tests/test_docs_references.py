@@ -47,7 +47,13 @@ _HEADING = re.compile(r"^#{2,4}\s+(?:§)?(\d+\.\d+[a-z]?)\s")
 _REF = re.compile(r"犯错档案-(微信|工程)\.md`?\s*§\s?(\d+\.\d+[a-z]?)|犯错指南\.md`?\s*§\s?(\d+\.\d+[a-z]?)")
 
 #: 仓库自有文件里的 `docs/xxx.md` 链接。
-_LINK = re.compile(r"docs[\\/]([A-Za-z0-9_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff.\-]*\.md)")
+#:
+#: ⚠️ 必须排除**外部 URL 里的** `docs/xxx.md`（2026-10-14 实测踩到）：
+#: 调研文档里有 `https://github.com/openvpi/DiffSinger/blob/main/docs/BestPractices.md`
+#: 这类**别人仓库**的链接，正则一视同仁地把 `docs/BestPractices.md` 当成本仓引用 ⇒
+#: 假红（本仓当然没有那份文件）。判据改成"**前面不是 `//` 或 `:/`**"，
+#: 即只认相对路径式的 `docs/xxx.md`。
+_LINK = re.compile(r"(?<![\\/])docs[\\/]([A-Za-z0-9_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff.\-]*\.md)")
 
 _SCAN_SUFFIXES = (".py", ".md", ".ps1", ".cjs", ".js", ".ts", ".tsx", ".yml", ".yaml")
 
@@ -203,6 +209,24 @@ def test_no_dead_doc_links():
                     bad.append(f"{rel}:{i} → docs/{m.group(1)}（不存在）")
     assert checked >= 20, f"只找到 {checked} 处 docs/ 链接 —— 扫描范围是不是被 _SKIP 吃掉了？"
     assert not bad, "指向已不存在的 docs 文档：\n  " + "\n  ".join(bad)
+
+
+def test_doc_link_scanner_bites_both_ways():
+    """守卫自己要有牙：本仓相对链接要报，**外部 URL 里的同名片段不许报**。
+
+    2026-10-14 实测踩到：调研文档引用别人仓库的
+    `github.com/openvpi/DiffSinger/blob/main/docs/BestPractices.md`，
+    旧正则把它当成本仓 `docs/BestPractices.md` ⇒ **假红**。
+    这里把两个方向都钉住 —— 只修"假红"而让"真死链"漏报，是最坏的修法。
+    """
+    # 该报：本仓相对引用（不存在的文件）
+    assert _LINK.search("见 docs/不存在的文档.md 那一节")
+    assert _LINK.search("见 `docs/也不存在.md`")
+    # 不该报：外部 URL（`//`、`:/` 前面那种）
+    assert not _LINK.search("https://github.com/openvpi/DiffSinger/blob/main/docs/BestPractices.md")
+    assert not _LINK.search("http://example.com/docs/foo.md")
+    # 仍然该报：Windows 反斜杠形式的相对路径
+    assert _LINK.search(r"见 docs\另也不存在.md")
 
 
 def test_cheatsheet_rows_are_sequential():

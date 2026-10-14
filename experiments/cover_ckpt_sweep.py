@@ -54,6 +54,13 @@ GROUPS: dict[str, list[str]] = {
         "myvoice_probe_8min_e40_s2560",
         "myvoice_ppt12_full_e40_s3960",
     ],
+    # C 组：训练集**频谱倾斜**（单变量 = 预加重斜率，见 cover_tilt_train.py）
+    # 三档都是同一份 12.23min 素材、同 epoch(40)、同超参，只差 2kHz 以上的抬升量。
+    "tilt": [
+        "myvoice_tilt_t00",
+        "myvoice_tilt_t03",
+        "myvoice_tilt_t06",
+    ],
 }
 
 

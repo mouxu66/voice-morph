@@ -38,24 +38,54 @@ VOICED_DROP_DB = 35.0
 def normalize_configs(report: dict) -> list[dict]:
     """把任意一份扫描报告规整成 `[{name, why, wav}]`。
 
-    为什么要这一层（2026-10-14）：现在有**两份**扫描报告要打同一套客观分 ——
-    `cover_knobs.py` 的旋钮扫描（键是 `configs`）与 `cover_ckpt_sweep.py` 的
-    权重扫描（键是 `rows`，字段是 `voice`/`group`）。若给后者另写一份体检逻辑，
-    两份就会各自漂移，而"闷不闷 / 撞没撞原唱"的**口径必须只有一处**
-    （同族教训：犯错指南 #175 的"副本与产品悄悄漂移"）。
+    为什么要这一层（2026-10-14）：现在有**三份**扫描报告要打同一套客观分 ——
+    `cover_knobs.py` 的旋钮扫描（键是 `configs`，字段 `name`）、`cover_ckpt_sweep.py`
+    的权重扫描（键是 `rows`，字段 `voice`/`group`）、以及 `cover_pitch_scan.py` 的
+    音域扫描（键也是 `rows`，字段 `pitch`）。若各写一份体检逻辑，它们就会各自漂移，
+    而"闷不闷 / 撞没撞原唱"的**口径必须只有一处**（同族：#175 的"副本悄悄漂移"）。
+
+    ★ 名字必须**唯一**（2026-10-14 踩过）：音域扫描的行里没有 `voice`，第一版
+    一律退化成 `"?"`，于是 7 条测量**全部塌进同一个键、只剩最后一条** ——
+    而 `metrics.json` 照写、页面照出，看着像"体检过了"（同族 §8.21 白绿病）。
+    所以这里按"报告类型"分别取名，并在重名时**显式抛错**而不是互相覆盖。
 
     ★ `wav` 不存在的一律剔掉：报告里可能有没跑成的条目（缺权重等），
     留着会让体检在使用户栈里找文件、报一个看不懂的错。
     """
     rows = report.get("configs")
     if rows is None:
-        # ckpt 形状：voice 当名字，group 当"为什么"（它就是这一档的说明）
-        rows = [
-            {"name": r.get("voice", "?"), "why": f"{r.get('group', '')}（只换权重）",
-             "wav": r.get("wav")}
-            for r in report.get("rows", [])
-        ]
-    return [r for r in rows if r.get("wav") and Path(r["wav"]).exists()]
+        # `rows` 形状有二：权重扫描用 voice 当名字；音域扫描没有 voice
+        # （每个档位是**同一个音色**的不同变调）⇒ 用 pitch 拼名字。
+        #
+        # ⚠️ 权重扫描里同一个 voice 可能出现在**多个组**（`cover_ckpt_sweep.GROUPS`
+        # 刻意让 `myvoice_ppt12_full_e40_s3960` 同时进 `epochs_12min` 与
+        # `dur_4_8_12min` —— 那是同一权重的两个用途）。名字要带上组名才唯一，
+        # 否则重名守卫会把这种**合法**情形判成错（本机实测撞到过）。
+        rows = []
+        for r in report.get("rows", []):
+            group = r.get("group", "")
+            if "voice" in r:
+                name = r["voice"] if not group else f"{group}__{r['voice']}"
+                rows.append({"name": name,
+                             "why": f"{group}（只换权重）",
+                             "wav": r.get("wav")})
+            elif "pitch" in r:
+                rows.append({"name": f"pitch{r['pitch']:+03d}",
+                             "why": f"变调 {r['pitch']:+d} 半音"
+                                    f"（输出中位 {r.get('median_f0_hz_expected')}Hz）",
+                             "wav": r.get("wav")})
+            else:
+                rows.append({"name": Path(str(r.get("wav", "?"))).stem,
+                             "why": group, "wav": r.get("wav")})
+
+    keep = [r for r in rows if r.get("wav") and Path(r["wav"]).exists()]
+    names = [r["name"] for r in keep]
+    dupes = {n for n in names if names.count(n) > 1}
+    if dupes:
+        raise ValueError(
+            f"体检条目名字重复：{sorted(dupes)} —— 重复会让后面的测量覆盖前面的，"
+            "而报告里看不出少了东西。请给 normalize_configs 加能区分的取名规则。")
+    return keep
 
 
 def report_meta(report: dict) -> dict:
