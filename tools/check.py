@@ -241,6 +241,11 @@ FAST_TESTS = [
     # 什么都证明不了（只跑后者：素材本来就不过顶也全绿 = 装饰）。前置那条尤其值钱：
     # 谁把对照也改成防削波，它就立刻红。
     "m2_server/tests/test_cover_mix_fix_verify.py",
+    # 翻唱 checkpoint 扫描（`experiments/cover_ckpt_sweep.py`）与体检脚本的
+    # `normalize_configs`（约 0.2s，纯 tmp_path）。两处退化都是静默的：
+    # ① 扫描顺手带上 index ⇒ "权重差异"与"检索库差异"混进同一个数，结论失效；
+    # ② 体检只认一种报告形状 ⇒ 另一种**一条都不打分**，页面照出、json 照写但是空的。
+    "m2_server/tests/test_cover_ckpt_sweep.py",
 ]
 
 

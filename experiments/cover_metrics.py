@@ -35,6 +35,38 @@ BANDS: list[tuple[int, int, str]] = [
 VOICED_DROP_DB = 35.0
 
 
+def normalize_configs(report: dict) -> list[dict]:
+    """把任意一份扫描报告规整成 `[{name, why, wav}]`。
+
+    为什么要这一层（2026-10-14）：现在有**两份**扫描报告要打同一套客观分 ——
+    `cover_knobs.py` 的旋钮扫描（键是 `configs`）与 `cover_ckpt_sweep.py` 的
+    权重扫描（键是 `rows`，字段是 `voice`/`group`）。若给后者另写一份体检逻辑，
+    两份就会各自漂移，而"闷不闷 / 撞没撞原唱"的**口径必须只有一处**
+    （同族教训：犯错指南 #175 的"副本与产品悄悄漂移"）。
+
+    ★ `wav` 不存在的一律剔掉：报告里可能有没跑成的条目（缺权重等），
+    留着会让体检在使用户栈里找文件、报一个看不懂的错。
+    """
+    rows = report.get("configs")
+    if rows is None:
+        # ckpt 形状：voice 当名字，group 当"为什么"（它就是这一档的说明）
+        rows = [
+            {"name": r.get("voice", "?"), "why": f"{r.get('group', '')}（只换权重）",
+             "wav": r.get("wav")}
+            for r in report.get("rows", [])
+        ]
+    return [r for r in rows if r.get("wav") and Path(r["wav"]).exists()]
+
+
+def report_meta(report: dict) -> dict:
+    """扫描报告里"这项实验是什么"的几个字段（两份报告的键名不同，统一在这里兜）。"""
+    return {
+        "voice": report.get("voice") or "（多权重扫描）",
+        "seed": report.get("seed"),
+        "pitch": report.get("pitch"),
+    }
+
+
 def frame_spectrum(path: Path, *, max_seconds: float | None = None) -> dict:
     """有声帧的平均功率谱 → 分频段能量比 + 谱质心。
 
@@ -197,6 +229,9 @@ def main() -> int:
 
     knobs = json.loads(args.knobs.read_text(encoding="utf-8"))
     out_dir = (args.out or args.knobs.parent).resolve()
+    # `--out` 指到还不存在的目录时要先建（2026-10-14 实测：报告写不进去，
+    # 而**全部体检数字都已经打完**才在最后一行炸，看着像"体检失败"，其实只是没落盘）
+    out_dir.mkdir(parents=True, exist_ok=True)
     clips_dir = out_dir / "clips"
     rep: dict = {"knobs": str(args.knobs), "files": {}, "notes": []}
 
@@ -213,8 +248,9 @@ def main() -> int:
         # ★ 对照必须是**未降采样**的原唱（44.1k）：拿 16k 那份当对照会让
         #   8 kHz 以上天然为空，从而把"高频掉得多"这件事**说小**（2026-10-14 踩过）。
         targets.append(("source", "原唱这一段（44.1k，对照用）", orig_clip))
-    for c in knobs["configs"]:
-        targets.append((c["name"], c["why"], Path(c["wav"])))
+    for c in normalize_configs(knobs):
+        targets.append((c["name"], c.get("why", ""), Path(c["wav"])))
+    configs = normalize_configs(knobs)
     ceil = knobs.get("ceiling") or {}
     for key, label in (("in_wav", "天花板·输入（你自己的说话素材）"),
                        ("out_wav", "天花板·输出（同一段过模型）")):
@@ -257,6 +293,11 @@ def main() -> int:
     print(f"[体检] 报告 → {out_dir / 'metrics.json'}")
 
     if args.page:
+        meta = report_meta(knobs)
+        is_ckpt = "configs" not in knobs
+        section_title = ("换声结果（同一 20 秒、同一 seed，只换**权重**）" if is_ckpt
+                         else "换声结果（同一 20 秒、同一 seed，只换一个旋钮）")
+        what_changed = "只换权重（index_rate 固定 0）" if is_ckpt else "只换一个旋钮"
         page_items: list[tuple[str, list[dict]]] = []
         rows = []
         if orig_clip.exists():
@@ -264,18 +305,21 @@ def main() -> int:
             if mp3(orig_clip, dst):
                 rows.append({"name": "原唱这一段", "tag": "对照", "src": _data_uri(dst),
                              "note": "这是 demucs 分出来的原唱，没经过任何换声。"})
-        for c in knobs["configs"]:
+        for c in configs:
             m = rep["files"][c["name"]]
             dst = clips_dir / f"{c['name']}.mp3"
             if not mp3(Path(c["wav"]), dst):
                 continue
-            tag = "与 A 逐字节相同" if c["name"] in json.dumps(knobs["identical_groups"]) else f"质心 {m['centroid_hz']}Hz"
-            note = c["why"]
+            same = json.dumps(knobs.get("identical_groups", {}))
+            tag = f"质心 {m['centroid_hz']}Hz"
+            if c["name"] in same and "identical_groups" in knobs:
+                tag = "与另一档逐字节相同"
+            note = c.get("why", "")
             if m["secs_vs_orig_singer"] is not None:
                 note += (f"　·　对原唱声纹 {m['secs_vs_orig_singer']}（越高=越像掺了原唱）"
                          f"　·　对你 {m['secs_vs_your_ref']}")
             rows.append({"name": c["name"], "tag": tag, "src": _data_uri(dst), "note": note})
-        page_items.append(("换声结果（同一 20 秒、同一 seed，只换一个旋钮）", rows))
+        page_items.append((section_title, rows))
 
         if ceil.get("out_wav"):
             rows2 = []
@@ -297,10 +341,10 @@ def main() -> int:
         intro = (
             f"素材：lorezo_feed_the_one 第 {args.start:.0f}–{args.start + args.seconds:.0f} 秒"
             f"（歌声最密的段落）\n"
-            f"模型：{knobs['voice']} · seed {knobs['seed']} · 变调 {knobs['pitch']:+d} 半音\n"
-            "每条都是同一段输入、同一个随机种子，只换一个旋钮 —— 所以听到的差异就是那个旋钮的。"
+            f"模型：{meta['voice']} · seed {meta['seed']} · 变调 {meta['pitch']:+d} 半音\n"
+            f"每条都是同一段输入、同一个随机种子，{what_changed} —— 所以听到的差异就是它的。"
         )
-        page = build_page(page_items, title="翻唱体检 · 旋钮 + 天花板", intro=intro,
+        page = build_page(page_items, title="翻唱体检 · 权重/旋钮 + 天花板", intro=intro,
                           out=out_dir / "listen.html")
         size = page.stat().st_size / 1048576
         rep["page"] = {"path": str(page), "mb": round(size, 1)}
