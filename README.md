@@ -5,8 +5,10 @@
 不打字生成音频文件，而是改造你正在说的话；不上云，全程本机。
 
 ```
-你的麦克风 ──▶ 本机 GPU 推理（RVC，p50 50ms）──▶ 目标音色 ──▶ 微信 / 游戏 / 会议
+你的麦克风 ──▶ 本机 GPU 推理（RVC，端到端 p50 ≈ 300ms）──▶ 目标音色 ──▶ 微信 / 游戏 / 会议
 ```
+
+> 延迟口径（`docs/延迟基准报告.md`）：**端到端 = 分块缓冲 250ms + 单块推理 30ms + 驱动缓冲 ~20ms**，p50 ≈ 300ms、p95 ≈ 360ms；单块推理本身才是 p50 30ms —— 别把后者当端到端报。另注意 p99 会到 1.2s 量级（每 100 块里约一次卡壳），实时通话里决定体验的是它。
 
 和「本地语音工作站」类工具（如 VoiceStudio）的区别一句话：**它们交付一个音频文件，我们交付一句已经发出去的话。**
 
@@ -14,13 +16,15 @@
 |---|---|---|
 | 你给它 | 一段文字 / 一个视频 | **你的麦克风** |
 | 它给你 | 一个音频/视频文件 | **你已发出去的语音条** |
-| 等待 | 秒到分钟 | **50ms** |
+| 等待 | 秒到分钟 | **≈ 300ms** |
 | 场景 | 配音、有声书、转录 | **开黑、微信语音、直播** |
 
 三条主路径：
 
 - **开麦说话**（实时变声）：RVC via 虚拟声卡 → 注入微信/游戏/Discord/OBS 的麦克风。
 - **打字让它说**（TTS）：输入文字 → 用你选的音色（含真声克隆）合成 → **一键发进微信**。
+  - **歌声垫底**（2026-10-13）：把一首歌/伴奏垫进要发出去的语音条 → 微信上「边有歌声、边说话」。两条路：`POST /api/soundboard/bgm/premix` 离线预混出 `bgmmix_<原名>.wav`，或交声板 worker 的**独立垫底层**实时混（`bgm/start|stop|gain`）；翻唱入口按 `WECHAT_AUDIO_BUDGET_S = 54.0` 自动截短，给微信单条 60s 硬上限留发送余量。
+    ⚠️ 微信语音是 16kHz 人声优化编码，**会把音乐高频削掉**（听感发闷），只能靠混音策略缓解；依据 `docs/调研-微信语音边唱边说-2026-10-13.md`（结论：合成侧混轨，发送链路零改动）。
 - **训练变声**（自建音色）：丢一段素材 → 自动切片质检、挑出干净片段 → 训练成你自己的音色。
 
 三端一体：**桌面端**（主力，Electron + React，自带 Python 推理后端）· **移动端**（Expo App，手机打字/遥控，PC 在局域网内推理并自动发到微信）· **Web 端**（同一套 React 前端，浏览器直连或由桌面壳托管）。
@@ -101,7 +105,8 @@
 │   │                     #   ↑ ai_api：AI 调试接口（只读快照 /api/ai/context，见 docs/AI调试端点设计.md）
 │   ├── tts_api.py mine_api.py capture_api.py ab_api.py ab_chain.py audio_api.py
 │   ├── media_api.py rvc_dataset_api.py market_api.py pet_market_api.py
-│   ├── cover_api.py ytdlp_api.py audition_api.py soundboard.py   # 翻唱/扒歌/试音/声板
+│   ├── cover_api.py ytdlp_api.py audition_api.py   # 翻唱（自动截 54s）/扒歌/试音间
+│   ├── soundboard.py board_worker.py sfx_lib.py sfx_packs.py sfx_mark.py   # 特效声板 + 歌声垫底（配平预混 / 独立垫底层）
 │   ├── voice_phrases.py passthrough.py   # 短语速播 / 真声直讲（真麦直通 + AI 音叠加）
 │   ├── config.py         # 路径/端口/鉴权/模型目录（环境变量可覆盖）
 │   ├── common.py history.py clip_qc.py speaker_sep.py loopback_capture.py quality_verdict.py ...
@@ -157,7 +162,7 @@
 
 `server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 39 个独立 router 模块**（默认 `standard` 预设只挂 17 个，见上面「关掉一个能力」那节的说明）：
 
-`cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history_api`（历史）、`cover_api`（翻唱）、`ytdlp_api`（在线扒歌）、`audition_api`（试音间）、`soundboard`（特效声板）、`market_api` / `pet_market_api`（市场）、`openai_compat`（OpenAI 兼容层）、`watermark_api`（音频水印溯源）、`blindtest_api`（盲听评测）、`course_api`（讲稿录课：PPT 备注页逐页旁白）、`remote_api`（手机遥控的**能力现状查询** —— 见下）。
+`cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history_api`（历史）、`cover_api`（翻唱）、`ytdlp_api`（在线扒歌）、`audition_api`（试音间）、`soundboard`（特效声板 / 歌声垫底三档预混）、`market_api` / `pet_market_api`（市场）、`openai_compat`（OpenAI 兼容层）、`watermark_api`（音频水印溯源）、`blindtest_api`（盲听评测）、`course_api`（讲稿录课：PPT 备注页逐页旁白）、`remote_api`（手机遥控的**能力现状查询** —— 见下）。
 
 > `remote_api` 是这套系统里第一个**不拥有功能、只拥有依赖知识**的 router：手机遥控页的
 > 三个标签分别打 `sound.rvc-live` / `hook.wechat` / `pet.companion` 的端点，
