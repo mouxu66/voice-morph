@@ -295,12 +295,21 @@ describe("CapabilityPanel · 开关", () => {
     expect(screen.queryByText(/同名文件/)).not.toBeInTheDocument()
   })
 
-  it("套餐预设可点，点了调 applyPluginPreset", async () => {
+  /**
+   * ★ 2026-10-15 语义变更：点套餐 = **只增不减**（`strict: false`）。
+   *
+   * 用户原话「切换模式会把我自己手动打开的功能给关掉，不能这么搞」——
+   * 所以这条测试现在钉两件事：① 点套餐走的是 merge 那条路（`{strict:false}`）；
+   * ② 回执如实说出保留了几项（用户此刻最想知道的就是「我的开关还在不在」）。
+   */
+  it("点套餐 = 只增不减（strict:false），回执说清保留了几项", async () => {
     getPlugins.mockResolvedValue(catalog([OK_CORE, OK_SOUND], "custom"))
     applyPluginPreset.mockResolvedValue({
       preset: "light",
-      disabled: ["sound.tts"],
+      mode: "merge",
+      disabled: [],
       enabled: ["sound.offline-vc"],
+      kept: ["sound.tts"],
       restartRequired: true,
     })
 
@@ -309,8 +318,44 @@ describe("CapabilityPanel · 开关", () => {
     expect(await screen.findByText(/当前是自定义组合/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: /轻量/ }))
 
-    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("light"))
-    expect(await screen.findByText(/已套用「轻量」套餐/)).toBeInTheDocument()
+    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("light", { strict: false }))
+    expect(await screen.findByText(/保留你手动开启的 1 项/)).toBeInTheDocument()
+    expect(screen.queryByText(/已严格套用/)).not.toBeInTheDocument()
+  })
+
+  /**
+   * 收窄是**显式**动作：单独的「严格（-N）」按钮，N = 会被关掉的项数。
+   * 只有这条路径才传 `strict: true` —— 后端也就只有这条路径会写 `disabled`。
+   */
+  it("「严格（-N）」是显式动作：带 N 的代价、且只有它传 strict:true", async () => {
+    getPlugins.mockResolvedValue(catalog([OK_CORE, OK_SOUND], "custom"))
+    applyPluginPreset.mockResolvedValue({
+      preset: "light",
+      mode: "strict",
+      disabled: ["sound.tts"],
+      enabled: ["sound.offline-vc"],
+      kept: [],
+      restartRequired: true,
+    })
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+    await screen.findByText(/当前是自定义组合/)
+
+    // sound.tts 开着、不在 light 里、非 core → 恰好 1 项要掉，按钮把代价写在脸上
+    const strict = screen.getByRole("button", { name: /严格（-1）/ })
+    fireEvent.click(strict)
+
+    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("light", { strict: true }))
+    expect(await screen.findByText(/已严格套用「轻量」/)).toBeInTheDocument()
+  })
+
+  it("不会掉任何东西时 → 不出现「严格」按钮（不制造没代价的选择）", async () => {
+    getPlugins.mockResolvedValue(catalog([OK_CORE], "custom"))
+
+    render(<CapabilityPanel open onClose={() => {}} />)
+    await screen.findByText(/当前是自定义组合/)
+
+    expect(screen.queryByRole("button", { name: /严格（-/ })).toBeNull()
   })
 
   it("当前套餐高亮（aria-pressed）", async () => {

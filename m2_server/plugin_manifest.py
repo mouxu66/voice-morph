@@ -564,17 +564,46 @@ def set_enabled(pid: str, on: bool) -> dict:
     return {"id": pid, "enabled": on, "blocked_by": blocked, "reason": reason}
 
 
-def apply_preset(name: str) -> dict:
-    """套用一个预设：把「预设没点名的」写进 `disabled`。
+def apply_preset(name: str, *, strict: bool = False) -> dict:
+    """套用一个预设。
 
     ⚠️ 写进文件的是**用户想关的**，不是「最终启用的」—— 因为被依赖而保留的
     能力不该被记成「用户主动开的」，否则切走再切回来会凭空多出几个开启项。
     保留逻辑统一留在读侧（`enabled_ids()`），一处权威。
+
+    ★ 2026-10-15 用户拍板改语义：**默认「只增不减」（merge）**。
+
+    改之前是「整套重设」：`off = 全部 - 套餐`，于是点一下模式就把用户手动开的能力
+    全部写进 `disabled`。这个语义在「一开始就是某个模式」时无感，但用户一旦在能力面板
+    里逐项开过（`_current_preset()` 判定为 `custom`），点模式就是**静默没收他的设置** ——
+    2026-10-08 报过一次（17 项全开 → 重启 → 被模式选择页随手一点清零），当时的修法是
+    「只补知情权、不改语义」（前端加一行会关掉哪几项的小字）。2026-10-15 用户明确：
+    **知情权不够，这个语义本身不能这么搞**。
+
+    所以现在默认只做**加法**：把套餐点名的能力从 `disabled` 里移除（开启），
+    **绝不**往 `disabled` 里加任何东西 —— 你手动开的，模式动不了。
+    真想「收窄到只剩这个套餐」走**显式的** `strict=True`（前端是一个单独的
+    「严格套用（会关掉 N 项）」动作 + 确认，不再是点模式卡片的副作用）。
+
+    返回 `mode` 与 `kept`：`kept` = 这次之后**仍在启用、但不属于该套餐**的能力
+    （含被依赖复活的），前端据此如实告诉用户「保留了你手动开启的 N 项」。
+    不要省掉它去猜 —— 用户此刻最想知道的正是「我开的东西掉没掉」。
     """
     keep = preset_ids(name)
-    off = {p.id for p in load_all() if p.id not in keep}
+    if strict:
+        off = {p.id for p in load_all() if p.id not in keep}
+    else:
+        # 只从禁用集里**移除**套餐点名的那些；不动任何其它 id（含用户手动关的）
+        off = disabled_ids() - keep
     write_disabled(off)
-    return {"preset": name, "disabled": sorted(off), "enabled": sorted(enabled_ids(off))}
+    on = enabled_ids(off)
+    return {
+        "preset": name,
+        "mode": "strict" if strict else "merge",
+        "disabled": sorted(off),
+        "enabled": sorted(on),
+        "kept": sorted(on - keep),
+    }
 
 
 #: 首次运行播种的开关。`0` = 不播种（测试用，同 `VM_WARMUP` / `VM_WECHAT_RESTART`）。

@@ -115,18 +115,29 @@ def plugins():
 
 class _PresetBody(BaseModel):
     preset: str = Field(..., description=f"预设名，可选：{sorted(plugin_manifest.PRESETS)}")
+    strict: bool = Field(
+        False,
+        description=(
+            "严格套用：把不在套餐里的能力**全部关闭**（会关掉你手动开启的项）。"
+            "默认 false = 只增不减：只补齐套餐点名的能力，绝不关你开的。"
+        ),
+    )
 
 
 @router.post("/plugins/preset")
 def apply_plugin_preset(body: _PresetBody):
     """套用一个套餐预设（`docs/插件化设计.md` §8.1）。
 
+    ★ 2026-10-15 起默认是**只增不减**（`strict=false`）：点模式不再没收用户手动
+    开启的能力，想收窄必须显式传 `strict=true`（前端把它做成单独的「严格套用
+    （会关掉 N 项）」动作）。理由与旧语义的事故记录见 `plugin_manifest.apply_preset`。
+
     **重启生效**：router 是启动时挂好的，改状态文件不会立刻卸载路由
     （热插拔见设计稿 §9，本轮不做）。响应里带 `restartRequired` 就是为了让
     前端能如实说出来 —— 否则用户点了开关却看不到变化，会以为开关坏了。
     """
     try:
-        rep = plugin_manifest.apply_preset(body.preset)
+        rep = plugin_manifest.apply_preset(body.preset, strict=body.strict)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"没有这个预设：{body.preset!r}") from exc
     return {**rep, "restartRequired": True}

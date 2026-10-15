@@ -11,7 +11,7 @@ import {
 } from "lucide-react"
 import { applyPluginPreset, getPlugins, setPluginEnabled } from "@/api/client"
 import { restartBackend } from "@/lib/electron"
-import { suppressModeChooserOnce } from "@/lib/modeSwitch"
+import { capabilitiesLostBy, suppressModeChooserOnce } from "@/lib/modeSwitch"
 import type { PluginCatalog, PluginEntry, PluginState } from "@/types"
 import { cn } from "@/lib/utils"
 import { ErrorPanel } from "@/components/ErrorPanel"
@@ -560,15 +560,31 @@ export function CapabilityPanel({ open, onClose }: { open: boolean; onClose: () 
     [addPending, load],
   )
 
+  /**
+   * 套用套餐。
+   *
+   * ★ 2026-10-15：默认**只增不减**（`strict=false`）—— 只补齐套餐点名的能力，
+   * 不关用户手动开的项；「收窄到只剩这个套餐」是旁边那个单独的
+   * 「严格套用（会关掉 N 项）」按钮（`strict=true`），不是点套餐的副作用。
+   * 回执说清保留了几项 —— 用户此刻最想知道的就是这个。
+   */
   const applyPreset = useCallback(
-    async (name: string, label: string) => {
+    async (name: string, label: string, strict = false) => {
       setBusy(`preset:${name}`)
       setNotice(null)
       try {
-        await applyPluginPreset(name)
+        const res = await applyPluginPreset(name, { strict })
         // 套餐动的是**整组**，所以整组都算待重启 —— 只记名字会漏掉被它连带改动的项
         addPending(plugins.map((p) => p.id))
-        setNotice({ tone: "ok", text: `已套用「${label}」套餐，重启应用后生效。` })
+        const kept = res.kept?.length ?? 0
+        setNotice({
+          tone: "ok",
+          text: strict
+            ? `已严格套用「${label}」：不在套餐里的能力已关闭，重启应用后生效。`
+            : kept > 0
+              ? `已套用「${label}」：只补齐，未关闭任何能力（保留你手动开启的 ${kept} 项），重启应用后生效。`
+              : `已套用「${label}」套餐，重启应用后生效。`,
+        })
         await load()
       } catch (e) {
         setNotice({ tone: "error", text: e instanceof Error ? e.message : String(e) })
@@ -734,31 +750,48 @@ export function CapabilityPanel({ open, onClose }: { open: boolean; onClose: () 
         <div className="mt-5 space-y-6">
           <Section
             title="套餐预设"
-            hint="先按套餐选，不够再往下逐项调 —— 直接甩一张裸插件表是配置负担，不是自由度。"
+            hint="先按套餐选（只补齐、不关你开的），不够再往下逐项调；想「只剩这一个套餐」用旁边的严格套用。"
           >
             <div className="flex flex-wrap gap-2">
               {presets.map((preset) => {
                 const active = data?.preset === preset.id
                 const isBusy = busy === `preset:${preset.id}`
+                // 严格套用会关掉的那几项 —— 判据与侧栏/首启页共用一份（lib/modeSwitch）
+                const lost = capabilitiesLostBy(data, preset.id)
                 return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    aria-pressed={active}
-                    disabled={busy !== null}
-                    onClick={() => void applyPreset(preset.id, preset.label)}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition disabled:opacity-60",
-                      // 当前套餐不让"选中的绿" —— 绿留给成功提示，这里用品牌色
-                      active
-                        ? "border-primary/50 bg-primary/10 text-primary"
-                        : "border-border bg-background/60 text-muted-foreground hover:bg-muted hover:text-foreground",
-                    )}
-                  >
-                    {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                    {preset.label}
-                    <span className="font-mono text-[10px] opacity-70">{preset.plugins.length}</span>
-                  </button>
+                  <div key={preset.id} className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      aria-pressed={active}
+                      disabled={busy !== null}
+                      onClick={() => void applyPreset(preset.id, preset.label, false)}
+                      title={`套用「${preset.label}」：补齐该套餐点名的能力，不会关闭你手动开启的能力`}
+                      className={cn(
+                        "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition disabled:opacity-60",
+                        // 当前套餐不让"选中的绿" —— 绿留给成功提示，这里用品牌色
+                        active
+                          ? "border-primary/50 bg-primary/10 text-primary"
+                          : "border-border bg-background/60 text-muted-foreground hover:bg-muted hover:text-foreground",
+                      )}
+                    >
+                      {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                      {preset.label}
+                      <span className="font-mono text-[10px] opacity-70">{preset.plugins.length}</span>
+                    </button>
+                    {/* 收窄是**显式**动作（2026-10-15）：它才会关掉手动开启的项，
+                        所以写成单独一个按钮、把代价写在按钮上（-N）。 */}
+                    {lost.length > 0 ? (
+                      <button
+                        type="button"
+                        disabled={busy !== null}
+                        onClick={() => void applyPreset(preset.id, preset.label, true)}
+                        title={`严格套用「${preset.label}」：关闭不在它里面的 ${lost.length} 项（含你手动开启的）`}
+                        className="rounded-full border border-border px-2 py-1 text-[10px] text-muted-foreground transition hover:text-foreground disabled:opacity-60"
+                      >
+                        严格（-{lost.length}）
+                      </button>
+                    ) : null}
+                  </div>
                 )
               })}
               {data && data.preset === "custom" ? (

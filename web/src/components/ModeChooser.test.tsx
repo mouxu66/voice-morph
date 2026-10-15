@@ -74,14 +74,17 @@ describe("ModeChooser", () => {
     expect(container.textContent).not.toContain("选择一个使用方式")
   })
 
-  it("选不同模式 → 套套餐 + 记目标页 + 重启后端 + 重载（不直接 navigate）", async () => {
+  it("选不同模式 → 套套餐（只增不减）+ 记目标页 + 重启后端 + 重载（不直接 navigate）", async () => {
     hasBeenAsked.mockReturnValue(true)
     render(<ModeChooser />)
     fireEvent.click(screen.getByTitle(/启用 2 项能力，进入「声音保存」/))
-    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("preserve"))
+    // ★ 默认 strict:false —— 只增不减，不问也不关
+    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("preserve", { strict: false }))
     await waitFor(() => expect(restartBackend).toHaveBeenCalledTimes(1))
     expect(localStorage.getItem("vm.pendingEntry")).toBe("/preserve")
     expect(sessionStorage.getItem("vm.modechooser.suppress-once")).toBe("1")
+    // ★ 本页只出现一次：走过任何一个出口就落「问过了»
+    expect(localStorage.getItem("vm.modechooser.dontask")).toBe("1")
     expect(reload).toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
   })
@@ -97,32 +100,51 @@ describe("ModeChooser", () => {
   })
 
   /**
-   * 2026-10-08 事故：本组件每次启动都弹，卡片点下去是**整套重设** ——
+   * 2026-10-08 事故：本组件当时每次启动都弹，卡片点下去是**整套重设** ——
    * 用户在能力面板逐项开好的能力会在这里被一次点击清零。
-   * 现在只在**真会关掉东西**时先问一句，确认后才走原流程。
+   *
+   * 2026-10-15 两道保险都上了：① 卡片默认**只增不减**（不再问、也不关）；
+   * ② 想收窄走卡片下面那行显式的「严格套用」，确认后才走 strict。
    */
-  it("会关掉手动开启的能力 → 先确认；确认后才套套餐+重启", async () => {
-    hasBeenAsked.mockReturnValue(true)
+  function withOneManualCap() {
     const cat = readyCatalog("custom")
     cat.state.catalog.plugins = [
       { id: "sound.audiobook", name: "有声书", enabled: true, core: false },
     ] as never
     usePluginCatalog.mockReturnValue(cat)
+  }
+
+  it("点卡片不会关掉手动开启的能力：走只增不减，不弹确认", async () => {
+    hasBeenAsked.mockReturnValue(true)
+    withOneManualCap()
     render(<ModeChooser />)
 
     fireEvent.click(screen.getByTitle(/启用 2 项能力，进入「声音保存」/))
+    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("preserve", { strict: false }))
+    // 没有东西会被夺走 → 不该有确认条（2026-10-15）
+    expect(screen.queryByRole("alert")).toBeNull()
+    expect(restartBackend).toHaveBeenCalledTimes(1)
+    expect(reload).toHaveBeenCalled()
+  })
+
+  it("严格套用才确认：先点名将关掉的项，确认后带 strict=true", async () => {
+    hasBeenAsked.mockReturnValue(true)
+    withOneManualCap()
+    render(<ModeChooser />)
+
+    fireEvent.click(screen.getByTitle(/严格套用「声音保存」/))
     expect(applyPluginPreset).not.toHaveBeenCalled()
     const alert = screen.getByRole("alert")
     expect(alert.textContent).toContain("关掉")
     expect(alert.textContent).toContain("有声书")
 
-    fireEvent.click(screen.getByText("确认切换并重启"))
-    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("preserve"))
+    fireEvent.click(screen.getByText("确认严格套用并重启"))
+    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("preserve", { strict: true }))
     await waitFor(() => expect(restartBackend).toHaveBeenCalledTimes(1))
     expect(reload).toHaveBeenCalled()
   })
 
-  it("确认条可以取消 → 不套用、不重启、页面不重载", () => {
+  it("严格套用的确认条可以取消 → 不套用、不重启、页面不重载", () => {
     hasBeenAsked.mockReturnValue(true)
     const cat = readyCatalog("custom")
     cat.state.catalog.plugins = [
@@ -131,7 +153,7 @@ describe("ModeChooser", () => {
     usePluginCatalog.mockReturnValue(cat)
     render(<ModeChooser />)
 
-    fireEvent.click(screen.getByTitle(/启用 2 项能力，进入「声音保存」/))
+    fireEvent.click(screen.getByTitle(/严格套用「声音保存」/))
     fireEvent.click(screen.getByText("取消"))
     expect(screen.queryByRole("alert")).toBeNull()
     expect(applyPluginPreset).not.toHaveBeenCalled()
@@ -155,7 +177,7 @@ describe("ModeChooser", () => {
     expect(sessionStorage.getItem("vm.modechooser.suppress-once")).toBeNull()
   })
 
-  it("「直接进入」→ 什么都不做只关闭；勾「记住」后落盘不再弹", () => {
+  it("「直接进入」→ 什么都不做只关闭；且这页只出现一次（直接落「问过了»）", () => {
     hasBeenAsked.mockReturnValue(true)
     render(<ModeChooser />)
     fireEvent.click(screen.getByText("直接进入"))
@@ -163,7 +185,8 @@ describe("ModeChooser", () => {
     expect(applyPluginPreset).not.toHaveBeenCalled()
     expect(restartBackend).not.toHaveBeenCalled()
 
-    localStorage.setItem("vm.modechooser.dontask", "1")
+    // ★ 2026-10-15：不再是「勾了才记住」—— 三个出口都落盘，本页只出现一次
+    expect(localStorage.getItem("vm.modechooser.dontask")).toBe("1")
     expect(shouldShowModeChooser()).toBe(false)
   })
 })

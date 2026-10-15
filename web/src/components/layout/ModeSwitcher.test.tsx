@@ -63,19 +63,47 @@ describe("ModeSwitcher", () => {
     expect(screen.queryByTitle(/「全能」/)).toBeNull()
   })
 
-  it("点击模式 → 调 applyPluginPreset 并出现「重启后生效」横幅", async () => {
+  it("点击模式 → 默认只增不减（strict:false）+ 出现「重启后生效」横幅，且不弹确认", async () => {
     getPlugins.mockResolvedValue(catalog("custom"))
-    applyPluginPreset.mockResolvedValue({ ok: true, enabled: [] })
+    applyPluginPreset.mockResolvedValue({ preset: "wechat", mode: "merge", disabled: [], enabled: [], kept: [] })
     render(<ModeSwitcher />)
     await waitFor(() => expect(screen.getByText("微信变声")).toBeTruthy())
     fireEvent.click(screen.getByTitle(/切换到「微信变声」/))
-    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("wechat"))
+    // ★ 2026-10-15：默认不传 strict —— 点模式不关你手动开启的能力，所以无需确认
+    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("wechat", { strict: false }))
     expect(screen.getByText("重启后生效")).toBeTruthy()
+    expect(screen.queryByRole("alert")).toBeNull()
+  })
+
+  /**
+   * 只增不减的回执（2026-10-15）：用户此刻最想知道的就是「我开的东西掉没掉」。
+   * 回执必须自己说出「保留了你手动开启的 N 项」—— 而不是让用户去能力面板里数。
+   */
+  it("只增不减的回执：保留了你手动开启的 N 项", async () => {
+    getPlugins.mockResolvedValue({
+      ...catalog("custom"),
+      plugins: [
+        { id: "sound.tts", name: "输字变声", enabled: true, core: false },
+        { id: "sound.audiobook", name: "有声书", enabled: true, core: false },
+      ],
+    })
+    applyPluginPreset.mockResolvedValue({
+      preset: "game",
+      mode: "merge",
+      disabled: [],
+      enabled: [],
+      kept: ["sound.tts", "sound.audiobook"],
+    })
+    render(<ModeSwitcher />)
+    await waitFor(() => expect(screen.getByText("微信变声")).toBeTruthy())
+    fireEvent.click(screen.getByTitle(/切换到「游戏变声」/))
+    await waitFor(() => expect(screen.getByText(/保留你手动开启的 2 项/)).toBeTruthy())
+    expect(screen.queryByRole("alert")).toBeNull()
   })
 
   it("「立即重启」→ 调 restartBackend 并刷新页面", async () => {
     getPlugins.mockResolvedValue(catalog("custom"))
-    applyPluginPreset.mockResolvedValue({ ok: true, enabled: [] })
+    applyPluginPreset.mockResolvedValue({ preset: "game", mode: "merge", disabled: [], enabled: [], kept: [] })
     restartBackend.mockResolvedValue({ running: true })
     render(<ModeSwitcher />)
     await waitFor(() => expect(screen.getByText("微信变声")).toBeTruthy())
@@ -90,10 +118,10 @@ describe("ModeSwitcher", () => {
   })
 
   /**
-   * 2026-10-08 事故的另一半：套餐是**整套重设**，用户逐项开过之后点模式会掉东西。
-   * 这里钉住「先问、确认后才动」这条路径 —— 以及不会掉东西时**不问**（不制造摩擦）。
+   * 2026-10-15：收窄变成**显式动作**。确认条从「点模式」搬家到卡片下面那行
+   * 「严格套用（会关掉 N 项）」—— 只有它才会关掉你手动开启的能力。
    */
-  it("会关掉手动开启的能力 → 先确认，确认后才套用", async () => {
+  it("严格套用才是会关东西的那一下 → 先确认，确认后带 strict=true", async () => {
     getPlugins.mockResolvedValue({
       ...catalog("custom"),
       plugins: [
@@ -101,31 +129,32 @@ describe("ModeSwitcher", () => {
         { id: "sound.audiobook", name: "有声书", enabled: true, core: false },
       ],
     })
-    applyPluginPreset.mockResolvedValue({ ok: true, enabled: [] })
+    applyPluginPreset.mockResolvedValue({ preset: "game", mode: "merge", disabled: [], enabled: [], kept: [] })
     render(<ModeSwitcher />)
     await waitFor(() => expect(screen.getByText("微信变声")).toBeTruthy())
 
-    fireEvent.click(screen.getByTitle(/切换到「游戏变声」/))
+    // ① 点严格套用：不直接动，先点名将被关掉的那几项
+    fireEvent.click(screen.getByTitle(/严格套用「游戏变声」/))
     expect(applyPluginPreset).not.toHaveBeenCalled()
     const alert = screen.getByRole("alert")
-    expect(alert.textContent).toContain("会")
     expect(alert.textContent).toContain("关掉")
     expect(alert.textContent).toContain("2 项")
     expect(alert.textContent).toContain("输字变声")
     expect(screen.queryByText("重启后生效")).toBeNull() // 还没套用，自然不该有重启横幅
 
-    fireEvent.click(screen.getByText("确认切换"))
-    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("game"))
+    // ② 确认后才走 strict
+    fireEvent.click(screen.getByText("确认严格套用"))
+    await waitFor(() => expect(applyPluginPreset).toHaveBeenCalledWith("game", { strict: true }))
   })
 
-  it("确认条可以取消 → 不套用、也不出现重启横幅", async () => {
+  it("严格套用的确认条可以取消 → 不套用、也不出现重启横幅", async () => {
     getPlugins.mockResolvedValue({
       ...catalog("custom"),
       plugins: [{ id: "sound.tts", name: "输字变声", enabled: true, core: false }],
     })
     render(<ModeSwitcher />)
     await waitFor(() => expect(screen.getByText("微信变声")).toBeTruthy())
-    fireEvent.click(screen.getByTitle(/切换到「游戏变声」/))
+    fireEvent.click(screen.getByTitle(/严格套用「游戏变声」/))
     fireEvent.click(screen.getByText("取消"))
     expect(screen.queryByRole("alert")).toBeNull()
     expect(screen.queryByText("重启后生效")).toBeNull()

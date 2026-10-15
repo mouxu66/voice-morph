@@ -97,13 +97,21 @@ def _act_plugins_enable(params: dict) -> tuple[dict, str]:
 
 def _act_plugins_preset(params: dict) -> tuple[dict, str]:
     name = _require_str(params, "name")
+    # 默认只增不减（2026-10-15）；要「收窄到只剩该套餐」得显式 strict=true
+    strict = bool(params.get("strict"))
     valid = sorted(getattr(plugin_manifest, "PRESETS", {}).keys())
     if valid and name not in valid:
         raise ActionError(400, f"没有这个预设：{name}；可选{sorted(valid)}")
-    res = plugin_manifest.apply_preset(name)
+    res = plugin_manifest.apply_preset(name, strict=strict)
     disabled = sorted(res.get("disabled") or [])
-    evidence = {"plugins_disabled": disabled}
-    return evidence, f"已套用预设「{name}」，关闭 {len(disabled)} 项（重启后生效）"
+    kept = sorted(res.get("kept") or [])
+    evidence = {"plugins_disabled": disabled, "mode": res.get("mode"), "kept": kept}
+    if strict:
+        return evidence, f"已严格套用预设「{name}」，关闭 {len(disabled)} 项（重启后生效）"
+    return evidence, (
+        f"已套用预设「{name}」：只补齐、未关闭任何能力"
+        f"（保留你手动开启的 {len(kept)} 项，重启后生效）"
+    )
 
 
 #: 动作表。**这张表就是全部权限** —— 表外的东西一律不存在。
@@ -120,9 +128,12 @@ _ACTIONS: dict[str, dict[str, Any]] = {
     },
     "plugins.preset": {
         "handler": _act_plugins_preset,
-        "schema": {"name": "string（预设名，如 standard / wechat / class）"},
+        "schema": {
+            "name": "string（预设名，如 standard / wechat / class）",
+            "strict": "boolean（可选，默认 false。true = 严格套用，会关闭不在套餐里的能力）",
+        },
         "risk": "low",
-        "desc": "套用场景预设，一次调整多个能力的开关",
+        "desc": "套用场景预设：默认只增不减（不动你手动开启的能力），strict=true 才整套重设",
     },
 }
 
@@ -210,23 +221,40 @@ def dry_run(action_id: str, params: dict) -> dict:
         }
     if action_id == "plugins.preset":
         name = _require_str(params, "name")
+        strict = bool(params.get("strict"))
         valid = sorted(getattr(plugin_manifest, "PRESETS", {}).keys())
         if valid and name not in valid:
             raise ActionError(400, f"没有这个预设：{name}；可选 {sorted(valid)}")
         # `preset_ids()` 返回的是**启用集**（未知预设直接抛KeyError），
         # 关闭集 = 全部能力 - 启用集。别拿启用集当关闭集报 —— 会说反。
         would_enable = sorted(plugin_manifest.preset_ids(name))
-        would_disable = sorted(set(plugin_manifest.by_id()) - set(would_enable))
+        # ★ 默认只增不减：真正会被**新开**的只是「套餐点名、当前还没开」的那些；
+        #   会关的一个也没有。dry_run 必须跟实际行为一致 —— 报成「关闭 N 项」
+        #   会让用户以为要掉东西（与 `apply_preset` 的语义改动同步，2026-10-15）。
+        already_on = plugin_manifest.enabled_ids()
+        if strict:
+            would_disable = sorted(set(plugin_manifest.by_id()) - set(would_enable))
+            newly_on: list[str] = []
+        else:
+            would_disable = []
+            newly_on = sorted(set(would_enable) - already_on)
+        msg = (
+            f"将会严格套用预设「{name}」：启用 {len(would_enable)} 项、"
+            f"关闭 {len(would_disable)} 项（重启后生效）"
+            if strict
+            else f"将会套用预设「{name}」：新开 {len(newly_on)} 项、不关闭任何能力（重启后生效）"
+        )
         return {
             "ok": True,
             "code": 200,
             "action": action_id,
             "dry_run": True,
-            "message": (
-                f"将会套用预设「{name}」：启用 {len(would_enable)} 项、"
-                f"关闭 {len(would_disable)} 项（重启后生效）"
-            ),
-            "evidence": {"would_enable": would_enable, "would_disable": would_disable},
+            "message": msg,
+            "evidence": {
+                "would_enable": newly_on if not strict else would_enable,
+                "would_disable": would_disable,
+                "mode": "strict" if strict else "merge",
+            },
             "duration_ms": 0,
         }
     raise ActionError(404, f"没有这个动作：{action_id}")

@@ -226,14 +226,38 @@ def test_unknown_preset_raises():
         plugin_manifest.preset_ids("standrad")
 
 
-def test_apply_preset_records_only_what_the_user_turned_off():
-    """写进文件的是"用户想关的"，不是"最终启用的"。
+def test_apply_preset_is_additive_by_default():
+    """★ 2026-10-15 用户拍板：套用预设**默认只增不减**，绝不新增 `disabled`。
 
-    被依赖而保留的能力不该被记成"用户主动开的" —— 否则切走预设再切回来，
-    会凭空多出几个开启项，用户根本不知道自己"开"过它们。
+    改之前是「整套重设」（`off = 全部 - 套餐`），于是点一下模式就把用户手动开的能力
+    全部写进 `disabled`。用户原话：「切换模式会把我自己手动打开的功能给关掉 ……
+    不能这么搞」——2026-10-08 那次只加了「会关掉哪几项」的小字提示（知情权），
+    2026-10-15 明确：知情权不够，语义本身要改。
+
+    所以：默认路径只做加法（套餐点名的从 `disabled` 里移除），
+    收窄必须显式 `strict=True`（见下一条）。
     """
+    # 先手动开一项套餐外的能力（模拟用户逐项开过）
+    plugin_manifest.set_enabled("sound.audiobook", True)
     rep = plugin_manifest.apply_preset("light")
+    assert rep["mode"] == "merge"
+    assert "sound.audiobook" not in rep["disabled"], "★ 默认路径关掉了用户手动开启的能力"
+    assert "sound.audiobook" in rep["enabled"], "用户手动开的没保住"
+    assert "sound.audiobook" in rep["kept"], "kept 没如实报出被保留的手动项"
+    # 加法的另一半：套餐点名的能力被补齐
+    assert "sound.offline-vc" in rep["enabled"]
+
+
+def test_apply_preset_strict_is_the_old_whole_set_reset():
+    """「收窄到只剩这个套餐」必须**显式** —— 旧语义整段保留在 `strict=True` 上。
+
+    写进文件的是「用户想关的」，不是「最终启用的」：被依赖而保留的能力不该被记成
+    「用户主动开的」，否则切走预设再切回来，会凭空多出几个开启项，用户根本不知道
+    自己"开"过它们（这条语义没变，变的只是它现在不再跟着默认路径走）。
+    """
+    rep = plugin_manifest.apply_preset("light", strict=True)
     keep = plugin_manifest.preset_ids("light")
+    assert rep["mode"] == "strict"
     assert set(rep["disabled"]) == _ids() - keep
     # 保留逻辑只留在读侧
     assert "sound.offline-vc" in rep["enabled"]
@@ -657,10 +681,23 @@ def test_enable_disable_roundtrip_via_api(client):
     assert plugin_manifest.disabled_ids() == {"sound.audiobook", "sound.course"}
 
 
-def test_preset_endpoint(client):
+def test_preset_endpoint_is_additive_by_default(client):
+    """端点默认也是只增不减（`strict` 缺省 false）—— 前端不传就是安全的那个。"""
+    plugin_manifest.set_enabled("sound.audiobook", True)
     resp = client.post("/api/plugins/preset", json={"preset": "light"})
     assert resp.status_code == 200
-    assert resp.json()["preset"] == "light"
+    body = resp.json()
+    assert body["preset"] == "light"
+    assert body["mode"] == "merge"
+    assert "sound.audiobook" in body["kept"]
+    assert "sound.audiobook" not in body["disabled"]
+
+
+def test_preset_endpoint_strict_resets_the_whole_set(client):
+    """显式 `strict=true` 才是旧的整套重设（写给「我就是要只剩这一个模式」）。"""
+    resp = client.post("/api/plugins/preset", json={"preset": "light", "strict": True})
+    assert resp.status_code == 200
+    assert resp.json()["mode"] == "strict"
     assert set(resp.json()["disabled"]) == _ids() - plugin_manifest.preset_ids("light")
 
 
@@ -685,8 +722,26 @@ def test_catalog_exposes_switch_state(client):
 
 
 def test_catalog_reports_the_current_preset(client):
-    plugin_manifest.apply_preset("standard")
+    """派生口径没变：禁用集与该套餐的补集**逐字相等**时才报那个套餐名。
+
+    ⚠️ 只增不减之后，点模式**不一定**能让 `preset` 变成该模式：你手动开的项被保留，
+    禁用集就不再等于该套餐的补集 —— 这正是「保留」的代价，如实报 `custom` 比
+    冒充套餐好（前端也用响应里的 `kept` 把这件事说出来，而不是在这儿假装）。
+    想得到确定的 `standard`，走显式 strict。
+    """
+    plugin_manifest.apply_preset("standard", strict=True)
     assert client.get("/api/plugins").json()["preset"] == "standard"
+
+
+def test_merge_keeps_the_preset_field_honest(client):
+    """只增不减下 `preset` 报 `custom`：保留了你开的项，就不再是那个套餐的补集。
+
+    这条是给人看的护栏：任何「让点模式后仍然高亮该模式」的 UI 小聪明，
+    都必须绕开这个派生口径 —— 而绕开它就会在侧栏说一个后端不认的模式名。
+    """
+    plugin_manifest.set_enabled("sound.workshop", False)  # 你已经逐项改过
+    client.post("/api/plugins/preset", json={"preset": "light"})
+    assert client.get("/api/plugins").json()["preset"] == "custom"
 
 
 def test_blocked_by_tells_you_what_to_close_first(client):

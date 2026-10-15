@@ -199,11 +199,21 @@ export interface PluginToggleResult {
   restartRequired: boolean;
 }
 
-/** `POST /api/plugins/preset` 的返回 */
+/**
+ * `POST /api/plugins/preset` 的返回。
+ *
+ * ★ 2026-10-15 起默认**只增不减**（`mode === "merge"`）：不关闭任何能力，
+ * `kept` 列出「仍在启用、但不属于该套餐」的能力 id（就是你手动开的那些）。
+ * `mode === "strict"` 才是旧的「整套重设」—— 只有显式的「严格套用」动作会调到它。
+ */
 export interface PluginPresetResult {
   preset: string;
+  /** `merge`=只增不减（默认）；`strict`=整套重设（需显式传 strict） */
+  mode: "merge" | "strict";
   disabled: string[];
   enabled: string[];
+  /** merge 时被保留下来的「套餐之外、你仍开着」的能力 id */
+  kept: string[];
   restartRequired: boolean;
 }
 

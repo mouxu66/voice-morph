@@ -157,12 +157,22 @@ export async function setPluginEnabled(id: string, enabled: boolean): Promise<Pl
   return jsonFetch<PluginToggleResult>(`/plugins/${encodeURIComponent(id)}/${verb}`, { method: "POST" })
 }
 
-/** 套用一个套餐预设（§8.1）。同样是重启生效。 */
-export async function applyPluginPreset(preset: string): Promise<PluginPresetResult> {
+/**
+ * 套用一个套餐预设（§8.1）。同样是重启生效。
+ *
+ * ★ 默认**只增不减**（不传 `strict`）：只补齐该套餐点名的能力，绝不关闭用户手动开启的项。
+ * 要「收窄到只剩这个套餐」必须显式 `{ strict: true }` —— 界面上它是一个单独的
+ * 「严格套用（会关掉 N 项）」动作 + 确认，**不是点一下模式卡片就跑的副作用**
+ * （2026-10-15 用户拍板，理由见 `lib/modeSwitch.ts` 头注释）。
+ */
+export async function applyPluginPreset(
+  preset: string,
+  opts: { strict?: boolean } = {},
+): Promise<PluginPresetResult> {
   return jsonFetch<PluginPresetResult>("/plugins/preset", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ preset }),
+    body: JSON.stringify({ preset, strict: opts.strict ?? false }),
   })
 }
 
