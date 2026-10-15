@@ -37,6 +37,23 @@ def test_classify_returncode_unknown_is_failure():
     assert "99" in str(e)
 
 
+def test_classify_windows_crash_code_gives_actionable_hint():
+    """Windows 异常退出码（0xC0000005 = 3221225477）给"显存不足"级别的可行动提示。
+
+    2026-10-15 实测：整曲链路 true（RC_SEP）之外被系统杀掉时 rc 是 DWORD 异常码、
+    stderr 为空；提示里必须有"显存 / 关闭 / 取消勾选"这类可行动指引。
+    """
+    e = lead_sep.classify_returncode(3221225477, "")
+    assert e.kind is lead_sep.LeadSepError.Kind.FAILED
+    s = str(e)
+    assert "显存" in s
+    assert "取消勾选" in s
+    # 负数形式（若某环境按有符号解释）同样命中
+    e2 = lead_sep.classify_returncode(-1073741819, "")   # 0xC0000005 的 int32 形态
+    assert e2.kind is lead_sep.LeadSepError.Kind.FAILED
+    assert "显存" in str(e2)
+
+
 # ------------------------------------------------------- 环境探测
 
 def test_status_reports_missing_pieces(monkeypatch, tmp_path):

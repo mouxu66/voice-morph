@@ -121,6 +121,16 @@ def classify_returncode(rc: int, stderr: str) -> LeadSepError:
         return LeadSepError(LeadSepError.Kind.MODEL_MISSING, f"主唱分离模型缺失：{tail}")
     if rc == RC_ENV:
         return LeadSepError(LeadSepError.Kind.ENV_MISSING, f"主唱分离环境异常：{tail}")
+    if (rc & 0xFFFFFFFF) >= 0xC0000000:
+        # Windows 异常退出码（0xC0000005 访问违例 = 3221225477、0xC00000FD 栈溢出…）：
+        # 进程被系统直接终止，stderr 常为空。2026-10-15 实测（RTX 5060 8G 整曲链路）：
+        # 同一输入一次崩一次成；崩时系统进程已占 5.5G+ 显存、而分离峰值要 7.3G ——
+        # 显存挤爆（native crash）是最常见诱因。给一句可行动的提示，别丢十六进制码给用户。
+        return LeadSepError(
+            LeadSepError.Kind.FAILED,
+            f"分离进程异常退出（系统错误码 {rc}），最常见的原因是显存不足"
+            f"（可关闭其他占用显卡的程序后重试，或取消勾选「先剥离和声/伴唱」继续）",
+        )
     return LeadSepError(LeadSepError.Kind.FAILED, f"主唱分离失败（退出码 {rc}）：{tail}")
 
 
