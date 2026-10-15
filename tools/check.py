@@ -269,6 +269,15 @@ FAST_TESTS = [
     # 的帧上逐帧算（"中位数之商"会混进清浊分布差，−12 档被读成 −9.70）、试听页按
     # **内容 md5** 查假对照、注入的 groups 必须生效、±12 夹紧。五个变异各自确认会红。
     "m2_server/tests/test_cover_song2.py",
+    # 补录混训集构建（`experiments/cover_supp_build.py`）的守卫（约 0.2s，纯 tmp 文件）：
+    # 旧素材必须逐字节复制（hash 核对）、新旧 stem 撞名必须在 rmtree 之前拒绝、
+    # rmtree 安全门只许重建 myvoice_supp*、解码产物必须是 40k 单声道。
+    # 两个变异各自确认会红（旧素材改走解码重编码 / 去掉安全门）。
+    "m2_server/tests/test_cover_supp_build.py",
+    # 补录 A/B（cover_supp_eval.summarize）的单变量闸（约 0.1s，纯 dict）：
+    # 三臂（t00/t03/supp）pitch 与 index_rate 必须完全一致，配置串味即抛错；
+    # 净高频变化扣掉总电平。变异（关掉核对）确认两条串味用例会红。
+    "m2_server/tests/test_cover_supp_eval.py",
 ]
 
 
