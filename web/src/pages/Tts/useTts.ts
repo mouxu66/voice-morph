@@ -31,6 +31,18 @@ const SLOW_HINT_MS = 8000
 
 export function useTts() {
   const { backendUp, voices, selectedVoiceId, selectVoice } = useAppStore()
+  /**
+   * 当前音色是"仅换声"型（明确没有参考录音）。
+   *
+   * 音色列表里有一类 RVC 模型音色，没有 reference.wav —— 选它做文字合成/风格参考
+   * 必被后端 404（voice_ref 校验），而报错文案（"找不到对应的音色档案"）会让人
+   * 以为音色坏了。前端已知时直接拦下，别把请求打到后端；列表未加载（找不到该音色
+   * 信息）时不拦，交给列表轮询与后端兜底。
+   *
+   * ⚠️ 声明必须在 generate 之前：generate 的 useCallback 依赖数组在渲染期求值，
+   * 放后面会 TDZ ReferenceError（与下方 chain 同一个坑）。
+   */
+  const selectedVoiceNoRef = voices.find((v) => v.id === selectedVoiceId)?.has_reference === false
   const [text, setText] = useState("")
   const [textLanguage, setTextLanguageState] = useState<TtsLanguage>("zh")
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -79,6 +91,10 @@ export function useTts() {
       setErrorMessage("还没有可用音色，请先到「音色库」挖掘并保存一个音色。")
       return
     }
+    if (selectedVoiceNoRef) {
+      setErrorMessage("当前音色没有参考录音（仅换声），不能直接输字。想用它念字：先用其他音色生成一句，再点结果旁的「变声处理 →」转成它。")
+      return
+    }
     setSynthesizing(true)
     setErrorMessage("")
     setSaveMessage("")
@@ -114,7 +130,7 @@ export function useTts() {
       setSlowHint("")
       setSynthesizing(false)
     }
-  }, [text, textLanguage, backendUp, synthesizing, selectedVoiceId, styleRefVoice, chain])
+  }, [text, textLanguage, backendUp, synthesizing, selectedVoiceId, selectedVoiceNoRef, styleRefVoice, chain])
 
   /** 把某条会话产物存进作品库（复制到 outputs 根 + 登记历史）。幂等。 */
   const saveItem = useCallback(async (id: string) => {
@@ -160,7 +176,7 @@ export function useTts() {
 
   const textLength = text.length
   const overLimit = textLength > TTS_MAX_LENGTH
-  const canGenerate = backendUp && !synthesizing && text.trim().length > 0 && !overLimit && Boolean(selectedVoiceId)
+  const canGenerate = backendUp && !synthesizing && text.trim().length > 0 && !overLimit && Boolean(selectedVoiceId) && !selectedVoiceNoRef
   const latestResult = ttsHistory[0] ?? null
 
   // ---- 输字变声链路自检（进页面自动跑一遍）----
@@ -210,6 +226,7 @@ export function useTts() {
     slowHint,
     errorMessage,
     canGenerate,
+    selectedVoiceNoRef,
     generate,
     ttsHistory,
     latestResult,
