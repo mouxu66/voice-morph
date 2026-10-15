@@ -29,10 +29,15 @@ import config as cfg
 SEP_VENV_PY = Path(".venv_sep/Scripts/python.exe")
 SEP_MODEL_DIR = Path("sep_models")
 
-#: 默认主唱模型。UVR MDX-Net Karaoke（ONNX，28MB，CPU 即可）：盲听中女主唱完整、
-#: 不忽弱；Aufr33（871MB）虽低男残留更低但被用户判"忽弱忽小"淘汰。
-#: 最终模型等用户第二轮盲听定稿后可调，这里先落一个可用默认。
-DEFAULT_MODEL = "UVR_MDXNET_KARA.onnx"
+#: 默认主唱模型（2026-10-15 blind3 盲听定稿）：
+#:   BS Roformer karaoke（frazer+becruily，204MB）—— MVSEP karaoke 榜公开权重里最高档
+#:   （10.10 lead SDR）。本机同段实测：男声残留区（80–250Hz）−23.5dB（旧 UVR MDX 系
+#:   仅 −1.7），女声主体（300–3.5k）−0.2dB（几乎无损）；用户盲听判"分出来了，确实可以"。
+#: ★ 布局要求：ckpt 同目录须放 `config_bs_roformer_karaoke_frazer_becruily.yaml`
+#:   （audio-separator 按内置名单映射取这个名，**别改名** —— 见犯错档案-工程 §8.73）。
+#: ★ 备选：`mel_band_roformer_karaoke_gabox_v2.ckpt`（用户也判可；913MB。**必须 v2**：
+#:   v1 分发是坏的，输出近全通且加载零报错，同见 §8.73）。
+DEFAULT_MODEL = "bs_roformer_karaoke_frazer_becruily.ckpt"
 
 #: runner 退出码 → 错误分类。见 tools/lead_sep_runner.py。
 RC_ENV = 2
