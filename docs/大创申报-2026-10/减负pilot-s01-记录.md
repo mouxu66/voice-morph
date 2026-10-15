@@ -116,8 +116,7 @@ cd D:/变声
 ## 7. 复现命令（全部本机、可重跑）
 
 ```bash
-# A 侧
-ffmpeg -y -i "docs/大创申报-2026-10/大创申报PPT.mp4" -vn -ac 1 -ar 16000 \
+# A 侧ffmpeg -y -i "_trash_大创-2026-10/大创申报PPT.mp4" -vn -ac 1 -ar 16000 \
   -c:a pcm_s16le media/voice_load/s01/lesson_A.wav
 .venv/Scripts/python.exe tools/voice_load.py measure media/voice_load/s01/lesson_A.wav \
   --json outputs/voice_load/s01_A.json
