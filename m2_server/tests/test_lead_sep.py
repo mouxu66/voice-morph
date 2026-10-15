@@ -130,6 +130,44 @@ def test_extract_lead_builds_correct_command_and_returns_lead(monkeypatch, tmp_p
     assert captured["cwd"] == str(root)            # 跟随 RVC_ROOT
 
 
+def test_extract_lead_resolves_relative_paths(monkeypatch, tmp_path):
+    """相对路径必须按**调用方 cwd** 归一成绝对再进 cmd。
+
+    runner 子进程的 cwd 是 RVC_ROOT（见上一条测试），不归一的话相对路径会被
+    解析到 RVC_ROOT 下 —— "输入不存在"（2026-10-15 端到端自测踩到过）。
+    """
+    root = tmp_path / "RVC"
+    py = root / ".venv_sep/Scripts/python.exe"
+    model = root / "sep_models/m.onnx"
+    py.parent.mkdir(parents=True)
+    model.parent.mkdir(parents=True)
+    py.write_text("x")
+    model.write_text("x")
+    monkeypatch.setattr(lead_sep.cfg, "RVC_ROOT", root, raising=False)
+
+    monkeypatch.chdir(tmp_path)                     # 调用方 cwd = tmp_path
+    (tmp_path / "vocals.wav").write_text("audio")
+
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        out_abs = Path(cmd[5])
+        assert out_abs.is_absolute()                # 进 cmd 前必须已归一
+        out_abs.mkdir(parents=True, exist_ok=True)
+        (out_abs / "lead.wav").write_text("lead")
+        return _Proc(0)
+
+    monkeypatch.setattr(lead_sep.subprocess, "run", fake_run)
+
+    lead = lead_sep.extract_lead(Path("vocals.wav"), Path("leadout"), model="m.onnx")
+    in_arg = Path(captured["cmd"][4])
+    assert in_arg.is_absolute()                     # 相对路径 → 绝对
+    assert in_arg.name == "vocals.wav"
+    assert in_arg.parent == tmp_path.resolve()      # 锚在**调用方** cwd，不是 RVC_ROOT
+    assert lead.is_absolute()
+
+
 def test_extract_lead_maps_runner_rc_to_error(monkeypatch, tmp_path):
     root = tmp_path / "RVC"
     py = root / ".venv_sep/Scripts/python.exe"

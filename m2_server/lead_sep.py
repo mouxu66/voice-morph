@@ -130,8 +130,14 @@ def extract_lead(vocals: Path, out_dir: Path, model: str = DEFAULT_MODEL,
 
     同步子进程（调用方已在翻唱后台线程里）。缺环境/模型/失败分别抛
     LeadSepError 对应分类；成功时确保 lead.wav 真实存在。
+
+    ★ 入参先按**调用方 cwd** 归一成绝对路径：runner 子进程的 cwd 是 RVC_ROOT
+    （见下），相对路径会被 runner 解析到那儿去 → 报"输入不存在"（2026-10-15
+    端到端自测踩到；产品链路本身就是绝对路径，这里是给未来调用者的防护）。
     """
     require_ready(model)
+    vocals = Path(vocals).resolve()
+    out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         str(venv_python()),
