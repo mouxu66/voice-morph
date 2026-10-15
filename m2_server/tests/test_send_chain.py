@@ -90,6 +90,50 @@ def test_default_render_is_cable_warns():
     assert by_key(r, "default_capture")["ok"] is True
 
 
+def test_cable_render_localized_names_count():
+    """中文 Windows 的本地化名「扬声器 (VB-Audio Virtual Cable)」必须认成 CABLE 播放端。
+
+    2026-10-15 实机回归：播放端被本地化后，旧判据（只认 "CABLE Input"）把
+    装好的 CABLE 误报成「未检测到播放端」——判据必须跟上下游播放链路同源的
+    驱动名双候选（见 test_cable_keyword_consistency.py 的模块说明）。
+    """
+    devices = [
+        {"flow": 0, "name": "扬声器 (VB-Audio Virtual Cable)", "state": 1, "roles": []},
+        {"flow": 0, "name": "CABLE In 16 Ch (VB-Audio Virtual Cable)", "state": 1, "roles": []},
+        {"flow": 1, "name": "CABLE Output (VB-Audio Virtual Cable)", "state": 1, "roles": [0, 1, 2]},
+    ]
+    r = mod.build_send_chain_report(_diag(devices), stale=False)
+    assert by_key(r, "cable")["ok"] is True
+
+
+def test_cable_render_16ch_variant_alone_does_not_count():
+    """反面守卫：只有 16 通道变体时不算就绪。
+
+    它的 MME 枚举名会被截断成 `CABLE In 16 Ch (VB-Audio Virtua`，播放链路的
+    双候选关键词谁都命不中它（同 test_cable_keyword_consistency 的反面守卫）。
+    """
+    devices = [
+        {"flow": 0, "name": "CABLE In 16 Ch (VB-Audio Virtual Cable)", "state": 1, "roles": []},
+        {"flow": 1, "name": "CABLE Output (VB-Audio Virtual Cable)", "state": 1, "roles": [0, 1, 2]},
+    ]
+    r = mod.build_send_chain_report(_diag(devices), stale=False)
+    cable = by_key(r, "cable")
+    assert cable["ok"] is False and "CABLE Input" in cable["detail"]
+
+
+def test_default_render_localized_cable_warns():
+    """默认播放是本地化名（扬声器 (VB-Audio Virtual Cable)）时，也要提示「本机听不到声音」。"""
+    devices = [
+        {"flow": 0, "name": "扬声器 (VB-Audio Virtual Cable)", "state": 1, "roles": [0, 1]},
+        {"flow": 0, "name": "扬声器 (Senary Audio)", "state": 1, "roles": [2]},
+        {"flow": 1, "name": "CABLE Output (VB-Audio Virtual Cable)", "state": 1, "roles": [0, 1, 2]},
+    ]
+    r = mod.build_send_chain_report(_diag(devices), stale=False)
+    ren = by_key(r, "default_render")
+    assert ren["ok"] is False and ren.get("warn") is True
+    assert by_key(r, "cable")["ok"] is True
+
+
 def test_stale_backup_appends_warn_item():
     r = mod.build_send_chain_report(GOOD, stale=True)
     item = by_key(r, "stale_backup")

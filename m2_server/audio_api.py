@@ -118,6 +118,26 @@ def _name_has(name: object, kw: str) -> bool:
     return kw in str(name or "").lower()
 
 
+#: 播放端（render）可认名，与 `wechat_voice` / `cascade` / `play_worker` 的
+#: `"VB-Audio Virtual Cable|CABLE Input"` 双候选同源（见
+#: `tests/test_cable_keyword_consistency.py`）：中文 Windows 上播放端被本地化成
+#: 「扬声器 (VB-Audio Virtual Cable)」——只有**驱动名**能命中；英文是
+#: `CABLE Input (…)`——只有**端点词**能命中。2026-10-15 实机回归：本判据此前
+#: 只认 "CABLE Input"，把装好的 CABLE 误报成「未检测到播放端」。
+_CABLE_RENDER_KEYWORDS = ("cable input", "vb-audio virtual cable")
+#: 反面守卫（同 `test_cable_keyword_consistency.py::test_candidates_do_not_match_16ch_variant`）：
+#: `CABLE In 16 Ch` 是播放端的 16 通道变体，下游播放关键词（MME 截断后）谁都命不中它，
+#: 所以「是否就绪」的判断里也一并排除，别拿它当就绪证据。
+_CABLE_RENDER_EXCLUDE = "16 ch"
+
+
+def _is_cable_render(name: object) -> bool:
+    """播放端是不是 VB-CABLE 的输入侧（认中文本地化名，排除 16 通道变体）。"""
+    if _name_has(name, _CABLE_RENDER_EXCLUDE):
+        return False
+    return any(_name_has(name, kw) for kw in _CABLE_RENDER_KEYWORDS)
+
+
 def build_send_chain_report(diag: dict, stale: bool) -> dict:
     """把 audio_config.ps1 diag 的端点清单转成发送链路检查项（纯函数，可单测）。
 
@@ -145,7 +165,7 @@ def build_send_chain_report(diag: dict, stale: bool) -> dict:
 
     renders = [d for d in devices if d.get("flow") == 0]
     captures = [d for d in devices if d.get("flow") == 1]
-    has_cable_in = any(_name_has(d.get("name"), "cable input") for d in renders)
+    has_cable_in = any(_is_cable_render(d.get("name")) for d in renders)
     has_cable_out = any(_name_has(d.get("name"), "cable output") for d in captures)
 
     # 1) 虚拟声卡是否安装（变声链路的物理前提）
@@ -221,7 +241,7 @@ def build_send_chain_report(diag: dict, stale: bool) -> dict:
                 "hint": "检查 Windows「声音设置 → 输出」里是否选择了设备。",
             }
         )
-    elif has_cable_in and _name_has(default_ren.get("name"), "cable input"):
+    elif has_cable_in and _is_cable_render(default_ren.get("name")):
         items.append(
             {
                 "key": "default_render",
