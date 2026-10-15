@@ -278,6 +278,11 @@ FAST_TESTS = [
     # 三臂（t00/t03/supp）pitch 与 index_rate 必须完全一致，配置串味即抛错；
     # 净高频变化扣掉总电平。变异（关掉核对）确认两条串味用例会红。
     "m2_server/tests/test_cover_supp_eval.py",
+    # 主唱分离（cover 的「先剥离和声」）：独立 venv/模型就绪探测、退出码错误分类、
+    # 子进程命令（模型名必须是 str 不能 Path）、runner 的复合文件名归类。
+    # 约 0.1s，全程 mock 子进程。两个变异各自确认会红。
+    "m2_server/tests/test_lead_sep.py",
+    "m2_server/tests/test_lead_sep_runner.py",
 ]
 
 

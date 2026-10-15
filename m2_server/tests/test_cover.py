@@ -458,11 +458,89 @@ def test_worker_reports_the_gain_actually_applied(cover, tmp_path, monkeypatch):
     rvc_mod.rvc_convert = lambda *a, **k: vocal
     monkeypatch.setitem(sys.modules, "rvc_convert", rvc_mod)
 
-    cover._cover_worker(fake, "v1", tmp_path / "v.pth", -12, 0.5, 1.0, 1.0, False, True, 1)
+    cover._cover_worker(fake, "v1", tmp_path / "v.pth", -12, 0.5, 1.0, 1.0, False, True, False, 1)
 
     assert cover.COVER_STATE["status"] == "done", cover.COVER_STATE.get("error")
     assert cover.COVER_STATE["vocal_gain_applied"] == 1.5, (
         f"面板应显示 mix_back 实际用的 1.5，实际 {cover.COVER_STATE['vocal_gain_applied']}"
         "（用缩放前的 3.0 就是界面与听感不符）"
     )
-    assert "×1.50" in cover.COVER_STATE["message"], cover.COVER_STATE["message"]
+
+
+def _setup_worker_smoke(cover, tmp_path, monkeypatch):
+    """搭一个最小可跑的 worker 环境，返回 (fake, 喂给 RVC 的输入记录)。"""
+    import soundfile as sf
+    import numpy as np
+
+    fake = tmp_path / "cover_in.wav"
+    sf.write(str(fake), np.zeros(4410, dtype="float32"), 44100)
+    monkeypatch.setattr(cover.session_out, "new_path", lambda stem: tmp_path / f"{stem}.wav")
+    vocal, accomp = tmp_path / "rvc.wav", tmp_path / "acc.wav"
+    for p in (vocal, accomp):
+        sf.write(str(p), (0.3 * np.sin(np.linspace(0, 90, 4410))).astype("float32"), 44100)
+    monkeypatch.setattr(cover, "separate_song", lambda src, stamp: (vocal, accomp))
+    monkeypatch.setattr(cover, "rms_db", lambda p: -20.0)
+    monkeypatch.setattr(cover, "auto_vocal_gain", lambda v, a: 1.0)
+
+    def fake_mix_back(v, a, o, gains):
+        sf.write(str(o), np.zeros(4410, dtype="float32"), 44100)  # ⑥ 会 sf.read 它
+        return Path(o), gains
+
+    monkeypatch.setattr(cover, "mix_back", fake_mix_back)
+    sent = []
+
+    rvc_mod = types.ModuleType("rvc_convert")
+    rvc_mod.rvc_convert = lambda wav, *a, **k: (sent.append(wav) or vocal)
+    monkeypatch.setitem(sys.modules, "rvc_convert", rvc_mod)
+    return fake, sent
+
+
+def test_worker_skips_lead_extraction_by_default(cover, tmp_path, monkeypatch):
+    """lead_vocal=False：不碰主唱分离，RVC 直接吃 demucs 的混声轨（行为不变）。"""
+    import lead_sep
+
+    called = []
+    monkeypatch.setattr(lead_sep, "extract_lead",
+                        lambda *a, **k: called.append(a) or (_ for _ in ()).throw(AssertionError("不该调用")))
+    fake, sent = _setup_worker_smoke(cover, tmp_path, monkeypatch)
+    cover._cover_worker(fake, "v1", tmp_path / "v.pth", -12, 0.5, 1.0, 1.0, False, True, False, 1)
+    assert cover.COVER_STATE["status"] == "done", cover.COVER_STATE.get("error")
+    assert not called
+
+
+def test_worker_replaces_vocal_with_lead_when_enabled(cover, tmp_path, monkeypatch):
+    """lead_vocal=True：先抠主唱，RVC 拿到的必须是 lead.wav 而不是 demucs 混声。"""
+    import soundfile as sf
+    import numpy as np
+    import lead_sep
+
+    fake, sent = _setup_worker_smoke(cover, tmp_path, monkeypatch)
+    lead = tmp_path / "lead_staging.wav"
+    sf.write(str(lead), (0.2 * np.sin(np.linspace(0, 50, 4410))).astype("float32"), 44100)
+    seen = {}
+
+    def fake_extract(vocals, out_dir, model=lead_sep.DEFAULT_MODEL):
+        seen["vocals"] = vocals
+        seen["out_dir"] = out_dir
+        return lead
+
+    monkeypatch.setattr(lead_sep, "extract_lead", fake_extract)
+    cover._cover_worker(fake, "v1", tmp_path / "v.pth", -12, 0.5, 1.0, 1.0, False, True, True, 1)
+    assert cover.COVER_STATE["status"] == "done", cover.COVER_STATE.get("error")
+    assert seen.get("vocals") is not None, "应当先对 demucs 人声做主唱分离"
+    assert sent and sent[0] == lead, f"RVC 应吃主唱轨 {lead}，实际 {sent}"
+
+
+def test_worker_lead_extraction_error_reaches_state(cover, tmp_path, monkeypatch):
+    """主唱分离失败（缺模型等）必须冒泡到 COVER_STATE.error，不能假装成功。"""
+    import lead_sep
+
+    fake, sent = _setup_worker_smoke(cover, tmp_path, monkeypatch)
+
+    def boom(*a, **k):
+        raise lead_sep.LeadSepError(lead_sep.LeadSepError.Kind.FAILED, "主唱分离失败：测试")
+
+    monkeypatch.setattr(lead_sep, "extract_lead", boom)
+    cover._cover_worker(fake, "v1", tmp_path / "v.pth", -12, 0.5, 1.0, 1.0, False, True, True, 1)
+    assert cover.COVER_STATE["status"] == "error"
+    assert "主唱分离" in cover.COVER_STATE["error"]

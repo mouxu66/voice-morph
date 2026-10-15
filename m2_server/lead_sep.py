@@ -1,0 +1,163 @@
+# -*- coding: utf-8 -*-
+"""主唱分离（卡拉OK主唱/伴唱分离）的产品后端。
+
+为什么需要它（2026-10-15，《唯一》实测）：
+    demucs 的 `--two-stems vocals` 只能把**所有人声**当一轨抠出来；很多歌的人声
+    是"主唱 + 和声/伴唱"叠唱，RVC 是**单基频**模型，RMVPE 在两个音高重叠的帧上
+    会在两者间乱跳 → 换声在高音/齐唱处出电音。实测《唯一》185–210s 有三个声纹簇
+    几乎全程重叠；先把**主唱单独**抠出来再换声，输出全部落回模型音域、电音消失。
+
+### 环境隔离（重要）
+    分离用的 `audio-separator` 依赖较新 torch，装进主 venv 会把在役的
+    torchaudio+cu128 顶坏（实测）。所以它跑在**独立 venv**（`<RVC_ROOT>/.venv_sep`）里，
+    本模块只通过**子进程**调 `tools/lead_sep_runner.py`，与主环境零耦合 —— 和
+    RVC 推理跑在 `D:/RVC/.venv` 是同一个隔离思路。
+
+### 能力是"可选"的
+    默认关闭；缺 venv / 缺模型时不崩，由 `status()` 给出"怎么补"的可操作信息，
+    翻唱 worker 仅在用户显式开启且环境就绪时才走这一步。
+"""
+from __future__ import annotations
+
+import enum
+import subprocess
+from pathlib import Path
+
+import config as cfg
+
+#: 独立 venv 与模型目录都跟随 RVC_ROOT（桌面端经 VM_RVC_ROOT 注入，与 RVC 同源部署）。
+SEP_VENV_PY = Path(".venv_sep/Scripts/python.exe")
+SEP_MODEL_DIR = Path("sep_models")
+
+#: 默认主唱模型。UVR MDX-Net Karaoke（ONNX，28MB，CPU 即可）：盲听中女主唱完整、
+#: 不忽弱；Aufr33（871MB）虽低男残留更低但被用户判"忽弱忽小"淘汰。
+#: 最终模型等用户第二轮盲听定稿后可调，这里先落一个可用默认。
+DEFAULT_MODEL = "UVR_MDXNET_KARA.onnx"
+
+#: runner 退出码 → 错误分类。见 tools/lead_sep_runner.py。
+RC_ENV = 2
+RC_MODEL = 3
+RC_SEP = 4
+
+
+class LeadSepError(RuntimeError):
+    """主唱分离失败，``kind`` 是可据以给用户不同提示的机器可读分类。"""
+
+    class Kind(str, enum.Enum):
+        ENV_MISSING = "env_missing"      # 独立 venv / runner 不存在
+        MODEL_MISSING = "model_missing"  # 模型权重缺失
+        FAILED = "failed"                # 跑了但失败（含解码器/输入问题）
+
+    def __init__(self, kind: "LeadSepError.Kind", message: str):
+        super().__init__(message)
+        self.kind = kind
+
+
+def venv_python() -> Path:
+    return cfg.RVC_ROOT / SEP_VENV_PY
+
+
+def model_dir() -> Path:
+    return cfg.RVC_ROOT / SEP_MODEL_DIR
+
+
+def runner_path() -> Path:
+    # tools/ 与 m2_server/ 同级，都在仓库根下。用 cfg 之外的 ROOT 更稳：
+    from runtime import ROOT
+
+    return ROOT / "tools" / "lead_sep_runner.py"
+
+
+def status(model: str = DEFAULT_MODEL) -> dict:
+    """供前端展示"主唱分离能不能用、缺什么"。不抛异常，永远返回 dict。"""
+    py = venv_python()
+    model_file = model_dir() / model
+    runner = runner_path()
+    ready = py.exists() and model_file.exists() and runner.exists()
+    missing: list[str] = []
+    if not py.exists():
+        missing.append("分离运行环境（.venv_sep）")
+    if not model_file.exists():
+        missing.append(f"主唱分离模型（{model}）")
+    if not runner.exists():
+        missing.append("分离脚本 lead_sep_runner.py")
+    return {
+        "available": ready,
+        "model": model,
+        "venv_python": str(py),
+        "model_exists": model_file.exists(),
+        "missing": missing,
+    }
+
+
+def require_ready(model: str = DEFAULT_MODEL) -> None:
+    """开工前断言环境就绪，缺什么抛带分类的 LeadSepError（便于 API 映射成提示）。"""
+    st = status(model)
+    if st["available"]:
+        return
+    if not venv_python().exists():
+        raise LeadSepError(
+            LeadSepError.Kind.ENV_MISSING,
+            "主唱分离运行环境未安装（独立环境 .venv_sep 缺失）",
+        )
+    if not (model_dir() / model).exists():
+        raise LeadSepError(
+            LeadSepError.Kind.MODEL_MISSING,
+            f"主唱分离模型缺失（{model}），请先下载该模型",
+        )
+    raise LeadSepError(LeadSepError.Kind.ENV_MISSING, "主唱分离脚本缺失：" + "、".join(st["missing"]))
+
+
+def classify_returncode(rc: int, stderr: str) -> LeadSepError:
+    """把 runner 的退出码映射成分类异常（纯函数，便于单测穷举各码）。"""
+    tail = (stderr or "").strip().splitlines()[-1:] or [""]
+    tail = tail[0][-300:]
+    if rc == RC_MODEL:
+        return LeadSepError(LeadSepError.Kind.MODEL_MISSING, f"主唱分离模型缺失：{tail}")
+    if rc == RC_ENV:
+        return LeadSepError(LeadSepError.Kind.ENV_MISSING, f"主唱分离环境异常：{tail}")
+    return LeadSepError(LeadSepError.Kind.FAILED, f"主唱分离失败（退出码 {rc}）：{tail}")
+
+
+def extract_lead(vocals: Path, out_dir: Path, model: str = DEFAULT_MODEL,
+                 timeout_s: int = 3600) -> Path:
+    """把混声音轨（demucs 的 vocals.wav）抠成**主唱**，返回 lead.wav。
+
+    同步子进程（调用方已在翻唱后台线程里）。缺环境/模型/失败分别抛
+    LeadSepError 对应分类；成功时确保 lead.wav 真实存在。
+    """
+    require_ready(model)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        str(venv_python()),
+        str(runner_path()),
+        str(model_dir()),
+        model,
+        str(vocals),
+        str(out_dir),
+    ]
+    try:
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(cfg.RVC_ROOT),
+        )
+    except subprocess.TimeoutExpired:
+        raise LeadSepError(LeadSepError.Kind.FAILED, f"主唱分离超时（>{timeout_s}s）")
+    except FileNotFoundError as e:
+        raise LeadSepError(LeadSepError.Kind.ENV_MISSING, f"分离环境启动失败：{e}")
+
+    if r.returncode != 0:
+        raise classify_returncode(r.returncode, r.stderr or r.stdout)
+
+    lead = out_dir / "lead.wav"
+    if not lead.exists():
+        raise LeadSepError(
+            LeadSepError.Kind.FAILED,
+            "主唱分离返回成功但缺少 lead.wav（runner 输出归类异常）",
+        )
+    return lead

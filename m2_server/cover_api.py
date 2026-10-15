@@ -420,6 +420,7 @@ async def cover_run(
     accomp_gain: float = Form(1.0),
     auto_pitch: bool = Form(False),
     auto_gain: bool = Form(True),
+    lead_vocal: bool = Form(False),
 ):
     """提交翻唱任务。pitch 为半音数（升八度 +12，降八度 -12）。
 
@@ -452,6 +453,18 @@ async def cover_run(
         holder = _gpu_guard()
         if holder:
             raise HTTPException(status_code=409, detail=f"{holder}，请先等它结束（避免争抢显卡）")
+        if lead_vocal:
+            # 主唱分离是**可选**能力（独立 venv + 模型），在任务真正开始前就把
+            # "缺环境/缺模型"挡下来 —— 否则用户会看到进度跑到一半才红。
+            import lead_sep
+
+            ls = lead_sep.status()
+            if not ls["available"]:
+                raise HTTPException(
+                    status_code=422,
+                    detail="主唱分离不可用：" + "、".join(ls["missing"])
+                    + "（可取消勾选「先剥离和声/伴唱」按普通翻唱继续）",
+                )
 
         COVER_STATE.update(
             running=True,
@@ -469,7 +482,8 @@ async def cover_run(
 
     threading.Thread(
         target=_cover_worker,
-        args=(raw_path, voice_id, pth, pitch, index_rate, vocal_gain, accomp_gain, auto_pitch, auto_gain, stamp),
+        args=(raw_path, voice_id, pth, pitch, index_rate, vocal_gain, accomp_gain,
+              auto_pitch, auto_gain, lead_vocal, stamp),
         daemon=True,
     ).start()
     return {"ok": True, "voice_id": voice_id}
@@ -485,6 +499,7 @@ def _cover_worker(
     accomp_gain: float,
     auto_pitch: bool,
     auto_gain: bool,
+    lead_vocal: bool,
     stamp: int,
 ):
     import soundfile as sf
@@ -508,6 +523,18 @@ def _cover_worker(
 
         # ② 分离
         vocals, accomp = separate_song(in_path, stamp)
+
+        # ②.5 可选：把"主唱"从 demucs 的混声（含和声/伴唱）里单独抠出来。
+        #     很多歌人声是主唱+和声叠唱，RVC 单基频在两个音高重叠的帧上会乱跳
+        #     → 高音/齐唱处电音（《唯一》实测，见 m1k）。剥离后只换主唱，更稳。
+        if lead_vocal:
+            COVER_STATE.update(step="separate", percent=22.0,
+                               message="正在剥离和声、提取主唱…")
+            import lead_sep
+
+            lead_dir = _separate_dir() / f"lead_{stamp}"
+            vocals = lead_sep.extract_lead(vocals, lead_dir)
+
         COVER_STATE.update(step="convert", percent=30.0,
                            message="人声已分离，正在换音色…")
 
@@ -571,11 +598,20 @@ def _cover_worker(
             import shutil
 
             shutil.rmtree(_separate_dir() / f"sep_{stamp}", ignore_errors=True)
+            shutil.rmtree(_separate_dir() / f"lead_{stamp}", ignore_errors=True)
 
 
 @router.get("/cover/status")
 def cover_status():
     return COVER_STATE
+
+
+@router.get("/cover/lead-status")
+def cover_lead_status():
+    """主唱分离能力是否可用、缺什么（前端据此启用/置灰「先剥离和声」并给出提示）。"""
+    import lead_sep
+
+    return lead_sep.status()
 
 
 #: 微信语音单条音频预算（`docs/微信语音-长文分段发送方案.md` §2）：
