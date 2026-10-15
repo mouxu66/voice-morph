@@ -121,6 +121,33 @@ describe("runCover 的 auto_gain 显式透传", () => {
   });
 });
 
+/**
+ * `lead_vocal` 也必须显式发送（2026-10-15）。
+ *
+ * 与 auto_gain 同一族问题：勾选框在界面上、字段在 FormData 里，中间任何一段
+ * "看起来接了、实际没接"都会**静默丢掉用户的勾选**（后端默认 false → 勾了也白勾，
+ * 用户只会觉得"这功能没用"）。这里钉住"字段一定在、值跟入参（第 10 参）走"。
+ */
+describe("runCover 的 lead_vocal 显式透传", () => {
+  it("默认（不传第 10 参）也发 lead_vocal=false", async () => {
+    const calls = stubFetch();
+
+    await runCover(null, "kangaroo", 0, 0.5);
+
+    const form = calls[0].init.body as FormData;
+    expect(form.get("lead_vocal")).toBe("false");
+  });
+
+  it("勾了「先剥离和声/伴唱」时发 true", async () => {
+    const calls = stubFetch();
+
+    await runCover(null, "kangaroo", 0, 0.5, 1, 1, false, "cover_src_1.mp3", true, true);
+
+    const form = calls[0].init.body as FormData;
+    expect(form.get("lead_vocal")).toBe("true");
+  });
+});
+
 describe("suggestCoverPitch 也认 src_name", () => {
   it("分析音域的源要和开跑用的是同一个", async () => {
     const calls = stubFetch(true, { ok: true, pitch: 3 });

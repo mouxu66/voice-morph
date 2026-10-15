@@ -51,6 +51,7 @@ vi.mock("@/api/client", async () => {
     ...actual,
     listRvcVoices: vi.fn(),
     getCoverStatus: vi.fn(),
+    getCoverLeadStatus: vi.fn(),
     runCover: vi.fn(),
     fetchCoverUrl: vi.fn(),
     suggestCoverPitch: vi.fn(),
@@ -63,6 +64,7 @@ vi.mock("@/api/client", async () => {
 const client = await import("@/api/client")
 const listRvcVoices = vi.mocked(client.listRvcVoices)
 const getCoverStatus = vi.mocked(client.getCoverStatus)
+const getCoverLeadStatus = vi.mocked(client.getCoverLeadStatus)
 const runCover = vi.mocked(client.runCover)
 const fetchCoverUrl = vi.mocked(client.fetchCoverUrl)
 const wechatSendVoice = vi.mocked(client.wechatSendVoice)
@@ -77,6 +79,13 @@ beforeEach(() => {
     rvc_ready: true,
   })
   getCoverStatus.mockResolvedValue(IDLE_STATUS)
+  getCoverLeadStatus.mockResolvedValue({
+    available: true,
+    model: "bs_roformer_karaoke_frazer_becruily.ckpt",
+    venv_python: "D:/RVC/.venv_sep/Scripts/python.exe",
+    model_exists: true,
+    missing: [],
+  })
   wechatSendVoice.mockResolvedValue({ ok: true, hint: "已交给微信发送流程" })
   coverClip.mockClear()
 })
@@ -237,6 +246,16 @@ function fakeProps(over: Partial<ReturnType<typeof useCover>> = {}): ReturnType<
     setAccompGain: () => {},
     autoGain: true,
     setAutoGain: () => {},
+    leadVocal: false,
+    setLeadVocal: () => {},
+    leadStatus: {
+      available: true,
+      model: "bs_roformer_karaoke_frazer_becruily.ckpt",
+      venv_python: "D:/RVC/.venv_sep/Scripts/python.exe",
+      model_exists: true,
+      missing: [],
+    },
+    leadAvailable: true,
     submitting: false,
     analyzing: false,
     errorMessage: "",
@@ -410,5 +429,53 @@ describe("CoverPage · 发到微信按钮", () => {
     render(<CoverPage {...fakeProps({ ...DONE_PROPS, wechatOn: false })} />)
 
     expect(screen.queryByRole("button", { name: /发到微信/ })).not.toBeInTheDocument()
+  })
+})
+
+describe("useCover · 先剥离和声/伴唱（leadVocal，2026-10-15）", () => {
+  it("挂载时就探测能力：就绪 → leadAvailable=true，勾选态默认关", async () => {
+    const { result } = await mounted()
+    await waitFor(() => expect(result.current.leadAvailable).toBe(true))
+    expect(result.current.leadVocal).toBe(false)
+    expect(getCoverLeadStatus).toHaveBeenCalled()
+  })
+
+  it("探测到缺环境 → leadAvailable=false，missing 原样透出（界面据此置灰+说明缺什么）", async () => {
+    getCoverLeadStatus.mockResolvedValue({
+      available: false,
+      model: "bs_roformer_karaoke_frazer_becruily.ckpt",
+      venv_python: "D:/RVC/.venv_sep/Scripts/python.exe",
+      model_exists: false,
+      missing: ["分离运行环境（.venv_sep）", "主唱分离模型（bs_roformer_karaoke_frazer_becruily.ckpt）"],
+    })
+
+    const { result } = await mounted()
+    await waitFor(() => expect(result.current.leadStatus?.available).toBe(false))
+    expect(result.current.leadAvailable).toBe(false)
+    expect(result.current.leadStatus?.missing).toHaveLength(2)
+  })
+
+  it("★ 勾上后 start() 把 leadVocal 作为第 10 参传给 runCover（漏传 = 勾了白勾）", async () => {
+    runCover.mockResolvedValue({ ok: true, voice_id: "kangaroo" })
+
+    const { result } = await mounted()
+    await waitFor(() => expect(result.current.leadAvailable).toBe(true))
+
+    await act(async () => {
+      await result.current.pickFile(new File([new Uint8Array([1])], "song.mp3"))
+    })
+    await act(async () => {
+      result.current.setLeadVocal(true)
+    })
+    await act(async () => {
+      await result.current.start()
+    })
+
+    // 用最近一次调用断言（本文件 mock 不自动清空，历史调用会累计 —— 既有测试同此约束）
+    expect(runCover).toHaveBeenCalled()
+    const call = runCover.mock.calls.at(-1)!
+    // 参数顺序：file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, srcName, autoGain, leadVocal
+    expect(call[9]).toBe(true)
+    expect(call[1]).toBe("kangaroo")
   })
 })

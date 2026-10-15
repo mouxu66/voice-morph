@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import {
   coverClip,
   fetchCoverUrl,
+  getCoverLeadStatus,
   getCoverStatus,
   listRvcVoices,
   mediaUrl,
@@ -9,6 +10,7 @@ import {
   suggestCoverPitch,
   wechatSendVoice,
   type CoverStatus,
+  type LeadStatus,
   type RvcVoice,
 } from "@/api/client"
 import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
@@ -61,6 +63,17 @@ export function useCover() {
    * 用户拖滑块毫无效果且看不到实测增益，等于两块死控件加一次暗箱。
    */
   const [autoGain, setAutoGain] = useState(true)
+  /**
+   * 先剥离和声/伴唱、只换主唱（默认关）。
+   *
+   * 为什么默认关：它多花 1~2 分钟，而且依赖独立分离环境（`.venv_sep`）——
+   * 用户没勾/环境缺失时链路一秒都不能多花。置灰与提示由 `leadStatus` 驱动：
+   * **能力探测在页面加载时就做**，别让用户勾上才在开工前撞后端的 422
+   * （2026-10-15，与后端 `GET /cover/lead-status` 同一口径）。
+   */
+  const [leadVocal, setLeadVocal] = useState(false)
+  /** 主唱剥离能力状态；null = 还没探测出结果（界面按"检测中"处理，禁勾） */
+  const [leadStatus, setLeadStatus] = useState<LeadStatus | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [errorMessage, setErrorMessage] = useState("")
@@ -113,6 +126,14 @@ export function useCover() {
         if (s.running) startPoll()
       } catch {
         /* ignore */
+      }
+      try {
+        const ls = await getCoverLeadStatus()
+        setLeadStatus(ls)
+        // 能力不可用就别留着一个勾着的状态（勾选态与可用性从结构上绑死）
+        if (!ls.available) setLeadVocal(false)
+      } catch {
+        /* 探测失败就维持 null —— 勾选框保持置灰，不会勾上一个未知状态的功能 */
       }
     })()
     return stopPoll
@@ -220,7 +241,7 @@ export function useCover() {
     setFeedback("")
     setSubmitting(true)
     try {
-      await runCover(file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, srcName, autoGain)
+      await runCover(file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, srcName, autoGain, leadVocal)
       // 源已经被这条任务用掉了（后端跑完就删，即用即删）。这里同步清掉试听，
       // 免得用户对着一个已经不在的文件再点一次「开始翻唱」而拿到 400。
       clearSource()
@@ -247,7 +268,7 @@ export function useCover() {
     } finally {
       setSubmitting(false)
     }
-  }, [file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, srcName, autoGain, clearSource, startPoll])
+  }, [file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, srcName, autoGain, leadVocal, clearSource, startPoll])
 
   const running = Boolean(status?.running) || submitting
   const resultUrl = status?.url ? mediaUrl(status.url) : ""
@@ -306,6 +327,10 @@ export function useCover() {
     srcName, srcUrl, setSrcUrl, srcPreview, srcSummary, fetching, fetchFromUrl, clearSource,
     pitch, setPitch, autoPitch, setAutoPitch,
     indexRate, setIndexRate, vocalGain, setVocalGain, accompGain, setAccompGain, autoGain, setAutoGain,
+    /** 先剥离和声/伴唱（默认关）；能不能勾由 `leadAvailable` 决定，界面不得越过它 */
+    leadVocal, setLeadVocal, leadStatus,
+    /** true 才允许勾选"先剥离和声/伴唱"；null（检测中）与不可用都按 false 处理 */
+    leadAvailable: leadStatus?.available === true,
     submitting, analyzing, errorMessage, feedback, status, running, resultUrl, resultStale,
     analyzePitch, start,
     /** B 档「翻唱直发」：成品发到微信（>54s 自动先截）。 */

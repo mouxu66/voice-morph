@@ -155,8 +155,41 @@ export function CoverPage(p: ReturnType<typeof useCover>) {
               </div>
             </div>
 
+            {/* 2. 先剥离和声/伴唱（可选）：置灰/提示由 leadStatus 驱动 —— 见 useCover */}
             <div>
-              <p className="text-sm font-semibold text-card-foreground">2. 变调</p>
+              <p className="text-sm font-semibold text-card-foreground">2. 先剥离和声/伴唱（可选）</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                有些歌的人声是主唱 + 和声叠唱，直接换声会和声串进主唱、高音容易出电音。
+                勾上后先把主唱单独抠出来再换（多花 1~2 分钟，仅对有和声的歌值得）。
+              </p>
+              <label
+                className={cn(
+                  "mt-2 flex items-center gap-2 text-xs text-muted-foreground",
+                  p.leadAvailable && !p.running
+                    ? "cursor-pointer"
+                    : "cursor-not-allowed opacity-50",
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={p.leadVocal}
+                  disabled={!p.leadAvailable || p.running}
+                  onChange={(e) => p.setLeadVocal(e.target.checked)}
+                  className="accent-primary"
+                />
+                先剥离和声/伴唱（有人声叠唱的歌更稳）
+              </label>
+              {!p.leadAvailable && (
+                <p className="mt-1.5 text-[11px] leading-4 text-muted-foreground/80">
+                  {p.leadStatus === null
+                    ? "正在检测分离环境…"
+                    : `分离环境未就绪（缺：${p.leadStatus.missing.join("、")}）；不勾选即按普通翻唱，不受影响。`}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <p className="text-sm font-semibold text-card-foreground">3. 变调</p>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
                 男女声互转通常要 ±12 半音。不知道填多少就点右边的「自动建议」——
                 程序会分离出人声、量它的音域中心，和你选的角色对比后给一个值。
@@ -190,7 +223,7 @@ export function CoverPage(p: ReturnType<typeof useCover>) {
             </div>
 
             <div>
-              <p className="text-sm font-semibold text-card-foreground">3. 音量平衡</p>
+              <p className="text-sm font-semibold text-card-foreground">4. 音量平衡</p>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
                 自动配平：按分离后的实测音量，把 RVC 换声输出的人声拉到和伴奏相称的比例
                 （换完的人声普遍偏小，这是最常见的"听不清"）。关掉后才用下面两个滑块手动调。

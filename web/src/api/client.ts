@@ -818,6 +818,12 @@ export async function runCover(
    * 时两个增益滑杆就是死控件（2026-09-27 修）。
    */
   autoGain = true,
+  /**
+   * true = 先剥离和声/伴唱、只换主唱（有人声叠唱的歌更稳；依赖独立分离环境
+   * `.venv_sep`，缺环境时后端 422）。与 auto_gain 同理**显式发送**：把"勾选态
+   * 与请求字段"在结构上绑死，将来后端改默认也不会两边悄悄漂开（2026-10-15）。
+   */
+  leadVocal = false,
 ): Promise<{ ok: boolean; voice_id: string }> {
   const form = new FormData();
   if (file) form.append("file", file);
@@ -829,6 +835,7 @@ export async function runCover(
   form.append("accomp_gain", String(accompGain));
   form.append("auto_pitch", String(autoPitch));
   form.append("auto_gain", String(autoGain));
+  form.append("lead_vocal", String(leadVocal));
   const res = await fetch(BASE + "/cover/run", { method: "POST", body: form });
   if (!res.ok) {
     let detail = res.statusText;
@@ -845,6 +852,27 @@ export async function runCover(
 
 export async function getCoverStatus(): Promise<CoverStatus> {
   return jsonFetch("/cover/status");
+}
+
+/**
+ * 主唱剥离能力状态（GET /cover/lead-status）。
+ *
+ * 这个功能依赖**独立环境 + 独立模型**（`.venv_sep` + karaoke ckpt，见
+ * `m2_server/lead_sep.py`）。界面的口径：**先问"能不能用、缺什么"，再把勾选框
+ * 置灰并说明原因** —— 不让用户勾上之后才在开工前撞 422（后端也会拦，这里是
+ * 同一信息的提前量）。
+ */
+export type LeadStatus = {
+  available: boolean;
+  model: string;
+  venv_python: string;
+  model_exists: boolean;
+  /** 缺什么（人话列表），空数组 = 就绪 */
+  missing: string[];
+};
+
+export async function getCoverLeadStatus(): Promise<LeadStatus> {
+  return jsonFetch("/cover/lead-status");
 }
 
 /** 只算变调建议（不跑完整链路）：分离人声 → 比中位基频 → 返回半音数 */
