@@ -891,7 +891,14 @@ export async function suggestCoverPitch(
   voiceId: string,
   /** 会话里已下好的源文件名（粘直链那条路）；与 file 二选一 */
   srcName = ""
-): Promise<{ ok: boolean; pitch: number }> {
+): Promise<{
+  ok: boolean;
+  pitch: number;
+  /** 分析出的原始建议（未吸附八度）；旧后端不返回时视为与 pitch 相同 */
+  raw_pitch?: number;
+  /** true = 原始建议不是整八度、已被吸附（伴奏不随人声变调，非八度会错调） */
+  octave_snapped?: boolean;
+}> {
   const form = new FormData();
   if (file) form.append("file", file);
   if (srcName) form.append("src_name", srcName);

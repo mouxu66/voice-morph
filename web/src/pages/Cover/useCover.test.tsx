@@ -69,6 +69,7 @@ const runCover = vi.mocked(client.runCover)
 const fetchCoverUrl = vi.mocked(client.fetchCoverUrl)
 const wechatSendVoice = vi.mocked(client.wechatSendVoice)
 const coverClip = vi.mocked(client.coverClip)
+const suggestCoverPitch = vi.mocked(client.suggestCoverPitch)
 
 beforeEach(() => {
   listRvcVoices.mockResolvedValue({
@@ -477,5 +478,44 @@ describe("useCover · 先剥离和声/伴唱（leadVocal，2026-10-15）", () =>
     // 参数顺序：file, voiceId, pitch, indexRate, vocalGain, accompGain, autoPitch, srcName, autoGain, leadVocal
     expect(call[9]).toBe(true)
     expect(call[1]).toBe("kangaroo")
+  })
+})
+
+describe("useCover · 自动变调建议吸附到整八度（2026-10-16）", () => {
+  // 为什么要有这组：翻唱只动人声、伴奏原样保留 ⇒ 人声非整八度变调会与伴奏**错调**。
+  // 实测《唯一》整曲人声 269Hz vs 参考音 117.5Hz → 原始建议 −14（低一个八度再低 2 个半音）。
+  it("原始建议不是整八度 → 用吸附值填滑块，并把「为什么改了」说清楚", async () => {
+    suggestCoverPitch.mockResolvedValue({
+      ok: true,
+      pitch: -12,
+      raw_pitch: -14,
+      octave_snapped: true,
+    })
+    const { result } = await mounted()
+    await act(async () => {
+      await result.current.pickFile(new File([new Uint8Array([1])], "song.mp3"))
+    })
+    await act(async () => {
+      await result.current.analyzePitch()
+    })
+
+    expect(result.current.pitch).toBe(-12)
+    expect(result.current.feedback).toContain("-14")
+    expect(result.current.feedback).toContain("-12")
+    expect(result.current.feedback).toContain("伴奏")
+  })
+
+  it("旧后端不返回 raw_pitch 时按未吸附处理（不炸、不误报）", async () => {
+    suggestCoverPitch.mockResolvedValue({ ok: true, pitch: -12 })
+    const { result } = await mounted()
+    await act(async () => {
+      await result.current.pickFile(new File([new Uint8Array([1])], "song.mp3"))
+    })
+    await act(async () => {
+      await result.current.analyzePitch()
+    })
+
+    expect(result.current.pitch).toBe(-12)
+    expect(result.current.feedback).toBe("已算出建议变调：-12 半音（降）")
   })
 })

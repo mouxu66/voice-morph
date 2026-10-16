@@ -309,6 +309,37 @@ def fake_librosa(monkeypatch):
     monkeypatch.setitem(sys.modules, "librosa", types.ModuleType("librosa"))
 
 
+# ---------------- 整八度吸附（2026-10-16）----------------
+
+
+def test_snap_to_octave_rounds_to_nearest(cover):
+    """★ 为什么必须吸附：翻唱**只动人声**，伴奏原样保留。
+
+    人声非整八度变调 ⇒ 与伴奏跑到不同调上。实测《唯一》：整曲人声 269Hz、
+    你的参考音 117.5Hz → 自动建议 **−14**（= 低一个八度再低 2 个半音）→
+    与伴奏全程错调。只有 ±12 的整数倍能保持同调性。
+    """
+    assert cover.snap_to_octave(-14) == (-12, True)
+    assert cover.snap_to_octave(-13) == (-12, True)
+    assert cover.snap_to_octave(13) == (12, True)
+    assert cover.snap_to_octave(-7) == (-12, True)
+    assert cover.snap_to_octave(7) == (12, True)
+    assert cover.snap_to_octave(-6) == (0, True)   # 半路取整：−6 距 0 与 −12 等远，round 取偶
+
+
+def test_snap_to_octave_is_identity_for_octaves(cover):
+    """已经是整八度（含 0）就不算改过 —— 前端据此决定要不要说明。"""
+    for v in (0, 12, -12, 24, -24):
+        assert cover.snap_to_octave(v) == (v, False)
+
+
+def test_snap_to_octave_clamps_to_slider_range(cover):
+    """吸附后不得超出前端滑块范围（±24），否则用户看到的值跟滑块对不上。"""
+    assert cover.snap_to_octave(-40)[0] == -24
+    assert cover.snap_to_octave(40)[0] == 24
+    assert cover.snap_to_octave(-18)[0] in (-12, -24)
+
+
 def test_pitch_suggest_direction(cover, tmp_path, monkeypatch, fake_librosa):
     """★ 变调方向的符号不能反。
 

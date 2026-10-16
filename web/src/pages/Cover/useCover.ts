@@ -216,10 +216,14 @@ export function useCover() {
       const r = await suggestCoverPitch(file, voiceId, srcName)
       setPitch(r.pitch)
       setAutoPitch(false) // 建议值已经填进滑块，交给用户微调
+      const raw = r.raw_pitch ?? r.pitch
+      const fmt = (n: number) => `${n > 0 ? "+" : ""}${n}`
       setFeedback(
-        r.pitch === 0
-          ? "音域与你选的角色接近，不需要变调"
-          : `已算出建议变调：${r.pitch > 0 ? "+" : ""}${r.pitch} 半音（${r.pitch > 0 ? "升" : "降"}）`
+        r.octave_snapped
+          ? `分析建议 ${fmt(raw)} 半音，但伴奏不随人声变调 —— 非整八度会与伴奏错调，已吸附到整八度 ${fmt(r.pitch)} 半音`
+          : r.pitch === 0
+            ? "音域与你选的角色接近，不需要变调"
+            : `已算出建议变调：${fmt(r.pitch)} 半音（${r.pitch > 0 ? "升" : "降"}）`
       )
     } catch (e) {
       setErrorMessage(friendlyError(e, "变调分析失败"))

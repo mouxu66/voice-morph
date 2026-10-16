@@ -298,6 +298,25 @@ def auto_vocal_gain(
     return round(min(max(gain, lo), hi), 2)
 
 
+#: 变调滑块的可达范围（前端 `min/max`，吸附后也不许越界）。
+PITCH_LIMIT = 24
+
+
+def snap_to_octave(semitones: int) -> tuple[int, bool]:
+    """把变调建议**吸附到最近的整八度**；返回 (吸附值, 是否改过)。
+
+    为什么必须吸附（2026-10-16 实测）：翻唱链路**只动人声**，伴奏原样保留。
+    人声非整八度变调 ⇒ 与伴奏跑到**不同调**上（例如《唯一》人声 269Hz / 目标参考音
+    117.5Hz 自动建议 **−14**，而 −14 比伴奏低 1 个八度**再低 2 个半音** → 全程错调）。
+    只有 ±12 的整数倍能保持与原伴奏**同调性**（低八度＝同调不同区）。
+
+    想做"降几个半音"的翻唱，正确做法是把**伴奏一起**变调，而不是只动人声。
+    """
+    snapped = int(round(semitones / 12.0)) * 12
+    snapped = max(-PITCH_LIMIT, min(PITCH_LIMIT, snapped))
+    return snapped, snapped != semitones
+
+
 def _pitch_suggest(vocals: Path, voice_id: str) -> int:
     """自动变调建议（半音）。
 
@@ -741,7 +760,10 @@ async def cover_pitch_suggest(
             capture_output=True, text=True, timeout=600, encoding="utf-8", errors="replace",
         )
         vocals, _ = separate_song(step, stamp)
-        return {"ok": True, "pitch": _pitch_suggest(vocals, voice_id)}
+        raw = _pitch_suggest(vocals, voice_id)
+        pitch, snapped = snap_to_octave(raw)
+        # 一并回传原始建议，前端才能把"为什么改了你的数"说清楚（不静默改语义）
+        return {"ok": True, "pitch": pitch, "raw_pitch": raw, "octave_snapped": snapped}
     finally:
         for leftover in (None if keep_src else raw_path, step):
             with contextlib.suppress(Exception):

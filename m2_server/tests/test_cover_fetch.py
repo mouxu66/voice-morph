@@ -333,7 +333,11 @@ def test_pitch_suggest_keeps_downloaded_source(env, monkeypatch, tmp_path):
         data={"src_name": "cover_src_2.mp3", "voice_id": "kangaroo"},
     )
     assert res.status_code == 200, res.text
-    assert res.json()["pitch"] == 7
+    body = res.json()
+    # 端点对分析值做**整八度吸附**（伴奏不随人声变调，非整八度会错调）—— 返回值仍要可溯源
+    assert body["raw_pitch"] == 7, "原始建议要如实回传，否则用户看不到「为什么被改了」"
+    assert body["pitch"] == 12, "7 半音不是整八度 → 应吸附到 12"
+    assert body["octave_snapped"] is True
     assert src.is_file(), "直链下好的源必须留下（上传的那份才用完即删）"
 
 
