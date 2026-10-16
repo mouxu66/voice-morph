@@ -55,6 +55,7 @@
 |---|---|
 | `翻唱歌声路线-实验快照-2026-09-28.md` | Seed-VC f0 歌声链路的 `semi_tone_shift` 全量扫描（0–15）。**产品现役走的是唱不了歌的 v2 入口**；音色随 shift 单调下降（越降越好）；开头 0–20s 崩掉与 shift 无关 |
 | `社区对标-2026-10-14.md` | **逐功能社区对标快照**：微信自动化四条路线（UIA/Hook/视觉/官方）格局 + **我们领先社区的 4 项独创** + 缺的 gate 扫描三件套/拟人节流/解除静音；TTS 与 RVC 的 SOTA 排序；绿钮判据 §2.19 偏差的修法。**问「我们是不是行业最优」先读这份** |
+| `调研-SVC跨音域与音色泄漏-2026-10-14.md` | **「高音唱不上去」的机制与药方**：RVC 作者亲答"训练集内需要带高音数据"(#957) + **音区≠音高**（DDSP-SVC 有独立的 `vocal_register_shift_key`／`formant_shift_key`，RVC 只有一个旋钮）+ **移调增强的论文证据是负面的**（WeSinger/SingAug/SPA-SVC）+ SVS 路线的真实门槛（ACE 要 30–100 分钟歌声、Synth V 不支持自助训练）。**问「换个模型能不能唱高音」先读这份**（§5 = 2026-10-16 复核） |
 | `调研-2026-实时VC-SVC-SOTA.md` | **2025–2026 实时 VC / SVC 开源 SOTA 快照**：8GB+中文+<100ms+离线没有单一最优解（RVC 90ms 但需训练 / X-VC 零样本中文最佳但 240ms / Conan-fast 37ms 仅英文）；免训练换声质量成熟、延迟未成熟；大移调音色泄漏的四类学术解法（Seed-VC timbre shifter / SPA-SVC / NeuCoSVC / Zero-VC）。star/许可等来自 GitHub API 实测 |
 | `调研-主唱和声分离路线-2026-10-15.md` | **主唱/和声分离快照**：blind2 五个候选全员 UVR MDX 老系（Lead SDR 6.4–7.4 dB）→ 换代际（BS-Roformer karaoke 10.10–10.77，+3~4 dB）+ 三条新路线（BS karaoke 公开权重 / gabox MelBand / 中文歌 chorus 男女分离）；**Fullness↔Bleedless 训练互斥**解释"忽弱忽小"；物理边界（unison 齐唱不可完美分）；**许可警告：chorus 模型 CC-BY-NC-SA 禁商用**。blind3 盲听配本页（`media/covers/song2/f0sweep/blind3/`） |
 | `待办盘点-2026-10-04.md` | **全项目待办审计（最新）**：产品建议 8 条对账、真机验收 4 组、待拍板 4 项。⚠️ **§4.2 的 AudioSeal / 多语言两行已于 2026-10-14 重核改正**（原判误） |
