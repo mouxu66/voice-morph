@@ -325,8 +325,8 @@ def main() -> int:
     if args.page:
         meta = report_meta(knobs)
         is_ckpt = "configs" not in knobs
-        section_title = ("换声结果（同一 20 秒、同一 seed，只换**权重**）" if is_ckpt
-                         else "换声结果（同一 20 秒、同一 seed，只换一个旋钮）")
+        section_title = (f"换声结果（同一 {args.seconds:.0f} 秒、同一 seed，只换**权重**）" if is_ckpt
+                         else f"换声结果（同一 {args.seconds:.0f} 秒、同一 seed，只换一个旋钮）")
         what_changed = "只换权重（index_rate 固定 0）" if is_ckpt else "只换一个旋钮"
         page_items: list[tuple[str, list[dict]]] = []
         rows = []
@@ -369,7 +369,7 @@ def main() -> int:
                 page_items.append(("模型天花板：拿它自己的训练素材过一遍", rows2))
 
         intro = (
-            f"素材：lorezo_feed_the_one 第 {args.start:.0f}–{args.start + args.seconds:.0f} 秒"
+            f"素材：{args.orig.stem if args.orig else '（未给原唱）'} 第 {args.start:.0f}–{args.start + args.seconds:.0f} 秒"
             f"（歌声最密的段落）\n"
             f"模型：{meta['voice']} · seed {meta['seed']} · 变调 {meta['pitch']:+d} 半音\n"
             f"每条都是同一段输入、同一个随机种子，{what_changed} —— 所以听到的差异就是它的。"
