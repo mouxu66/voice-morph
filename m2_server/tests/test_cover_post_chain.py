@@ -151,6 +151,49 @@ def test_overlay_breath_tolerates_length_mismatch(cpc):
     assert np.allclose(out[:400], 1.0) and np.allclose(out[400:], 0.0)
 
 
+# ---------------------------------------------------------------- 输入端归属（2026-10-16）
+
+def test_two_input_sets_are_two_different_separation_models(cpc):
+    """★ 这页的教训：**同一个文件名 lead_* 不代表同一个分离模型**。
+
+    实战踩到：实验拿 `f0sweep/lead_185-210.wav`（= aufr33 旧参照模型的输出）
+    当成"产品输入"，而产品默认走 BS Roformer —— 整页 8 臂结论建立在错的输入上，
+    是用户听出来"还有和声"才发现。所以两套输入必须显式分开。
+    """
+    assert set(cpc.INPUT_SETS) == {"aufr33", "bs"}
+    a_src, a_out = cpc.INPUT_SETS["aufr33"][:2]
+    b_src, b_out, b_pre = cpc.INPUT_SETS["bs"]
+    assert a_src != b_src and a_out != b_out, "两套输入/产物目录必须分开，否则互相覆盖"
+    assert "aufr33" not in b_src.name and "frazer" in b_src.name, "BS 集合必须用产品默认模型的产物"
+    assert b_pre.endswith("_"), "BS 集合的工作文件名要带前缀，避免与另一套的同名中间产物互踩"
+
+
+def test_product_default_model_is_the_one_the_bs_set_uses(cpc):
+    """BS 集合指向的文件名必须与 `lead_sep.DEFAULT_MODEL`（产品默认）对得上 ——
+    产品一旦换默认模型，这条会红，提醒重跑对照。"""
+    import importlib.util
+    import sys as _sys
+
+    m2 = Path(__file__).resolve().parents[1]
+    if str(m2) not in _sys.path:
+        _sys.path.insert(0, str(m2))
+    spec = importlib.util.spec_from_file_location("lead_sep", m2 / "lead_sep.py")
+    mod = importlib.util.module_from_spec(spec)
+    _sys.modules["lead_sep"] = mod
+    spec.loader.exec_module(mod)
+    assert "bs_roformer_karaoke_frazer_becruily" in mod.DEFAULT_MODEL
+    assert "bs_frazer_becruily" in cpc.INPUT_SETS["bs"][0].name
+
+
+def test_page_rows_always_start_with_the_input_itself(cpc):
+    """首行永远是"输入自己"：上一轮就是靠听它才发现输入不干净。"""
+    for set_name in ("aufr33", "bs"):
+        rows = cpc.rows_for(set_name)
+        assert rows and rows[0][0].startswith("input_")
+        assert all(len(r) == 3 for r in rows)
+    assert cpc.rows_for("bs")[0][0] == "input_aufr33", "BS 页的①应是对照输入（aufr33）"
+
+
 def test_peak_normalize_only_scales_when_clipping(cpc):
     ok = np.array([0.5, -0.5], dtype=np.float32)
     assert np.array_equal(cpc._peak_normalize(ok), ok), "没超顶就不该动它"

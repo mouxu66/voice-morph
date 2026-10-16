@@ -58,15 +58,29 @@ from scipy.ndimage import uniform_filter1d
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "m2_server"))
 
-#: 输入：BS Roformer 抠出的干净主唱，185–210s，40k 单声道（f0_p50 331Hz，全曲最高段）
-INPUT = ROOT / "media" / "covers" / "song2" / "f0sweep" / "lead_185-210.wav"
-#: 旧"高音直唱"臂（A 臂的自检对象：同输入/同模型/同 seed/同 index ⇒ 应逐字节一致）
+#: ★★ 输入选择是两个**不同的分离模型**，不是同一个东西（ 2026-10-16 用户听出差异后核实）：
+#:   · aufr33 主唱（`lead_185-210.wav`，corr 1.0000 与 sep/ 的 aufr33 输出相同）：
+#:     旧参照模型（blind3 的「候选5」）。**用户报“里面还有和声”**，相相素素量也证实：
+#:     同段次音高比 0.767 vs BS 0.558（未分离的混声是 0.851）。
+#:   · BS Roformer frazer+becruily（`blind3/raw/bs_frazer_becruily_lead.wav`）：
+#:     **产品默认**（`lead_sep.DEFAULT_MODEL`，翻唱页勾“先剥离和声/伴唱”走的就是它）。
+#: 所以本实验必须两种输入都跑 —— 拿旧参照模型的输出当真・产品的基线是错的。
+INPUT_AUFR33 = ROOT / "media" / "covers" / "song2" / "f0sweep" / "lead_185-210.wav"
+INPUT_BS = ROOT / "media" / "covers" / "song2" / "f0sweep" / "blind3" / "raw" / "bs_frazer_becruily_lead.wav"
+#: 产物根：两种输入各一个子目录（防止两套臂互相覆盖）
+OUT_ROOT = ROOT / "media" / "covers" / "song2"
+#: 旧"高音直唱"臂（A 臂自检②的信息性对照对象，见模块头“跨路径不可比”）
 OLD_A = ROOT / "media" / "covers" / "song2" / "highdirect" / "direct_myvoice_tilt_t03.wav"
-OUT_DIR = ROOT / "media" / "covers" / "song2" / "opt25"
 
 VOICE = "myvoice_tilt_t03"  # 现役（m1k §3：presence 与"像你"两段都赢 t03 系列）
 PITCH = 0
 SEED_NOTE = "worker 默认 INFER_SEED（与旧臂同）"
+
+#: 两套输入的定义：{集合名: (输入源文件, 产物目录, 臂前缀)}
+INPUT_SETS: dict[str, tuple[Path, Path, str]] = {
+    "aufr33": (INPUT_AUFR33, OUT_ROOT / "opt25", ""),
+    "bs": (INPUT_BS, OUT_ROOT / "opt25bs", "bs_"),
+}
 
 #: 气口叠回电平：−18dB 是"听得见换气、但不加噪声"的起点（太靠上会变成嘶声）。
 BREATH_GAIN_DB = -18.0
@@ -234,22 +248,33 @@ def voiced_flags(src: np.ndarray, sr: int) -> np.ndarray:
     return np.asarray(voiced, dtype=bool)
 
 
-def _convert(src_name: str, index_rate: float) -> Path:
+def _convert(src_name: str, index_rate: float, input_path: Path, out_dir: Path) -> Path:
     """跑 RVC（走常驻 worker，模型缓存）——输入先复制成独立名字，避免产物互相覆盖。"""
     import rvc_convert
 
-    work = OUT_DIR / "work"
+    work = out_dir / "work"
     work.mkdir(parents=True, exist_ok=True)
     src_copy = work / f"{src_name}.wav"
-    src_copy.write_bytes(INPUT.read_bytes())
+    src_copy.write_bytes(input_path.read_bytes())
     return rvc_convert.rvc_convert(src_copy, VOICE, pitch=PITCH, index_rate=index_rate)
 
 
-def run_arms() -> dict:
-    """跑 6 臂，产物写进 OUT_DIR，返回 {臂: 路径}。"""
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def run_arms(set_name: str = "aufr33", *, with_index_arm: bool = True) -> dict:
+    """跑一套臂，产物写进该集合的目录，返回 {臂: 路径}。
+
+    `with_index_arm=False` 可跳过 index 0.3（该轴已扫完：与 0.5 差在噪声内）。
+    输入先统一成 **40k 单声道 wav**（与旧实验同一口径，便于横比）。
+    """
+    src_file, out_dir, pre = INPUT_SETS[set_name]
+    assert src_file.exists(), f"输入端缺失：{src_file}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    input_40k = out_dir / "in" / f"lead_{set_name}_40k.wav"
+    y_in, sr_in = read_wav(src_file)
+    write_wav(input_40k, y_in, sr_in)
+    print(f"[输入·{set_name}] {src_file.name} → {input_40k.name}（{sr_in}Hz、{len(y_in)/sr_in:.1f}s）")
+
     chain = post_filters()
-    src, sr = read_wav(INPUT)
+    src, sr = read_wav(input_40k)
     voiced = voiced_flags(src, sr)
     breath = breath_track(src, voiced, sr)
     print(f"[输入] 浊音帧 {int(voiced.sum())}/{len(voiced)} · 气口轨能量占比 "
@@ -259,20 +284,21 @@ def run_arms() -> dict:
 
     # A/B：两个 index 档（同一输入、同 seed）
     conv: dict[str, Path] = {}
-    for tag, ir in (("A_ir05", 0.5), ("B_ir03", 0.3)):
-        conv[tag] = _convert(tag, ir)
-        print(f"[RVC] {tag} ← index_rate={ir}")
+    irs = [("A_ir05", 0.5)] + ([("B_ir03", 0.3)] if with_index_arm else [])
+    for tag, ir in irs:
+        conv[tag] = _convert(f"{pre}{tag}", ir, input_40k, out_dir)
+        print(f"[RVC] {pre}{tag} ← index_rate={ir}")
 
     # A 臂自检 ①：同一路径再转一次必须**逐字节一致**（播种与路径自洽）
     import hashlib
 
-    again = _convert("A_ir05_repeat", 0.5)
+    again = _convert(f"{pre}A_ir05_repeat", 0.5, input_40k, out_dir)
     det = hashlib.md5(conv["A_ir05"].read_bytes()).hexdigest() == hashlib.md5(again.read_bytes()).hexdigest()
-    print(f"[自检①] 同一路径重复转换逐字节一致：{'✅' if det else '❌（播种/环境有问题，本轮 A/B 不可信）'}")
+    print(f"[自检①·{set_name}] 同一路径重复转换逐字节一致：{'✅' if det else '❌（播种/环境有问题，本轮 A/B 不可信）'}")
 
     # A 臂自检 ②：与旧"高音直唱"文件比 —— **只作信息性报告**（旧文件走的是进程内 +
     # scipy 重采样，输入不同 ⇒ 输出本就是另一次抽样，见模块头 §跨路径产物不可比）。
-    if OLD_A.exists():
+    if OLD_A.exists() and set_name == "aufr33":
         import soundfile as sf
 
         x, _ = sf.read(str(conv["A_ir05"]), dtype="float64")
@@ -283,19 +309,20 @@ def run_arms() -> dict:
               " —— 路径不同，波形本不可比，只供分辨「换了代码」与「换了路径」")
 
     for tag, path in conv.items():
-        arms[tag] = OUT_DIR / f"{tag}.wav"
+        arms[tag] = out_dir / f"{tag}.wav"
         y, ysr = read_wav(path)
         write_wav(arms[tag], y, ysr)
 
     # C/D：A、B 过后期链
-    for tag, src_tag in (("C_ir05_post", "A_ir05"), ("D_ir03_post", "B_ir03")):
-        arms[tag] = OUT_DIR / f"{tag}.wav"
+    posts = [("C_ir05_post", "A_ir05")] + ([("D_ir03_post", "B_ir03")] if with_index_arm else [])
+    for tag, src_tag in posts:
+        arms[tag] = out_dir / f"{tag}.wav"
         apply_filters(arms[src_tag], arms[tag], chain)
         print(f"[后期] {tag} ← {chain}")
 
     # G：剂量加倍的空气感（+6dB@7k）——首轮指标显示 8–12k 缺口有 38dB，+3dB 档杯水车薪
     chain_air6 = post_filters(air_db=6.0, air_hz=7000.0)
-    arms["G_air6"] = OUT_DIR / "G_air6.wav"
+    arms["G_air6"] = out_dir / "G_air6.wav"
     apply_filters(arms["A_ir05"], arms["G_air6"], chain_air6)
     print(f"[后期] G_air6 ← {chain_air6}")
 
@@ -303,11 +330,11 @@ def run_arms() -> dict:
     for tag, base in (("E_post_breath", "C_ir05_post"), ("F_breath", "A_ir05"),
                       ("H_air6_breath", "G_air6")):
         y, ysr = read_wav(arms[base])
-        arms[tag] = OUT_DIR / f"{tag}.wav"
+        arms[tag] = out_dir / f"{tag}.wav"
         write_wav(arms[tag], overlay_breath(y, breath), ysr)
         print(f"[气口] {tag} ← {base} + 源气口轨 {BREATH_GAIN_DB:g}dB")
 
-    arms["input_lead"] = OUT_DIR / "input_lead.wav"
+    arms["input_lead"] = out_dir / "input_lead.wav"
     write_wav(arms["input_lead"], src, sr)
     return arms
 
@@ -411,26 +438,38 @@ def _timbre(path: Path, ref_path: Path) -> dict:
     }
 
 
-#: 试听页的臂顺序 + 标题（先说「看什么」、再给客观数字）。
-#: D（B+后期链）与 G/H 重复度高，不入页 —— 它的数字仍在 metrics.json 里备查。
-#: 页上 7 段：先去 ①→④，再把 ⑤⑥⑦ 与 ④ 对比，判断「还是不是更自然」。
-ROWS: list[tuple[str, str, str]] = [
-    ("input_lead", "① 输入：干净主唱（源头）", "被 RVC 替换的原料，是你听到的「电」的出生地"),
-    ("A_ir05", "② A · 现役 index 0.5（你上轮听到「很好」的那版）", "基线：后面全部与它比"),
-    ("B_ir03", "③ B · index 0.3（更少往说话索引平均）", "唯一没试过的检索档（实测影响极小）"),
-    ("C_ir05_post", "④ C · A + 后期链（+3dB 空气感 + De-Ess + 轻压缩）", "保守档，应该听不出「被处理过」"),
-    ("G_air6", "⑤ G · 后期链 +6dB@7k（剂量加倍）", "8–12k 缺口有 38dB，这一档才可能真变亮"),
-    ("F_breath", "⑥ F · A + 气口叠回（换气/气声 −18dB）", "只隔离「气口」这一个变量"),
-    ("E_post_breath", "⑦ E · C + 气口叠回", "后期链 + 气口，最「人」的候选"),
-    ("H_air6_breath", "⑧ H · G + 气口叠回", "最亮的候选"),
+#: 臂顺序 + 标题（先说「看什么」、再给客观数字）。两套输入各一份 ——
+#: ★ 首行永远是"输入自己"：用户上一轮就是靠听它发现"aufr33 那条里还有和声"的。
+_TAIL = [
+    ("F_breath", "F · A + 气口叠回（换气/气声 −18dB）", "只隔离「气口」这一个变量"),
+    ("E_post_breath", "E · C + 气口叠回", "后期链 + 气口，最「人」的候选"),
+    ("H_air6_breath", "H · G + 气口叠回", "最亮的候选"),
 ]
+_ROWS_AUFR33 = [
+    ("input_lead", "① 输入：干净主唱 —— <b>aufr33 旧参照模型</b>", "就是你上轮听出「还有和声」的那条（不是产品在用的模型）"),
+    ("A_ir05", "② A · 现役 index 0.5（aufr33 输入）", "上一页的基线"),
+    ("B_ir03", "③ B · index 0.3", "该轴已扫完（与 ② 差在噪声内）"),
+    ("C_ir05_post", "④ C · A + 后期链（+3dB@9k + De-Ess + 轻压缩）", "保守档"),
+    ("G_air6", "⑤ G · 后期链 +6dB@7k", "空气感剂量加倍"),
+] + _TAIL
+_ROWS_BS = [
+    ("input_aufr33", "① 对照输入：aufr33（旧参照模型）", "你上轮听出有和声的那条（同段同秒）"),
+    ("input_lead", "② 输入：干净主唱 —— <b>BS Roformer frazer+becruily</b>", "★ 产品默认模型，翻唱页勾「先剥离和声/伴唱」走的就是它"),
+    ("A_ir05", "③ A · 现役 index 0.5（BS 输入）", "新基线：与 ①③ 的差别只来自分离模型"),
+    ("C_ir05_post", "④ C · A + 后期链（+3dB@9k + De-Ess + 轻压缩）", "保守档"),
+    ("G_air6", "⑤ G · 后期链 +6dB@7k", "空气感剂量加倍"),
+] + _TAIL
 
 
-def build_page(arms: dict[str, Path]) -> Path:
+def rows_for(set_name: str) -> list[tuple[str, str, str]]:
+    return _ROWS_AUFR33 if set_name == "aufr33" else _ROWS_BS
+
+
+def build_page(arms: dict[str, Path], out_dir: Path, set_name: str = "aufr33") -> Path:
     ref = ROOT / "media" / "voicebank" / "myvoice_supp2026" / "reference.wav"
     metrics: dict[str, dict] = {}
     parts: list[str] = []
-    for key, title, sub in ROWS:
+    for key, title, sub in rows_for(set_name):
         p = arms.get(key)
         if p is None or not p.exists():
             parts.append(f'<div class="card"><div class="t">{title}</div><div class="s">{sub}</div><span class="missing">（缺文件）</span></div>')
@@ -466,19 +505,21 @@ def build_page(arms: dict[str, Path]) -> Path:
 </style></head><body>
 <h1>《唯一》185–210s · 主唱剥离之后再优化（人声干声，无伴奏）</h1>
 <p class="sub">前提：你已经确认「先剥离和声/伴唱」把电音治好了（这一步不在本页里重复，它就是本条链路的输入）。</p>
-<p class="sub">本页只问一件事：<b>在已经「听着很好」的版本上，还能不能更自然</b>。七段都来自同一条链路、
-同一个 25s 窗口、同一 seed、pitch=0，只是加工不同 —— <b>请只凭耳朵</b>挑出最像「一个人在唱」的那一段，
+<p class="sub">本页只问一件事：<b>在已经「听着很好」的版本上，还能不能更自然</b>（另一件事：<b>输入自己干净不干净</b>）。
+各段都来自同一个 25s 窗口、同一 seed、pitch=0，只是输入分离模型与加工不同 —— <b>请只凭耳朵</b>挑出最像「一个人在唱」的那一段，
 然后告诉我编号。客观数字只做参考：<b>「像你」的裸余弦会随音高失配假红</b>
 （见 docs/犯错档案-工程 §8.76），所以看「对齐音高」那一列才有意义。</p>
 <p class="sub">已确认无用、不必再试的：<b>index_rate 0.3</b>（③ 与 ② 各项几乎相同）、
 <b>换 f0 提取器 / 关检索</b>（10-15 四配置实测：同 f0 方法下 index 0.5 与 0 逐字节相同）。</p>
 __BODY__
-<footer>2026-10-16 · experiments/cover_post_chain.py · 输入 media/covers/song2/f0sweep/lead_185-210.wav（BS Roformer 主唱剥离）· 模型 myvoice_tilt_t03</footer>
+<footer>2026-10-16 · experiments/cover_post_chain.py · 输入 __INPUT__ · 模型 myvoice_tilt_t03 · 窗口 185–210s</footer>
 </body></html>"""
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    dst = OUT_DIR / "listen.html"
-    dst.write_text(html.replace("__BODY__", "\n".join(parts)), encoding="utf-8")
-    (OUT_DIR / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=1), encoding="utf-8")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dst = out_dir / "listen.html"
+    src_file = INPUT_SETS[set_name][0]
+    dst.write_text(html.replace("__BODY__", "\n".join(parts))
+                   .replace("__INPUT__", f"{set_name} 分离（{src_file.name}）"), encoding="utf-8")
+    (out_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=1), encoding="utf-8")
     print("[页] %s（%.1f MB）" % (dst, dst.stat().st_size / 1e6))
     return dst
 
@@ -486,19 +527,26 @@ __BODY__
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("step", choices=["run", "page", "all"], nargs="?", default="all")
+    ap.add_argument("--set", dest="sets", action="append", choices=sorted(INPUT_SETS),
+                    help="跑哪套输入（可重复；默认两套都跑）")
     a = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, OSError, ValueError):
         pass
 
-    arms: dict[str, Path] = {}
-    if a.step in ("run", "all"):
-        arms = run_arms()
-    if a.step in ("page", "all"):
-        if not arms:
-            arms = {k: OUT_DIR / f"{k}.wav" for k, _, _ in ROWS}
-        build_page(arms)
+    for set_name in (a.sets or sorted(INPUT_SETS)):
+        _, out_dir, _pre = INPUT_SETS[set_name]
+        arms: dict[str, Path] = {}
+        if a.step in ("run", "all"):
+            arms = run_arms(set_name, with_index_arm=(set_name == "aufr33"))
+        if a.step in ("page", "all"):
+            if not arms:
+                arms = {k: out_dir / f"{k}.wav" for k, _, _ in rows_for(set_name)}
+            # BS 页的①行是 aufr33 的输入本身（同段同秒），跨目录取一下
+            if set_name != "aufr33":
+                arms["input_aufr33"] = INPUT_SETS["aufr33"][1] / "input_lead.wav"
+            build_page(arms, out_dir, set_name)
     return 0
 
 
