@@ -50,8 +50,6 @@ function backendCallers(): string[] {
  */
 const REGISTRY: Record<string, string> = {
   'web/electron/pet/pet.html': '桌宠渲染侧；已接能力清单（`capStateFromCatalog`，见 petCapabilityGate.test.ts）',
-  'seed_vc_demo.html':
-    '开发用独立演示页，调 /api/seedvc/*（属 sound.offline-vc）；未被主进程/package.json 引用 → **不进包**，故不做门控',
   'web/vite.config.ts': '开发期 dev proxy（把 /api 转发到 8000），不是 UI 面',
   'tools/test-pet-renderer-script.cjs': '桌宠脚本的语法自检工具，不是 UI 面',
   'mobile/src/store.ts':
