@@ -655,6 +655,13 @@ def test_cleanup_retries_a_locked_file(env, monkeypatch, tmp_path):
         ("ERROR: Unsupported URL: https://x", "升级"),
         ("ERROR: This video is not available in your country", "版权"),
         ("ERROR: HTTP Error 403: Forbidden", "403"),
+        # 2026-10-18 实测：B 站接口改版后 stable 2026.03.17 全站 412，
+        # 必须归因到「升级 yt-dlp」而不是把原始报错甩回去。
+        (
+            "ERROR: [BiliBili] 323346569: Unable to download JSON metadata: "
+            "HTTP Error 412: Precondition Failed",
+            "412",
+        ),
     ],
 )
 def test_stderr_is_translated_to_human(env, monkeypatch, tmp_path, stderr, expect):

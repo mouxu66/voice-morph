@@ -936,6 +936,16 @@ def _explain(returncode: int, output: str, site: str) -> str:
         )
     if "copyright" in low or "not available" in low or "vip" in low:
         return f"{site} 这首有版权/付费限制，拿不到音频流。换一首或换来源。"
+    # 412 单列：2026-10-18 实测 B 站全站 412（`x/player/wbi/playurl` 风控改版），
+    # stable 2026.03.17 必挂、nightly 2026.10.10 才通。不单列的话会落进下面
+    # 的兜底，用户看到的是一行原始报错，而"升级 yt-dlp"才是唯一有效动作。
+    if "412" in err or "precondition failed" in low:
+        return (
+            f"{site} 返回 412（风控/接口改版），当前 yt-dlp 多半已过期。"
+            "先升级它：独立 exe 跑 `yt-dlp -U`（或 `--update-to nightly`），"
+            "pip 装的跑 `pip install -U --pre yt-dlp`，然后重启后端再试。"
+            "升级后仍 412 就换条链接或换来源（上传 / 粘直链）。"
+        )
     if "403" in err or "forbidden" in low:
         return f"{site} 拒绝了请求（403）。升级 yt-dlp 或配上登录态再试。"
     tail = _tail_line(err) or f"退出码 {returncode}"
