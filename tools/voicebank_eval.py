@@ -20,7 +20,7 @@
 设计约束（沿用项目惯例，都不是随手选的）
     1. **零新依赖**：只用 numpy + 已有 `tools/voice_metrics.py`。Spearman 自己实现，
        不引入 scipy —— 避免又一条「本机装了、CI 没装」的依赖债
-       （见 `docs/犯错指南.md` 速查表第 61 条：本机全绿、CI 在 `--cov` 上红）。
+       （见 `docs/犯错指南.md` 速查表第 56 条：本机全绿、CI 在 `--cov` 上红）。
     2. **绝不裸崩**：任何单项算不出来 → None，绝不抛。与 `voice_metrics` / `voice_qc`
        同一约定（`rvc_live` 训练完成回调依赖「QC 永不裸崩」）。
     3. **不需要 GPU**：`plan` / `measure` / `analyze` 三步都能在没有模型、没有 worker

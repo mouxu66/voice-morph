@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest"
  * ① **门控写在自己身上**（`pluginVisible(catalog, "sound.fx-board")` + `return null`）。
  *    宿主页是 `sound.tts`（单段合成页）/ `hook.wechat`，**不是** `sound.fx-board` ——
  *    「宿主开着、声板关着」完全可达，此时那块照旧渲染就是一路 404。
- *    见 `docs/犯错指南.md` 速查表 74 / `docs/犯错档案-工程.md` §8.40。
+ *    见 `docs/犯错指南.md` 速查表 68 / `docs/犯错档案-工程.md` §8.40。
  *
  * ② **不许自己调 `useSoundboard`**，必须由调用方把路由层那**一个**实例传进来。
  *    hook 一调就预热常驻播放器 + 拉目录；组件里再调一次 = 两回预热、两回目录请求，

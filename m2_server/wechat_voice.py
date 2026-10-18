@@ -2560,7 +2560,7 @@ def _record_and_send(
     prefix = f"[第 {index+1}/{total} 条] " if (index is not None and total is not None) else ""
 
     # 段间：先等上一次的录音浮层消失（它是 _trigger_record 的前置条件，残留会让后续全失败），
-    # 再留 gap_s 停顿。**不要**用固定 sleep 当同步手段（速查表第 55 条）。
+    # 再留 gap_s 停顿。**不要**用固定 sleep 当同步手段（速查表第 17 条：等 PLAYING/浮层消失这类信号）。
     if index is not None and index > 0:
         _await_overlay_gone(gap_s)
         steps.append(f"{prefix}上一段录音浮层已消失，停顿 {gap_s:.1f}s 后继续")
@@ -2750,7 +2750,7 @@ def _await_overlay_gone(gap_s: float = BATCH_GAP_S, timeout: float | None = None
     —— 浮层残留会让后续每一次点击都落在浮层上（速查表第 11 条：「前一次失败后，
     后续全部失败」）。批次内连续发送正是最容易被这条打中的场景。
 
-    **不用固定 sleep 当同步手段**（速查表第 55 条：固定 sleep 换轮询）。
+    **不用固定 sleep 当同步手段**（速查表第 17 条：等信号，不靠猜时长）。
     """
     if timeout is None:
         timeout = gap_s + 2.0

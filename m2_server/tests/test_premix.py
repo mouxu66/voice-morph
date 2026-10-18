@@ -423,7 +423,7 @@ def test_premix_does_not_need_the_effects_plugin(client, blip, tts_wav, monkeypa
 
     关掉 `sound.effects` 时 `effects` 的 router 会卸载，但用户面板上的"预混"按钮
     还在（它属声板）。如果预混偷偷走了效果链的端点，那个按钮就会 404 —— 正是
-    `docs/犯错指南.md` 速查表 74 那一类"宿主开着、被托管插件关着"的缺口。
+    `docs/犯错指南.md` 速查表 68 那一类"宿主开着、被托管插件关着"的缺口。
     """
     import ast
 

@@ -211,7 +211,7 @@ async def _save_upload(file: UploadFile) -> Path:
     ★ `await file.read()` **必须在路由内**（也就是在请求还活着的时候）：FastAPI 0.141
     在端点返回后会自动关闭表单文件句柄，把 `file` 丢进后台线程再读会报
     `I/O operation on closed file`（2026-10-01 实测抓到过，见
-    `docs/犯错指南.md` 速查表第 123 条）。所以这里一次读完、写完再返回路径 ——
+    `docs/犯错指南.md` 速查表第 117 条）。所以这里一次读完、写完再返回路径 ——
     后续的 ffmpeg 转换拿的是**磁盘上的临时文件**，与请求生命周期无关了。
     """
     import tempfile

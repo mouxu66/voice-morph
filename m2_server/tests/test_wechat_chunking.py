@@ -10,7 +10,7 @@
 
 ⚠️ 变异测试（本仓传统，见 `docs/犯错档案-工程.md` §8.19）：把 `MAX_CHUNK_S` 调到 70、
    或删掉 `_check_budget` 的判据，本文件必须**变红**。做变异时**整行删除**，
-   不能只注释 —— 断言可能匹配到注释里的同名文本（速查表第 46 条）。
+   不能只注释 —— 断言可能匹配到注释里的同名文本（速查表第 44 条）。
 """
 
 import random
@@ -336,7 +336,7 @@ def test_batch_prepares_and_restores_env_exactly_once(tmp_path, monkeypatch):
     """★ D7/D13 的核心：切卡与还原**整批各只做一次**，与条数无关。
 
     3 条批次断言调用计数 —— 现状每条都要 apply+restore 会白等 N×6s，
-    而且反复切卡本身就是故障源（速查表第 22 条）。
+    而且反复切卡本身就是故障源（速查表第 21 条）。
     """
     prep, restore = [], []
     monkeypatch.setattr(wv, "_prepare_env", lambda pre_apply=None, steps=None: prep.append(1) or {})

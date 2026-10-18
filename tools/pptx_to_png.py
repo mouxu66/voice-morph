@@ -138,7 +138,7 @@ def powerpoint_pids() -> list[int]:
 
     PowerShell 输出编码必须显式指定 utf-8 + errors=replace：中文 Windows 的控制台
     是 GBK，`text=True` 按 locale 解会在 UTF-8 模式下把 stdout 变成 None，
-    随后 `.splitlines()` 抛异常被 except 吞掉 → 静默返回"没在跑"（速查表 55）。
+    随后 `.splitlines()` 抛异常被 except 吞掉 → 静默返回"没在跑"（速查表 53）。
     """
     try:
         out = subprocess.run(
@@ -181,7 +181,7 @@ class ComEngine:
             # （PowerPoint 不允许 Application.Visible=False，用这个参数代替）
             # ⚠️ 必须传**绝对路径**：COM 解析相对路径用的是 PowerPoint 自己的工作目录，
             # 不是我们的 CWD —— 传相对的会报 `-2147024893 系统找不到指定的路径`
-            # （本项目踩过一次，速查表 14/85 同一族）。
+            # （本项目踩过一次，速查表 79 同一族：绝对路径）。
             self.pres = self.app.Presentations.Open(
                 str(pptx.resolve()), ReadOnly=True, WithWindow=False)
         except Exception as e:  # noqa: BLE001 —— COM 的异常类型五花八门，一律转人话

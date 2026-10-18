@@ -171,7 +171,7 @@
   `m2_server/tests/test_seedvc_e2e.py` 7 条从路由到 worker 全真走通（只桩 ffmpeg 预处理与推理子进程），
   **当场抓到一个生产级 bug**：FastAPI 0.141 在端点返回后自动关闭表单文件句柄，
   「上传参考音」分支在线程里读 `target.file` 必报 `I/O operation on closed file` → 路由内读全修复。
-  踩坑记 `docs/犯错指南.md` 速查表第 123 条。
+  踩坑记 `docs/犯错指南.md` 速查表第 117 条。
 - **残余项**：GPL-3.0 分发合规（本地自用无碍；对外分发 exe 需评估，见「外部调研对照」）。
 
 ***

@@ -863,7 +863,7 @@ class TestApi:
 
         这比 400 更好：请求根本没进到业务代码。这里显式钉住它，
         免得哪天路由改成 `{pid:path}` 把这条防线悄悄拆掉
-        （`docs/犯错指南.md` 速查表第 77 条：`{sample_id:path}` 会先吃掉后面的路由）。
+        （`docs/犯错指南.md` 速查表第 71 条：`{sample_id:path}` 会先吃掉后面的路由）。
         """
         assert client.get("/api/preserve/profiles/..%2Fetc").status_code == 404
 
