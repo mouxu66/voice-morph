@@ -112,20 +112,31 @@ def make_ir(
     rt60: float = REVERB_RT60,
     length_s: float = REVERB_LENGTH,
     seed: int = 1234,
+    pre_delay_ms: float = 0.0,
 ) -> np.ndarray:
     """生成一条立体声“板式”混响 IR（指数衰减噪声 + 早期反射）。
 
     为什么不用 ffmpeg 的 `aecho`：`aecho` 是**离散回声**，在慢歌上会听成
     “山谷里的重复”，不是空间。这里用真卷积：早期反射给方向感、指数尾巴给余韵。
+
+    `pre_delay_ms` 把**整条 IR 往后推**（前面补零），总时长仍是 `length_s`：
+    干声到达耳朵后先静一段、空间才开始。这是 SOS 那组 plate 案例的核心参数
+    （60–80ms），而本函数默认值仍是 0（= 早期反射第一拍在 11ms，`m1l` 原档）——
+    默认路径逐字节不变，老结论可复算。⚠️ 2026-10-18 之前把它当“混响类型”一维漏了，
+    实际 2.0s/11ms 更接近中厅而不是流行 plate（`m1m` §4.2）。
     """
     n = max(1, int(round(sr * length_s)))
     rng = np.random.RandomState(seed)
     t = np.arange(n, dtype=np.float64) / sr
-    # −60dB 的时间 = rt60 ⇒ 幅度衰减 e^{-6.9078 t / rt60}
-    late = rng.standard_normal((n, 2)) * np.exp(-6.9078 * t / max(1e-6, rt60))[:, None]
+    pre_s = max(0.0, float(pre_delay_ms)) / 1000.0
+    onset = min(n - 1, int(round(pre_s * sr)))
+    # −60dB 的时间 = rt60 ⇒ 幅度衰减 e^{-6.9078 t / rt60}（t 从首达时刻算起）
+    dt = t - pre_s
+    late = rng.standard_normal((n, 2)) * np.exp(-6.9078 * np.clip(dt, 0.0, None) / max(1e-6, rt60))[:, None]
+    late[dt < 0.0] = 0.0
     # 10ms 淡入，避免 IR 起点“啪”一声
-    fade = min(n, max(1, int(0.010 * sr)))
-    late[:fade] *= np.linspace(0.0, 1.0, fade)[:, None]
+    fade = min(n - onset, max(1, int(0.010 * sr)))
+    late[onset:onset + fade] *= np.linspace(0.0, 1.0, fade)[:, None]
 
     # 早期反射：左右去相关（同一组时间、不同符号/微差），给立体声宽度
     ir = late.astype(np.float64)
@@ -133,7 +144,7 @@ def make_ir(
     gains = (0.60, 0.45, 0.35, 0.28, 0.20, 0.15, 0.10)
     for ch in range(2):
         for k, (ms, g) in enumerate(zip(taps_ms, gains, strict=False)):
-            idx = int(round((ms + ch * 0.7) * sr / 1000.0))
+            idx = int(round((ms + pre_delay_ms + ch * 0.7) * sr / 1000.0))
             if idx < n:
                 sign = 1.0 if (k + ch) % 2 == 0 else -1.0
                 ir[idx, ch] += sign * g * 0.5
