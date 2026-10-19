@@ -310,6 +310,12 @@ FAST_TESTS = [
     #    指标长得像"没补"）。这类错法全都静默，必须钉在提交那一刻。
     "m2_server/tests/test_cover_bwe.py",
     "m2_server/tests/test_cover_bwe_universr.py",
+    # 唱歌素材罩得住的歌上 BWE 用 vs 不用（约 0.4s，纯 mock/纯合成）：守两件
+    # 本轮真踩过的事 —— ① 有状态滤波器（acompressor/deesser）冷启动会让切段
+    # 裸跑链和产品后期版差 0.115，必须带预热前导且 A/D 两臂同处理；
+    # ② 产品后期链由 app 管线生成、与本机 ffmpeg 存滤波器实现级差异（corr
+    # 0.99995 但 max|diff| 0.027），自检必须两级判定（逐样本 / 等效一致）才放行。
+    "m2_server/tests/test_cover_bwe_chengdu.py",
 ]
 
 
