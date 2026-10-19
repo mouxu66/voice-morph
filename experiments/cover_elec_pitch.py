@@ -89,6 +89,69 @@ def build_input_from_file(path: Path, sr_target: int, seconds: float):
     return in16, in40, [path.name], int(sr)
 
 
+def build_page(out: Path, in_name: str, rows: list[dict], *, voice: str) -> Path:
+    """把刚跑出来的产物拼成一份自包含听感页（base64 mp3，双击即听）。
+
+    为什么要它：这一轮（2026-10-19）的名单里「唱歌台阶」是全套电音归因里**唯一要耳朵**
+    的一段 —— 数字（周期峰 p50/p10）只能告诉你"哪个档位可疑"，听不出来的是"哪一档开始像电音"。
+    """
+    import base64
+    import subprocess
+
+    sys.path.insert(0, str(ROOT / "experiments"))
+    from elec_ruler import frame_stats, summarise
+
+    sys.path.insert(0, str(ROOT / "m2_server"))
+    from common import find_ffmpeg
+
+    def card(title: str, sub: str, path: Path) -> str:
+        s = summarise(frame_stats(path))
+        tmp = path.with_suffix(".page_tmp.mp3")
+        subprocess.run([find_ffmpeg(), "-y", "-loglevel", "error", "-i", str(path),
+                        "-b:a", "128k", str(tmp)], check=True, timeout=300)
+        b64 = "data:audio/mpeg;base64," + base64.b64encode(tmp.read_bytes()).decode()
+        tmp.unlink()
+        note = (f"输出 F0 中位 {s.get('f0_median')}Hz · 周期峰 p50={s.get('periodicity_p50')} · "
+                f"p10={s.get('periodicity_p10')} · p90={s.get('periodicity_p90')} · "
+                f"有效帧 {s.get('frames')}")
+        return (f"<div class='card'><div class='t'>{title}</div><div class='s'>{sub}<br>{note}</div>"
+                f"<audio controls preload='metadata' src='{b64}'></audio></div>")
+
+    cards = [card("① 输入（参照）", "这条素材本身长什么样", out / in_name)]
+    for arm, label, sub in (("rvc", "第二组 · 模型输出", "请重点听：从哪一档开始出现电/毛刺"),
+                            ("mech", "第三组 · 机械变调对照", "不过模型、直接重采样；它应该随音高变糙")):
+        cards.append(f"<h2>{label}</h2><p class='sub'>{sub}</p>")
+        for r in rows:
+            if r["arm"] != arm:
+                continue
+            cards.append(card(f"pitch {r['pitch']:+d}", f"期望 F0 {r['expected_f0_hz']}Hz",
+                              Path(r["wav"])))
+
+    html = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>电音归因 · 音高台阶（尺子已修正）</title>
+<style>
+ body{font-family:"Microsoft YaHei",system-ui,sans-serif;background:#f5f6f8;color:#222;
+      max-width:880px;margin:24px auto;padding:0 16px;line-height:1.7}
+ h1{font-size:21px} h2{font-size:16px;margin:26px 0 6px;color:#1a4a7a}
+ .card{background:#fff;border:1px solid #e2e6ec;border-radius:10px;padding:12px 14px;margin:10px 0}
+ .card .t{font-weight:600;font-size:14px} .card .s{color:#667;font-size:12.5px;margin:4px 0 8px}
+ audio{width:100%;height:34px} .sub{color:#555;font-size:13.5px} footer{margin:28px 0;color:#888;font-size:12px}
+</style></head><body>
+<h1>音高台阶 · 同一条输入只改请求音高（周期峰已按逐 lag 归一修正）</h1>
+<p class="sub">听三组：① 输入；② 模型输出；③ 不经过模型的机械变调（重采样）。
+<b>只回答一件事：模型那一组从哪一档开始出现"电/毛刺"</b>（如果全都没出现，也请直接说）。
+数字只做参考：修正后的尺子是"纯正弦读 1.00"，所以 <b>p50 高不代表没问题</b>，
+本页要的是 <b>p10（局部最差帧）</b>与耳朵的一致。</p>
+__BODY__
+<footer>2026-10-19 · experiments/cover_elec_pitch.py · 模型 __VOICE__ · 输入 __INPUT__</footer>
+</body></html>"""
+    dst = out / "listen.html"
+    dst.write_text(html.replace("__BODY__", "\n".join(cards)).replace("__VOICE__", voice)
+                   .replace("__INPUT__", in_name), encoding="utf-8")
+    print(f"[电音] 听感页 → {dst}（{dst.stat().st_size / 1e6:.1f} MB）")
+    return dst
+
+
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -102,7 +165,16 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--seconds", type=float, default=INPUT_SECONDS)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--page", action="store_true",
+                    help="额外生成 listen.html（把已跑出的产物拼成听感页；可单独用：跳过转换）")
+    ap.add_argument("--page-only", action="store_true", help="只出页（读已有的 elec_pitch.json）")
     args = ap.parse_args()
+
+    if args.page_only:
+        out = args.out.resolve()
+        meta = json.loads((out / "elec_pitch.json").read_text(encoding="utf-8"))
+        build_page(out, meta["input"], meta["rows"], voice=meta.get("voice", args.voice))
+        return 0
 
     if not args.clips and not args.audio:
         raise SystemExit("必须给 --clips 或 --audio")
@@ -164,6 +236,8 @@ def main() -> int:
                     "tgt_sr": int(engine.tgt_sr), "rows": rows},
                    ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n[电音] {len(rows)} 条产物 → {out}")
+    if args.page:
+        build_page(out, in_name, rows, voice=args.voice)
     return 0
 
 
