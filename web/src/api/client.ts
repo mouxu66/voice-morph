@@ -2197,7 +2197,15 @@ export async function marketPreviewTrigger(
 
 // ---- 作品库（B1：收藏 / 标签 / 批量导出） ----
 
-export type HistoryKind = "tts" | "offlinevc" | "audiobook" | "fx" | "trial" | "mine";
+export type HistoryKind =
+  | "tts"
+  | "offlinevc"
+  | "audiobook"
+  | "fx"
+  | "trial"
+  | "mine"
+  | "seedvc"
+  | "cover";
 
 export type HistoryItem = {
   id: string;

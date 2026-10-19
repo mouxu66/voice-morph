@@ -26,7 +26,10 @@ _MAX_ITEMS = int(os.environ.get("VM_HISTORY_MAX", "2000"))
 _MAX_TAGS = 8  # 单条记录标签上限（防滥用）
 _MAX_TAG_LEN = 16
 _TAG_RE = re.compile(rf"^[^\s,，;；/\\]{{1,{_MAX_TAG_LEN}}}$")
-_KINDS = {"tts", "offlinevc", "audiobook", "fx", "trial", "mine", "seedvc"}
+#: 作品库允许的类型。**新增登记 kind 时必须同时加在这里**，否则会被静默降级成
+#: `tts`（作品库按类型筛不出来，且日志不报错）。2026-10-19 加 `cover`：
+#: 翻唱保存此前落成 tts（`docs/product/research` 的交付记录里手工改过）。
+_KINDS = {"tts", "offlinevc", "audiobook", "fx", "trial", "mine", "seedvc", "cover"}
 
 _lock = threading.Lock()
 

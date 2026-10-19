@@ -121,3 +121,15 @@ def test_trim_keeps_max_items(isolated, monkeypatch):
     # 保留最新 3 条（4,3,2）
     wavs = [r["wav"] for r in res["items"]]
     assert wavs == ["4.wav", "3.wav", "2.wav"]
+
+
+def test_cover_kind_preserved(isolated):
+    """翻唱保存必须保留 cover 类型（2026-10-19）。
+
+    回归：`_KINDS` 缺 `cover` 时 `register(\"cover\")` 静默降级成 `tts`，
+    作品库里翻唱和语音合成混在一起，按类型筛不出来 —— 且日志全绿。
+    """
+    hid = history.register("cover", "myvoice_supp2026", "c.wav", "/api/media/outputs/c.wav", 250.5)
+    assert hid
+    assert history.query(kind="cover")["items"][0]["kind"] == "cover"
+    assert history.query(kind="tts")["total"] == 0

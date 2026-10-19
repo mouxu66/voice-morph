@@ -22,6 +22,7 @@ const KIND_LABEL: Record<string, string> = {
   trial: "试听",
   mine: "挖掘",
   seedvc: "表达力变声",
+  cover: "翻唱",
 }
 
 function fmtTime(ts: number): string {

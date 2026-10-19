@@ -572,6 +572,20 @@ def _cover_worker(
         COVER_STATE.update(step="convert", percent=40.0,
                            message=f"正在换音色…（{voice_id}，变调 {use_pitch:+d} 半音）")
         rvc_out = rvc_convert.rvc_convert(vocals, voice_id, pitch=use_pitch, index_rate=index_rate)
+
+        # ④.5 掉音补洞（2026-10-19）：源有声、换声输出相对静音的帧，按 −14dB 把源补回。
+        #     不补的话后期链救不回来（只能改已有声音的形状，不能造出没有的声音）。
+        #     `VM_COVER_GAPFILL=0` 可关，供纯 A/B。
+        try:
+            import cover_gapfill
+
+            if cover_gapfill.enabled():
+                filled = cover_gapfill.apply_in_place(rvc_out, vocals)
+                if filled:
+                    print(f"[cover] 掉音补洞 {filled} 帧（−14dB）", flush=True)
+        except Exception as e:  # 补洞失败不影响主流程
+            print(f"[cover] 掉音补洞跳过: {e}", flush=True)
+
         COVER_STATE.update(step="mix", percent=85.0, message="正在与伴奏合成…")
 
         # ⑤ 合回伴奏。auto_gain=True（默认）时按实测 RMS 自动配平人声：
