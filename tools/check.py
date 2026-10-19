@@ -302,6 +302,14 @@ FAST_TESTS = [
     # 过采样数据集的权重/时长账（约 0.2s，纯计划函数）：训练集构建错了只能在
     # 训完 25 分钟 GPU 之后才发现。
     "m2_server/tests/test_cover_singdom_dataset.py",
+    # 神经带宽扩展（UniverSR）的两层闸（约 0.3s，纯 mock/纯静态，不 import torch）：
+    # ① `cover_bwe` 的开关与"缺环境要降级、不许把整条翻唱搞失败"；
+    # ② 子进程跑手与实验脚本的结构约束 —— 后端不得 import universr/timm，
+    #    张量入口必须先把波形真正降到 input_sr 再喂（2026-10-19 就因为把 48k 张量
+    #    配 input_sr=16000，模型当成 16k 再升 3 倍，整段被拉慢 3 倍而**没有任何报错**，
+    #    指标长得像"没补"）。这类错法全都静默，必须钉在提交那一刻。
+    "m2_server/tests/test_cover_bwe.py",
+    "m2_server/tests/test_cover_bwe_universr.py",
 ]
 
 
