@@ -56,12 +56,12 @@ def test_experiment_imports_without_the_model_env():
 
 
 def test_rows_and_arm_files_agree():
-    """页面四行必须在臂表里、文件名互不重复（少一行 = 静默少显示一条路）。"""
+    """页面每一行必须在臂表里、文件名互不重复（少一行 = 静默少显示一条路）。"""
     keys = [k for k, _, _ in cd.ROWS]
     assert set(keys) <= set(cd.ARM_FILES), set(keys) - set(cd.ARM_FILES)
     vals = list(cd.ARM_FILES.values())
     assert len(set(vals)) == len(vals), vals
-    for k in ("00_source", "A_dry", "D1_bwe", "D2_bwe_no_air"):
+    for k in ("00_source", "A_dry", "D1_bwe", "D2_bwe_no_air", "D3_bwe_tilted"):
         assert k in cd.ARM_FILES, k
 
 
@@ -145,6 +145,55 @@ def test_excerpt_stats_on_synthetic_singing():
     assert s["frac_ge300"] == 0.0
 
 
+def test_hf_tilt_attenuates_high_band_and_keeps_low_energy():
+    """滚降整形：低频带能量不变、高频带按 db_per_oct 衰减、长度守恒。
+
+    判据是**频带能量**不是逐样本：整段 FFT 改高频 bin 会通过 irfft 的线性
+    叠加轻微影响每个样本（docstring 已写明），低频带 RMS 相对差 < 0.1% 才对。
+    斜率核对照带心中值：9.5k（8–11k）与 13.5k（11–16k），理论差
+    −14 × log2(13.5/9.5) = −7.1dB。
+    """
+    sr = 40000
+    rng = np.random.default_rng(11)
+    t = np.arange(int(3.0 * sr)) / sr
+    y = (0.4 * np.sin(2 * np.pi * 200 * t) + 0.2 * np.sin(2 * np.pi * 5000 * t)
+         + 0.1 * rng.standard_normal(len(t))).astype(np.float32)
+    out, info = cd._hf_tilt(y, sr)
+    assert out.shape == y.shape and out.dtype == np.float32
+    assert info["db_per_oct"] == cd.TILT_DB_PER_OCT and info["from_hz"] == cd.TILT_FROM_HZ
+    lo_in = float(cd.hfb.rms(cd.hfb.bandpass(y.astype(np.float64), sr, 0.0, 7000.0)))
+    lo_out = float(cd.hfb.rms(cd.hfb.bandpass(out.astype(np.float64), sr, 0.0, 7000.0)))
+    assert abs(lo_out - lo_in) / lo_in < 1e-3, (lo_in, lo_out)
+    d_band = (cd.hfb.rel_band_db(out.astype(np.float64), sr, (11000, 16000))
+              - cd.hfb.rel_band_db(out.astype(np.float64), sr, (8000, 11000)))
+    d_in = (cd.hfb.rel_band_db(y.astype(np.float64), sr, (11000, 16000))
+            - cd.hfb.rel_band_db(y.astype(np.float64), sr, (8000, 11000)))
+    assert (d_band - d_in) == pytest.approx(-7.1, abs=1.5), (d_in, d_band)
+
+
+def test_hf_tilt_zero_slope_is_identity():
+    """db_per_oct=0 → 增益恒 1 → 逐样本等于输入（防"整形恒衰减"的假实现）。
+
+    注意幅度要压在峰值守卫（ceiling 0.99）以下，否则 _peak_guard 的等比缩
+    会被误读成"整形动了信号"。
+    """
+    sr = 40000
+    rng = np.random.default_rng(12)
+    y = (rng.standard_normal(sr).astype(np.float32) * 0.15).clip(-0.9, 0.9)
+    out, info = cd._hf_tilt(y, sr, db_per_oct=0.0)
+    assert info["db_per_oct"] == 0.0
+    assert float(np.max(np.abs(out - y))) == pytest.approx(0.0, abs=1e-5)
+
+
+def test_hf_tilt_never_raises_peak():
+    """纯衰减不许把峰值抬上去（峰值守卫在，且输入满幅时也不许超 1）。"""
+    sr = 40000
+    rng = np.random.default_rng(13)
+    y = (rng.standard_normal(sr).astype(np.float32) * 0.9).clip(-0.99, 0.99)
+    out, _ = cd._hf_tilt(y, sr)
+    assert float(np.max(np.abs(out))) <= float(np.max(np.abs(y))) + 1e-6
+
+
 # ---------------------------------------------------------------- 集成（全合成）
 
 def _write_wav(path: Path, y: np.ndarray, sr: int) -> Path:
@@ -183,7 +232,11 @@ def wired(tmp_path, monkeypatch):
     def fake_enhance(src: Path, dst: Path, *, input_sr: int, seed: int) -> dict:
         calls["enhance"] = {"input_sr": input_sr, "seed": seed}
         y, s = sf.read(str(src), dtype="float32")
-        sf.write(str(dst), y, s, subtype="PCM_16")
+        # BWE 的产物一定有 8k 以上内容（它干的就是这个）—— 合成版加一份高频
+        # 噪声，否则滚降整形在低频合成信号上几乎无操作，D3/D1 差异测不出来
+        rng = np.random.default_rng(5)
+        hf = (0.05 * rng.standard_normal(len(y))).astype(np.float32)
+        sf.write(str(dst), y + hf, s, subtype="PCM_16")
         return {"seconds_in": 28.0, "load_s": 0.1, "run_s": 1.0,
                 "ode": "midpoint", "seed": seed, "peak": 0.5}
 
@@ -228,11 +281,17 @@ def test_run_writes_all_arms_with_selfcheck_and_seed(wired, tmp_path):
     assert meta["seed"] == 1234 and meta["input_sr"] == 16000
     assert meta["selfcheck"]["tier"] == "逐样本一致"
     assert meta["selfcheck"]["max_abs_diff"] < cd.SELFCHECK_TOL
+    assert meta["tilt"]["db_per_oct"] == cd.TILT_DB_PER_OCT
     assert wired["enhance"] == {"input_sr": 16000, "seed": 1234}
     # D1 有 treble、D2 没有 → 两者必须不同（单变量差的是空气 EQ）
     d1, _ = sf.read(str(arms["D1_bwe"]), dtype="float32")
     d2, _ = sf.read(str(arms["D2_bwe_no_air"]), dtype="float32")
     assert float(np.max(np.abs(d1 - d2))) > 1e-3
+    # D3 = D1 再过滚降整形 → 必须与 D1 不同，且走的是带 treble 的同一条链
+    d3, _ = sf.read(str(arms["D3_bwe_tilted"]), dtype="float32")
+    assert float(np.max(np.abs(d1 - d3))) > 1e-3
+    assert len(wired["chains"]) == 4, wired["chains"]  # A/D1/D2/D3 各跑一次链
+    assert sum("treble" in c for c in wired["chains"]) == 3  # 只有 D2 去掉了 air
     # A 臂必须与产品后期版同段一致（自检真的在跑，不是装饰）
     a, _ = sf.read(str(arms["A_dry"]), dtype="float32")
     prod, _ = sf.read(str(cd.POST_SRC), dtype="float32")

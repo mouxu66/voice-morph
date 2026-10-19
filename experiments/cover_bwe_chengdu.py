@@ -12,6 +12,7 @@
       rvc_dry 切段（不是重转的——重转会有 seed/worker 噪声，两个变量一起动）
     - 同一个 seed=1234、input_sr=16000（有效带宽 8k 截止）
     - A = 现役产品后期链；D1 = BWE + 同一条链；D2 = BWE + 同一条链去掉 +6dB@7k
+    - D3 = BWE + 8k 以上滚降整形 + 同一条链（见下面「D3 的来历」）
     - 源（原唱同段）只做亮度参照，**不是真值**（"你唱这一句的 8–12k"不存在）
     - ★ 自检：A 臂与产品 `P0_原调_post.wav` 同段比对，两级判定——
         ① 逐样本一致（max|diff| ≤ 1e-3）；② 等效一致（corr ≥ 0.999 且
@@ -25,6 +26,20 @@
 切段（`scan` 步骤实测，2026-10-19，0.5s 窗中位 + 静音门，全曲 641 窗）
     239.5s 起 28.0s：voiced 0.919 / f0 中位 183.9Hz（全曲 183.8）/ ≥300Hz 占比 0.0
     即整段落在唱歌素材覆盖区——「高音区音色覆盖」这个病在这一段上不犯。
+
+D3 的来历（2026-10-19 深夜，用户听完 A/B 页反馈"BWE 两臂带电音"）
+    先把"电音"拆开量，再决定加不加这一臂：
+    - 周期峰（m1p 修正尺子，逐 lag 归一）：原唱 p10 **0.610**（气声足）→
+      RVC 干声 p10 **0.938**（缺气声，模型特性）→ A 0.935 / D1 0.934 / D2 0.935。
+      **BWE 对周期峰的影响是 0.0007（噪声级）** —— "缺非周期成分"的电音在
+      RVC 干声出来时就有，三臂一样强，BWE 不引入也不加重。
+    - 高频质地：BWE 臂的 8–12k 谐波集中度 0.439 vs 原唱 0.459（无"正弦叠加"
+      金属味）；8–12k 包络与 0–4k 包络相关 0.217 vs 原唱 0.143（比真高频还锁相）。
+    - ★ 但有一个真嫌疑：**BWE 生成的 11–16k 比 8–11k 还高**（D1 +4.2dB、
+      D2 +2.4dB 上翘），而真实人声高频是滚降的（原唱同段 **−5.5dB**）。
+      凭空编出来的频谱形状 → "嘶嘶/电音"的头号嫌疑。D3 = BWE 输出过
+      8k 以上 −14dB/oct 滚降，把上翘压回接近原唱形状：
+      **③ 电而 ⑤ 不电 = 上翘是元凶；③⑤ 都电 = 回到"RVC 缺气声"（② 也一样）**。
 
 用法：
     ./.venv/Scripts/python.exe experiments/cover_bwe_chengdu.py scan   # 重扫最佳切段
@@ -74,6 +89,12 @@ PRODUCT_CHAIN = {"air_db": 6.0, "air_hz": 7000.0}
 SELFCHECK_TOL = 1e-3   # ① 逐样本一致（合成/同构建 ffmpeg 可达）
 SELFCHECK_EQUIV = dict(corr_min=0.999, max_diff=0.05, peak_rel=0.02)  # ② 等效一致
 
+#: D3 臂的滚降整形：BWE 生成的 11–16k 比 8–11k 高（上翘，见 docstring「D3 的
+#: 来历」），8k 以上按 −14dB/oct 压回接近原唱的滚降形状（原唱 8–11k→11–16k
+#: 差 −5.5dB；D1 是 +4.2dB，需要在中位 13.5k 处降约 10dB）。
+TILT_FROM_HZ = 8000.0
+TILT_DB_PER_OCT = -14.0
+
 #: 臂 → 文件名。★ run 与 page 只认这张表（2026-10-19 在 hf_bands 上踩过：
 #: page 单独跑会读到没过后期链的中间产物，读数"看起来正常"但整臂错）。
 ARM_FILES: dict[str, str] = {
@@ -81,12 +102,14 @@ ARM_FILES: dict[str, str] = {
     "A_dry": "A_dry_post.wav",
     "D1_bwe": "D1_bwe_post.wav",
     "D2_bwe_no_air": "D2_bwe_no_air_post.wav",
+    "D3_bwe_tilted": "D3_bwe_tilted_post.wav",
 }
 ROWS = [
     ("00_source", "① 原唱这一段（亮度参照，非真值）", "源的高频长什么样"),
     ("A_dry", "② A · 现役产品链（不用 UniverSR）", "你在《成都》页听过的 P0 后期版"),
     ("D1_bwe", "③ D1 · UniverSR + 同一条产品链 ★", "唯一差别：8–12k 由模型生成"),
     ("D2_bwe_no_air", "④ D2 · UniverSR + 去掉 +6dB@7k", "已有真高频后，这个 shelf 还该不该留"),
+    ("D3_bwe_tilted", "⑤ D3 · UniverSR + 8k 以上滚降整形", "把 BWE 的 11–16k 上翘压回原唱形状，验证上翘是不是你听到的「电音」"),
 ]
 
 
@@ -170,11 +193,33 @@ def _embed_mp3(path: Path) -> str:
     return b64
 
 
+def _hf_tilt(y: np.ndarray, sr: int, *, from_hz: float = TILT_FROM_HZ,
+             db_per_oct: float = TILT_DB_PER_OCT) -> tuple[np.ndarray, dict]:
+    """整段频谱滚降整形：`from_hz` 以上按每倍频程 `db_per_oct` 倾斜（零相位）。
+
+    为什么整段 FFT 而不是逐帧 STFT：滚降是**时不变**谱形操作，逐帧反而会在帧
+    边界造伪影；整段 rfft 改幅度再 irfft 天然零相位（与 hfb.spectral_fold 同族）。
+    注意：改高频 bin 会通过 irfft 的线性叠加**轻微影响每个样本**（不是"低频
+    逐样本不变"），所以判据是**频带能量**不变（低频带 RMS 相对差 < 0.1%），
+    不是逐样本。db_per_oct=0 时增益恒 1，输出才逐样本等于输入。
+    """
+    x = np.asarray(y, dtype=np.float64)
+    X = np.fft.rfft(x)
+    fr = np.fft.rfftfreq(len(x), 1.0 / sr)
+    g = np.ones_like(fr)
+    up = fr > from_hz
+    g[up] = 10.0 ** (float(db_per_oct) * np.log2(fr[up] / float(from_hz)) / 20.0)
+    out = np.fft.irfft(X * g, n=len(x))
+    out, pk_gain = hfb._peak_guard(out)
+    return out.astype(np.float32), {"from_hz": from_hz, "db_per_oct": db_per_oct,
+                                    "peak_gain": round(float(pk_gain), 4)}
+
+
 # ---------------------------------------------------------------- 跑臂
 
 def run(out_dir: Path = OUT_DIR, *, start: float = EXCERPT_START,
         seconds: float = EXCERPT_SECONDS, seed: int = SEED) -> dict[str, Path]:
-    """A（不用 BWE）/ D1（BWE + 产品链）/ D2（BWE 去空气 EQ）三臂 + 源参照。"""
+    """A（不用 BWE）/ D1（BWE + 产品链）/ D2（BWE 去空气 EQ）/ D3（BWE + 滚降整形）四臂 + 源参照。"""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -241,8 +286,15 @@ def run(out_dir: Path = OUT_DIR, *, start: float = EXCERPT_START,
 
     d1_path = out_dir / ARM_FILES["D1_bwe"]
     d2_path = out_dir / ARM_FILES["D2_bwe_no_air"]
+    d3_path = out_dir / ARM_FILES["D3_bwe_tilted"]
     _chain_then_cut(d40, d1_path, chain)
     _chain_then_cut(d40, d2_path, chain_no_air)
+    # D3：BWE 输出先过 8k 以上滚降整形（压 11–16k 上翘），再走同一条产品链
+    tilt_in, _ = hfb._read(d40)
+    tilted, tilt_info = _hf_tilt(tilt_in, 40000)
+    tilt_path = out_dir / "D_bwe_tilted_40k.wav"
+    hfb._write(tilt_path, tilted, 40000)
+    _chain_then_cut(tilt_path, d3_path, chain)
 
     stats = excerpt_stats(exc, dsr)
     arms = {k: out_dir / v for k, v in ARM_FILES.items()}
@@ -252,7 +304,7 @@ def run(out_dir: Path = OUT_DIR, *, start: float = EXCERPT_START,
         "dry_src": str(DRY_SRC), "vocal_src": str(VOCAL_SRC),
         "start": start, "seconds": seconds, "pre_roll_s": PRE_ROLL_S,
         "chain": chain, "chain_no_air": chain_no_air,
-        "seed": seed, "input_sr": INPUT_SR, "univer": info,
+        "seed": seed, "input_sr": INPUT_SR, "univer": info, "tilt": tilt_info,
         "selfcheck": {"max_abs_diff": diff, "corr": corr, "peak_a": pk_a,
                       "peak_product": pk_p, "peak_rel": peak_rel, "tier": tier},
         "excerpt": stats,
@@ -294,7 +346,7 @@ def build_page(out_dir: Path = OUT_DIR, *, ref: Path | None = REF) -> Path:
     exc = meta.get("excerpt") or {}
     sc = meta.get("selfcheck") or {}
     html = """<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>成都 A/B · UniverSR 用 vs 不用</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>成都 A/B · UniverSR 用 vs 不用（含滚降整形臂）</title>
 <style>
  body{font-family:"Microsoft YaHei",system-ui,sans-serif;background:#f5f6f8;color:#222;
       max-width:900px;margin:24px auto;padding:0 16px;line-height:1.7}
@@ -304,16 +356,17 @@ def build_page(out_dir: Path = OUT_DIR, *, ref: Path | None = REF) -> Path:
  audio{width:100%;height:34px} .missing{color:#b00;font-size:13px}
  .sub{color:#555;font-size:13.5px} footer{margin:28px 0;color:#888;font-size:12px}
 </style></head><body>
-<h1>《成都》A/B · UniverSR <b>用 vs 不用</b>（唱素材罩得住的中音歌）</h1>
+<h1>《成都》A/B · UniverSR <b>用 vs 不用</b> + 滚降整形臂（唱素材罩得住的中音歌）</h1>
 <p class="sub">为什么是这首歌：m1q 的六臂全在低音歌《好久不见》（147Hz）上测。本页换成<b>中位 183.8Hz 的《成都》</b>，
 切段 __START__s 起 __SECONDS__s（voiced __VOICED__、f0 中位 __MED__Hz = 全曲中位、≥300Hz 占比 __GE__）——
 整段落在唱歌素材覆盖区（素材中位 130Hz、singdom 过采样后唱歌占 24.6%），<b>「高音区音色覆盖」这个病在这一段不犯</b>。</p>
 <p class="sub">单变量：同一段产品干声（supp2026 / ir 0.5 / pitch 0 的 P0 原调切段）、同一条现役产品后期链
-（+6dB@7k + De-Ess + 轻压缩）、同一个 seed，<b>唯一差别是 8–12k 怎么来</b>。A 臂已与产品后期版同段自检：
+（+6dB@7k + De-Ess + 轻压缩）、同一个 seed，<b>唯一差别是 8k 以上怎么来</b>（不补 / BWE 生成 / BWE+去 shelf / BWE+滚降整形）。A 臂已与产品后期版同段自检：
 __TIER__（max|diff| __DIFF__、corr __CORR__、峰值 __PKA__/__PKP__ —— 产品由 app 管线生成，与本机 ffmpeg 有滤波器实现级差异，不影响 A/B 单变量）。</p>
-<p class="sub">请只听三件事：<b>① ② → ③ 是不是真的"亮而不沙"，高频里有没有凭空编出来的嘶声/金属味</b>（神经超分最典型的失败形态）；
-<b>② ③ ④ 哪个更自然</b>（已有真高频之后，那个 +6dB@7k 还该不该留）；
-<b>③ 整体有没有"更像一个人在对你唱"</b>。都是干声口径（后期链后、未混伴奏），周期度/包络类指标必须干声才准。</p>
+<p class="sub">请只听三件事：<b>① ③ vs ② —— BWE 臂是不是"更亮所以电音更明显"</b>：
+周期峰逐帧量过（原唱 p10 0.610 → RVC 干声 0.938 → A/D1/D2 都在 0.934–0.935），缺气声的电音在 RVC 干声出来时就有，②③④⑤ 一样强，<b>不是 BWE 引入的</b>；
+<b>② ③ vs ⑤ —— 把 11–16k 的上翘（D1 比 8–11k 高 4.2dB，真实人声是低 5.5dB）压掉后还电不电</b>：⑤ 不电而 ③ 电 = 上翘是元凶，③⑤ 都电 = 回到第 ① 条结论；
+<b>③ ③ ④ ⑤ 哪个最自然</b>（+6dB@7k 该不该留 / 上翘该不该压）。都是干声口径（后期链后、未混伴奏），周期度/包络类指标必须干声才准。</p>
 <p class="sub">口径：① 原唱那条<b>不是真值</b>（这是你的音色唱别人的歌），只给亮度参照；
 「像你」只做同输入同 seed 的相对比较（CAM++ 是语音尺子，歌声上不可读绝对值）。
 本次推理：__INFO__</p>
