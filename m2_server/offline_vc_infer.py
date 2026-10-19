@@ -71,6 +71,11 @@ PROTECT = 0.33
 RMS_MIX_RATE = 0.25
 POST_LOWPASS_HZ = 11000.0
 
+#: 推理可选的 F0 提取器（RVC `infer/vc/pipeline.py` 只认这三个）。
+#: `rmvpe` 是现役；`fcpe` 是 2026-10-19 加的对比档（歌声上可能更稳，未产品化）。
+F0_METHODS = ("rmvpe", "pm", "fcpe")
+DEFAULT_F0_METHOD = "rmvpe"
+
 
 def apply_infer_seed(seed: int = INFER_SEED) -> int:
     """把 RVC 推理的随机源钉死（SineGen 的谐波初相 + 噪声激励），返回实际用的 seed。
@@ -275,6 +280,7 @@ def convert_audio(
     protect: float = PROTECT,
     rms_mix_rate: float = RMS_MIX_RATE,
     lowpass_hz: float = POST_LOWPASS_HZ,
+    f0_method: str = DEFAULT_F0_METHOD,
 ) -> "np.ndarray":
     """把 16k float 音频转成目标音色，返回后处理后的 float32 数组（engine.tgt_sr）。
 
@@ -286,6 +292,8 @@ def convert_audio(
     后三个旋钮（2026-10-14 加）默认即现役值，**默认路径的行为逐字节不变**；
     它们只是让实验能扫它们，而不是复制一份 `convert_audio`。
     """
+    if f0_method not in F0_METHODS:
+        raise ValueError(f"不支持的 f0_method: {f0_method!r}（只认 {F0_METHODS}）")
     apply_infer_seed(seed)
     import numpy as np
 
@@ -300,7 +308,7 @@ def convert_audio(
         audio_in,
         [0.0, 0.0, 0.0],
         pitch,
-        "rmvpe",
+        f0_method,
         engine.index,
         index_rate if engine.index else 0.0,
         engine.if_f0,
