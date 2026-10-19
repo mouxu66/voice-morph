@@ -283,6 +283,25 @@ FAST_TESTS = [
     # 约 0.1s，全程 mock 子进程。两个变异各自确认会红。
     "m2_server/tests/test_lead_sep.py",
     "m2_server/tests/test_lead_sep_runner.py",
+    # 翻唱掉音补洞（约 0.3s，纯 numpy）：产品**默认开着**的一步 —— 源够响且输出
+    # 近乎静音时才把源按 −14dB 补回。两条口径退化后都不报错，只表现为"听感不对"：
+    # 阈值放宽 → 把原唱混进来；补丁边缘硬切 → 比原来的断字更难听。
+    "m2_server/tests/test_cover_gapfill.py",
+    # 音高台阶的尺子（约 1.2s，纯合成信号）：周期峰是本轮所有"电音"结论的唯一
+    # 证据来源，而它的旧实现（`ac/ac[0]`）本身就带音高偏置 —— 尺子退化 = 结论反向。
+    "m2_server/tests/test_elec_ruler.py",
+    # 非周期残差的剂量实验（约 0.4s，纯 numpy STFT）：谐波必须扣干净（留旁瓣
+    # 等于把"更响的谐波"当气声叠回去）、残差必须还是同一量级、静音段不许被填。
+    "m2_server/tests/test_elec_aperiodic.py",
+    # 8–12k 三臂的纯函数（约 0.9s，scipy 滤波）：等带宽斜率（否则白噪声被读成
+    # +2.15dB/oct）、零相位注入、门控、t 臂同一目标亮度、页面与产物路径表一致。
+    "m2_server/tests/test_cover_hf_bands.py",
+    # 唱歌域过采样 A/B 的结构闸（约 0.2s）：最贵的一类错是「拿训练集里的素材比」，
+    # 那样比的只是"背得多熟"，页面照样出数字 → 钉在提交那一刻。
+    "m2_server/tests/test_cover_singdom_ab.py",
+    # 过采样数据集的权重/时长账（约 0.2s，纯计划函数）：训练集构建错了只能在
+    # 训完 25 分钟 GPU 之后才发现。
+    "m2_server/tests/test_cover_singdom_dataset.py",
 ]
 
 
