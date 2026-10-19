@@ -19,8 +19,8 @@
     （8–12k 实测 −55dB，等于空的），所以默认 16000；源高频移植那条臂才需要 24000。
 
 用法（由 `experiments/cover_bwe_universr.py` 调用，也可手跑）：
-    D:/变声/.venv-universr/Scripts/python.exe tools/universr_enhance.py \
-        --input media/covers/song2/hf8k/rvc_dry.wav --output /tmp/bwe_d.wav --input-sr 16000
+    ./.venv/Scripts/python.exe tools/universr_enhance.py \
+        --input media/covers/song2/hf8k/rvc_dry.wav --output media/covers/song2/bwe/D_bwe_48k.wav --input-sr 16000
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, OSError, ValueError):
         pass
-    ap = argparse.ArgumentParser(description="UniverSR 单文件超分（独立 venv）")
+    ap = argparse.ArgumentParser(description="UniverSR 单文件超分（主 .venv，子进程调用）")
     ap.add_argument("--input", required=True, type=Path)
     ap.add_argument("--output", required=True, type=Path)
     ap.add_argument("--input-sr", type=int, default=16000, choices=[8000, 12000, 16000, 24000],
