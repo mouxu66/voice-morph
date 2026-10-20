@@ -189,6 +189,9 @@ m1_workshop/_*.json
 /.tmp_*
 /.docx_*/
 /.preview_*/
+# 外部对照工程（克隆的第三方仓库 + 其 checkpoints），只为实验，不进仓库
+/_ext/
+/.venv-svc/
 /.skills-staging/
 /.npm-cache/
 /.acl-recovery/

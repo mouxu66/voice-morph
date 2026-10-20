@@ -323,6 +323,7 @@ FAST_TESTS = [
     "m2_server/tests/test_cover_bwe_chengdu_full.py",
     "m2_server/tests/test_cover_elec_attrib.py",
     "m2_server/tests/test_voice_dataset_check.py",
+    "m2_server/tests/test_cover_seedvc_probe.py",
 ]
 
 
