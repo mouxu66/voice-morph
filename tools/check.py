@@ -324,6 +324,10 @@ FAST_TESTS = [
     "m2_server/tests/test_cover_elec_attrib.py",
     "m2_server/tests/test_voice_dataset_check.py",
     "m2_server/tests/test_cover_seedvc_probe.py",
+    # 8–12k「跟随嗓音 vs 静态嘶声」（约 0.3s，纯合成）：这条决定 m1u 的 P1 能不能只靠
+    # 重录参照音上线。守卫两个方向 —— ① 静态嘶声必须报出来而不是 `raise`（第一版就是这样，
+    # 最该报的样本反而罢工）；② 必须对响度不敏感，否则 RVC 干声和 Seed-VC 输出不在一条尺子上。
+    "m2_server/tests/test_cover_hf_tracking.py",
 ]
 
 
