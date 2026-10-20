@@ -322,6 +322,7 @@ FAST_TESTS = [
     # 要对比的东西；③ 整曲九条若照切片版内嵌 base64，页面 60MB 打不开。三条都钉在提交那一刻。
     "m2_server/tests/test_cover_bwe_chengdu_full.py",
     "m2_server/tests/test_cover_elec_attrib.py",
+    "m2_server/tests/test_voice_dataset_check.py",
 ]
 
 
