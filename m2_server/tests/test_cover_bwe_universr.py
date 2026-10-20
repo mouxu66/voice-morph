@@ -125,3 +125,46 @@ def test_runner_prefers_local_weights():
     src = RUNNER.read_text(encoding="utf-8")
     assert "universr_repo" in src and "ckpts" in src, "跑手应默认指向 universr_repo/ckpts/universr-audio"
     assert "pytorch_model.bin" in src, "本地权重存在性判据应看 pytorch_model.bin"
+
+
+# ---------------------------------------------------------------- 跑手的自检守卫（2026-10-20）
+
+def _runner_mod():
+    """加载 `tools/universr_enhance.py`（模块级只有 argparse/pathlib/json，可安全 import）。"""
+    spec = importlib.util.spec_from_file_location("universr_enhance_under_test", RUNNER)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["universr_enhance_under_test"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_f0_skips_leading_silence():
+    """整曲开头是静音时，f0 自检必须往后找有声窗，不能读 0 就放行。
+
+    《成都》前 10s 是 −81dB；旧实现取前 3s → 0.0 → `else: octave=0.0` 静默放行，
+    整曲那次 UniverSR 的自检其实是**假绿**（2026-10-20 实测 octave_shift 记成 0.0）。
+    """
+    import numpy as np
+
+    sr = 16000
+    silence = np.zeros(int(2.5 * sr))
+    t = np.arange(int(3.0 * sr)) / sr
+    tone = 0.4 * np.sin(2 * np.pi * 200.0 * t)
+    f0 = _runner_mod()._f0(np.concatenate([silence, tone]), sr)
+    assert 150.0 < f0 < 260.0, f"前导静音把 f0 读成了 {f0}"
+
+
+def test_f0_returns_zero_only_for_fully_silent_input():
+    import numpy as np
+
+    sr = 16000
+    assert _runner_mod()._f0(np.zeros(sr * 8), sr) == 0.0
+
+
+def test_runner_has_duration_guard_and_does_not_fake_octave():
+    """时长守卫必须在（拉慢 3 倍一定改时长）；读不出 f0 时 octave 记 None 而不是 0.0。"""
+    src = RUNNER.read_text(encoding="utf-8")
+    assert "secs_out - secs_in" in src, "缺时长守卫：拉慢 3 倍最硬的判据是时长"
+    assert '"f0_checked"' in src, "必须如实记录 f0 自检有没有生效"
+    assert '"octave_shift": round(octave, 3) if octave is not None else None' in src, \
+        "读不出 f0 时不许把 octave 写成 0.0（那会把「没验过」伪装成「没偏移」）"

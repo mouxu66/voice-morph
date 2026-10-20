@@ -42,11 +42,27 @@ DEFAULT_MODEL = _default_model()
 
 
 def _f0(x, sr: int) -> float:
-    """前 3 秒的自相关基频（静音返回 0）。只用来抓"整段被拉慢"这类离谱错误。"""
+    """自相关基频（**跳过静音前导**；整段静音返回 0）。
+
+    ★ 为什么不能只取前 3 秒（2026-10-20 实测）：整曲开头常是静音 —— 《成都》前 10s
+    只有 −81dB，取前 3s 读到的就是 0.0；而 `main()` 原来的 `else: octave = 0.0`
+    会把「读不出来」当成「没有偏移」**静默放行**，自检变成假绿。
+    改成往前找第一个 RMS ≥ 1e-3 的 3s 窗，找不到才返回 0（那才是真的静音文件）。
+    """
     import numpy as np
 
-    seg = np.asarray(x, dtype=np.float64)[: sr * 3]
-    if seg.size < sr // 2 or float(np.sqrt((seg ** 2).mean())) < 1e-3:
+    x = np.asarray(x, dtype=np.float64)
+    seg_len = int(sr * 3)
+    if x.size < seg_len // 2:
+        return 0.0
+    step = max(1, int(sr // 2))
+    seg = None
+    for i in range(0, max(1, x.size - seg_len + 1), step):
+        cand = x[i:i + seg_len]
+        if cand.size >= seg_len // 2 and float(np.sqrt((cand ** 2).mean())) >= 1e-3:
+            seg = cand
+            break
+    if seg is None:
         return 0.0
     seg = seg - seg.mean()
     ac = np.correlate(seg, seg, "full")[seg.size - 1:]
@@ -158,25 +174,36 @@ def main() -> int:
         out = out * (0.99 / peak)
 
     # ③ 自检：时长/音高对不对（挡住上面那类"拉慢 3 倍"的假绿）
+    #
+    # ★ 时长守卫比音高守卫硬（2026-10-20 加）：拉慢 3 倍一定改变时长，而音高检测
+    #   会因为"开头是静音 / 素材本来就没明显基频"读不出来。f0 只做辅助证据。
+    secs_in = len(mono) / float(sr)
+    secs_out = float(out.shape[-1] / 48000)
+    if secs_in > 0 and abs(secs_out - secs_in) / secs_in > 0.02:
+        raise SystemExit(
+            f"输出时长 {secs_out:.2f}s 与输入 {secs_in:.2f}s 差超过 2%"
+            f"——采样率/带宽口径不一致，别拿这条结果做 A/B")
     f0_in = _f0(mono, sr)
     f0_out = _f0(out.squeeze(0).numpy(), 48000)
-    if f0_in > 0 and f0_out > 0:
+    f0_checked = bool(f0_in > 0 and f0_out > 0)
+    if f0_checked:
         octave = float(np.log2(f0_out / f0_in))
         if abs(octave) > 0.5:
             raise SystemExit(
                 f"输出音高偏移 {octave:+.2f} 八度（输入 {f0_in:.0f}Hz → 输出 {f0_out:.0f}Hz）"
                 f"——极可能是采样率/带宽口径不一致，别拿这条结果做 A/B")
     else:
-        octave = 0.0
-    secs_out = float(out.shape[-1] / 48000)
+        # 不假装"没有偏移"：读不出来就如实记 None，让调用方知道这项没验过
+        octave = None
     a.output.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(a.output), out.squeeze(0).numpy(), 48000, subtype="PCM_16")
     print(json.dumps({"ok": True, "input": str(a.input), "output": str(a.output),
                       "input_sr_effective": in_sr, "file_sr": int(sr),
-                      "seconds_in": round(len(mono) / sr, 2),
+                      "seconds_in": round(secs_in, 2),
                       "seconds_out": round(secs_out, 2), "out_sr": 48000,
                       "f0_in": round(f0_in, 1), "f0_out": round(f0_out, 1),
-                      "octave_shift": round(octave, 3),
+                      "f0_checked": f0_checked,
+                      "octave_shift": round(octave, 3) if octave is not None else None,
                       "peak": round(peak, 4), "load_s": round(t_load, 2), "run_s": round(t_run, 2),
                       "chunks": tried, "chunk_s": a.chunk_s, "overlap_s": a.overlap_s,
                       "ode": f"{a.ode_method}/{a.ode_steps}", "seed": a.seed,
