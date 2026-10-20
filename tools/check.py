@@ -316,6 +316,11 @@ FAST_TESTS = [
     # ② 产品后期链由 app 管线生成、与本机 ffmpeg 存滤波器实现级差异（corr
     # 0.99995 但 max|diff| 0.027），自检必须两级判定（逐样本 / 等效一致）才放行。
     "m2_server/tests/test_cover_bwe_chengdu.py",
+    # 整曲五臂 + 伴奏（约 0.5s，纯 mock/纯合成）：切片版判"电不电"，这一版判**整首平衡**，
+    # 于是新踩三种全静默的错法 —— ① 混音滤镜漏 `normalize=0` 会按输入数除权（人声掉 6dB，
+    # 只表现为"人声有点小"）；② 每臂各自 auto 配平会把 D 臂多出来的高频压回去，正好抹掉
+    # 要对比的东西；③ 整曲九条若照切片版内嵌 base64，页面 60MB 打不开。三条都钉在提交那一刻。
+    "m2_server/tests/test_cover_bwe_chengdu_full.py",
 ]
 
 
