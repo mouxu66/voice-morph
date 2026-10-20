@@ -57,10 +57,15 @@ def _row(r: dict) -> str:
     # 行底色直接跟手臂类别走：A4 是“对照/音色跑掉”，不能因为“good”以外的标签就洗成绿
     row_cls = {"good": "good", "bad": "bad", "warn": "warn"}.get(str(r.get("cls")), "")
     cls = f' class="{row_cls}"' if row_cls else ""
-    return (f"<tr{cls}><td>{r['name']}</td><td>{f(r.get('f0'), '.0f')}</td>"
-            f"<td>{f(r.get('hf_db'), '.1f')}</td><td>{f(r.get('r_env'), '.2f')}</td>"
-            f"<td>{f(r.get('slope'), '.2f')}</td><td>{f(r.get('gap_drop'), '.1f')}</td>"
-            f"<td>{f(r.get('secs_cos'), '.3f')}</td><td>{r.get('verdict', '—')}</td></tr>")
+    # data-l 是窄屏堆叠布局的字段名（≤560px 时表头不显示，靠它给每个值标名）
+    return (f"<tr{cls}><td class=\"nm\" data-l=\"版本\">{r['name']}</td>"
+            f"<td data-l=\"基频\">{f(r.get('f0'), '.0f')}</td>"
+            f"<td data-l=\"8–12k\">{f(r.get('hf_db'), '.1f')}</td>"
+            f"<td data-l=\"r_env\">{f(r.get('r_env'), '.2f')}</td>"
+            f"<td data-l=\"slope\">{f(r.get('slope'), '.2f')}</td>"
+            f"<td data-l=\"气口掉\">{f(r.get('gap_drop'), '.1f')}</td>"
+            f"<td data-l=\"CAM++\">{f(r.get('secs_cos'), '.3f')}</td>"
+            f"<td data-l=\"判读\">{r.get('verdict', '—')}</td></tr>")
 
 
 def build(out: Path, meta: dict) -> Path:
@@ -121,6 +126,24 @@ def build(out: Path, meta: dict) -> Path:
   th,td{{padding:7px 8px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}}
   th:first-child,td:first-child{{text-align:left;font-family:inherit}}
   td:last-child{{white-space:normal;min-width:120px}}
+  /* 窄面板（预览侧栏 ~310–560px）：表格改成一行一卡，字段名走 data-l。
+     固定横滚在这么窄的栏里等于"只能看到两列"，用户不会去拖。 */
+  @media (max-width:560px){{
+    .tablewrap{{overflow:visible}}
+    table{{min-width:0;display:block;font-size:12.5px}}
+    thead{{display:none}}
+    tbody,tr,td{{display:block}}
+    tr{{border:1px solid var(--line);border-radius:8px;margin:8px 0;padding:7px 11px}}
+    tr.good{{border-color:rgba(62,207,142,.35)}}
+    tr.bad{{border-color:rgba(255,95,86,.35)}}
+    tr.warn{{border-color:rgba(240,180,41,.35)}}
+    tr.good td,tr.bad td,tr.warn td{{background:none}}
+    td{{border:0;padding:1.5px 0;display:flex;justify-content:space-between;
+        gap:14px;white-space:normal;text-align:right}}
+    td::before{{content:attr(data-l);color:var(--dim);font-size:11px;font-family:inherit}}
+    td.nm{{font-weight:600;margin-bottom:3px}}
+    td.nm::before{{display:none}}
+  }}
   th:last-child,td:last-child{{text-align:left;font-family:inherit;font-size:12px;color:var(--dim)}}
   thead th{{color:var(--dim);font-weight:500;font-size:11.5px}}
   tr.good td{{background:rgba(62,207,142,.07)}}
