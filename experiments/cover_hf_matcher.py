@@ -63,10 +63,16 @@ def band_levels(y: np.ndarray, sr: int, bands=BANDS) -> dict[str, float]:
     }
 
 
-def eq_curve(target: dict, current: dict, bands=BANDS) -> tuple[np.ndarray, np.ndarray]:
-    """逐带差 → 对数频率上的平滑增益锚点。"""
+def eq_curve(target: dict, current: dict, bands=BANDS,
+             cap_db: float = MAX_GAIN) -> tuple[np.ndarray, np.ndarray]:
+    """逐带差 → 对数频率上的平滑增益锚点。
+
+    `cap_db` 允许调用方收紧上限。2026-10-20 实测：同一套 +18dB 逻辑搬到**降调后的**
+    这一段，slope 从 0.38 跌到 0.29（正好过“距噪底”阈值）—— 上限不是越大约好，
+    要跟着素材的余量走。默认值不变，旧结论不受影响。
+    """
     fs = [np.sqrt(a * b) for a, b in bands]
-    gs = [float(np.clip(target[k] - current[k], 0.0, MAX_GAIN)) for k in target]
+    gs = [float(np.clip(target[k] - current[k], 0.0, float(cap_db))) for k in target]
     f = np.concatenate([[500.0, F_LOW], fs])
     g = np.concatenate([[0.0, 0.0], gs])
     return f, g

@@ -102,6 +102,23 @@ def test_band_levels_is_loudness_invariant():
         assert abs(a[k] - b[k]) < 0.6, f"{k} 随音量变了"
 
 
+def test_eq_curve_cap_is_honored():
+    """cap_db 必须真的夹住增益。
+
+    2026-10-20 实测：同一套 +18dB 逻辑搬到降调后的那一段，slope 从 0.38 跌到 0.29
+    （正好过「噪声底」阈值）—— 上限要跟着素材的余量走，所以它得是参数，
+    并且默认值必须保持 MAX_GAIN，不让旧结论（+18dB）在无提示的情况下被改掉。
+    """
+    m = _mod()
+    target = {k: -30.0 for k in ("5000-6000", "6000-8000", "8000-12000", "12000-16000")}
+    current = {k: -60.0 for k in target}      # 每条都差 30dB
+    _f, g_default = m.eq_curve(target, current)
+    assert max(g_default[2:]) == m.MAX_GAIN == 18.0
+    _f, g_cap = m.eq_curve(target, current, cap_db=12.0)
+    assert max(g_cap[2:]) == 12.0
+    assert all(v >= 0.0 for v in g_cap[2:])   # 不往下减：不把已有内容压掉
+
+
 def test_no_module_level_audio_io():
     """模块级不许读音频 —— import 只应该拿到常量。"""
     import ast

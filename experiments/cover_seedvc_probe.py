@@ -58,8 +58,14 @@ def cut(src: Path, out: Path, start: float, dur: float) -> Path:
     return out
 
 
-def run_seedvc(source: Path, ref: Path, out_dir: Path, steps: int = 30) -> Path:
-    """调 seed-vc 的 CLI。--f0-condition True 是歌声模式的开关。"""
+def run_seedvc(source: Path, ref: Path, out_dir: Path, steps: int = 30,
+               shift: int = 0) -> Path:
+    """调 seed-vc 的 CLI。--f0-condition True 是歌声模式的开关。
+
+    `shift` 是**半音**。`--f0-condition True` 下模型只跟源的音高曲线走，
+    所以源的音区就是你输出音区 —— 唱高一段（比如原曲副歌 330Hz）喂进一个
+    116Hz 的参照音，出来必然是"童声/夹嗓子"。降调靠这个参数，不是靠换源。
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable, "inference.py",
@@ -68,13 +74,18 @@ def run_seedvc(source: Path, ref: Path, out_dir: Path, steps: int = 30) -> Path:
         "--output", str(out_dir),
         "--diffusion-steps", str(steps),
         "--f0-condition", "True",
-        "--semi-tone-shift", "0",
+        "--semi-tone-shift", str(int(shift)),
         "--fp16", "True",
     ]
     env = {**os.environ,
            "HF_ENDPOINT": "https://hf-mirror.com",
            "HF_HUB_DISABLE_SYMLINKS_WARNING": "1"}
-    r = subprocess.run(cmd, cwd=str(SEEDVC), capture_output=True, text=True, env=env)
+    # ★ 必须显式 `encoding="utf-8"`：Windows 上 text=True 默认按 GBK 解码，
+    # 而 seed-vc 打的是 UTF-8（带 emoji/progress），reader 线程会直接
+    # UnicodeDecodeError 死掉 —— 返回码仍可用，但**失败时那几行诊断全丢**，
+    # 留下的只有一句 SystemExit，排查时看不到真正原因。
+    r = subprocess.run(cmd, cwd=str(SEEDVC), capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", env=env)
     if r.returncode != 0:
         print(r.stdout[-3000:], file=sys.stderr)
         print(r.stderr[-3000:], file=sys.stderr)
