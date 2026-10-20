@@ -328,6 +328,13 @@ FAST_TESTS = [
     # 重录参照音上线。守卫两个方向 —— ① 静态嘶声必须报出来而不是 `raise`（第一版就是这样，
     # 最该报的样本反而罢工）；② 必须对响度不敏感，否则 RVC 干声和 Seed-VC 输出不在一条尺子上。
     "m2_server/tests/test_cover_hf_tracking.py",
+    # 参照音 BWE：把「音色」和「带宽」拆开（约 0.4s，纯合成）。守卫 —— ① BWE 输入必须是 16k 档
+    # （22.05k 直接喂会被内部重采样，带宽与声明不符；降到 16k 丢的是本来就空的 8k 以上）；
+    # ② 拼接臂必须先统一时基，否则变调。
+    "m2_server/tests/test_cover_seedvc_refbwe.py",
+    # 匹配 EQ：抬的是内容不是底噪（约 0.6s，纯合成）。守卫 —— ① 4k 以下锚点恒为 0dB
+    # （那是音色本体）；② 增益夹在 +18dB（A 臂就是无上限抬底噪翻车的）；③ 整段零相位，不许分帧。
+    "m2_server/tests/test_cover_hf_matcher.py",
 ]
 
 
