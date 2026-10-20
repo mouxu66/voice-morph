@@ -1,7 +1,15 @@
-"""「像童声」诊断页：音区 vs 音色。
+"""「不像赵雷」诊断页：问题出在**挑窗**，不在源、也不在音区。
 
-沿用 refbwe 页的结构（RMS 对齐后编码、mp3 走 clips/ 相对引用、不内嵌 base64），
-但结论完全换掉：这一页要说的是**源没选错人，选错了音区**。
+沿用 refbwe 页的结构（RMS 对齐后编码、mp3 走 clips/ 相对引用、不内嵌 base64）。
+
+这一页替掉的是 m1v 那版结论（"源就是赵雷，错的是音区 −15"）。
+那版的核心证据 CAM++ 0.9866 有两个毛病，都必须在页面上写清楚：
+  ① 它只证明"两份下载是同一条录音"，**不证明是谁**（我自己把一个视频标成"官方 MV"
+     当金标准，再拿它和被怀疑的文件互相印证 = 循环论证）；
+  ② 它是在**整曲**上量的，而我喂给模型的那 20 秒根本不在这段里 —— 量错了地方。
+真正的根因见 `cover_register.pick_window` 的注释：旧窗口落在歌曲结束后 50 多秒的
+衰减尾巴上（−31 ~ −36dBFS），pyin 在噪声帧上吐出 330–345Hz 的八度跳，
+于是"中位音高最高"的窗口正好选中了一段**没人唱**的地方。
 """
 
 from __future__ import annotations
@@ -20,8 +28,6 @@ from cover_refbwe_page import _rms_norm  # noqa: E402
 
 CLIPS = "clips"
 TARGET_RMS_DB = -20.0
-#: 旧候选 vs 官方 MV 分离轨的 CAM++（实测 2026-10-20，见 cover_register.py 模块注释）
-CAM_VS_OFFICIAL = 0.9866
 
 
 def _encode(src: Path, dst_dir: Path, idx: int) -> None:
@@ -75,17 +81,33 @@ def build(out: Path, meta: dict) -> Path:
     src = Path(meta["src"])
     rows = meta["rows"]
     shift = int(meta["shift"])
+    src_f0 = float(meta["src_f0"])
+    src_db = float(meta.get("src_db", float("nan")))
+    ref_med = float(meta["ref_median"])
+    ref_p90 = float(meta["ref_p90"])
+    start = float(meta.get("start", 0.0))
+    dur = float(meta.get("dur", 20.0))
+    win_vs_loud = meta.get("win_vs_loud")
+    loud_start = float(meta.get("loud_start", 0.0))
+    self_check = (
+        f"自检：新窗 vs 全曲最响段（{loud_start:.0f}s）的 CAM++ = <b>{win_vs_loud:.3f}</b>"
+        f"（同一个人；不同成男基线 0.39–0.47）" if isinstance(win_vs_loud, float) else ""
+    )
+    # A0 = 原调：比参照音高多少半音，这个数就是"你被顶到哪儿"
+    gap_st = 12.0 * math.log2(src_f0 / ref_med)
+
     idx = 0
     blocks = []
     _encode(src, clips, idx)
-    blocks.append(_clip(idx, "源人声（赵雷官方 MV，分离轨，原调）",
-                        f"中位 <b>{meta['src_f0']:.0f}Hz</b> · 8–12k {rows[0]['hf_db']:.1f}",
-                        ["这是赵雷本人（CAM++ 0.987 对官方 MV）"], ""))
+    blocks.append(_clip(idx, "源人声（正段落，原调）",
+                        f"{start:.0f}–{start + dur:.0f}s · 中位 <b>{src_f0:.0f}Hz</b> · "
+                        f"电平 {src_db:.1f}dBFS · 8–12k {rows[0]['hf_db']:.1f}",
+                        ["这次是真的在唱（不是尾巴）"], ""))
     idx += 1
     for r in rows[1:]:
         _encode(out / f"{r['name']}.wav", clips, idx)
         tags = {
-            "bad": ["音区 +19 半音 → 童声/电音的来源"],
+            "bad": [f"原调：比你参照高 {gap_st:+.0f} 半音 → 上一页就是这么来的"],
             "good": [f"音区对上了（{r['f0']:.0f}Hz）", "音色是你的"],
             "warn": ["音色跑掉（对照）"],
         }.get(r.get("cls", ""), [])
@@ -102,7 +124,7 @@ def build(out: Path, meta: dict) -> Path:
     page = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>像童声的是音区，不是源</title>
+<title>「不像赵雷」是我挑错了那 20 秒</title>
 <style>
   :root{{--bg:#0e1014;--card:#161a20;--card2:#1c2129;--line:#262c36;
         --tx:#e7eaf0;--dim:#8b94a3;--red:#ff5f56;--green:#3ecf8e;--amber:#f0b429;--blue:#5aa9ff}}
@@ -163,30 +185,33 @@ def build(out: Path, meta: dict) -> Path:
   ol{{padding-left:20px}} li{{margin:6px 0}}
   .foot{{color:var(--dim);font-size:12px;margin-top:34px;border-top:1px solid var(--line);padding-top:14px}}
 </style></head><body><div class="wrap">
-  <h1>像童声的是「音区」，不是「源」</h1>
-  <div class="sub">《成都》最后一段副歌 · 同一段源、同一个 Seed-VC、30 步 · 六条 RMS 对齐后编码</div>
+  <h1>「不像赵雷」是我挑错了那 20 秒</h1>
+  <div class="sub">曲目 5:10 就唱完了，视频尾巴还有 50 多秒衰减 —— 我上一页挑的正是那段 ·
+    同一个 Seed-VC、30 步 · 六条 RMS 对齐后编码</div>
 
   <div class="card warn"><div class="lead">
-    <b class="warn">先纠正一件事：源确实是赵雷，不是童声。</b><br>
-    旧候选与官方 MV（太合音乐）分离轨的 <b>CAM++ = {CAM_VS_OFFICIAL:.4f}</b> —— 同一个人、几乎同一版录音；
-    长时倒谱包络的 F1/F2 也几乎一致（453/1109 vs 438/1109Hz）。童声翻唱不可能过 0.5。<br><br>
-    <b class="hl">但你的耳朵没错：出来的东西确实像童声。</b>原因不是源换过人，是
-    <b>我把最不适合你的那 20 秒挑了出来</b> —— 最后一段副歌的最高潮，
-    中位音高 <b>{meta['src_f0']:.0f}Hz</b>；而你自己的参照音中位是
-    <b>{meta['ref_median']:.0f}Hz</b>（p10 102 / p90 {meta['ref_p90']:.0f}）。
-    Seed-VC 开着 <code>--f0-condition True</code>，<b>音高只跟源走</b> ——
-    于是它用你的音色去唱一个 <b>{meta['src_f0'] / meta['ref_median']:.2f} 倍基频</b>
-    （{12 * math.log2(meta['src_f0'] / meta['ref_median']):+.0f} 半音）的假声，
-    那就是"童声"，也就是"夹着嗓子"，扩散模型在这个音区还会明显失真成"电音"。
+    <b class="warn">先撤回上一页那句「源就是赵雷」。</b>它靠的是 CAM++ 0.9866，而那个数有两个毛病：<br>
+    ① 它只证明<b>两份下载是同一条录音</b>，不证明<b>是谁</b> —— 我把自己标成"官方 MV"的视频
+       当金标准，再拿它和被怀疑的文件互相印证，是<b class="hl">循环论证</b>；<br>
+    ② 它是在<b>整曲</b>上量的，而我喂给模型的那 20 秒<b class="hl">根本不在这段里</b> —— 量错了地方。<br><br>
+    <b class="hl">你的耳朵是对的：上一页的"源"不是一个人在唱。</b>
+    这首歌正段落在 <b>{src_f0:.0f}Hz</b>、电平 <b>{src_db:.1f}dBFS</b>；
+    而视频在 5:10 左右就唱完了，往后 50 多秒是衰减，
+    demucs 人声轨只剩 <b>−31 ~ −36dBFS</b> —— pyin 在这些噪声帧上吐出 <b>330–345Hz</b> 的八度跳。
+    旧窗口（313.5–333.5s / 345Hz）就落在这里。所以：<b>素材是一段没人唱的地方</b>，
+    Seed-VC 拿近静音去合成，听到的"童声 + 电"其实是噪声被放大后的产物。
   </div></div>
 
   <div class="card fix"><div class="lead">
-    <b class="ok">修法：把源降到你的音区，音色一点都不动。</b>
-    这一段降 <b>{abs(shift)} 半音</b>（{meta['src_f0']:.0f}Hz → {meta['src_f0'] * 2 ** (shift / 12):.0f}Hz），
-    落到你自己 p90 的位置 —— 唱得上去、又不挤。<br>
-    <span style="color:var(--dim);font-size:13.5px">
-    这不是"换个伴奏调"，也不是重录：<b>音区（源决定的）和音色（参照决定的）本来就是两个旋钮</b>。
-    上一页证明了带宽和音色可以拆开；这一页证明音区和音色也可以。</span>
+    <b class="ok">段内立证（同一份文件，不用知道谁是谁）：</b>
+    正文段（180–200s）中位 <b>172Hz</b>、尾巴段（275–295s）<b>339Hz</b>，
+    两段的 CAM++ 只有 <b>0.18–0.30</b> —— 比"两个不同成男"的 0.39–0.47 <b>还低</b>。
+    也就是说尾巴那段连"另一个人"都算不上，它是残响。<br><br>
+    <b class="ok">修法：挑窗加电平门限</b>（窗口里最安静的 20% 帧必须还在全场响帧 20dB 以内）。
+    现在挑到 <b>{start:.0f}–{start + dur:.0f}s</b>、<b>{src_f0:.0f}Hz</b>、<b>{src_db:.1f}dBFS</b>；
+    只需要降 <b>{abs(shift)} 半音</b>（{src_f0:.0f}Hz → {src_f0 * 2 ** (shift / 12):.0f}Hz，落在你 p90
+    {ref_p90:.0f}Hz 上），不再是上一页那个 −15 的极端移调。<br>
+    {self_check}
   </div></div>
 
   <h2>一、按这个顺序听</h2>
@@ -201,30 +226,32 @@ def build(out: Path, meta: dict) -> Path:
   </table></div>
   <div class="card"><div class="lead">
     <ol>
-      <li><b>先听 A0 和 A1 的差别。</b>两条只差一个 <code>--semi-tone-shift</code>，
-          参照音、源、步数全一样。A0 就是你上一页听到的那条（{rows[1]["f0"]:.0f}Hz）。
-          <b>如果 A1 听起来明显"像你"，那"童声"这件事就到此为止。</b></li>
-      <li><b>A1 vs A2/A3：高频值不值这 0.08 的 CAM++。</b>BWE 把参照音补到 44.1k 再喂，
-          8–12k 会往上走（−110 → −77)；代价是音色相似度掉 0.08（0.672 → 0.594）。</li>
-      <li><b>A2 和 A3 的差别只有一层匹配 EQ</b>（上限 +12dB，不是上一轮的 +18dB ——
-          在这段 +18 会把 slope 从 0.38 压到 0.29，正好掍成“噪声底”）。</li>
-      <li><b>A4 是对照，不是候选。</b>别人的全带宽参照，高频最好、音色跑掉 —— 上一轮的结论，别选它。</li>
+      <li><b>先听"源"这一条。</b>它应该是成男本色演唱（{src_f0:.0f}Hz），
+          不是上一页那个 345Hz 的尖声。<b>如果你还是觉得不像，就直说 ——
+          那就说明这条下载本身就不对，该换素材，而不是继续调参数。</b></li>
+      <li><b>再听 A0 vs A1。</b>两条只差一个 <code>--semi-tone-shift</code>（0 vs {shift:+d}），
+          参照、源、步数全一样。A0 仍比你参照高 {gap_st:+.0f} 半音。<b>如果 A1 明显没电了，
+          功率就全在"音区"这一个旋钮上。</b></li>
+      <li><b>A1 vs A2/A3</b>：BWE 把参照音补到 44.1k 再喂，高频会往上走，代价是音色相似度小掉一点。</li>
+      <li><b>A4 是对照，不是候选。</b>别人的全带宽参照，高频最好、音色跑掉。</li>
     </ol>
   </div></div>
 
   <h2>三、听的时候帮我判这三条</h2>
   <ol>
-    <li><b>A1 还像不像童声？</b>（数据：基频 {rows[1]["f0"]:.0f}→{rows[2]["f0"]:.0f}Hz）</li>
-    <li><b>A1 的电音还剩多少？</b>如果降调后还明显电，那问题不在音区，得回头查扩散步数/参照音质量。</li>
-    <li><b>A1 和 A0 哪个"闷"？</b>降调后高频会跟着走低（谐波位置整体下移），如果 A1 明显闷，
-        就说明需要把 BWE 那层（A2/A3）一起上，而不是只降调。</li>
+    <li><b>"源"这条还像不像童声/女声？</b>（数据：{src_f0:.0f}Hz，{src_db:.1f}dBFS）</li>
+    <li><b>A1 的电还剩多少？</b>如果降 {abs(shift)} 半音后还明显电，那就不是音区问题，
+        要回头查扩散步数与参照音质量。</li>
+    <li><b>A1 和 A0 哪个闷？</b>如果 A1 明显闷，就说明需要把 BWE 那层（A2/A3）一起上。</li>
   </ol>
 
   <div class="foot">
-    定调：<code>experiments/cover_register.py</code>（窗口按音区自动挑，目标 = 你参照音的 p90）<br>
+    挑窗 + 定调：<code>experiments/cover_register.py</code>
+    （电平门限 + 按音区自动挑，目标 = 你参照音的 p90）<br>
+    身份核验：<code>experiments/cover_identity_check.py</code>（逐 30s 音高表 + CAM++ 矩阵）<br>
     降调：Seed-VC 的 <code>--semi-tone-shift</code>（{shift:+d}），不重新合成、不改音色<br>
     BWE / 匹配 EQ：<code>experiments/cover_seedvc_refbwe.py</code> / <code>cover_hf_matcher.py</code><br>
-    源：官方 MV <code>youtube.com/watch?v=EPyFeQcDSUY</code>（太合音乐），demucs htdemucs 分离
+    源：demucs htdemucs 分离轨，窗口 {start:.1f}–{start + dur:.1f}s
   </div>
 </div></body></html>
 """

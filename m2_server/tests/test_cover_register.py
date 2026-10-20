@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 """`experiments/cover_register.py`（音区 vs 音色）的守卫。
 
-用户 2026-10-20 的判断是「你给的原声是童声」。实测源就是赵雷（CAM++ 0.987 对官方 MV），
-真正错的是**我挑的那 20 秒在 345Hz**，而用户自己的参照音中位 116Hz ——
-Seed-VC 的 f0-condition 只跟源走，于是输出成了 +19 半音的假声。
+用户 2026-10-20 的两次判断：「你给的原声是童声」→「这段根本就不是赵雷的声音」。
+第二次是对的。根因不是音区也不是源，而是**挑窗：
+《成都》5:10 左右就唱完了，视频尾巴还有 50 多秒衰减，demucs 人声轨在那段只剩
+−31 ~ −36dBFS（正文 −16），pyin 在噪声帧上吐出 330–345Hz 的八度跳 —— 于是
+“中位音高最高”的那 20 秒落在一段**根本没人唱**的地方，整轮实验的素材都是噪声。
+（m1v 把 CAM++ 0.987 读成“源就是赵雷”也是循环论证：只证明两份下载是同一条录音。）
 
-这个模块守四件「跑之前看不出来、跑完也看不出来」的事：
+这个模块守五件「跑之前看不出来、跑完也看不出来」的事：
+0. **挑窗必须有电平门限**：近静音的尾巴不能因为“音高读数高”就胜出。
 
 1. **降调必须是负的、必须是整数半音**。把 345Hz 搬到 144Hz 得 −15；
    写反了页面照样出、只是出来更高更尖，听起来像"模型坏了"。
@@ -107,6 +111,51 @@ def test_pick_window_ignores_fmax_boundary(reg):
     start, med = reg.pick_window(y, 16000, dur=6.0, scan_from=0.0)
     assert start < 10.0, f"被噪声段骗到了 {start:.1f}s"
     assert med < 300, med
+
+
+def test_pick_window_rejects_silent_tail(reg):
+    """尾巴是残响/静音时，pyin 在噪声上会吐高音 —— 不能因为"音高最高"就选它。
+
+    真实素材（`成都-赵雷-真` 5:10 之后还有 50s 衰减）：正文 −16dBFS / 170Hz，
+    尾巴 −31~−40dBFS、读数 335Hz。只按音高中位数挑 → 素材是一段没人唱的地方，
+    Seed-VC 拿近静音合成出来就是"童声 + 电"。
+    """
+    rng = np.random.default_rng(0)
+    tail = (0.008 * rng.standard_normal(16000 * 12)).astype(np.float32)   # ≈ −45dBFS
+    y = np.concatenate([_tone(170.0, 12.0), tail])
+    start, med = reg.pick_window(y, 16000, dur=6.0, scan_from=0.0)
+    assert start < 12.0, f"被尾巴骗到了 {start:.1f}s"
+    assert 150 <= med <= 200, f"该窗中位 {med:.1f}Hz"
+
+
+def test_pick_window_gate_scales_with_material(reg):
+    """门限必须相对本首素材定：整首歌都小声时，不许因为"绝对安静"把全曲都排除。"""
+    y = (0.02 * _tone(180.0, 20.0)).astype(np.float32)   # 同一条正弦，只是整体 −25dB
+    start, med = reg.pick_window(y, 16000, dur=6.0, scan_from=0.0)
+    assert 0.0 <= start <= 14.0, start
+    assert 160 <= med <= 200, med
+
+
+def test_loudest_window_skips_given_range(reg):
+    """自检必须拿**另一段**比：不排除时最响窗常常压在选中窗身上（实测 288.5 vs 292.5），
+    重叠的两段 CAM++ 0.9586 是必然的，什么都证明不了。
+    """
+    quiet = (0.05 * _tone(180.0, 10.0)).astype(np.float32)
+    loud = (0.50 * _tone(180.0, 10.0)).astype(np.float32)
+    mid = (0.20 * _tone(180.0, 10.0)).astype(np.float32)
+    y = np.concatenate([quiet, loud, mid])
+    assert 9.0 <= reg.loudest_window(y, 16000, dur=5.0, scan_from=0.0) <= 15.0
+    got = reg.loudest_window(y, 16000, dur=5.0, scan_from=0.0, avoid=(9.0, 21.0))
+    assert 19.0 <= got <= 22.0, f"排除后应挑中段，实际 {got:.1f}s"
+
+
+def test_level_db_reports_window_level(reg):
+    """电平要能报（页面上用它证明“这段真的在唱”），静音窗必须明显更低。"""
+    y = np.concatenate([_tone(180.0, 10.0), np.zeros(16000 * 5, dtype=np.float32)])
+    loud = reg.level_db(y, 16000, 0.0, 5.0)
+    quiet = reg.level_db(y, 16000, 12.0, 5.0)
+    assert loud > -20.0, loud
+    assert quiet < -100.0, quiet
 
 
 def test_pick_window_stays_inside_audio(reg):

@@ -1,22 +1,26 @@
-"""「像童声」到底是谁的锅：源是赵雷，音区不是。
+"""「像童声」到底是谁的锅：**挑窗错了，素材是一段没人唱的尾巴**。
 
-用户 2026-10-20 16:05 的裁决
-    「你给我选的原声是儿声儿童的声音……导致我后面的声音也扭曲成了儿童的声音，
-      搞得特别的怪，而且都带着电音的」
+用户 2026-10-20 的裁决（两次）
+    16:05「你给我选的原声是儿声儿童的声音……导致我后面的声音也扭曲成了儿童的声音」
+    18:0x「这段根本就不是赵雷的声音啊。我要克隆，也不是这段声音啊」
 
-先把事实钉住（这一步做错，后面全白跑）
-    旧候选 `candidates/成都-赵雷/vocals.wav` 到底是谁？
-    · 与官方 MV（太合音乐，`youtube.com/watch?v=EPyFeQcDSUY`）分离轨的 CAM++ = **0.9866**
-      （同一个人，几乎就是同一版录音；童声翻唱不可能过 0.5）；
-    · 长时倒谱包络的 F1/F2 = 453/1109Hz vs 438/1109Hz —— 声道长度一致。
-    所以**源就是赵雷**，上一页那句「源人声（赵雷）」没标错。
+★ 第二次是对的，而 m1v 那版的结论（「源就是赵雷，错的是音区 −15」）**必须撤回**：
+    它靠 CAM++ 0.9866，但那个数只证明「两份下载是同一条录音」，不证明「是谁」——
+    我把一个自己标成"官方 MV"的视频当金标准，再拿它和被怀疑的文件互相印证，是循环论证。
+    更致命的是：它是在**整曲**上量的，而我喂给模型的那 20 秒根本不在这段里。
 
-那为什么听着像童声？
-    因为源选的是**最后一段副歌的最高潮**：中位音高 330Hz（E4），
-    而用户自己的参照音中位 **116Hz**（p10 102 / p90 144）。
-    Seed-VC 开着 `--f0-condition True`，**只跟源的音高曲线走** ——
-    330Hz 喂进一个 116Hz 的参照音，出来的当然是「你的音色 + 童声的音区」，
-    也就是 2.85 倍基频（+19 半音）的假声，顺带把扩散模型的失真放大成"电音"。
+真因（2026-10-20 实测，`cover_identity_check.py` 可复现）
+    《成都》在 5:10 左右就唱完了，视频尾巴还有 50 多秒衰减；
+    demucs 人声轨在那段只剩 **−31 ~ −36dBFS**（正段落 −16 ~ −18）——
+    pyin 在这些噪声帧上吐出 330–345Hz 的八度跳，于是「中位音高最高」的窗口
+    正好选中了一段**没人唱**的地方。旧窗口 313.5–333.5s / 345Hz 就在这里。
+    同一份文件内：正文段 172Hz vs 尾巴段 339Hz，CAM++ 只有 0.18–0.30
+    （比"两个不同成男"的 0.39–0.47 还低）—— 那点"人声"是残响，不是演唱。
+    所以"童声 + 电"不是音区问题：是拿近静音去合成，噪声被放大成假声。
+
+这一轮要验的
+    挑窗加电平门限后，素材回到真唱段（成男 170–195Hz、−18dBFS 左右）；
+    这时只需要降 5 个半音（而不是 −15）就能落到用户的 p90。
 
 这一轮要验的
     音区和音色是**两个可以分开设的量**：把源降到用户自己的音区（−15 半音，
@@ -89,9 +93,22 @@ def f0_curve(y: np.ndarray, sr: int, fmin: float = 70.0, fmax: float = 500.0,
     return f0, 16000 / hop
 
 
+#: 窗口内最安静那 20% 帧，允许比全场"响帧"（p90）低多少 dB。
+#: 20dB 是"主歌到副歌 / 唱到气口"的量级；再低就是尾巴残响、淡出、静音。
+MIN_REL_DB = 20.0
+
+
+def rms_curve(y: np.ndarray, sr: int, hop: int = 320) -> np.ndarray:
+    """16k / 20ms 帧的 RMS 包络，与 `f0_curve` 同一套帧格，便于逐帧对齐。"""
+    y16 = librosa.resample(np.asarray(y, dtype=np.float64), orig_sr=sr, target_sr=16000)
+    return librosa.feature.rms(y=y16.astype(np.float32), frame_length=1024,
+                               hop_length=hop)[0].astype(np.float64)
+
+
 def pick_window(y: np.ndarray, sr: int, dur: float = SEG_DUR,
-                scan_from: float = SCAN_FROM) -> tuple[float, float]:
-    """挑「中位音高最高」的 dur 秒窗口，返回 (起点秒, 该窗 pyin 中位)。
+                scan_from: float = SCAN_FROM,
+                min_rel_db: float = MIN_REL_DB) -> tuple[float, float]:
+    """挑「中位音高最高**且真的在唱**」的 dur 秒窗口，返回 (起点秒, 该窗 pyin 中位)。
 
     为什么按音高挑而不是按位置：用户抱怨的正是"夹着嗓子"，而"夹不夹"由音区决定。
     挑最高的一段 = 挑最可能翻车的一段，修复才可证伪。
@@ -100,21 +117,81 @@ def pick_window(y: np.ndarray, sr: int, dur: float = SEG_DUR,
       直接把"最高"这个判据骗了，而 pyin 复核同一窗口只有 178.8Hz。挑窗口必须和
       报数用同一把尺子（pyin），否则窗口选错、页面上的"源 330Hz"也不成立。
       另外 fmax 边界的帧一律剔除：那是失败帧，不是高音。
+
+    ★★ 第二版（本函数上一版）仍有致命漏洞，2026-10-20 用户第二次裁决后实测发现：
+      「只看音高、不看电平」= 让**歌曲结束后的残响/近似静音**赢下比赛。
+      《成都》原曲 5:10 左右结束，视频尾巴还有 50 多秒的衰减，demucs 人声轨在
+      275–300s 只剩 **−31 ~ −36dBFS**（正段落是 −15 ~ −17dB），pyin 在这些噪声帧上
+      吐出 330–345Hz 的八度跳 —— 于是"最高音区"落在了一段根本没人唱的地方。
+      后果不是"数字不准"，而是整轮实验的素材是噪声：Seed-VC 拿近静音去合成，
+      听到的就是"童声 + 电"。用户那句「这段根本就不是赵雷的声音」是对的。
+      修法：窗口 RMS 必须不低于**本次扫描区内所有候选窗口电平的中位数** + min_rel_db。
     """
     f0, fps = f0_curve(y, sr)
+    rms = rms_curve(y, sr)
+    n = min(len(f0), len(rms))
+    f0, rms = f0[:n], rms[:n]
     lo = int(scan_from * fps)
     win = int(dur * fps)
+    step = max(1, int(0.5 * fps))
+
+    # 帧电平门限：窗口内**最安静的 20% 帧**也必须还在“响帧”的 20dB 以内。
+    # 用均值/中位数都会被“5s 唱 + 15s 静音”这种拼接窗骗到（实测 −26.9dBFS 就混过了 −27.4 的门限），
+    # 用低分位数则是直接问：这个窗口里有没有一段是空的。
+    fdb = 20.0 * np.log10(rms + 1e-12)
+    gate = float(np.percentile(fdb[lo:], 90)) - min_rel_db
+
+    starts = list(range(lo, max(lo + 1, n - win), step))
     best, best_med = scan_from, -1.0
-    for i in range(lo, max(lo, len(f0) - win), max(1, int(0.5 * fps))):
+    for i in starts:
+        if float(np.percentile(fdb[i:i + win], 20)) < gate:
+            continue                     # 窗口里有静音/残响：不是一段可以当素材的“唱”
         seg = f0[i:i + win]
         v = seg[np.isfinite(seg)]
         v = v[(v > 70.0) & (v < 480.0)]
-        if v.size < win * 0.4:          # 伴奏/气口为主：不算"唱上去"
+        if v.size < win * 0.4:           # 伴奏/气口为主：不算"唱上去"
             continue
         med = float(np.median(v))
         if med > best_med:
             best, best_med = i / fps, med
     return best, best_med
+
+
+def loudest_window(y: np.ndarray, sr: int, dur: float = SEG_DUR,
+                   scan_from: float = SCAN_FROM,
+                   avoid: tuple[float, float] | None = None) -> float:
+    """全曲最响的 dur 秒窗口起点 —— 用作"这首歌真正在唱的那一段"的参照。
+
+    用途是自检：挑中的窗口如果与它**不是同一个人**，那就是又挑到残响了。
+    只看电平不看音高，所以不会被噪声帧的八度跳骗到。
+
+    `avoid=(t0, t1)` 把一段区间排除在外 —— 自检必须用**另一段**去比：
+    不排除时最响窗常常就压在选中窗身上（实测挑中 292.5s、最响 288.5s），
+    两段重叠 → CAM++ 0.9586 是必然的，什么都证明不了。
+    """
+    rms = rms_curve(y, sr)
+    fps, lo = 50.0, int(scan_from * 50)
+    win = max(1, int(dur * fps))
+    best, best_db = float(scan_from), -1e9
+    for i in range(lo, max(lo + 1, len(rms) - win), max(1, int(0.5 * fps))):
+        t0 = i / fps
+        if avoid and t0 + dur > avoid[0] and t0 < avoid[1]:
+            continue
+        db = float(20.0 * np.log10(np.mean(rms[i:i + win]) + 1e-12))
+        if db > best_db:
+            best, best_db = i / fps, db
+    return best
+
+
+def level_db(y: np.ndarray, sr: int, start: float, dur: float) -> float:
+    """某个窗口的电平（dBFS）。用于在页面/日志里给出「这段真的在唱」的证据。"""
+    rms = rms_curve(y, sr)
+    fps = 50.0
+    i, n = int(start * fps), max(1, int(dur * fps))
+    seg = rms[i:i + n]
+    if seg.size == 0:
+        return float("nan")
+    return float(20.0 * np.log10(np.mean(seg) + 1e-12))
 
 
 def shift_for(src_median: float, target: float) -> int:
@@ -240,6 +317,7 @@ def main() -> int:
         start = float(args.start)
     src = cut_resampled(vocal, OUT / "src.wav", start, SEG_DUR)
     src_f0 = median_f0(src)
+    src_db = level_db(y, sr, start, SEG_DUR)
 
     ref_y, ref_sr = read(ref)
     ref16 = librosa.resample(np.asarray(ref_y, dtype=np.float64), orig_sr=ref_sr, target_sr=16000)
@@ -249,9 +327,24 @@ def main() -> int:
     target = float(np.percentile(rv, 90))          # 你的 p90：唱到这儿还不至于挤嗓子
     shift = shift_for(src_f0, target)
 
-    print(f"\n=== 定调 ===\n源（{vocal.name}）{start:.1f}–{start + SEG_DUR:.1f}s  中位 {src_f0}Hz")
+    print(f"\n=== 定调 ===\n源（{vocal.name}）{start:.1f}–{start + SEG_DUR:.1f}s  "
+          f"电平 {src_db:.1f}dBFS  中位 {src_f0}Hz")
     print(f"你的参照中位 {float(np.median(rv)):.1f}Hz / p90 {target:.1f}Hz → 降 {abs(shift)} 半音"
           f"（{src_f0}Hz → {src_f0 * 2 ** (shift / 12):.0f}Hz）")
+
+    # ── ①b 自检：挑中的这段和"全曲最响那段"是不是同一个人 ──────────────
+    # 上一轮的素材就是靠这个没做而混过去的：整曲 CAM++ 很高，窗口却不在同一段。
+    loud_start = loudest_window(y, sr, avoid=(start - 2 * SEG_DUR, start + 2 * SEG_DUR))
+    win_vs_loud = None
+    try:
+        import cover_metrics as _cm
+
+        loud = cut_resampled(vocal, WORK / "_loud.wav", loud_start, SEG_DUR)
+        win_vs_loud = _cm.secs(src, loud)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [自检] 同人检验失败：{e}")
+    print(f"自检：新窗 vs 全曲最响段（{loud_start:.1f}s）CAM++ = {win_vs_loud}"
+          f"（歌声不同人基线 0.39–0.47）")
 
     ref_bwe = cached_ref_bwe(ref, WORK / "ref_bwe44.wav")
     spec = arms_spec(shift, ref_bwe)
@@ -289,7 +382,7 @@ def main() -> int:
 
     # ── ④ 度量 ──────────────────────────────────────────────────────────
     src_hf = round(float(P.analyze(*read(src))["bands"]["8000-12000"]), 1)
-    rows = [{"name": "源（赵雷，原调）", "f0": src_f0, "hf_db": src_hf,
+    rows = [{"name": "源（正段落，原调）", "f0": src_f0, "hf_db": src_hf,
              "r_env": None, "slope": None, "gap_drop": None, "secs_cos": None}]
     print(f"\n=== 同一段源、同一个 Seed-VC，只改音区与参照（源 8–12k = {src_hf}dB）===")
     print(f"{'':<26}{'基频':>8}{'8–12k':>9}{'r_env':>8}{'slope':>7}{'气口掉':>8}{'CAM++':>8}")
@@ -313,7 +406,9 @@ def main() -> int:
                  "gap_drop_db": r["gap_drop"]}, src_hf)
 
     meta = {"src": str(src), "start": start, "dur": SEG_DUR, "shift": shift,
-            "src_f0": src_f0, "ref_median": round(float(np.median(rv)), 1),
+            "src_f0": src_f0, "src_db": round(src_db, 1),
+            "loud_start": round(loud_start, 1), "win_vs_loud": win_vs_loud,
+            "ref_median": round(float(np.median(rv)), 1),
             "ref_p90": round(target, 1), "rows": rows}
     (OUT / "register.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2),
                                        encoding="utf-8")
