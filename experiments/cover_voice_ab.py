@@ -165,6 +165,8 @@ def _encode(src: Path, dst_dir: Path, idx: int) -> None:
 
 
 LABELS = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛"]
+#: 用来拼"再往下听甲乙丙…"这句；条数随臂数变，不能写死成五条
+_CN = "甲乙丙丁戊己庚辛"
 
 
 def build_page(rows: list[dict], anchor: Path, key: dict, out: Path | None = None) -> Path:
@@ -176,7 +178,7 @@ def build_page(rows: list[dict], anchor: Path, key: dict, out: Path | None = Non
 
     blocks = []
     for i, r in enumerate(rows, start=1):
-        _encode(out / f"{r['key']}.wav", clips, i)
+        _encode(Path(r.get("path") or (out / f"{r['key']}.wav")), clips, i)
         blocks.append(f"""  <div class="clip">
     <div class="h"><span class="t">{LABELS[i - 1]}</span></div>
     <audio controls preload="none" src="clips/{i}.mp3"></audio>
@@ -218,17 +220,17 @@ def build_page(rows: list[dict], anchor: Path, key: dict, out: Path | None = Non
   .foot{{color:var(--dim);font-size:12px;margin-top:30px;border-top:1px solid var(--line);padding-top:12px}}
 </style></head><body><div class="wrap">
   <h1>哪一条像「我」把这首歌唱的</h1>
-  <div class="sub">同一段源（{key['src']['window']}，中位 {key['src']['f0']:.0f}Hz）· 五条盲听 · 顺序已打乱</div>
+  <div class="sub">同一段源（{key['src']['window']}，中位 {key['src']['f0']:.0f}Hz）· {len(rows)} 条盲听 · 顺序已打乱</div>
 
   <div class="card anchor"><div class="lead">
     <b>先听这条锚：这是我本人在唱歌。</b>（不是翻唱成品，也不是合成的）<br>
     <audio controls preload="none" src="clips/0.mp3"></audio><br>
     <span style="color:var(--dim);font-size:13px">
-    拿它当尺子，再往下听甲乙丙丁戊。<b>不要拿你记忆里我说话的声音去比</b> ——
+    拿它当尺子，再往下听{_CN[:len(rows)]}。<b>不要拿你记忆里我说话的声音去比</b> ——
     唱歌和说话不是一个音区，这也是"很多人说不像"的一半原因。</span>
   </div></div>
 
-  <h2>盲听五条（顺序打乱，我不知道你会先听哪条）</h2>
+  <h2>盲听 {len(rows)} 条（顺序打乱，我不知道你会先听哪条）</h2>
 {"".join(blocks)}
 
   <div class="card"><div class="lead">
@@ -250,7 +252,7 @@ def build_page(rows: list[dict], anchor: Path, key: dict, out: Path | None = Non
   </div></div>
 
   <div class="foot">产物：<code>experiments/cover_voice_ab.py</code> ·
-    盲听映射：<code>voice_ab.json</code>（<b>页面源码里不出现</b> —— 否则按 F12 就揭宝了）</div>
+    盲听映射：<code>{key.get('mapfile', 'voice_ab.json')}</code>（<b>页面源码里不出现</b> —— 否则按 F12 就揭宝了）</div>
 </div>
 </body></html>
 """
