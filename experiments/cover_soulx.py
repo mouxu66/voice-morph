@@ -109,10 +109,17 @@ def cut_prompt(start: float, dur: float) -> tuple[Path, Path]:
 
 
 def ensure_arm(key: str, window: tuple[float, float], auto: bool,
-               cfg: float, steps: int, target: Path | None = None) -> Path:
-    """跑一条臂。`target` 为空=原始源切片；否则是串联臂的输入（已是 24k）。"""
+               cfg: float, steps: int, target: Path | None = None,
+               prompt: Path | None = None) -> Path:
+    """跑一条臂。`target` 为空=原始源切片；`prompt` 为空=从真唱里切窗口。"""
     dst = OUT / f"{key}.wav"
-    prompt, prompt_f0 = cut_prompt(*window)
+    if prompt is None:
+        prompt, prompt_f0 = cut_prompt(*window)
+    else:
+        prompt_f0 = Path(prompt.with_suffix("").as_posix() + "_f0.npy")
+        if not prompt_f0.exists() or prompt_f0.stat().st_mtime < prompt.stat().st_mtime:
+            subprocess.run([str(SVC_PY), "make_f0.py", "cuda", str(prompt)],
+                           cwd=str(SVC_ROOT), check=True, timeout=600)
     target_wav = target or (OUT / "target.wav")
     target_f0 = target_wav.with_suffix("").as_posix() + "_f0.npy"
     target_f0 = Path(target_f0)
