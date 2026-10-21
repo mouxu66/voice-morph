@@ -269,6 +269,7 @@ ORPHAN_OK: dict[str, tuple[str, str]] = {
     "qwen3_verify": ("devtool", "拉起 TTS worker 做端到端验证的排查脚本"),
     "make_test_audio": ("devtool", "生成合成测试音频，无真实素材时验证链路"),
     "cover_bwe": ("devtool", "翻唱神经带宽扩展（UniverSR）的子进程包装：`experiments/cover_bwe_universr.py` 与手工 `python m2_server/cover_bwe.py run` 调用，尚未接进 cover_api 路由，故无人可达"),
+    "asr_eval": ("devtool", "中文 ASR 评测（简繁/标点归一化、字错率、按说话人切分）的独立工具，由 `python m2_server/asr_eval.py` 与 `experiments/` 手工调用，尚未接进任何路由，故无人可达"),
     "conftest": ("test-infra", "pytest 的 sys.path/conftest 基建"),
     "test_wechat_voice": ("test-infra", "wechat_voice 的逻辑层回归用例（放在 m2_server 下而非 tests/）"),
 }
