@@ -59,12 +59,15 @@ def cut(src: Path, out: Path, start: float, dur: float) -> Path:
 
 
 def run_seedvc(source: Path, ref: Path, out_dir: Path, steps: int = 30,
-               shift: int = 0) -> Path:
+               shift: int = 0, cfg: float = 0.7) -> Path:
     """调 seed-vc 的 CLI。--f0-condition True 是歌声模式的开关。
 
     `shift` 是**半音**。`--f0-condition True` 下模型只跟源的音高曲线走，
     所以源的音区就是你输出音区 —— 唱高一段（比如原曲副歌 330Hz）喂进一个
     116Hz 的参照音，出来必然是"童声/夹嗓子"。降调靠这个参数，不是靠换源。
+
+    `cfg`（`--inference-cfg-rate`）控制"像不像参照"：越高越贴参照，
+    但过高会把源咬字吃掉；默认 0.7，唱歌上实测 1.0 更好。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -73,6 +76,7 @@ def run_seedvc(source: Path, ref: Path, out_dir: Path, steps: int = 30,
         "--target", str(ref),
         "--output", str(out_dir),
         "--diffusion-steps", str(steps),
+        "--inference-cfg-rate", str(cfg),
         "--f0-condition", "True",
         "--semi-tone-shift", str(int(shift)),
         "--fp16", "True",
