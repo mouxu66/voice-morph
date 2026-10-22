@@ -187,10 +187,21 @@ namespace CoreAudio {
                 "\"render\":{\"0\":" + J(GetName(GetDefaultId(0,0),true)) + ",\"1\":" + J(GetName(GetDefaultId(0,1),true)) + ",\"2\":" + J(GetName(GetDefaultId(0,2),true)) + "}," +
                 "\"capture\":{\"0\":" + J(GetName(GetDefaultId(1,0),false)) + ",\"1\":" + J(GetName(GetDefaultId(1,1),false)) + ",\"2\":" + J(GetName(GetDefaultId(1,2),false)) + "}}";
         }
+        static bool IsCable(string nm) {
+            return nm != null && nm.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
         public static string ApplyOptimal(string renderSub, string captureSub, string backupPath) {
+            // 2026-10-22：「用户原本就把默认设备设成 CABLE」时必须原样保留。
+            // 旧逻辑一见默认是 CABLE 就"纠正"回真实声卡（下面的 pb = FindReal(0)），
+            // 备份也把 CABLE 换成真实设备 —— 于是 restore 后用户自己的配置被抹掉，
+            // 微信录音链路随之断开。表现就是：点了语音按钮，设备自己跳回真实声卡、
+            // 发出去的语音是静音。
+            // 判据：render / capture 各自已经在 CABLE 上 → 这一侧就完全不碰。
+            bool rCable = IsCable(GetName(GetDefaultId(0, 1), true));
+            bool cCable = IsCable(GetName(GetDefaultId(1, 1), false));
             string pb = GetDefaultId(0, 1);
             string pbName = GetName(pb, true);
-            if (pbName == null || pbName.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) {
+            if (!rCable && (pbName == null || pbName.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0)) {
                 pb = FindReal(0);
             }
             string co = FindId(1, renderSub, captureSub);
@@ -204,14 +215,15 @@ namespace CoreAudio {
                     string d = GetDefaultId(0,r);
                     string n = GetName(d, true);
                     // CABLE 和 Steam 虚拟设备都不能作为"用户原始设备"写入备份
-                    if (n != null && n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(0); if (rd != null) d = rd; }
-                    if (n != null && n.IndexOf("Steam Streaming", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(0); if (rd != null) d = rd; }
+                    // 例外：用户本来就在 CABLE 上（rCable）→ 如实记录，否则 restore 会把他的配置改掉
+                    if (!rCable && n != null && n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(0); if (rd != null) d = rd; }
+                    if (!rCable && n != null && n.IndexOf("Steam Streaming", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(0); if (rd != null) d = rd; }
                     lines[r] = "R"+r+"="+d;
                 }
                 for (int r=0;r<3;r++) {
                     string d = GetDefaultId(1,r);
                     string n = GetName(d, false);
-                    if (n != null && n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(1); if (rd != null) d = rd; }
+                    if (!cCable && n != null && n.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(1); if (rd != null) d = rd; }
                     if (n != null && n.IndexOf("Steam Streaming", StringComparison.OrdinalIgnoreCase) >= 0) { string rd = FindReal(1); if (rd != null) d = rd; }
                     lines[3+r] = "C"+r+"="+d;
                 }
