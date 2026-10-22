@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import subprocess
 import sys
@@ -75,12 +76,17 @@ def rvc_convert(wav: Path, voice: str, pitch: int = 0, index_rate: float = 0.5) 
     return out
 
 
-def synth(text: str, ref: str) -> Path:
+def synth(text: str, ref: str, ref_text: str = "") -> Path:
     import qwen3_tts
     t0 = time.time()
     print(f"[TTS] 合成中：{text}")
     print(f"[TTS] 音色参考：{ref}")
-    data = qwen3_tts.tts(text=text, ref_audio=ref, language="Chinese")
+    # ref_text 非空才走 ICL（音色+韵律一起学）；为空退化成 x-vector 纯声纹。
+    # 对「TTS 之后再 RVC」的旧链路影响不大（音色由 RVC 决定），
+    # 但对「音色和口音都靠参考音」的音色（如四川话零克隆）必须传，
+    # 否则语气和口音都会明显变淡 —— 见 docs/方言-四川重庆-2026-10-22.md §13。
+    print(f"[TTS] 模式：{'ICL（含 ref_text）' if ref_text else 'x-vector（无 ref_text）'}")
+    data = qwen3_tts.tts(text=text, ref_audio=ref, ref_text=ref_text, language="Chinese")
     out = OUTPUTS_DIR / f"tts_{int(time.time() * 1000)}.wav"
     out.write_bytes(data)
     dur = wv._wav_duration(out)
@@ -90,13 +96,14 @@ def synth(text: str, ref: str) -> Path:
 
 def main() -> int:
     # 重定向到管道时 Python 按 cp936 写 stdout —— 中文会变乱码，这里统一钉成 UTF-8
-    try:
+    with contextlib.suppress(AttributeError, OSError, ValueError):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, OSError, ValueError):
-        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--text", default=DEFAULT_TEXT)
     ap.add_argument("--ref", default=DEFAULT_REF)
+    ap.add_argument("--voice-id", default="",
+                    help="音色库 id（如 sichuan_me）：自动取 reference.wav + ref_text.txt，"
+                         "走 ICL 模式；给了它就忽略 --ref")
     ap.add_argument("--wav", default="", help="已有 wav 文件名（跳过合成直接发）")
     ap.add_argument("--voice", default=DEFAULT_VOICE, help="RVC 音色实验名（默认袋鼠 kangaroo_v2）")
     ap.add_argument("--pitch", type=int, default=0, help="变调半音数")
@@ -111,7 +118,14 @@ def main() -> int:
             wav = OUTPUTS_DIR / wav.name
         print(f"[TTS] 跳过合成，使用已有音频 {wav.name}（{wv._wav_duration(wav):.2f}s）")
     else:
-        wav = synth(a.text, a.ref)
+        ref, ref_text = a.ref, ""
+        if a.voice_id:
+            from common import voice_ref
+            ref_path, ref_text = voice_ref(a.voice_id)
+            ref = str(ref_path)
+            if not ref_text:
+                print("[TTS] 警告：该音色没有 ref_text.txt，会退化成 x-vector，语气与口音都会变淡")
+        wav = synth(a.text, ref, ref_text)
         if not a.no_rvc:
             wav = rvc_convert(wav, a.voice, a.pitch, a.index_rate)
 
