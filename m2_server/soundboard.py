@@ -42,8 +42,10 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import subprocess
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -430,8 +432,8 @@ def soundboard_premix(req: PremixReq):
 #     产出 bgmmix_*.wav，发送目标换成它（发送链路零改动）；
 #   · /bgm/start /bgm/stop /bgm/gain —— C 档「实时垫歌」：往 CABLE 垫一层长 BGM，
 #     走声板 worker 的「垫底层」（独立流，不抢占 one-shot，见 board_worker.py）。
-# 歌的来源统一走**会话目录**（cover 产物、/cover/fetch 下好的、这里上传的都在那）：
-# 一条 `session_out.find(bare_name)` 就能定位，且天然「退出即删」。
+# 歌的来源：**会话目录**（这里上传的、翻唱链路的成品）+ **常驻歌单目录** `media/songs`
+# （用户自己丢进去的歌，跨会话保留）。两条都用「裸文件名」定位，**不收路径**。
 
 #: BGM 素材上限（秒）：垫底是"一首歌"的量级，10 分钟以上的多半是下错了东西
 MAX_BGM_S = 600.0
@@ -442,18 +444,142 @@ _MAX_BGM_BYTES = 50 * 1024 * 1024
 BGM_DEFAULT_GAIN = 0.3
 
 
+def _songs_dir() -> Path:
+    """常驻歌单目录（跨会话保留，不随会话清空）。
+
+    ⚠️ 必须**每次现读** `cfg.MEDIA_DIR`，不许在导入期绑成模块常量 —— 早绑定的副本
+    会让测试的目录隔离静默失效，写入落回用户的真实 `media/`
+    （`docs/犯错档案-工程.md` §8.36 / §8.37）。
+    """
+    return cfg.MEDIA_DIR / "songs"
+
+
+def _bgm_last_file() -> Path:
+    """「上次放的那首」指针（跨会话保留）。
+
+    歌本身在会话目录里、退出即删，所以指针**可能指向一个已经不存在的歌**：
+    读到就交叉核对 `_bgm_candidates()`，对不上当没有（`/bgm/recent` 的 last 字段）。
+    宁可面板回落到第一首，也别让它指着一个点了 404 的名字。
+    """
+    return cfg.OUTPUTS_DIR / "soundboard_bgm_last.json"
+
+
+#: 面板「换歌」列表上限：204px 的下拉里超过 8 行就只剩滚动了
+BGM_RECENT_LIMIT = 8
+
+#: 能**直接播**的扩展名（soundfile 能读的）。m4a/aac 刻意不在里面 —— 它们要先经
+#: ffmpeg 转码（`/bgm/upload` 做的就是这件事），列出来只会点了报「读不出来」。
+_BGM_SUFFIXES = (".wav", ".mp3", ".flac", ".ogg")
+
+#: 会话目录里**算歌**的文件名口径（白名单，不是黑名单）。
+#:   同一个目录里还躺着 `tts_*.wav`（合成语音）、`sfxmix_*`（预混产物）、
+#:   `rvc_*`（换声产物）—— 黑名单漏一个就会把一句 5 秒的人声当"歌"列给用户，
+#:   而他只有点下去才知道选错了。所以只认两种：
+#:     · `bgm_*`                 —— `/bgm/upload` 解码后的歌；
+#:     · `cover_<毫秒>_<毫秒>.wav` —— 翻唱链路的**成品**（`cover_api.py:526-528`
+#:       的 `cover_in_*` / `cover_voice_*` 是同一条链路的中间件，必须排除：
+#:       voice 只有人声、in 是原始输入）。
+_COVER_FINAL_RE = re.compile(r"^cover_\d+_\d+\.wav$", re.IGNORECASE)
+
+
+def _is_song_name(name: str) -> bool:
+    """会话目录里的文件名是不是"一首歌"（`media/songs` 常驻目录不做这层过滤 ——
+    用户放进去的就是歌，认扩展名即可）。"""
+    low = str(name or "").lower()
+    if not low.endswith(_BGM_SUFFIXES):
+        return False
+    return low.startswith("bgm_") or bool(_COVER_FINAL_RE.match(name))
+
+
+def _song_dirs() -> list[tuple[Path, str]]:
+    """候选目录 + 来源标记。**会话在前** —— 与 `session_out.find` 的查找顺序一致，
+    重名时列表里先出现的就是 `_bgm_path` 真会解析到的那一个。"""
+    return [(session_out.session_dir(), "session"), (_songs_dir(), "library")]
+
+
+def _song_item(p: Path, source: str) -> dict:
+    """一条候选歌。时长读不到不算失败（面板只是不显示时长，照样能播）。"""
+    dur = None
+    with contextlib.suppress(Exception):
+        dur = round(float(sf.info(str(p)).duration), 2)
+    return {
+        "name": p.name,
+        "id": p.stem,          # 与 `/bgm/start` 返回的 id 同一口径（board_worker 的 sid）
+        "duration_s": dur,
+        "source": source,
+        "mtime": int(p.stat().st_mtime),
+    }
+
+
+def _bgm_candidates(limit: int = BGM_RECENT_LIMIT) -> list[dict]:
+    """最近能放的歌（按修改时间倒序）。只读：不碰 worker、不碰声卡。"""
+    seen: set[str] = set()
+    found: list[tuple[float, dict]] = []
+    for d, source in _song_dirs():
+        if not d.is_dir():
+            continue
+        try:
+            files = [p for p in d.iterdir() if p.is_file()]
+        except OSError:      # 目录刚被清掉 / 权限问题：当作没有，别让整个端点 500
+            continue
+        for p in files:
+            if p.name in seen:
+                continue
+            if source == "session" and not _is_song_name(p.name):
+                continue
+            if source == "library" and not p.name.lower().endswith(_BGM_SUFFIXES):
+                continue
+            seen.add(p.name)
+            try:
+                found.append((p.stat().st_mtime, _song_item(p, source)))
+            except OSError:
+                continue
+    found.sort(key=lambda t: t[0], reverse=True)
+    return [it for _, it in found[: max(1, int(limit))]]
+
+
+def _bgm_last() -> str | None:
+    try:
+        data = json.loads(_bgm_last_file().read_text(encoding="utf-8"))
+        name = str(data.get("name") or "").strip()
+    except Exception:
+        return None
+    return name or None
+
+
+def _remember_bgm(name: str) -> None:
+    """记住这次放的是哪首（尽力而为：写不进去不影响播放）。"""
+    try:
+        dst = _bgm_last_file()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_name(dst.name + ".tmp")
+        tmp.write_text(json.dumps({"name": name, "at": int(time.time())}, ensure_ascii=False),
+                       encoding="utf-8")
+        os.replace(tmp, dst)
+    except OSError:
+        pass
+
+
 def _bgm_path(bgm: str) -> Path:
-    """会话产物裸名 → 绝对路径（预混与实时垫底共用）。找不到/非法都当场报错。"""
+    """歌的裸名 → 绝对路径（预混与实时垫底共用）。找不到/非法都当场报错。
+
+    查找顺序：会话目录 → `outputs` 根（`session_out.find` 的老口径）→ **常驻歌单**
+    `media/songs`。最后这一处是 2026-10-22 加的：面板的「换歌」列表里就有常驻歌，
+    只查会话目录的话，列表点得中、播放却 404。
+    """
     p = session_out.find(bgm)
-    if p is None:
-        n = str(bgm or "").strip()
-        if not n or n in (".", "..") or any(c in n for c in "/\\"):
-            raise HTTPException(status_code=400, detail=f"非法的音频名：{bgm!r}")
-        raise HTTPException(
-            status_code=404,
-            detail=f"找不到这首歌：{n}（翻唱产物/上传的歌都在本次会话里，退出应用会清空）",
-        )
-    return p
+    if p is not None:
+        return p
+    n = str(bgm or "").strip()
+    if not n or n in (".", "..") or any(c in n for c in "/\\"):
+        raise HTTPException(status_code=400, detail=f"非法的音频名：{bgm!r}")
+    q = _songs_dir() / n
+    if q.is_file():
+        return q
+    raise HTTPException(
+        status_code=404,
+        detail=f"找不到这首歌：{n}（本次导入/翻唱的歌退出应用会清空；常驻歌放在 media/songs 里）",
+    )
 
 
 class BgmPremixReq(BaseModel):
@@ -592,6 +718,20 @@ class BgmStartReq(BaseModel):
     loop: bool = True  # 歌比说话短时循环补满（与预混同一语义）
 
 
+@router.get("/bgm/recent")
+def bgm_recent():
+    """面板「放歌」页的换歌列表 + 上次放的那首。**只读**（不碰 worker、不碰声卡）。
+
+    为什么会话目录也要列：桌宠面板是「此刻放给对面听」的遥控器，用户在通话前刚
+    导入/翻唱的那首歌，必须能在面板里直接点到 —— 让他为此切回主界面就失去意义了。
+    """
+    items = _bgm_candidates()
+    last = _bgm_last()
+    if last and not any(it["name"] == last for it in items):
+        last = None   # 指针指向会话里的歌、而会话已被清空 → 当作没有
+    return {"ok": True, "items": items, "last": last}
+
+
 @router.post("/bgm/start")
 def bgm_start(req: BgmStartReq):
     """往 CABLE **实时垫一层 BGM**（C 档）：说话/实时变声的同时垫歌。
@@ -606,6 +746,7 @@ def bgm_start(req: BgmStartReq):
         msg = _command({"bgm": str(path), "id": path.stem, "gain": gain, "loop": bool(req.loop)})
     except (RuntimeError, OSError) as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
+    _remember_bgm(path.name)   # 面板下次悬停/重启后回到这首（尽力而为，失败不影响播放）
     return {
         "ok": True,
         "playing": True,
