@@ -65,6 +65,22 @@ TEXTS = {
     "s08": "要得，那就这么说定了，明天见。",
 }
 
+# 同一批语义的口语版：加语气词（诶/嘛/哦/噻/哈）、加停顿、加程度补语。
+# 2026-10-22：书面句念出来是「播报腔」，加语气词是唯一零成本的自然度提升
+# —— instruct 指令那条路会把底噪从 75dB 打到 13.9dB（见 docs §12）。
+ORAL_TEXTS = {
+    "s01": "诶，今天这个天气巴适得很哦，走嘛，我们出去耍一哈。",
+    "s02": "诶你吃饭没得哦？没吃的话我们一起嘛。",
+    "s03": "这个事情我晓得噻，你放心嘛。",
+    "s04": "诶你在爪子哦？啷个半天不回个消息嘛，急死个人。",
+    "s05": "莫得事莫得事，慢慢来嘛，不着急哈。",
+    "s06": "这个东西嘛是有点贵，但是味道确实安逸哦。",
+    "s07": "他昨天在屋头耍了一整天哦，啥子都没做，懒得很。",
+    "s08": "要得嘛，那就这么说定了哈，明天见。",
+}
+
+TEXT_PROFILES = {"book": TEXTS, "oral": ORAL_TEXTS}
+
 
 def main() -> int:
     with contextlib.suppress(AttributeError, OSError, ValueError):
@@ -79,6 +95,8 @@ def main() -> int:
                     help="只取音色不取韵律；口音迁移实验不要开")
     ap.add_argument("--tag", default="probe", help="本次实验标签，用于输出目录")
     ap.add_argument("--limit", type=int, default=len(TEXTS))
+    ap.add_argument("--text-profile", choices=sorted(TEXT_PROFILES), default="book",
+                    help="book=书面句（默认，历史产物用它）；oral=加语气词的口语版")
     # 2026-10-22：采样解码的 sub-talker 会带进底噪（SNR 12–33dB），
     # 贪心解码同一句能到 76dB。默认仍保持采样（历史产物可复现），
     # 需要干净输出时显式加 --greedy。
@@ -126,7 +144,7 @@ def main() -> int:
         )
         print(f"音色向量已建（x_vector_only={bool(args.x_vector_only)}）", flush=True)
 
-    items = list(TEXTS.items())[: args.limit]
+    items = list(TEXT_PROFILES[args.text_profile].items())[: args.limit]
     manifest = []
     for key, text in items:
         t1 = time.time()
