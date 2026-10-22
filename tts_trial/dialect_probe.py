@@ -1,23 +1,25 @@
-"""四川/重庆方言 TTS 探针：一段参考音做零样本克隆，看口音能不能跟着走。
+"""方言 TTS 探针：两种发声方式跑同一批文本，用于判断「口音到底跟不跟得上」。
 
-背景：`tts_models/qwen3-tts-1.7b-base` 的 codec_language_id 只有 10 种语言，
-没有任何方言标签（`spk_id` / `spk_is_dialect` 都是空字典），所以它不会「按标签
-说四川话」。但 Base 是零样本克隆模型，克隆时会同时带上参考音的**音色与韵律**——
-包括口音。于是判断只剩一个实证问题：
+两种模式（二选一）：
 
-    给一段四川话参考音，出来的新句子还是不是四川话？
+1. **内置音色模式** —— 用 CustomVoice 检查点自带的音色。
+   `eric` 在 config 里是 `sichuan_dialect`（成都男声，language_id 2062），
+   `dylan` 是 `beijing_dialect`，其余是标准普通话音色。
+   这一模式不依赖任何外部音频，用来回答「开源模型说四川话到底行不行」。
 
-用法：
-    # 口音迁移检验（主实验）
-    python -u dialect_probe.py --ref-audio 我的四川话.wav \
-        --ref-text "参考音里说的那句话" --tag sichuan
+       python -u dialect_probe.py --model D:/变声/tts_models/qwen3-tts-1.7b-customvoice \
+           --speaker eric --tag eric_sichuan
 
-    # 对照：普通话参考音跑同一批文本
-    python -u dialect_probe.py --ref-audio 我的普通话.wav \
-        --ref-text "..." --tag mandarin --limit 3
+2. **零样本克隆模式** —— 给一段参考音 + 逐字文本，把参考音的音色和口音搬过来。
+   这一模式用来回答「换成任意声音之后，口音还在不在」。
 
-    # 只跑前两句快速验证
-    python -u dialect_probe.py --ref-audio x.wav --ref-text "..." --limit 2
+       python -u dialect_probe.py --ref-audio 我的四川话.wav \
+           --ref-text "参考音里说的那句话" --tag myclone
+
+   注意 ref_text 必须与音频逐字一致，写错会直接毁掉韵律。
+
+Base 检查点（`qwen3-tts-1.7b-base`）的 `spk_id` 与 `spk_is_dialect` 是空的，
+只能跑模式 2；CustomVoice 检查点才有内置方言音色，跑模式 1。
 """
 
 import argparse
@@ -47,7 +49,7 @@ import torch  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent / "Qwen3-TTS"))
 from qwen_tts import Qwen3TTSModel  # noqa: E402
 
-MODEL_DIR = r"D:/变声/tts_models/qwen3-tts-1.7b-base"
+BASE_MODEL = r"D:/变声/tts_models/qwen3-tts-1.7b-base"
 OUT_ROOT = Path(r"D:/变声/media/dialect_probe")
 
 # 探针文本：方言词密度从低到高，故意混入普通话里没有对照的用法，
@@ -69,41 +71,66 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ref-audio", required=True, help="参考音路径")
-    ap.add_argument("--ref-text", required=True, help="参考音说了什么（必须逐字一致）")
+    ap.add_argument("--model", default=BASE_MODEL, help="检查点目录")
+    ap.add_argument("--speaker", help="内置音色名（CustomVoice 检查点专用），如 eric")
+    ap.add_argument("--ref-audio", help="参考音路径（克隆模式）")
+    ap.add_argument("--ref-text", help="参考音的逐字文本（克隆模式，必须与音频一致）")
+    ap.add_argument("--x-vector-only", action="store_true",
+                    help="只取音色不取韵律；口音迁移实验不要开")
     ap.add_argument("--tag", default="probe", help="本次实验标签，用于输出目录")
     ap.add_argument("--limit", type=int, default=len(TEXTS))
-    ap.add_argument("--x-vector-only", action="store_true",
-                    help="只取音色、不取韵律；口音迁移实验不要开")
     args = ap.parse_args()
 
-    ref = Path(args.ref_audio)
-    if not ref.exists():
+    clone_mode = bool(args.ref_audio or args.ref_text)
+    if args.speaker and clone_mode:
+        print("--speaker 与 --ref-audio/--ref-text 互斥，只能选一种模式", flush=True)
+        return 2
+    if not args.speaker and not clone_mode:
+        print("必须指定 --speaker 或 --ref-audio + --ref-text", flush=True)
+        return 2
+    if clone_mode and not (args.ref_audio and args.ref_text):
+        print("克隆模式要求 --ref-audio 与 --ref-text 同时给出", flush=True)
+        return 2
+
+    ref = Path(args.ref_audio) if args.ref_audio else None
+    if ref is not None and not ref.exists():
         print(f"参考音不存在：{ref}", flush=True)
         return 2
 
     out_dir = OUT_ROOT / args.tag
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"加载模型 {MODEL_DIR} ...", flush=True)
+    print(f"加载模型 {args.model} ...", flush=True)
     t0 = time.time()
     model = Qwen3TTSModel.from_pretrained(
-        MODEL_DIR, device_map="cuda:0", dtype=torch.bfloat16)
+        args.model, device_map="cuda:0", dtype=torch.bfloat16)
     print(f"模型就绪 {time.time() - t0:.1f}s", flush=True)
 
-    prompt = model.create_voice_clone_prompt(
-        ref_audio=str(ref),
-        ref_text=args.ref_text,
-        x_vector_only_mode=bool(args.x_vector_only),
-    )
-    print(f"音色向量已建（x_vector_only={bool(args.x_vector_only)}）", flush=True)
+    speakers = model.get_supported_speakers()
+    if args.speaker:
+        print(f"可用音色：{speakers}", flush=True)
+        if args.speaker.lower() not in {s.lower() for s in (speakers or [])}:
+            print(f"音色 {args.speaker} 不在清单里", flush=True)
+            return 2
+        prompt = None
+    else:
+        prompt = model.create_voice_clone_prompt(
+            ref_audio=str(ref),
+            ref_text=args.ref_text,
+            x_vector_only_mode=bool(args.x_vector_only),
+        )
+        print(f"音色向量已建（x_vector_only={bool(args.x_vector_only)}）", flush=True)
 
     items = list(TEXTS.items())[: args.limit]
     manifest = []
     for key, text in items:
         t1 = time.time()
-        wavs, sr = model.generate_voice_clone(
-            text=[text], language=["Chinese"], voice_clone_prompt=prompt)
+        if args.speaker:
+            wavs, sr = model.generate_custom_voice(
+                text=[text], speaker=[args.speaker], language=["Chinese"])
+        else:
+            wavs, sr = model.generate_voice_clone(
+                text=[text], language=["Chinese"], voice_clone_prompt=prompt)
         path = out_dir / f"{key}.wav"
         sf.write(str(path), wavs[0], sr)
         dur = len(wavs[0]) / sr
@@ -119,10 +146,12 @@ def main() -> int:
         })
 
     meta = {
-        "ref_audio": str(ref),
+        "mode": "custom_voice" if args.speaker else "voice_clone",
+        "model": args.model,
+        "speaker": args.speaker,
+        "ref_audio": str(ref) if ref else None,
         "ref_text": args.ref_text,
-        "x_vector_only": bool(args.x_vector_only),
-        "model": MODEL_DIR,
+        "x_vector_only": bool(args.x_vector_only) if prompt else None,
         "items": manifest,
     }
     meta_path = out_dir / "manifest.json"
