@@ -1055,7 +1055,11 @@
                aria-label="歌的音量"
                title="歌的音量（默认 0.3 ≈ -10dB：垫在人声下面，说话才听得清）" />
       </div>
-      <div id="bgmHint">进微信，本机不出声 · 歌短会循环</div>
+      <!-- 提示行兼做「缺什么」的说明（见 renderBgm）。空的时候必须写明**去哪个页面**：
+           写「主界面「垫歌」」时用户找了一圈也没找到 —— 那不是一个页面名，真正的入口是
+           实时变声页里 BgmPanel 那张卡（标题才叫「实时垫歌」）。 -->
+      <div id="bgmHint"
+           title="歌从哪来：① 主界面 → 实时变声 → 实时垫歌 → 选一首歌；② 或直接把 mp3 放进后端 media/songs（安装版：%APPDATA%\voice-morph-desktop\media\songs）">进微信，本机不出声 · 歌短会循环</div>
     </div><!-- /#bgmPane -->
 
     <!-- 底部动作行：合成并发送 + 试听。
@@ -2350,7 +2354,7 @@ function renderBgm() {
   if (bgmHintEl) {
     const msg = bgmNote || (bgmSongs.length
       ? "进微信，本机不出声 · 歌短会循环"
-      : "去主界面「垫歌」里选一首");
+      : "还没有歌：主界面 → 实时变声 → 实时垫歌");
     bgmHintEl.textContent = msg;
     bgmHintEl.classList.toggle("warn", !!bgmNote);
   }
