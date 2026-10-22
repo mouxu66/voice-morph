@@ -353,7 +353,10 @@ def test_raw_fetch_skips_non_endpoint_paths(ao):
     module2plugin, _is_core, _ids = ao.load_plugins()
     raw = ao.load_raw_endpoints(ao.load_routes(), module2plugin)
     for rel, mapping in raw.items():
-        assert "api/client.ts" != rel, "client.ts 已由 load_client_funcs 覆盖，不该双重计数"
+        assert rel != "api/client.ts", "client.ts 已由 load_client_funcs 覆盖，不该双重计数"
+        assert not rel.startswith("api/domains/"), (
+            f"{rel} 已由 load_client_funcs 覆盖（2026-10-22 按域拆分），不该双重计数"
+        )
         for plug, keys in mapping.items():
             assert plug in module2plugin.values(), f"{rel} 归属到一个不存在的插件 {plug}"
             for k in keys:

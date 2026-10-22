@@ -261,7 +261,8 @@ describe("特效声板的 `sound.fx-board` 门控", () => {
 describe("声板素材管理（单条导入 + 成套音效包）", () => {
   const panelSrc = readRel(path.join("pages", "Tts", "SoundboardPanel.tsx"))
   const hookSrc = readRel(path.join("pages", "Tts", "useSoundboard.ts"))
-  const clientSrc = readRel(path.join("api", "client.ts"))
+  // 2026-10-22 api/client.ts 拆成按域模块：声板相关请求在 domains/sfx.ts
+  const clientSrc = readRel(path.join("api", "domains", "sfx.ts"))
 
   it("★ 四个动作都打声板自己的端点（不绕道别的可关插件）", () => {
     for (const call of [
@@ -334,7 +335,7 @@ describe("声板预混模式（发送前把音效烘进音频）", () => {
   const hookSrc = readRel(path.join("pages", "Tts", "useSoundboard.ts"))
   const sendHookSrc = readRel(path.join("pages", "Tts", "useWechatSend.ts"))
   const pageSrc = readRel(path.join("pages", "Tts", "WechatSendPage.tsx"))
-  const clientSrc = readRel(path.join("api", "client.ts"))
+  const clientSrc = readRel(path.join("api", "domains", "sfx.ts"))
 
   it("★ 预混打的是声板自己的端点（`/soundboard/premix`），不绕道效果器", () => {
     // 绕道 `/effects/apply` 会同时坏两件事：① 关掉 `sound.effects` 后按钮 404；

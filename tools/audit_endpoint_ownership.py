@@ -218,18 +218,23 @@ _TERNARY_ALT = re.compile(r':\s*"(\s*/(?:[^"]*)?)"')
 # 从 `BASE}/voicebank/x` 这类模板串里剥掉前缀，只留 /voicebank/x
 _BASE_PREFIX = re.compile(r"^\$\{BASE\}|^BASE\s*\+\s*")
 
-# 纯 URL **拼装**函数（不自己发请求，只是把路径拼出来给 <img>/<a href>/<audio src> 用）。
+# 纯 URL **拼装**函数 / 传输包装（不自己绑定端点，只是把路径拼出来或转发请求）。
 # 它们不是端点，归属无从谈起 —— 与其塞进白名单掩盖，不如显式分类：脚本跳过它们，
-# `--check` 也不报。加新条目必须是真的"只拼不发"，别拿它当免检后门。
+# `--check` 也不报。加新条目必须是真的"没有固定端点"，别拿它当免检后门。
 URL_BUILDERS = {
     "backendPrefix",  # 返回 API base 前缀本身
     "mediaUrl",       # 后端相对音频路径 → 可播放绝对地址
     "voicePackUrl",   # 音色包导出下载链接（给 <a href>）
+    "jsonFetch",      # 传输层：URL 由调用方给，自身不绑定端点
 }
 
 
 def load_client_funcs() -> dict[str, list[str]]:
-    """client.ts: 导出函数名 → 它打的 URL 列表。
+    """`api/client.ts` + `api/domains/*.ts`: 导出函数名 → 它打的 URL 列表。
+
+    2026-10-22 拆分：实现搬到了 `api/domains/*.ts`，`client.ts` 只剩 barrel。
+    扫描范围必须跟着走，否则所有函数都会变成「抽不到 URL」的假未定位。
+    barrel 里的 `export *` 不匹配下面的函数声明正则，不会重复计数。
 
     ⚠️ 必须**按函数体**扫，不能只扫单行。项目里大量存在这种跨行写法：
 
@@ -242,9 +247,19 @@ def load_client_funcs() -> dict[str, list[str]]:
     会把 URL 混进来。折中：按函数切块，只在**含请求动作**（jsonFetch / fetch / xhr.open）
     的行上抽，且请求动作与 URL 允许跨行。
     """
-    path = os.path.join(WEB_SRC, "api", "client.ts")
-    with open(path, encoding="utf-8") as fh:
-        lines = fh.read().split("\n")
+    paths = [os.path.join(WEB_SRC, "api", "client.ts"), os.path.join(WEB_SRC, "api", "http.ts")]
+    paths += sorted(glob.glob(os.path.join(WEB_SRC, "api", "domains", "*.ts")))
+    funcs: dict[str, list[str]] = {}
+    for path in paths:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().split("\n")
+        for name, urls in _scan_export_funcs(lines).items():
+            funcs.setdefault(name, []).extend(urls)
+    return {name: list(dict.fromkeys(urls)) for name, urls in funcs.items()}
+
+
+def _scan_export_funcs(lines: list[str]) -> dict[str, list[str]]:
+    """单个前端 api 文件：导出函数名 → 它打的 URL 列表。"""
 
     # 先切出每个导出函数的行范围。
     # ⚠️ `export const NAME =` 只收**函数值**（`(...)=>` / `function`），不收普通常量：
@@ -324,7 +339,7 @@ def load_callers() -> dict[str, set[str]]:
     return out
 
 
-# 裸打后端的写法：与 `load_client_funcs` 用同一组正则（那边只扫 `api/client.ts` 一个文件）
+# 裸打后端的写法：与 `load_client_funcs` 用同一组正则（那边只扫 `api/` 下的模块文件）
 _RAW_REQUESTS = (_FETCH, _FETCH_TPLBASE, _XHR)
 
 
@@ -353,8 +368,8 @@ def load_raw_endpoints(
                 continue
             p = os.path.join(dp, f)
             rel = os.path.relpath(p, WEB_SRC).replace(os.sep, "/")
-            if rel == "api/client.ts":
-                continue  # 那一份已由 load_client_funcs 覆盖，别双重计数
+            if rel == "api/client.ts" or rel.startswith("api/domains/"):
+                continue  # 这些文件已由 load_client_funcs 覆盖，别双重计数
             try:
                 with open(p, encoding="utf-8") as fh:
                     s = fh.read()
