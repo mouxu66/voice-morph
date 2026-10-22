@@ -52,5 +52,3 @@ export async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> 
   }
   return res.json() as Promise<T>;
 }
-
-export type { WarmupStatus, LanInfo } from "../types";
