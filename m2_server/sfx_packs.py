@@ -45,9 +45,9 @@ import shutil
 import stat
 import zipfile
 from pathlib import Path
-from urllib.parse import urlparse
 
 import config as cfg
+import net_guard
 import soundfile as sf
 
 #: 装到哪（跟 media 走，与 `sfx_lib.IMPORT_DIR` 平级）
@@ -426,16 +426,15 @@ def uninstall(pack_id: str) -> dict:
 
 
 def _validate_url(url: str) -> str:
-    """域名白名单（精确域或其子域）。返回规范化后的 URL。"""
+    """域名白名单（判据在 net_guard）。返回原 URL；文案保持本模块口径。"""
     try:
-        u = urlparse(url)
-        host = (u.hostname or "").lower()
-    except ValueError as e:
-        raise PackError(f"清单里的地址没法解析：{url!r}") from e
-    if u.scheme not in ("http", "https"):
-        raise PackError(f"清单里的地址协议不支持：{url!r}")
-    if not any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS):
-        raise PackError(f"下载域名不在白名单: {host}")
+        net_guard.validate_url(url, ALLOWED_HOSTS, require_http=True)
+    except net_guard.UrlRejected as exc:
+        if exc.kind == "invalid":
+            raise PackError(f"清单里的地址没法解析：{url!r}") from exc
+        if exc.kind == "scheme":
+            raise PackError(f"清单里的地址协议不支持：{url!r}") from exc
+        raise PackError(str(exc)) from exc
     return url
 
 

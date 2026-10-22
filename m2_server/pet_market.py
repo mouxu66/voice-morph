@@ -25,6 +25,7 @@ import urllib.parse
 import zipfile
 from pathlib import Path
 
+import net_guard
 import requests
 from pet_skin_build import (
     SkinBuildError,
@@ -394,15 +395,11 @@ def sheet_file(skin_id: str, name: str) -> Path:
 
 
 def _validate_url(url: str) -> str:
-    """白名单校验（精确域或子域），非法抛 PetMarketError。"""
+    """白名单校验（判据在 net_guard，精确域或子域），非法抛 PetMarketError。"""
     try:
-        host = (urllib.parse.urlparse(url).hostname or "").lower()
-    except ValueError as exc:
-        raise PetMarketError(f"非法 URL: {url}") from exc
-    for allowed in PET_ALLOWED_HOSTS:
-        if host == allowed or host.endswith("." + allowed):
-            return host
-    raise PetMarketError(f"下载域名不在白名单: {host}")
+        return net_guard.validate_url(url, PET_ALLOWED_HOSTS)
+    except net_guard.UrlRejected as exc:
+        raise PetMarketError(str(exc)) from exc
 
 
 def _download_to(url: str, dst: Path, box: dict) -> None:

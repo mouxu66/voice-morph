@@ -30,6 +30,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
+import net_guard
 import requests
 from runtime import OUT
 
@@ -79,19 +80,11 @@ class MarketError(Exception):
 
 
 def _validate_url(url: str, allow_loopback: bool = False) -> None:
-    """域名白名单校验（精确域或其子域，如 cas-bridge.xethub.hf.co 匹配 hf.co）；
-    不满足直接抛 MarketError。"""
+    """域名白名单校验（判据在 net_guard，精确域或子域）；不满足直接抛 MarketError。"""
     try:
-        host = urllib.parse.urlparse(url).hostname or ""
-    except ValueError as exc:
-        raise MarketError(f"非法 URL: {url}") from exc
-    host = host.lower()
-    if allow_loopback and host in {"127.0.0.1", "localhost", "::1"}:
-        return
-    for allowed in ALLOWED_HOSTS:
-        if host == allowed or host.endswith("." + allowed):
-            return
-    raise MarketError(f"下载域名不在白名单: {host}")
+        net_guard.validate_url(url, ALLOWED_HOSTS, allow_loopback=allow_loopback)
+    except net_guard.UrlRejected as exc:
+        raise MarketError(str(exc)) from exc
 
 
 class DownloadManager:
