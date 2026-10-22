@@ -199,6 +199,14 @@ namespace CoreAudio {
             // 判据：render / capture 各自已经在 CABLE 上 → 这一侧就完全不碰。
             bool rCable = IsCable(GetName(GetDefaultId(0, 1), true));
             bool cCable = IsCable(GetName(GetDefaultId(1, 1), false));
+            // 2026-10-22：录制侧已经是 CABLE Output → 本次什么都不用做。
+            // 直接空转返回，**不写备份、不切换任何设备**（配套：Restore 见无备份也空转）。
+            // 这样「用户常驻把默认设备设成 CABLE」的用法下，整条发送链路零改动，
+            // 不会再出现"点了语音按钮设备自己跳回去"。
+            string curC = GetDefaultId(1, 1);
+            if (cCable) {
+                return "{\"ok\":true,\"skipped\":\"capture_already_cable\",\"playback\":" + J(GetDefaultId(0,1)) + ",\"capture\":" + J(curC) + ",\"backupSaved\":false}";
+            }
             string pb = GetDefaultId(0, 1);
             string pbName = GetName(pb, true);
             if (!rCable && (pbName == null || pbName.IndexOf("CABLE", StringComparison.OrdinalIgnoreCase) >= 0)) {
@@ -292,7 +300,13 @@ namespace CoreAudio {
             return "{\"ok\":" + (allOk?"true":"false") + ",\"reset\":true,\"setted\":" + okCount + ",\"playback\":" + J(rTargets[0]) + ",\"capture\":" + J(cTargets[0]) + detail + "}";
         }
         public static string Restore(string backupPath) {
-            if (!System.IO.File.Exists(backupPath)) return Reset(backupPath);
+            // 2026-10-22：没有备份 = 本次根本没改过设备（apply 空转跳过 / 从未执行）。
+            // 此时必须**什么都不做**。旧逻辑会 `return Reset(backupPath)`，而 Reset 在
+            // 找不到备份时会 FindReal() 把默认设备改成真实声卡 —— 这正是
+            // 「用户自己把默认设成 CABLE，发一次语音后被悄悄改回真实声卡」的最后一条暗路。
+            // 崩溃残留 CABLE 的兜底仍可用：显式执行 `-action reset`。
+            if (!System.IO.File.Exists(backupPath))
+                return "{\"ok\":true,\"restored\":false,\"skipped\":\"no_backup\"}";
             var dict = new Dictionary<string,string>();
             try {
                 foreach (var line in System.IO.File.ReadAllLines(backupPath)) {
