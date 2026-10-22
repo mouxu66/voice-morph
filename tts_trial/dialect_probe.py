@@ -79,6 +79,11 @@ def main() -> int:
                     help="只取音色不取韵律；口音迁移实验不要开")
     ap.add_argument("--tag", default="probe", help="本次实验标签，用于输出目录")
     ap.add_argument("--limit", type=int, default=len(TEXTS))
+    # 2026-10-22：采样解码的 sub-talker 会带进底噪（SNR 12–33dB），
+    # 贪心解码同一句能到 76dB。默认仍保持采样（历史产物可复现），
+    # 需要干净输出时显式加 --greedy。
+    ap.add_argument("--greedy", action="store_true",
+                    help="do_sample=False，底噪显著更低但韵律更平淡")
     args = ap.parse_args()
 
     clone_mode = bool(args.ref_audio or args.ref_text)
@@ -127,10 +132,12 @@ def main() -> int:
         t1 = time.time()
         if args.speaker:
             wavs, sr = model.generate_custom_voice(
-                text=[text], speaker=[args.speaker], language=["Chinese"])
+                text=[text], speaker=[args.speaker], language=["Chinese"],
+                do_sample=not args.greedy)
         else:
             wavs, sr = model.generate_voice_clone(
-                text=[text], language=["Chinese"], voice_clone_prompt=prompt)
+                text=[text], language=["Chinese"], voice_clone_prompt=prompt,
+                do_sample=not args.greedy)
         path = out_dir / f"{key}.wav"
         sf.write(str(path), wavs[0], sr)
         dur = len(wavs[0]) / sr
