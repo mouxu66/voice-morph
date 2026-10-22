@@ -546,7 +546,8 @@
     animation: pulse 1.6s infinite;
   }
 
-  /* —— 功能页切换（2026-09-26）：说话 / 音效 二选一 ——
+  /* —— 功能页切换（2026-09-26 两页 → 09-29 三页 → 10-22 四页）：
+     说话 / 按住 / 音效 / 放歌 —— 四个互斥页签，高度由 CSS 钉死不随数量变。
      用户原话：「全部放到桌面人偶那个功能上……不然用户老点我那个应用，要分屏太难搞了」。
      面板纵向预算是死的（300px 上限，本次压缩前 ok-dark 只剩 2.5px 余量），
      塞不下两套完整表单，所以做成两个互斥的功能页：
@@ -701,6 +702,54 @@
     color: rgb(var(--c-t-500)); font-weight: 600; padding: 0 1px;
   }
   #panel .fxchip .fxrm:hover { color: rgb(var(--c-err)); }
+
+  /* —— 放歌页（2026-10-22）：把一首歌**实时垫进虚拟声卡** ——
+     两行：歌名下拉（复用 .field sel）+ 46px 主按钮 + 音量滑块，再一行 15px 提示。
+     高度预算 ≈ 100px，与「按住说话」页（98px）同级 —— 那一页也是 46px 主按钮，
+     所以余量是**已知能装下**的（tools/pet-panel-layout-budget.json 里 hold 页的账）。
+     ⚠️ 这页同样收起动作行：「合成并发送 / 试听」作用的是说话页的输入框（同按住页）。 */
+  #bgmCtlRow { display: flex; align-items: center; gap: 6px; }
+  /* 主按钮与 #holdMic 同规格（46px 高 = 整行唯一的按压面）。
+     ⚠️ 必须两段选择器：#panel button 的 (0,2,0,1) 高于单个 #id，而且
+        `#panel button:not(.primary){flex:1}` 会把它撑满整行（犯错指南速查表同条）。 */
+  #panel #bgmBtn {
+    flex: 0 0 auto; width: 92px; height: 46px; padding: 0;
+    border-radius: 11px; font-size: 12px; font-weight: 600;
+  }
+  #panel #bgmBtn .ic { font-size: 10px; line-height: 1; }
+  #panel #bgmBtn.on {
+    border-color: rgb(var(--c-accent) / 0.55);
+    background: rgb(var(--c-accent) / 0.20);
+    color: rgb(var(--c-accent-h));
+  }
+  /* 音量滑块：#panel input 的通用外观（28px 左内边距 + 边框 + 背景）对 range 是错的，
+     这里整组压回去，只留一根细轨 + 品牌紫的滑块。 */
+  #panel #bgmGain {
+    flex: 1 1 auto; min-width: 0; height: 18px;
+    padding: 0; border: 0; border-radius: 0; background: transparent;
+    accent-color: rgb(var(--c-accent-h)); cursor: pointer;
+  }
+  /* 放歌中锁住选歌框：垫层只有一层，选中项与正在放的那首**必须**一致，
+     否则「停」到底停的是哪首就成了猜谜。换歌 = 停 → 选 → 放。 */
+  #panel #bgmSel:disabled { opacity: .55; cursor: default; }
+  #bgmHint { margin-top: 3px; font-size: 10px; line-height: 1.5; color: rgb(var(--c-t-500)); }
+  #bgmHint.warn { color: rgb(var(--c-err)); }
+  /* 放歌角标：面板会在鼠标移开后自己收（500ms），歌却还在放 —— 得有个东西回答
+     「现在是不是还在放」。挂桌宠右上角，pointer-events:none（不抢拖拽），
+     不用可点：悬停宠物本体本来就会把面板叫回来。 */
+  #bgmBadge {
+    display: none; position: absolute; top: 6px; right: 6px; z-index: 3;
+    width: 18px; height: 18px; border-radius: 999px;
+    align-items: center; justify-content: center;
+    font-size: 11px; line-height: 1;
+    color: rgb(var(--c-accent-h));
+    background: rgb(var(--c-surface-2) / 0.85);
+    box-shadow: 0 0 0 1px rgb(var(--c-accent) / 0.4);
+    pointer-events: none;
+    animation: bgm-pop 1.8s ease-in-out infinite;
+  }
+  #bgmBadge.on { display: flex; }
+  @keyframes bgm-pop { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
 
   /* —— 气泡在屏时的「让位」规则 ——
      气泡与面板共用同一个 480px 高的窗口，可用高是：
@@ -859,10 +908,15 @@
     <div id="tabRow" role="tablist" aria-label="面板功能页">
       <button type="button" id="tabSpeak" data-tab="speak"
               title="输入文字合成发微信 / 麦克风实时变声">说话</button>
+      <!-- 页签名限 2~3 个汉字（2026-10-22 加第 4 页时从「按住说话」改成「按住」）：
+           204px 分给 4 颗页签，每颗内容宽只剩 ~37px，而「按住说话」实测 40px —— 被
+           省略号吃掉一半。完整名字在 title 与页内那颗大按钮上，不靠页签背。 -->
       <button type="button" id="tabHold" data-tab="hold"
-              title="按住说话：录真实麦克风 → 换声 → 直接发微信（不用先打字合成）">按住说话</button>
+              title="按住说话：录真实麦克风 → 换声 → 直接发微信（不用先打字合成）">按住</button>
       <button type="button" id="tabFx" data-tab="fx"
               title="音效声板：点格子立即出声，或勾选混进语音一起发">音效</button>
+      <button type="button" id="tabBgm" data-tab="bgm"
+              title="放歌：把一首歌实时垫进虚拟声卡 —— 通话/录音时对面也听得到，与人声由系统混音">放歌</button>
     </div>
 
     <div id="speakPane" class="pane on">
@@ -975,6 +1029,35 @@
       <div id="fxPicks"></div>
     </div><!-- /#fxPane -->
 
+    <!-- 放歌页（2026-10-22）：把一首歌**实时垫进虚拟声卡**，与说话/变声/音效一起
+         被微信录走（POST /bgm/start → 声板 worker 的「垫底层」，独立音频流：
+         点音效格子不会把歌掐断 —— 见 board_worker.py 头注释）。
+         ⚠️ 面板里刻意**不做**「垫进一条语音再发」（那是主界面 BgmPanel 的 A 档）：
+          它要 lead_db / start_s 两个参数，204px 塞不下；而且它发生在"发送之前"，
+          与这一页「此刻放给对面听」不是同一时刻的事。
+         ⚠️ 本机扬声器**不出声**（歌只进 CABLE 渲染端）→ 提示行与 title 都要说清楚。
+          音效格子 2026-10-01 就是漏了这句，用户全在问「我怎么听不到」。 -->
+    <div id="bgmPane" class="pane">
+      <div class="field sel">
+        <svg class="lead" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
+        </svg>
+        <select id="bgmSel" title="选一首歌：本次导入/翻唱的（退出应用会清空），或 media/songs 里常驻的">
+          <option value="">加载中…</option>
+        </select>
+      </div>
+      <div id="bgmCtlRow">
+        <button type="button" id="bgmBtn"
+                title="放歌：把歌实时垫进虚拟声卡，微信那边听得到；本机扬声器不出声（想自己听请开「自我监听」）。歌比说话短时循环补满">
+          <span class="ic" id="bgmIc">▶</span><span id="bgmLabel">放歌</span>
+        </button>
+        <input id="bgmGain" type="range" min="0" max="1" step="0.05" value="0.3"
+               aria-label="歌的音量"
+               title="歌的音量（默认 0.3 ≈ -10dB：垫在人声下面，说话才听得清）" />
+      </div>
+      <div id="bgmHint">进微信，本机不出声 · 歌短会循环</div>
+    </div><!-- /#bgmPane -->
+
     <!-- 底部动作行：合成并发送 + 试听。
          （2026-09-26 去重：第三颗「开 RVC / 开 千问」已并进上面的引擎分段 ——
           它与分段里已选中的引擎永远是同一个，两处文案都在报"RVC"。）
@@ -1014,7 +1097,7 @@
 
     <div id="recent" title="最近发送的语音，点一下重发"></div>
   </div>
-  <div id="pet"><div id="sprite"></div></div>
+  <div id="pet"><div id="sprite"></div><span id="bgmBadge" title="正在放歌">♪</span></div>
 </div>
 <script>
 "use strict";
@@ -1602,6 +1685,17 @@ const fxPicksEl = document.getElementById("fxPicks");
 const fxEmptyEl = document.getElementById("fxEmpty");
 const fxModeLiveBtn = document.getElementById("fxModeLive");
 const fxModePremixBtn = document.getElementById("fxModePremix");
+// 放歌页（2026-10-22）：选歌框 / 放-停主按钮（内含图标与文字两个 span，不能直写
+// textContent —— 同 #holdMic）/ 音量滑块 / 桌宠身上的 ♪ 角标
+const tabBgmBtn = document.getElementById("tabBgm");
+const bgmPaneEl = document.getElementById("bgmPane");
+const bgmSelEl = document.getElementById("bgmSel");
+const bgmBtnEl = document.getElementById("bgmBtn");
+const bgmIcEl = document.getElementById("bgmIc");
+const bgmLabelEl = document.getElementById("bgmLabel");
+const bgmGainEl = document.getElementById("bgmGain");
+const bgmBadgeEl = document.getElementById("bgmBadge");
+const bgmHintEl = document.getElementById("bgmHint");
 const VOICE_KEY = "pet_voice_id";
 let panelTimer = null;
 let panelOpen = false;       // 面板是否可见（Esc 收起、点击穿透判定都要用）
@@ -1960,7 +2054,7 @@ let sfxLiveHintShown = false;
 
 // 记住上次的页：常驻遥控器的用户往往固定在一页（比如就用「按住说话」），
 // 每次悬停都要先点一下页签的话，那个「常驻」就没意义了。
-const TAB_NAMES = ["speak", "hold", "fx"];
+const TAB_NAMES = ["speak", "hold", "fx", "bgm"];
 try {
   const saved = localStorage.getItem(TAB_KEY);
   if (TAB_NAMES.includes(saved)) activeTab = saved;
@@ -1978,13 +2072,16 @@ function esc(s) {
 function setTab(next, save) {
   activeTab = TAB_NAMES.includes(next) ? next : "speak";
   if (save) { try { localStorage.setItem(TAB_KEY, activeTab); } catch {} }
-  for (const [btn, name] of [[tabSpeakBtn, "speak"], [tabHoldBtn, "hold"], [tabFxBtn, "fx"]]) {
+  for (const [btn, name] of [[tabSpeakBtn, "speak"], [tabHoldBtn, "hold"], [tabFxBtn, "fx"], [tabBgmBtn, "bgm"]]) {
     if (btn) btn.classList.toggle("on", activeTab === name);
   }
-  for (const [pane, name] of [[speakPaneEl, "speak"], [holdPaneEl, "hold"], [fxPaneEl, "fx"]]) {
+  for (const [pane, name] of [[speakPaneEl, "speak"], [holdPaneEl, "hold"], [fxPaneEl, "fx"], [bgmPaneEl, "bgm"]]) {
     if (pane) pane.classList.toggle("on", activeTab === name);
   }
   if (activeTab === "fx") void loadSfx(true);   // 进音效页就刷新清单（强制，绕过节流）
+  // 放歌页同理：歌是会话产物，用户可能刚在主界面导入/翻唱完 —— 进页必须看到此刻
+  // 真能放的那些，而不是 60s 前缓存的那份。
+  if (activeTab === "bgm") void loadBgm(true);
   // 进「按住说话」页就复查预检（强制）：切过来时看到的必须是**此刻**的微信状态，
   // 否则刚把微信关掉的人会拿着上一次的「已打开」按下去。
   if (activeTab === "hold") void refreshWechatPrecheck(true);
@@ -2172,9 +2269,195 @@ if (fxPicksEl) fxPicksEl.addEventListener("click", (e) => {
   renderFxPicks();
   refreshFxActions();
 });
-[tabSpeakBtn, tabHoldBtn, tabFxBtn].forEach((b) => {
+[tabSpeakBtn, tabHoldBtn, tabFxBtn, tabBgmBtn].forEach((b) => {
   if (b) b.addEventListener("click", () => setTab(b.dataset.tab, true));
 });
+
+// ---------------- 放歌页（sound.fx-board 的「垫底层」）----------------
+/**
+ * `POST /bgm/start` 往 CABLE 垫一层长歌，`/bgm/stop` 停，`/bgm/gain` 实时调音量。
+ * 三条不变量（都是踩过的坑，改之前先读完）：
+ *
+ *   1. **不能用 `/play` 放歌**：它是抢占式 one-shot，下一格音效会把歌掐断 ——
+ *      那正是 board_worker.py 头注释里钉死的故障场景。长播放只走 /bgm/start、/bgm/stop。
+ *   2. **`loop=true` 是刻意的**：`loop=false` 且播完时 worker **不会发任何消息**
+ *      （协议不变量：stdout 绝不发未经请求的行），面板收不到"放完了"。要非循环
+ *      兜底就得自己按 duration_s 倒计时，误差一路累积到「按钮亮着但没声音」。
+ *      面板只有一颗按钮（放 / 停），所以：短了就循环，想停就按停。
+ *   3. **播放中锁住选歌框**：垫层只有一层（后端 `_bgm_stop_stream()` 也是先停旧再起新），
+ *      若选中项与正在放的那首不一致，「停」就变成猜谜。换歌 = 停 → 选 → 放，
+ *      且按钮状态以 `/bgm/start` 返回的 `id` 为准，不乐观点亮。
+ */
+const BGM_KEY = "pet_bgm_name";
+let bgmSongs = [];        // /bgm/recent 的 items
+let bgmSelName = "";      // 当前选中的文件裸名（select 的 value）
+let bgmPlayingId = null;  // 正在放的 id（= 文件名去扩展名，后端返回的就是它）
+let bgmGainV = 0.3;       // 与后端 BGM_DEFAULT_GAIN 同值（≈ -10dB，压在人声下面）
+let bgmLoadedAt = 0;
+let bgmBusy = false;
+let bgmGainTimer = null;
+let bgmNote = "";         // 拉歌单失败的说明 —— 写在**页内**提示行，不抢共用状态行
+
+/** 秒 → `m:ss`（204px 里多一个字符都可能在 select 尾部变成省略号）。 */
+function fmtDur(s) {
+  const t = Math.max(0, Math.round(Number(s) || 0));
+  return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0");
+}
+
+/** 默认选哪首：上次放过的 > 后端记的 last > 列表第一首。 */
+function pickBgmName(items, last) {
+  let saved = "";
+  try { saved = localStorage.getItem(BGM_KEY) || ""; } catch {}
+  for (const name of [saved, last]) {
+    if (name && items.some((it) => it.name === name)) return name;
+  }
+  return items.length ? items[0].name : "";
+}
+
+/** 把歌单填进下拉。没有歌时**说清楚缺什么**，而不是一个空下拉（用户无从下手）。 */
+function renderBgmOptions() {
+  if (!bgmSelEl) return;
+  if (!bgmSongs.length) {
+    bgmSelEl.innerHTML = '<option value="">' + esc(bgmNote || "还没有歌") + "</option>";
+    return;
+  }
+  bgmSelEl.innerHTML = bgmSongs.map((it) => {
+    const label = it.name.replace(/\.[^.]+$/, "") + (it.duration_s ? " · " + fmtDur(it.duration_s) : "");
+    return '<option value="' + esc(it.name) + '"' + (it.name === bgmSelName ? " selected" : "") + ">"
+      + esc(label) + "</option>";
+  }).join("");
+  if (!bgmSelName) bgmSelName = bgmSongs[0].name;
+}
+
+/** 按钮/角标/滑块的单一镜像点 —— 任何状态变化后只调它。 */
+function renderBgm() {
+  const song = bgmSongs.find((it) => it.name === bgmSelName) || null;
+  const playing = !!bgmPlayingId;
+  if (bgmBtnEl) {
+    bgmBtnEl.disabled = !song || bgmBusy;
+    bgmBtnEl.classList.toggle("on", playing);
+    bgmBtnEl.title = playing
+      ? "停止放歌（歌还在放时点它就是停；本机扬声器不出声是正常的）"
+      : "放歌：把歌实时垫进虚拟声卡，微信那边听得到；本机扬声器不出声（想自己听请开「自我监听」）。歌比说话短时循环补满";
+  }
+  if (bgmIcEl) bgmIcEl.textContent = playing ? "■" : "▶";
+  if (bgmLabelEl) bgmLabelEl.textContent = playing ? "停" : "放歌";
+  if (bgmSelEl) bgmSelEl.disabled = playing;   // 不变量 3：选中项必须就是正在放的那首
+  if (bgmGainEl && document.activeElement !== bgmGainEl) bgmGainEl.value = String(bgmGainV);
+  if (bgmBadgeEl) bgmBadgeEl.classList.toggle("on", playing);
+  // 提示行兼做「缺什么」的说明：204px 里没有第二行可以用来报错，而共用状态行
+  // （`setStatus`）属于发送链路 —— 在这里写会**把刚发完微信的结果顶掉**。
+  if (bgmHintEl) {
+    const msg = bgmNote || (bgmSongs.length
+      ? "进微信，本机不出声 · 歌短会循环"
+      : "去主界面「垫歌」里选一首");
+    bgmHintEl.textContent = msg;
+    bgmHintEl.classList.toggle("warn", !!bgmNote);
+  }
+}
+
+/** 拉歌单。force=false 时 60s 内不重复拉（refreshPanel 每次悬停都跑）。 */
+async function loadBgm(force) {
+  if (!CAP.fx) return;
+  const now = Date.now();
+  if (!force && now - bgmLoadedAt < 60000) return;
+  bgmLoadedAt = now;
+  try {
+    const r = await fetch(SFX_BASE + "/bgm/recent", { cache: "no-store" });
+    if (!r.ok) {
+      bgmSongs = [];
+      // 404 与「后端在但出错」是两件事：前者多半是后端比面板旧（/bgm/recent 还没有），
+      // 后者该看日志 —— 猜错会把用户指去查错的环节。
+      bgmNote = r.status === 404
+        ? "要新版后端（/bgm/recent 没有）"
+        : "歌单拉不到（HTTP " + r.status + "）";
+      renderBgmOptions();
+      renderBgm();
+      return;
+    }
+    const j = await r.json();
+    bgmSongs = (j.items || []).filter((it) => it && it.name);
+    bgmNote = "";
+    bgmSelName = pickBgmName(bgmSongs, j.last || "");
+    renderBgmOptions();
+    renderBgm();
+  } catch {
+    bgmSongs = [];
+    bgmNote = "后端没连上，放歌不可用";
+    renderBgmOptions();
+    renderBgm();
+  }
+}
+
+/** 从错误响应里挖一句人话（FastAPI 的 detail；没有就报状态码）。 */
+async function bgmErr(r) {
+  try {
+    const j = await r.json();
+    if (j && j.detail) return String(j.detail).slice(0, 80);
+  } catch {}
+  return "HTTP " + r.status;
+}
+
+/** 主按钮：放 / 停。 */
+async function toggleBgm() {
+  if (bgmBusy) return;
+  const song = bgmSongs.find((it) => it.name === bgmSelName) || null;
+  if (!song) {
+    setStatus("还没有歌：主界面 → 实时变声/发微信 页的「垫歌」里选一首", "err");
+    return;
+  }
+  const stopping = !!bgmPlayingId;
+  bgmBusy = true;
+  renderBgm();
+  try {
+    const r = await fetch(SFX_BASE + (stopping ? "/bgm/stop" : "/bgm/start"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(stopping ? {} : { bgm: song.name, gain: bgmGainV, loop: true }),
+    });
+    if (!r.ok) {
+      setStatus((stopping ? "停不掉：" : "放歌失败：") + await bgmErr(r), "err");
+      return;
+    }
+    if (stopping) {
+      bgmPlayingId = null;
+      setStatus("已停", "");
+    } else {
+      const j = await r.json().catch(() => ({}));
+      bgmPlayingId = j.id || song.id;
+      try { localStorage.setItem(BGM_KEY, song.name); } catch {}
+      // 一次性说清"为什么我听不到"（与音效格子同一条教训）
+      setStatus("放歌中 · 微信那边听得到，本机扬声器不出声", "ok");
+    }
+  } catch {
+    setStatus("后端没连上，" + (stopping ? "停不掉" : "放歌失败"), "err");
+  } finally {
+    bgmBusy = false;
+    renderBgm();
+  }
+}
+
+/** 音量：拖动只改本地值，停 250ms 再发（滑块 input 事件一次拖动能发几十次）。 */
+function onBgmGainInput() {
+  if (!bgmGainEl) return;
+  bgmGainV = Math.min(1.5, Math.max(0, Number(bgmGainEl.value) || 0));
+  if (!bgmPlayingId) return;      // 没在放就只记下，下次 /bgm/start 带上
+  if (bgmGainTimer) clearTimeout(bgmGainTimer);
+  bgmGainTimer = setTimeout(() => {
+    bgmGainTimer = null;
+    void fetch(SFX_BASE + "/bgm/gain", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gain: bgmGainV }),
+    }).catch(() => {});
+  }, 250);
+}
+
+if (bgmSelEl) bgmSelEl.addEventListener("change", () => {
+  bgmSelName = bgmSelEl.value || "";
+  try { localStorage.setItem(BGM_KEY, bgmSelName); } catch {}
+  renderBgm();
+});
+if (bgmBtnEl) bgmBtnEl.addEventListener("click", () => void toggleBgm());
+if (bgmGainEl) bgmGainEl.addEventListener("input", onBgmGainInput);
 function refreshFxModeSeg() {
   if (fxModeLiveBtn) fxModeLiveBtn.classList.toggle("on", sfxMode === "live");
   if (fxModePremixBtn) fxModePremixBtn.classList.toggle("on", sfxMode === "premix");
@@ -2216,7 +2499,12 @@ function refreshCapVisibility() {
   // 没法切走、还打 404 的死页。收掉后强制回「说话」页。
   hide("tabRow", !CAP.fx);
   hide("fxPane", !CAP.fx);
+  // 「放歌」页同样归 sound.fx-board（bgm 那组端点都挂在那支 router 上）：入口与页体一起收，
+  // 否则 localStorage 里残留 tab=bgm 的用户会看到一个全 404 的死页。
+  hide("tabBgm", !CAP.fx);
+  hide("bgmPane", !CAP.fx);
   if (!CAP.fx && activeTab === "fx") setTab("speak", false);
+  if (!CAP.fx && activeTab === "bgm") setTab("speak", false);
   // 「按住说话」整条链路的终点是 `sendWechatWav` → 同样归 hook.wechat。
   // （录/换声那两步的 capture/mic 端点在 pet.companion 里，也就是桌宠自身的能力，
   //   它关掉的话桌宠入口本身就没了，所以这里只需盯 wechat 这一道。
@@ -2235,6 +2523,10 @@ function refreshCapVisibility() {
 function refreshPanel() {
   loadVoices(); loadRecent(); loadSfx(false); refreshSendLabel(); refreshEngineSeg();
   refreshFxModeSeg(); refreshCapVisibility(); refreshFxActions();
+  // 歌单只在「放歌」页可见时才拉：这一页的数据对其它页没用，而在后台拉失败会把
+  // 提示写进共用状态行 —— 轻则占掉一行高度（纵向预算只剩 2px），重则把刚发完
+  // 微信的结果顶掉。进页本身由 setTab 强制拉一次（绕过节流）。
+  if (activeTab === "bgm") loadBgm(false);
 }
 
 // ---------------- 试听 / 发送 / 结果反馈 ----------------
@@ -2261,7 +2553,9 @@ function refreshFxActions() {
   if (sendBtn) sendBtn.disabled = fx && !sfxPicks.length ? true : false;
   // 整行动作行在「按住说话」页收起：那一页的动作是按住那颗大按钮本身，
   // 「合成并发送 / 试听」在那里只会让人以为还要先打字（它们作用的是「说话」页的输入框）。
-  if (actRowEl) actRowEl.style.display = activeTab === "hold" ? "none" : "";
+  // 「按住说话」页与「放歌」页都收起整行动作：「合成并发送 / 试听」作用的是说话页的
+  // 输入框，在这两页里只会让人以为还要先打字/先合成（同按住页 2026-09-29 的理由）。
+  if (actRowEl) actRowEl.style.display = (activeTab === "hold" || activeTab === "bgm") ? "none" : "";
   refreshSendLabel();
 }
 

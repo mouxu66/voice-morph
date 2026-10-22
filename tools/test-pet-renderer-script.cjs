@@ -267,10 +267,17 @@ const PRECHECK_OK = {
   hint: "不会重启微信，直接切麦克风到 CABLE Output",
 };
 let precheckStub = null;
+// 歌单桩（2026-10-22 放歌页）：接口只读，但**失败形态**也是契约的一部分 ——
+// 「后端比面板旧」（404）与「后端没起来」要说不同的话，且都只能说在页内。
+let bgmItems = [];
+let bgmLast = "";
+let bgmStatus = 200;
 global.fetch = async (url, opts) => {
   const u = String(url);
   const method = String((opts && opts.method) || "GET").toUpperCase();
-  fetchCalls.push({ url: u, method });
+  // body 也要记：放歌的 loop/gain 决定「会不会在下一格音效时被掐断」跟「压不压得住人声」，
+  // 只断言 URL 等于什么也没验。
+  fetchCalls.push({ url: u, method, body: (opts && opts.body) || null });
   // 离线模式：两个状态接口都失败 → 走 pet.html 自己的「后端离线」分支
   if (OFFLINE && (u.includes("/api/cascade/status") || u.includes("/api/rvc/live/status"))) {
     return { ok: false, status: 503, json: async () => ({}) };
@@ -295,6 +302,10 @@ global.fetch = async (url, opts) => {
     if (typeof precheckStub === "function") return precheckStub();
     if (precheckStub) return precheckStub;
     return { ok: true, status: 200, json: async () => ({ ...PRECHECK_OK }) };
+  }
+  if (u.includes("/api/soundboard/bgm/recent")) {
+    if (bgmStatus !== 200) return { ok: false, status: bgmStatus, json: async () => ({ detail: "nope" }) };
+    return { ok: true, status: 200, json: async () => ({ ok: true, items: bgmItems, last: bgmLast }) };
   }
   let body = {};
   // 音色清单（2026-09-29 起多一个 selected：主界面当前选中的音色 id）。
@@ -975,6 +986,91 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       assert.strictEqual(preFetches(), afterForce,
         "多发了 " + (preFetches() - afterForce) + " 次预检请求");
     });
+
+    // ---------- 放歌（2026-10-22）：第四个页签 ----------
+    //
+    // 这一页的价值全在「此刻把歌放给对面听」，所以钉三件事：
+    //   ① 入口是页签（204px 里放不下第三行），切过去要显示页体、收起动作行；
+    //   ② 放歌必须走 /bgm/start 且 **loop=true** —— /play 是抢占式 one-shot，
+    //      下一格音效会把歌掐断；而 loop=false 播完时 worker 不发消息（协议不变量），
+    //      面板会永远停在「放歌中」；
+    //   ③ 拉歌单失败要说在**页内提示行**，不许写共用状态行 —— 那既会顶掉刚发完
+    //      微信的结果，也会凭空多吃 39px 高度（纵向预算最紧只剩 2px）。
+    bgmItems = [
+      { name: "bgm_1792678124662.wav", id: "bgm_1792678124662", duration_s: 252.4, source: "session" },
+      { name: "kangaroo_cover.wav", id: "kangaroo_cover", duration_s: 61, source: "library" },
+    ];
+    bgmLast = "";
+    bgmStatus = 200;
+    (els.tabBgm._on.click || [])[0]();
+    await flush();
+    check("「放歌」是第四个页签：显示页体、收起动作行、把歌单拉出来", () => {
+      assert.strictEqual(petFns.getActiveTab(), "bgm");
+      assert.ok(els.bgmPane.classList.contains("on"), "放歌页的页体没显示");
+      assert.ok(!els.speakPane.classList.contains("on"), "说话页没有让位");
+      assert.strictEqual(els.actRow.style.display, "none",
+        "「放歌」页里还留着「合成并发送/试听」—— 它们作用的是说话页的输入框");
+      assert.match(String(els.bgmSel.innerHTML), /bgm_1792678124662/,
+        "歌单没填进下拉：" + JSON.stringify(els.bgmSel.innerHTML));
+      assert.strictEqual(localStorageStore.get("pet_panel_tab"), "bgm",
+        "页签没记住 —— 固定用这一页的人每次悬停都要重新点");
+      // 整页归 sound.fx-board（bgm 那组端点都挂在那支 router 上）
+      assert.ok(/hide\("tabBgm"/.test(codeStripped) && /hide\("bgmPane"/.test(codeStripped),
+        "refreshCapVisibility 没有收起「放歌」的页签/页体：关掉声板后它就是个全 404 的死页");
+    });
+
+    const bgmPosts = () => fetchCalls.filter((c) => c.url.includes("/api/soundboard/bgm/") && c.method === "POST");
+    const lastBgmPost = () => bgmPosts().slice(-1)[0];
+
+    (els.bgmBtn._on.click || [])[0]();
+    await flush();
+    check("放歌 → /bgm/start，且 loop=true（不循环就收不到「播完了」）", () => {
+      const post = lastBgmPost();
+      assert.ok(post && /\/bgm\/start$/.test(post.url), "没打 /bgm/start：" + JSON.stringify(post));
+      const body = JSON.parse(post.body || "{}");
+      assert.strictEqual(body.bgm, "bgm_1792678124662.wav", "送的不是选中那首：" + body.bgm);
+      assert.strictEqual(body.loop, true,
+        "loop=false 播完时 worker 不发消息 —— 面板会永远停在「放歌中」");
+      assert.ok(body.gain > 0 && body.gain <= 1.5, "增益没带/超范围：" + body.gain);
+      assert.strictEqual(els.bgmLabel.textContent, "停", "按钮没切成「停」");
+      assert.strictEqual(els.bgmSel.disabled, true,
+        "放着歌时还允许换歌 → 「停」到底停的是哪首就成了猜谜");
+      assert.ok(els.bgmBadge.classList.contains("on"),
+        "面板一收，用户就没有任何地方看得出歌还在放");
+      assert.match(String(els.statusText.textContent), /本机/, "「本机不出声」没说");
+    });
+
+    els.bgmGain.value = "0.5";
+    (els.bgmGain._on.input || [])[0]();
+    await new Promise((r) => setTimeout(r, 350));   // 滑块停 250ms 才发（拖动会触发几十次）
+    check("拖音量：只在放歌中发 /bgm/gain，且不用重开歌", () => {
+      const post = lastBgmPost();
+      assert.ok(post && /\/bgm\/gain$/.test(post.url), "没打 /bgm/gain：" + JSON.stringify(post));
+      assert.strictEqual(JSON.parse(post.body || "{}").gain, 0.5);
+    });
+
+    (els.bgmBtn._on.click || [])[0]();
+    await flush();
+    check("再点一下 = /bgm/stop：按钮回「放歌」、选歌框解锁、角标熄灭", () => {
+      const post = lastBgmPost();
+      assert.ok(post && /\/bgm\/stop$/.test(post.url), "没打 /bgm/stop：" + JSON.stringify(post));
+      assert.strictEqual(els.bgmLabel.textContent, "放歌");
+      assert.strictEqual(els.bgmSel.disabled, false);
+      assert.ok(!els.bgmBadge.classList.contains("on"), "停了歌角标还亮着");
+    });
+
+    const statusBeforeBgm = els.statusText.textContent;
+    bgmStatus = 404;
+    (els.tabBgm._on.click || [])[0]();   // 再进一次页 = 强制重拉（绕过节流）
+    await flush();
+    check("歌单拉不到时写在页内提示行，不抢共用状态行（那会顶掉发送结果 + 多吃 39px）", () => {
+      assert.match(String(els.bgmHint.textContent), /新版后端|拉不到|没连上/,
+        "页内没给说法，实际：" + JSON.stringify(els.bgmHint.textContent));
+      assert.strictEqual(els.statusText.textContent, statusBeforeBgm,
+        "拉歌单失败把共用状态行写掉了 —— 会顶掉刚发完微信的结果");
+    });
+    bgmStatus = 200;
+    bgmItems = [];
 
     (els.tabSpeak._on.click || [])[0]();   // 收尾：把页签还给说话页，别影响后面的用例
   }
