@@ -5,12 +5,13 @@ import { describe, expect, it } from 'vitest'
 /**
  * 桌宠（`web/electron/pet/pet.html`）的能力门控（2026-09-20 补）。
  *
- * 为什么需要：桌宠请求的接口里有 4 个属于**可关能力** —— 关掉之后后端根本不挂载
+ * 为什么需要：桌宠请求的接口里有 5 个属于**可关能力** —— 关掉之后后端根本不挂载
  * 那些 router（实测 `mount_plan()` 的差异）：
  *   - 关 `pet.market`      → `pet_market_api` 不挂载
  *   - 关 `sound.rvc-live`  → `rvc_live` + `cascade` 不挂载
  *   - 关 `hook.wechat`     → `wechat_voice` 不挂载
  *   - 关 `sound.fx-board`  → `soundboard` 不挂载（2026-09-26 面板加「音效」页时纳入）
+ *   - 关 `hook.radar`      → `radar_api` 不挂载（2026-10-23 面板加雷达层时纳入）
  * 而桌宠原本对能力清单一无所知（全文没有一处读 `/api/plugins`）。
  *
  * 其中最严重的一条：**`tick()` 拿「cascade + live 都拉不到」当后端离线的判据** ——
@@ -53,7 +54,7 @@ const { capStateFromCatalog } = loadGate()
 
 /** 造一个 /api/plugins 形状的目录；ids 里列出的能力标记为已关闭。 */
 function catalogWithDisabled(ids: string[]): Catalog {
-  const all = ['core.system', 'core.voices', 'pet.market', 'sound.rvc-live', 'hook.wechat', 'sound.fx-board']
+  const all = ['core.system', 'core.voices', 'pet.market', 'sound.rvc-live', 'hook.wechat', 'sound.fx-board', 'hook.radar']
   return {
     plugins: all.map((id) => ({
       id,
@@ -65,12 +66,13 @@ function catalogWithDisabled(ids: string[]): Catalog {
 }
 
 describe('桌宠的能力门控', () => {
-  it('全启用时四处都开着', () => {
+  it('全启用时五处都开着', () => {
     expect(capStateFromCatalog(catalogWithDisabled([]))).toEqual({
       market: true,
       live: true,
       wechat: true,
       fx: true,
+      radar: true,
     })
   })
 
@@ -79,11 +81,12 @@ describe('桌宠的能力门控', () => {
     ['sound.rvc-live', 'live'],
     ['hook.wechat', 'wechat'],
     ['sound.fx-board', 'fx'],
+    ['hook.radar', 'radar'],
   ])('关掉 %s → 只有 %s 被关', (id, key) => {
     const s = capStateFromCatalog(catalogWithDisabled([id]))
     expect(s[key], `${id} 关了，${key} 应该是 false`).toBe(false)
     // 关一个不该牵连别的 —— 否则「关掉市场」会把桌宠的变声也一起弄没
-    for (const other of ['market', 'live', 'wechat', 'fx']) {
+    for (const other of ['market', 'live', 'wechat', 'fx', 'radar']) {
       if (other !== key) expect(s[other]).toBe(true)
     }
   })
@@ -97,6 +100,7 @@ describe('桌宠的能力门控', () => {
         live: true,
         wechat: true,
         fx: true,
+        radar: true,
       })
     }
   })
@@ -115,6 +119,7 @@ describe('桌宠的能力门控', () => {
     expect(s.live).toBe(true)
     expect(s.wechat).toBe(true)
     expect(s.fx).toBe(true)
+    expect(s.radar).toBe(true)
   })
 })
 
@@ -128,24 +133,27 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
     expect(tickBody).toContain('HEALTH_API')
   })
 
-  it('四处调用点各自有门控', () => {
+  it('五处调用点各自有门控', () => {
     expect(html).toContain('if (!CAP.market) return;') // loadSkin：皮肤接口
     expect(html).toContain('if (!CAP.wechat) return;') // loadRecent：最近发送
     expect(html).toContain('if (!CAP.fx) return;')     // loadSfx：音效声板
+    expect(html).toContain('if (!CAP.radar) return;')  // radarTick：微信雷达轮询
     expect(html).toContain('refreshCapVisibility()')
   })
 
-  it('收起来的控件正好是那三处（其余归 refreshFire）', () => {
+  it('收起来的控件正好是那四处（其余归 refreshFire）', () => {
     // 2026-10-23 面板重构：页签（tabRow）与四个页体全删了，入口收成「状态条两个图标
     // + 主按钮」；「试听/发送」也不再由 refreshCapVisibility 用 style.display 硬盖 ——
     // 它们的文案与可用性要跟着「草稿有没有内容、是不是在录」变，两套机制会互相覆盖，
     // 统一由 refreshFire 决定（下面那条单独钉它）。
+    // 2026-10-23 晚：抽屉雷达行（radarRow）也归 refreshCapVisibility —— 它归 hook.radar。
     const i = html.indexOf('function refreshCapVisibility()')
-    const fn = html.slice(i, i + 1600)
+    const fn = html.slice(i, i + 1800)
     for (const call of [
       'hide("engRow", !CAP.live)',
       'hide("recent", !CAP.wechat)',
       'hide("trayBtn", !CAP.fx)',
+      'hide("radarRow", !CAP.radar)',
     ]) {
       expect(fn, `refreshCapVisibility 漏了 ${call}`).toContain(call)
     }
@@ -179,6 +187,20 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
     // 2026-10-23：搜歌层 `songs` 也归 sound.fx-board（它的入口长在放歌卡上），
     // 所以归位条件必须同时认「已经开着的托盘」和「已经开着的搜歌层」。
     expect(html).toContain('if (!CAP.fx && (panelLayer === "tray" || panelLayer === "songs")) setLayer("");')
+  })
+
+  it('★ 雷达层整体归 hook.radar（关了能力就是一条 404 轮询）', () => {
+    // radarTick 打的是 /api/radar/*（hook.radar 插件的路由）：关掉后 state/reset 全 404，
+    // 所以抽屉雷达行、层、两档轮询必须一起收，已经开着雷达层的要被归位（全 404 的空层）。
+    // 入口在抽屉（radarRow），绿点挂在 ⋯（moreBtn）上 —— phead 塞第 5 个图标会挤裁音色 chip。
+    expect(html).toContain('id="radarRow"')
+    expect(html).toContain('id="radarLayer"')
+    const tickBody = html.slice(html.indexOf('async function radarTick('), html.indexOf('function resetRadar()'))
+    expect(tickBody, '雷达轮询必须接能力门控（vitest 拿这行当锚点）').toContain('if (!CAP.radar) return;')
+    // 归位 + 轮询随能力启停（refreshCapVisibility 里那条会真正停掉定时器）
+    expect(html).toContain('if (!CAP.radar && panelLayer === "radar") setLayer("");')
+    const vis = html.slice(html.indexOf('function refreshCapVisibility()'), html.indexOf('function refreshFire()'))
+    expect(vis, '能力关了必须停掉两档轮询').toContain('radarSetPolling()')
   })
 
   it('★ 音效页的发送走 premix → sendWav 既有链路（不新造发送路径）', () => {

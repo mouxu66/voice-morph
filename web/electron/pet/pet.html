@@ -769,6 +769,68 @@
   #songNote:empty { display: none; }
   #songNote.err { color: rgb(var(--c-err)); }
 
+  /* —— 微信雷达层 #radarLayer：「该不该回」（hook.radar）——
+     为什么也是一整层：大结论 + 原因 + 三条信号，和搜歌层一样塞不进任何一行。
+     打开时收起草稿区与主按钮 —— 看雷达的人此刻不想发消息；关掉能力时整层
+     连同入口一起由 refreshCapVisibility 收（它是纯只读层，不发任何请求）。
+     判断语义全在后端（judge.py 的 ACTION_LABEL），这里只做展示不造文案。 */
+  #panel.has-radar #draft,
+  #panel.has-radar #fireRow,
+  #panel.has-radar #gesture,
+  #panel.has-radar #fxPicks { display: none; }
+  #radarLayer[hidden] { display: none; }
+  #radarLayer { margin-top: 3px; }
+  #radarHead { display: flex; align-items: center; gap: 4px; }
+  #radarHead .st { font-size: 11px; font-weight: 650; color: rgb(var(--c-t-300)); }
+  /* 「重新观察」：长得像状态字（9px 灰）但可点；压掉 button:not(.primary) 的 flex:1。 */
+  #panel #radarLive {
+    flex: 0 0 auto; margin-left: auto; height: auto; padding: 1px 2px;
+    border: 0; background: transparent; box-shadow: none;
+    font-size: 9px; color: rgb(var(--c-t-500));
+  }
+  #panel #radarLive:hover { color: rgb(var(--c-accent-h)); }
+  #panel #radarBack {
+    flex: 0 0 auto; width: 22px; height: 20px; padding: 0;
+    border-radius: 7px; font-size: 13px; line-height: 1;
+  }
+  #rdCard {
+    margin-top: 5px; padding: 9px 8px 8px; text-align: center;
+    border-radius: 11px;
+    border: 1px solid rgb(var(--c-border) / 0.9);
+    background: rgb(var(--c-surface-2) / 0.55);
+  }
+  #rdVerdict { font-size: 17px; font-weight: 750; letter-spacing: .5px; color: rgb(var(--c-t-300)); }
+  #rdCard.v-now     #rdVerdict { color: rgb(var(--c-ok)); }
+  #rdCard.v-soon    #rdVerdict { color: rgb(var(--c-accent-h)); }
+  #rdCard.v-wait    #rdVerdict { color: rgb(var(--c-warn)); }
+  #rdCard.v-unknown #rdVerdict { color: rgb(var(--c-t-500)); }
+  #rdReason { margin-top: 2px; font-size: 10px; line-height: 1.45; color: rgb(var(--c-t-400)); }
+  /* 三条信号：标签靠左、值靠右；值用等宽数字 —— 秒数在跳动时不抖宽。 */
+  #rdSignals { margin-top: 7px; display: grid; grid-template-columns: 1fr; gap: 2px; }
+  #panel .rrow {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+    font-size: 10px; color: rgb(var(--c-t-400));
+  }
+  #panel .rrow b {
+    font-weight: 550; color: rgb(var(--c-t-200));
+    font-variant-numeric: tabular-nums;
+  }
+  #rdNote { margin-top: 3px; font-size: 9.5px; line-height: 1.4; color: rgb(var(--c-t-500)); }
+  #rdNote:empty { display: none; }
+  #rdNote.err { color: rgb(var(--c-err)); }
+  /* 抽屉里的雷达行：整行可点（div[role=button]），行尾值实时显示结论。 */
+  #panel #radarRow { cursor: pointer; }
+  #panel #radarRow:hover { border-color: rgb(var(--c-accent) / 0.55); }
+  #panel #radarRowLabel { font-size: 10px; color: rgb(var(--c-t-400)); }
+  /* ⋯ 按钮上的「该回了」绿点：不打开抽屉也能看见 —— 这是雷达存在的意义。 */
+  #moreBtn .rdot {
+    position: absolute; top: 3px; right: 3px;
+    width: 7px; height: 7px; border-radius: 999px;
+    background: rgb(var(--c-ok));
+    box-shadow: 0 0 0 2.5px rgb(var(--c-ok) / 0.25);
+    animation: pulse 1.1s infinite;
+  }
+
   /* —— 更多抽屉 #drawer：音色 / 引擎 / 最近发送 ——
      这些是「设置」，进来的频率远低于发送；放进抽屉后它们不再跟主按钮抢注意力。
      抽屉打开时收起提示行与音效片：那两样属于「发送」，而抽屉是「配置」——
@@ -1030,12 +1092,16 @@
           <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
         </svg>
       </button>
-      <!-- 更多：音色 / 引擎 / 最近发送。都是「设置」，不该跟发送动作抢地方。 -->
+      <!-- 更多：音色 / 引擎 / 最近发送 / 微信雷达。都是「设置」，不该跟发送动作抢地方。
+           雷达的「该回了」绿点挂在这个按钮上（.rdot）：⋯ 是抽屉入口，徽标点亮的
+           意思是「抽屉里有东西要看」 —— 标准的角标语义，且不占 phead 宽度预算
+           （phead 塞第 5 个图标会把音色 chip 挤到裁切，门禁已验证）。 -->
       <button type="button" id="moreBtn" class="icb" aria-expanded="false" aria-controls="drawer"
               title="音色 / 引擎 / 最近发送">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <circle cx="5" cy="12" r="1.9" /><circle cx="12" cy="12" r="1.9" /><circle cx="19" cy="12" r="1.9" />
         </svg>
+        <i class="rdot" id="rdot" hidden aria-hidden="true"></i>
       </button>
     </div>
 
@@ -1186,6 +1252,26 @@
       <div id="songNote" aria-live="polite"></div>
     </div>
 
+    <!-- ── 微信雷达层：该不该回 ───────────────────────────────────────────────
+         hook.radar 的展示面。判断在后端（像素行投影 + 规则引擎），这里只渲染
+         verdict.label / reason / signals —— 前端不造文案，不抄判断。
+         层打开时 1.5s 轮询（后端 poll_hint_ms 给的值）；关掉后降为 5s 的徽标轮询，
+         只为入口上的小绿点。能力关了整层连同入口一起收（refreshCapVisibility）。 -->
+    <div id="radarLayer" hidden>
+      <div id="radarHead">
+        <button type="button" id="radarBack" title="返回">‹</button>
+        <span class="st">该不该回</span>
+        <!-- 右侧两用：观测中就当「重新观察」按钮用（换了会话点它重算）；连不上时空着。 -->
+        <button type="button" id="radarLive" title="换了聊天窗口？点一下重新观察">重新观察</button>
+      </div>
+      <div id="rdCard" class="v-unknown">
+        <div id="rdVerdict">观察中</div>
+        <div id="rdReason">正在观察微信窗口…</div>
+        <div id="rdSignals"></div>
+      </div>
+      <div id="rdNote" aria-live="polite"></div>
+    </div>
+
     <!-- ── 更多抽屉：音色 / 引擎 / 最近发送 ─────────────────────────────────
          三样都是「设置」，进来的频率远低于发送。放在抽屉里之后，它们不再跟主按钮
          抢注意力；抽屉打开时提示行与音效片收起（见 CSS #panel.has-drawer）。 -->
@@ -1218,6 +1304,15 @@
       <div class="drow" id="latRow" hidden style="margin-top:4px" title="实时变声的实测推理耗时（p95）">
         <span class="dl">耗时</span>
         <span id="rmLat" hidden>—</span>
+      </div>
+      <!-- 微信雷达行：跟「耗时」同款 drow（不加 dsep/dgroup 头 —— 抽屉纵向余量只有
+           29px，只塞得下一行）。行尾的 label 由 5s 轮询实时换成结论文案，
+           所以开抽屉本身就等于看了一眼雷达；点行进雷达层看信号细节。
+           ⋯ 按钮上的绿点（.rdot）负责「不用开抽屉也知道该回了」。 -->
+      <div class="drow" id="radarRow" role="button" tabindex="0"
+           title="微信雷达：对方最后发言 / 连发几条 / 等了多久 —— 该不该回，一眼看。点开看细节">
+        <span class="dl">该不该回</span>
+        <span id="radarRowLabel">查看</span>
       </div>
       <div class="dsep"></div>
       <div class="dgroup">最近发送</div>
@@ -1279,8 +1374,9 @@ const PRECHECK_API = "http://127.0.0.1:8000/api/wechat/precheck";
 const CAP_DEPS = {
   market: "pet.market", live: "sound.rvc-live", wechat: "hook.wechat",
   fx: "sound.fx-board",   // 音效声板（2026-09-26 面板加「音效」页时一并纳入门控）
+  radar: "hook.radar",    // 微信「该不该回」雷达（2026-10-23 面板加雷达层时纳入）
 };
-const CAP = { market: true, live: true, wechat: true, fx: true, loaded: false };
+const CAP = { market: true, live: true, wechat: true, fx: true, radar: true, loaded: false };
 
 /**
  * 由 `GET /api/plugins` 的响应算出各处门控。
@@ -1292,7 +1388,7 @@ const CAP = { market: true, live: true, wechat: true, fx: true, loaded: false };
  * `state=disabled / enabled=true`（路由仍然挂着），拿 `state` 判会把还在的能力藏掉。
  */
 function capStateFromCatalog(json) {
-  const all = { market: true, live: true, wechat: true, fx: true };
+  const all = { market: true, live: true, wechat: true, fx: true, radar: true };
   const list = json && Array.isArray(json.plugins) ? json.plugins : null;
   if (!list) return all;
   for (const p of list) {
@@ -1315,6 +1411,7 @@ async function loadCapabilities() {
     CAP.live = s.live;
     CAP.wechat = s.wechat;
     CAP.fx = s.fx;
+    CAP.radar = s.radar;
     CAP.loaded = true;
   } catch {}
 }
@@ -1865,6 +1962,18 @@ const bgmGainEl = document.getElementById("bgmGain");
 const bgmBadgeEl = document.getElementById("bgmBadge");
 // 搜歌层（放歌卡右上角放大镜进来）：榜单 / 搜索框 / 结果 / 进度行
 const songLayerEl = document.getElementById("songLayer");
+// 雷达相关元素（入口在抽屉里，绿点挂在 ⋯ 按钮上 —— 逻辑见下方「微信雷达」一节）
+const radarRowEl = document.getElementById("radarRow");
+const radarRowLabelEl = document.getElementById("radarRowLabel");
+const radarLayerEl = document.getElementById("radarLayer");
+const radarBackEl = document.getElementById("radarBack");
+const rdotEl = document.getElementById("rdot");
+const rdCardEl = document.getElementById("rdCard");
+const rdVerdictEl = document.getElementById("rdVerdict");
+const rdReasonEl = document.getElementById("rdReason");
+const rdSignalsEl = document.getElementById("rdSignals");
+const rdNoteEl = document.getElementById("rdNote");
+const radarLiveEl = document.getElementById("radarLive");
 const songBtnEl = document.getElementById("songBtn");
 const songBackEl = document.getElementById("songBack");
 const songSrcEl = document.getElementById("songSrc");
@@ -2269,14 +2378,15 @@ function esc(s) {
 //   drawer —— 设置：音色 / 引擎 / 最近发送。进来的频率远低于发送，不该常驻。
 // 为什么不分得更细（比如音效一个入口、放歌又一个）：那又会退化成页签 ——
 // 用户得先想「这个声音属于哪一类」，而他要的只是「放个声」。
-let panelLayer = "";           // "" | "tray" | "drawer" | "songs"
+let panelLayer = "";           // "" | "tray" | "drawer" | "songs" | "radar"
 
 /** 切换分层。next 为 "" 时全部收起。 */
 function setLayer(next) {
-  panelLayer = (next === "tray" || next === "drawer" || next === "songs") ? next : "";
+  panelLayer = (next === "tray" || next === "drawer" || next === "songs" || next === "radar") ? next : "";
   if (trayEl) trayEl.hidden = panelLayer !== "tray";
   if (drawerEl) drawerEl.hidden = panelLayer !== "drawer";
   if (songLayerEl) songLayerEl.hidden = panelLayer !== "songs";
+  if (radarLayerEl) radarLayerEl.hidden = panelLayer !== "radar";
   if (trayBtn) {
     trayBtn.classList.toggle("on", panelLayer === "tray");
     trayBtn.setAttribute("aria-expanded", panelLayer === "tray" ? "true" : "false");
@@ -2290,6 +2400,7 @@ function setLayer(next) {
   if (panel) panel.classList.toggle("has-drawer", panelLayer === "drawer");
   if (panel) panel.classList.toggle("has-tray", panelLayer === "tray");
   if (panel) panel.classList.toggle("has-songs", panelLayer === "songs");
+  if (panel) panel.classList.toggle("has-radar", panelLayer === "radar");
   // 分层打开时气泡让位（理由见 applyBubble）：82px 的气泡与 115px 的托盘不可能同时站下。
   if (rootEl) rootEl.classList.toggle("layer-open", !!panelLayer);
   applyBubble();
@@ -2302,6 +2413,9 @@ function setLayer(next) {
     // 打开即可输入 —— 这一层最常见的动作是「我脑子里有一首歌名」。
     queueMicrotask(() => { if (songQEl) songQEl.focus(); });
   }
+  // 雷达层：打开立刻抓一帧并启动快轮询，关掉换回慢轮询（只养入口上的小绿点）。
+  if (panelLayer === "radar") void radarTick(true);
+  radarSetPolling();
   refreshFire();
 }
 
@@ -2873,6 +2987,15 @@ if (bgmBtnEl) bgmBtnEl.addEventListener("click", () => void toggleBgm());
 if (bgmGainEl) bgmGainEl.addEventListener("input", onBgmGainInput);
 if (songBtnEl) songBtnEl.addEventListener("click", () => setLayer("songs"));
 if (songBackEl) songBackEl.addEventListener("click", () => setLayer("tray"));
+// 雷达层：入口在抽屉（radarRow），‹ 退出，「重新观察」清状态后立刻重抓。
+// 行是 div[role=button] —— 键盘 Enter 也要能进（与 .drow 的可点行保持同一约定）。
+function openRadar() { setLayer("radar"); }
+if (radarRowEl) {
+  radarRowEl.addEventListener("click", openRadar);
+  radarRowEl.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openRadar(); } });
+}
+if (radarBackEl) radarBackEl.addEventListener("click", () => setLayer(""));
+if (radarLiveEl) radarLiveEl.addEventListener("click", () => resetRadar());
 if (songSrcEl) songSrcEl.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-src]");
   if (!btn) return;
@@ -2915,6 +3038,109 @@ if (songListEl) songListEl.addEventListener("click", (e) => {
   const row = e.target.closest(".srow");
   if (row) onSongRow(Number(row.dataset.i));
 });
+// ── 微信雷达：该不该回（hook.radar → /api/radar/*）────────────────────────
+// 只读层：判断全在后端（像素行投影 + 规则引擎），这里只渲染 verdict/signals。
+// 两档轮询：层开着 1.5s（后端 poll_hint_ms 给的值，后端 tick 实测 ~100ms）；
+// 层关着 5s —— 只为入口上的小绿点（verdict.action === "now" 时点亮）。
+// ⚠️ 能力关了必须整条链路停：polling 兜底、tick 直接 return（vitest 拿这行当锚点）。
+const RADAR_BASE = "http://127.0.0.1:8000/api/radar";
+let radarTimer = null;         // 快轮询句柄（层开着）
+let radarBadgeTimer = null;    // 慢轮询句柄（层关着，养绿点）
+let radarBusy = false;         // 上一次请求还没回来就不叠下一发
+let radarPollHintMs = 1500;    // 跟随后端响应里的 poll_hint_ms 走
+
+function radarSetPolling() {
+  // 快轮询：只在层开着且能力在时跑。
+  const wantFast = panelLayer === "radar" && CAP.radar;
+  if (!wantFast && radarTimer) { clearInterval(radarTimer); radarTimer = null; }
+  if (wantFast && !radarTimer) radarTimer = setInterval(() => void radarTick(false), radarPollHintMs);
+  // 慢轮询：能力在就常驻（绿点要跟上「该回了」的变化）。
+  if (CAP.radar && !radarBadgeTimer) radarBadgeTimer = setInterval(() => void radarTick(false), 5000);
+  if (!CAP.radar && radarBadgeTimer) { clearInterval(radarBadgeTimer); radarBadgeTimer = null; }
+}
+
+function radarSigRows(s) {
+  const rows = [];
+  if (s.last_side === "left") {
+    const gap = s.gap_lower_bound ? `≥${Math.round(s.gap_seconds)}s` : `${Math.round(s.gap_seconds)}s`;
+    rows.push(["对方最后发言", gap + "前"]);
+  } else {
+    rows.push(["最后一条", "你说的"]);
+    rows.push(["等对方回", `${Math.round(s.my_last_reply_age ?? 0)}s`]);
+  }
+  if ((s.last_side === "left") && s.streak > 1) rows.push(["连发", `${s.streak} 条`]);
+  rows.push(["已观察", `${s.frames_seen ?? 0} 帧`]);
+  return rows;
+}
+
+function renderRadar(j) {
+  const v = j.verdict || {};
+  const act = v.action || "unknown";
+  if (rdCardEl) {
+    rdCardEl.className = "v-" + (act === "none" ? "none" : act);
+    if (rdVerdictEl) rdVerdictEl.textContent = v.label || act;
+    if (rdReasonEl) rdReasonEl.textContent = v.reason || "";
+  }
+  if (rdSignalsEl) {
+    rdSignalsEl.innerHTML = radarSigRows(j.signals || {})
+      .map(([k, val]) => `<span class="rrow"><span>${k}</span><b>${val}</b></span>`).join("");
+  }
+  // 入口小绿点：只有「该回了」才亮 —— 绿点常亮等于没有绿点。
+  // 绿点挂在 ⋯（抽屉入口）上：抽屉里就有雷达行，角标语义成立。
+  if (rdotEl) rdotEl.hidden = act !== "now";
+  // 抽屉雷达行的行尾值：开抽屉不用点进去也能看到当前结论。
+  if (radarRowLabelEl) radarRowLabelEl.textContent = v.label || "查看";
+  // 「重新观察」只在真的在观测时有用（连不上/没窗口时重观察也无从观察）。
+  if (radarLiveEl) radarLiveEl.hidden = !j.ok;
+}
+
+/** 抓一帧并渲染。层开着时整卡刷新；层关着时只动绿点（别把没开的层写成有字）。 */
+async function radarTick(force) {
+  // ⚠️ 这一行必须保持**逐字** `if (!CAP.radar) return;`：petCapabilityGate.test.ts
+  // 拿它当「雷达轮询真的接了能力门控」的锚点。
+  if (!CAP.radar) return;
+  if (radarBusy) return;
+  if (panelLayer !== "radar" && !force && !radarBadgeTimer) return;
+  radarBusy = true;
+  try {
+    const r = await fetch(RADAR_BASE + "/state", { cache: "no-store" });
+    if (!r.ok) {
+      if (panelLayer === "radar" && rdNoteEl) {
+        rdNoteEl.textContent = r.status === 404
+          ? "雷达插件没开：主界面 → 桌面 → 插件里打开「微信状态雷达」"
+          : "雷达拉不到（HTTP " + r.status + "）";
+        rdNoteEl.className = "err";
+      }
+      return;
+    }
+    const j = await r.json();
+    if (j.poll_hint_ms && j.poll_hint_ms !== radarPollHintMs && radarTimer) {
+      radarPollHintMs = j.poll_hint_ms;
+      radarSetPolling();  // 后端调了节奏就跟上（老前端不用发版）
+    }
+    renderRadar(j);
+    if (panelLayer === "radar" && rdNoteEl) {
+      rdNoteEl.textContent = j.ok ? "" : (j.error || "观察不可用");
+      rdNoteEl.className = j.ok ? "" : "err";
+    }
+  } catch {
+    if (panelLayer === "radar" && rdNoteEl) {
+      rdNoteEl.textContent = "后端没连上";
+      rdNoteEl.className = "err";
+    }
+  } finally {
+    radarBusy = false;
+  }
+}
+
+function resetRadar() {
+  // 换了会话想重新观察：后端清状态，本地立刻抓一帧（不等下个轮询周期）。
+  if (!CAP.radar) return;
+  void fetch(RADAR_BASE + "/reset", { method: "POST" }).then(() => {
+    if (panelLayer === "radar") void radarTick(true);
+  }).catch(() => {});
+}
+
 /**
  * 按能力清单收起桌宠上用不到的控件 —— 关掉的能力意味着后端**根本没有那些接口**，
  * 留着就是一按 404 的按钮。
@@ -2938,6 +3164,11 @@ function refreshCapVisibility() {
   // 只收一个的话，已经开着托盘的用户会看到一个全 404 的空盘。
   hide("trayBtn", !CAP.fx);
   if (!CAP.fx && (panelLayer === "tray" || panelLayer === "songs")) setLayer("");
+  // 雷达行与层一起归 hook.radar：能力关了后端就没有 /api/radar/*，
+  // 已经开着雷达层的要被归位收起 —— 并把两档轮询都停掉（radarSetPolling）。
+  hide("radarRow", !CAP.radar);
+  if (!CAP.radar && panelLayer === "radar") setLayer("");
+  radarSetPolling();
   // ⚠️ 主按钮与试听的显隐**不在这里**用 style.display 硬盖：它们的文案/可用性
   // 还要跟着「草稿有没有内容、是不是在录」变，两套机制会互相覆盖
   // （CAP 收起来 → refreshFire 又亮回去）。统一由 refreshFire 决定。
@@ -3728,6 +3959,13 @@ function resetLayoutState() {
   }
   renderSongList();
   songSetNote("");
+  // 雷达层：回骨架文案 + 收绿点（轮询句柄不动 —— 真实应用里慢轮询要继续养绿点）。
+  if (rdVerdictEl) rdVerdictEl.textContent = "观察中";
+  if (rdReasonEl) rdReasonEl.textContent = "正在观察微信窗口…";
+  if (rdSignalsEl) rdSignalsEl.innerHTML = "";
+  if (rdNoteEl) { rdNoteEl.textContent = ""; rdNoteEl.className = ""; }
+  if (rdCardEl) rdCardEl.className = "v-unknown";
+  if (rdotEl) rdotEl.hidden = true;
   setLayer("");
   setStatus("", "");
   renderFxPicks();
@@ -3804,6 +4042,22 @@ const LAYOUT_STATES = {
     renderSongList();
     songSetNote("点一行去 B站 找音频");
   },
+  // 微信雷达：雷达打开时 setLayer 会触发 radarTick(true) —— radarBusy=true 拦下它，
+  // 再同步塞一份与预览台 FAKE 桩同值的样本：量到的是「满内容」的最挤形态
+  // （大结论 + 原因一行 + 三条信号 + 提示行）。判断语义在后端，这里只是展示样本。
+  radar: () => {
+    radarBusy = true;
+    renderRadar({
+      ok: true, poll_hint_ms: 1500,
+      verdict: { action: "soon", label: "可以回了", score: 3, source: "rule",
+                 reason: "对方最后说话 42.0秒，等你回" },
+      signals: { last_side: "left", streak: 2, gap_seconds: 42.0, gap_lower_bound: false,
+                 my_last_reply_age: 120.0, frames_seen: 30 },
+    });
+    if (rdNoteEl) rdNoteEl.textContent = "点右上「重新观察」从头看";
+    setLayer("radar");
+    radarBusy = false;
+  },
   // 更多抽屉：音色 + 引擎 + 直出 + 历史（抽屉打开时提示行与音效片收起，见 CSS）。
   drawer: () => setLayer("drawer"),
   // 合成中：主按钮转圈（busy 会把图标换成 spinner，尺寸不同）。
@@ -3823,6 +4077,9 @@ setEngine(engine);
 void (async () => {
   await loadCapabilities();
   refreshCapVisibility();
+  // 雷达慢轮询在这里挂上：能力在才挂（radarSetPolling 内部判 CAP.radar）。
+  // 绿点常驻面板 —— 用户不开层也能知道「该回了」。
+  radarSetPolling();
   // 首帧：主按钮按空草稿渲染（托盘/抽屉都是收起态 —— 它们是「需要时才长出来」的）
   refreshFire();
   void tick();

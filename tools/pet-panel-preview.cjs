@@ -150,7 +150,15 @@ function preScript(state) {
     "/api/soundboard/bgm/recent": { last: "夜航星-翻唱.wav", items: [
       { name: "夜航星-翻唱.wav", duration_s: 214.0 },
       { name: "孤勇者-清唱.wav", duration_s: 78.0 }
-    ] }
+    ] },
+    // 微信雷达（radar 形态用）：数值必须与 pet.html LAYOUT_STATES.radar 的样本**同值** ——
+    // 量测走同步样本、之后 1.5s/5s 轮询换真桩，两边不一致会看到骨架跳一下。
+    "/api/radar/state": { ok: true, poll_hint_ms: 1500, elapsed_ms: 30.0,
+      verdict: { action: "soon", label: "可以回了", score: 3, source: "rule",
+                 reason: "对方最后说话 42.0秒，等你回" },
+      signals: { last_side: "left", streak: 2, gap_seconds: 42.0, gap_lower_bound: false,
+                 my_last_reply_age: 120.0, tail_meta: "", changed: false,
+                 stable_frames: 7, n_blocks: 5, frames_seen: 30 } }
   };
   window.fetch = async (url, opts) => {
     const u = String(url);
