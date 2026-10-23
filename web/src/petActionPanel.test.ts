@@ -81,13 +81,22 @@ const base = (over: Ctx = {}): Ctx => ({
 describe('建议面板：空态必须给得出来', () => {
   it('什么都没有时也要有三条兜底（空面板会让人以为坏了）', () => {
     const rows = api.rankActions(base())
-    expect(rows.map((r) => r.id)).toEqual(['song.find', 'sfx.play', 'radar.open'])
+    expect(rows.map((r) => r.id)).toEqual(['song.find', 'sfx.play', 'analyze.open'])
+  })
+
+  it('★ 兜底里的「分析聊天」是用户 2026-10-23 点名要的那个按钮', () => {
+    // 原话：「有个按钮能自动分析，就是点它就能自动分析。」
+    // 它必须在空面板的前三条里，而且打字搜「分析」也要搜得到 ——
+    // 否则用户只能靠猜「这个功能藏在哪」。
+    expect(api.labelFor('analyze.open', {})).toBe('分析聊天')
+    expect(api.matchActions('分析', base()).map((r) => r.id)).toContain('analyze.open')
   })
 
   it('★ 能力关掉的动作不能出现在兜底里（点了就是 404）', () => {
     const rows = api.rankActions(base({ cap: { ...ALL_CAP, radar: false, fx: false } }))
     const ids = rows.map((r) => r.id)
     expect(ids).not.toContain('radar.open')
+    expect(ids).not.toContain('analyze.open')
     expect(ids).not.toContain('song.find')
     // 还能剩什么就显示什么，但不能因此变成空数组
     expect(ids.length).toBeGreaterThan(0)
@@ -141,7 +150,7 @@ describe('建议面板：上下文信号', () => {
   it('★ 使用频率能把「开变声」顶进前三条（这就是「不用每次打字」的那一半）', () => {
     const cold = api.rankActions(base()).map((r) => r.id)
     expect(cold).not.toContain('live.toggle')
-    // 18 底分 + 5 次 × 3 = 33 > sfx.play 的 26 / radar.open 的 22
+    // 18 底分 + 5 次 × 3 = 33 > sfx.play 的 26 / analyze.open 的 24
     const warm = api.rankActions(base({ freq: { 'live.toggle': 5 } })).map((r) => r.id)
     expect(warm).toContain('live.toggle')
   })

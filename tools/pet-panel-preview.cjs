@@ -42,7 +42,7 @@ const OUT_DIR = path.join(ROOT, "outputs", "pet-preview");
 const SCENES = ["idle-dark", "idle-light", "typed-dark", "picked-dark", "rec-dark",
                 "tray-dark", "trayplay-dark", "drawer-dark", "busy-dark", "offline-dark",
                 "live-dark", "qwen-dark", "think-dark", "guide-dark", "holdwarn-dark",
-                "songs-dark"];
+                "songs-dark", "analysis-dark"];
 
 /** 找 Playwright 缓存里的 chromium-headless-shell。找不到返回 null（调用方负责报错/跳过）。 */
 function findChrome() {
@@ -225,6 +225,8 @@ const SCENE_STATE = {
   idle: "idle", typed: "typed", picked: "picked", rec: "rec",
   tray: "tray", trayplay: "trayplay", drawer: "drawer", busy: "busy",
   songs: "songs",
+  // 聊天分析层（2026-10-23）：满内容形态（1 条结论 + 3 条要点 + 8 行消息）。
+  analysis: "analysis",
   // 以下都是「空草稿 + 一段状态」：形态本身不变，变的是状态行/气泡。
   offline: "idle", live: "idle", qwen: "idle", think: "idle", guide: "idle",
   // 预检告警要配一段草稿：这条告警只有「真的要发」时才有意义。

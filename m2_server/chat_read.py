@@ -1,0 +1,312 @@
+"""当前微信会话的只读视图 + 本地规则分析（桌宠「分析聊天」按钮的后端）。
+
+为什么是 UIA 不是截图 OCR
+--------------------------
+`wechat_uia` 把微信 4.x 的 Qt accessibility gate 打开后，聊天区就是一个
+`list "消息"`，每条消息是 ListItem，Name 就是正文：
+
+    list-item "23:21"        ← 时间分隔行
+    list-item "语音4\"秒"     ← 语音（带真实时长）
+    list-item "图片"          ← 图片/文件类
+    list-item "偷偷吃一"      ← 普通文字
+
+读一次 ~50ms，不占显存、不做 OCR。而 Qwen3-VL-4B 读整屏要 3.4s（GPU）/
+8.4s（CPU），且本机实测它判断「谁说的 / 几点」准确率极低 —— 这两类事实
+信息正是 UIA 的强项（见 `docs/方案-微信状态雷达.md` 的分层）。
+
+只读边界
+--------
+不点击、不切会话、不滚动、不发消息。只读「当前已打开会话」已经渲染出来的
+消息（UIA 只暴露可见 ListItem），所以它是「看一眼」，不是「拉完整历史」。
+发言人归属拿不到（ListItem 只有气泡内容），交给雷达的 last_side/streak；
+群聊里的 @ 以正文形式出现，按文本提示。
+"""
+
+from __future__ import annotations
+
+import re
+
+import wechat_uia
+
+#: 微信的 UIA 树在窗口控件的第 16 层才出现消息列表（2026-10-23 实测 4.1.13.12），
+#: 给到 30 层留余量；节点数封顶防止异常树把接口拖死。
+MAX_DEPTH = 30
+MAX_NODES = 6000
+
+#: 聊天区那份列表叫「消息」，左侧会话列表叫「会话」——同名会取错。
+LIST_CHAT = "消息"
+LIST_SESSIONS = "会话"
+
+#: 时间分隔行：23:21 / 昨天 23:32 / 星期一 09:10 / 7/30 / 2026年9月1日 …
+_TIME_RE = re.compile(
+    r"^(?:\d{1,2}:\d{2}"
+    r"|昨天(?:\s*\d{1,2}:\d{2})?"
+    r"|前天(?:\s*\d{1,2}:\d{2})?"
+    r"|(?:星期|周)[一二三四五六日天](?:\s*\d{1,2}:\d{2})?"
+    r"|\d{1,2}/\d{1,2}(?:\s*\d{1,2}:\d{2})?"
+    r"|\d{4}年\d{1,2}月\d{1,2}日(?:\s*\d{1,2}:\d{2})?)$"
+)
+
+#: 语音消息名：`语音4"秒`（微信 4.x 的实际写法，引号是半角直引号；
+#: 兼容全角/双引号与省略「秒」的写法）。
+_VOICE_RE = re.compile(r'^语音\s*(\d+(?:\.\d+)?)\s*["″“”]?\s*秒?$')
+
+_MEDIA_LABELS = (
+    "图片", "视频", "文件", "链接", "位置", "名片",
+    "动画表情", "转账", "红包", "语音通话", "视频通话",
+)
+
+_SYSTEM_HINTS = ("撤回", "拒收", "已添加", "开启了好友验证", "加入了群聊", "退出了群聊")
+
+#: 会话列表里的未读标记：`[3条]`。注意 `[语音] 6"` 不是未读，必须是「数字+条」。
+_UNREAD_RE = re.compile(r"^\[(\d+)条\]$")
+
+#: 问句判据：句尾问号，或以疑问词开头（微信里口语提问常常不带问号）。
+_Q_TAIL = re.compile(r"[?？]\s*$")
+_Q_HEAD = re.compile(
+    r"^(?:为什么|咋|怎么|啥|什么|哪|谁|几点|多久|是不是|能不能|可不可以|要不要|有没有|在吗|人呢|你[在看]?)"
+)
+
+
+def message_kind(name: str) -> str:
+    """一条 ListItem 名称 → `time` / `voice` / `media` / `system` / `text`。"""
+    if _TIME_RE.match(name):
+        return "time"
+    if _VOICE_RE.match(name):
+        return "voice"
+    for label in _MEDIA_LABELS:
+        if name == label or name.startswith("[" + label + "]"):
+            return "media"
+    if any(h in name for h in _SYSTEM_HINTS):
+        return "system"
+    return "text"
+
+
+def parse_messages(names: list[str], limit: int = 40) -> list[dict]:
+    """UIA ListItem 名称 → 消息 dict，保留**末尾** limit 条（含时间行）。
+
+    保留末尾而不是开头：用户在聊的永远是最近几条，往上翻要靠滚动（改微信状态），
+    不在只读边界内。
+    """
+    items: list[dict] = []
+    for raw in names:
+        name = (raw or "").strip()
+        if not name:
+            continue
+        kind = message_kind(name)
+        item: dict = {"kind": kind, "text": name}
+        if kind == "voice":
+            m = _VOICE_RE.match(name)
+            if m:
+                item["seconds"] = float(m.group(1))
+        items.append(item)
+    if limit > 0:
+        items = items[-limit:]
+    return items
+
+
+def parse_sessions(names: list[str], limit: int = 8) -> list[dict]:
+    """左侧会话列表 → 每条会话的标题 / 未读数 / 预览 / 时间。
+
+    实测名称是多行拼接（4.1.13.12）：
+
+        117\\n[3条] \\n李河璋: 偷偷吃一\\n23:21
+        i志愿\\n已置顶\\n[1条] \\n2026年…\\n昨天 08:58\\n消息免打扰
+
+    「已置顶 / 消息免打扰」是状态标记不是内容，先剔掉再按位置取。
+    """
+    out: list[dict] = []
+    for raw in names:
+        lines = [x.strip() for x in (raw or "").splitlines() if x.strip()]
+        if not lines:
+            continue
+        title = lines[0]
+        rest = [x for x in lines[1:] if x not in ("已置顶", "消息免打扰")]
+        unread = 0
+        if rest:
+            m = _UNREAD_RE.match(rest[0])
+            if m:
+                unread = int(m.group(1))
+                rest = rest[1:]
+        preview = rest[0] if rest else ""
+        when = rest[-1] if len(rest) > 1 else ""
+        out.append(
+            {
+                "chat": title,
+                "unread": unread,
+                "preview": preview[:80],
+                "time": when,
+            }
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _item_names(ctrl) -> list[str]:
+    names: list[str] = []
+    try:
+        children = ctrl.GetChildren()
+    except Exception:
+        return names
+    for c in children:
+        try:
+            if c.ControlTypeName == "ListItemControl":
+                names.append(c.Name or "")
+        except Exception:
+            continue
+    return names
+
+
+def _selected_chat(ctrl) -> str:
+    """当前选中会话的标题。拿不到就返回空串（前端显示「当前会话」）。"""
+    try:
+        children = ctrl.GetChildren()
+    except Exception:
+        return ""
+    for c in children:
+        try:
+            pat = c.GetSelectionItemPattern()
+            if pat and pat.IsSelected:
+                first = (c.Name or "").splitlines()
+                return first[0].strip() if first else ""
+        except Exception:
+            continue
+    return ""
+
+
+def collect() -> tuple[list[str], list[str], str, str]:
+    """从活着的微信 UIA 树取原始名单。
+
+    返回 `(消息名, 会话名, 当前会话标题, 错误)`。错误为空表示成功。
+    任何 UIA 异常都降级成错误文本 —— 这是只读视图，不该让接口 500。
+    """
+    root = wechat_uia._root()
+    if root is None:
+        return [], [], "", "读不到微信窗口（没开，或 UIA 未激活）"
+
+    found: dict[str, object] = {}
+    seen = 0
+
+    def walk(ctrl, depth: int) -> None:
+        nonlocal seen
+        if depth > MAX_DEPTH or seen > MAX_NODES:
+            return
+        seen += 1
+        try:
+            if ctrl.ControlTypeName == "ListControl" and ctrl.Name in (LIST_CHAT, LIST_SESSIONS):
+                found.setdefault(ctrl.Name, ctrl)
+        except Exception:
+            return
+        try:
+            children = ctrl.GetChildren()
+        except Exception:
+            return
+        for c in children:
+            walk(c, depth + 1)
+
+    try:
+        walk(root, 0)
+    except Exception as exc:  # noqa: BLE001 —— COM 抖动是已知现象，降级不抛
+        return [], [], "", f"遍历微信控件失败：{exc}"
+
+    chat = found.get(LIST_CHAT)
+    if chat is None:
+        return [], [], "", "找不到消息列表（微信可能最小化了）"
+    sessions = found.get(LIST_SESSIONS)
+    return (
+        _item_names(chat),
+        _item_names(sessions) if sessions is not None else [],
+        _selected_chat(sessions) if sessions is not None else "",
+        "",
+    )
+
+
+def read_chat(limit: int = 20) -> dict:
+    """当前会话快照：标题 + 最近消息 + 会话列表（未读）。"""
+    msg_names, sess_names, chat, err = collect()
+    if err:
+        return {"ok": False, "error": err}
+    return {
+        "ok": True,
+        "chat": chat,
+        "messages": parse_messages(msg_names, limit=min(max(limit, 5), 60)),
+        "sessions": parse_sessions(sess_names),
+        "raw_n": len(msg_names),
+    }
+
+
+def is_question(text: str) -> bool:
+    t = (text or "").strip()
+    return bool(t) and bool(_Q_TAIL.search(t) or _Q_HEAD.match(t))
+
+
+def analyze(snap: dict, verdict: dict | None = None) -> dict:
+    """本地规则分析：**只做能证实的判断**，不猜语义、不生成回复文案。
+
+    产出四样：headline（一句话概述）、highlights（值得看一眼的点）、
+    unread（哪些会话还有未读）、suggest（下一步该做什么，来自雷达结论 + 文本规则）。
+    """
+    msgs = snap.get("messages") or []
+    bodies = [m for m in msgs if m.get("kind") != "time"]
+    texts = [m for m in bodies if m.get("kind") == "text"]
+    voices = [m for m in bodies if m.get("kind") == "voice"]
+    medias = [m for m in bodies if m.get("kind") == "media"]
+    cur = str(snap.get("chat") or "")
+    # 未读分两堆：当前会话的未读就摆在眼前（往下翻就能看），不该算进「其他会话」；
+    # 它只作为一条提示，不参与 headline 的计数。
+    unread_all = [s for s in (snap.get("sessions") or []) if s.get("unread")]
+    unread = [s for s in unread_all if s["chat"] != cur]
+    cur_unread = sum(s["unread"] for s in unread_all if s["chat"] == cur)
+
+    highlights: list[str] = []
+    ats = [m["text"] for m in texts if "@" in m["text"]]
+    if ats:
+        highlights.append("有人在会话里 @：" + ats[-1][:24])
+    if texts and is_question(texts[-1]["text"]):
+        highlights.append("最后一条像是提问：「" + texts[-1]["text"][:24] + "」")
+    if voices:
+        highlights.append(f"含 {len(voices)} 条语音（要点开听）")
+    if medias:
+        highlights.append(f"含 {len(medias)} 条图片/文件类消息")
+    if cur_unread:
+        highlights.append(f"当前会话还有 {cur_unread} 条未读（往下翻）")
+    if len(bodies) >= 10:
+        highlights.append(f"这次读到 {len(bodies)} 条可见消息")
+
+    v = verdict or {}
+    act = v.get("action") or ""
+    label = v.get("label") or ""
+    reason = v.get("reason") or ""
+    if act in ("now", "soon"):
+        suggest = {"action": "reply", "label": label or "该回了", "reason": reason}
+    elif act == "wait":
+        suggest = {"action": "wait", "label": label or "再等等", "reason": reason}
+    elif texts and is_question(texts[-1]["text"]):
+        # 直接摆在眼前的问题比「别的会话有未读」更该先处理。
+        suggest = {"action": "reply", "label": "对方在问，建议回", "reason": texts[-1]["text"][:30]}
+    elif unread:
+        top = max(unread, key=lambda s: s["unread"])
+        suggest = {
+            "action": "check",
+            "label": "有未读",
+            "reason": f"{top['chat']} 还有 {top['unread']} 条没看",
+        }
+    else:
+        suggest = {"action": "none", "label": "暂时不用回", "reason": "没看到在等你的问题"}
+
+    unread_total = sum(s["unread"] for s in unread)
+    parts = []
+    if snap.get("chat"):
+        parts.append(str(snap["chat"]))
+    parts.append(f"{len(bodies)} 条可见消息")
+    if unread_total:
+        parts.append(f"其他会话 {unread_total} 条未读")
+
+    return {
+        "headline": " · ".join(parts),
+        "highlights": highlights,
+        "unread": sorted(unread, key=lambda s: -s["unread"])[:4],
+        "unread_total": unread_total,
+        "suggest": suggest,
+    }

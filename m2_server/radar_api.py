@@ -96,6 +96,33 @@ def reset():
     return {"ok": True}
 
 
+@router.get("/chat")
+def chat(limit: int = 20):
+    """当前会话的只读视图 + 本地规则分析（桌宠「分析聊天」按钮）。
+
+    为什么不放进雷达的轮询链路：读消息列表要遍历 UIA 树（~50ms/次），
+    只在用户点按钮时跑；雷达那 1.5s 的轮询仍然只走像素投影。
+    微信没开 / 最小化是正常状态：200 + ok:false + 人话原因，与 /state 同一约定。
+    """
+    from chat_read import analyze, read_chat  # 惰性：不点按钮不碰 UIA
+
+    try:
+        snap = read_chat(limit=limit)
+    except Exception as exc:  # noqa: BLE001 —— 只读视图不该把接口打成 500
+        return {"ok": False, "error": f"读微信会话失败：{exc}"}
+    if not snap.get("ok"):
+        return snap
+    # 雷达结论是「锦上添花」：拿不到也照样有消息与未读分析。
+    try:
+        tick = _tick_serialized()
+        snap["verdict"] = tick.get("verdict")
+        snap["signals"] = tick.get("signals")
+    except Exception as exc:  # noqa: BLE001
+        snap["verdict_note"] = f"雷达不可用：{exc}"
+    snap["analysis"] = analyze(snap, snap.get("verdict"))
+    return snap
+
+
 @router.get("/probe")
 def probe():
     """诊断：窗口矩形 + 聊天区 ROI + 最近一次识别出的块数。**不推进观察状态。**

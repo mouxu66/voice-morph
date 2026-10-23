@@ -210,6 +210,13 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
     expect(tickBody, '雷达轮询必须接能力门控（vitest 拿这行当锚点）').toContain('if (!CAP.radar) return;')
     // 归位 + 轮询随能力启停（refreshCapVisibility 里那条会真正停掉定时器）
     expect(html).toContain('if (!CAP.radar && panelLayer === "radar") setLayer("");')
+    // 2026-10-23：「分析聊天」读的是同一个插件的 /api/radar/chat ——
+    // 按钮由 rankActions 的 cap 藏掉，但**已经开着的分析层也要归位收起**，
+    // 否则能力刚被关掉时用户会对着一个永远「读不到」的层。
+    expect(html).toContain('id="analysisLayer"')
+    expect(html).toContain('if (!CAP.radar && panelLayer === "ana") setLayer("");')
+    const anaBody = html.slice(html.indexOf('async function analyzeChat('), html.indexOf('function renderAnalysis('))
+    expect(anaBody, '分析聊天必须接能力门控（与雷达轮询同一个理由）').toContain('if (!CAP.radar) return;')
     const vis = html.slice(html.indexOf('function refreshCapVisibility()'), html.indexOf('function refreshFire()'))
     expect(vis, '能力关了必须停掉两档轮询').toContain('radarSetPolling()')
   })

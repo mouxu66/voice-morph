@@ -269,6 +269,27 @@ const PRECHECK_OK = {
   hint: "不会重启微信，直接切麦克风到 CABLE Output",
 };
 let precheckStub = null;
+// 「分析聊天」桩（2026-10-23）：/api/radar/chat 的形状由 m2_server/chat_read 决定
+// （ok / chat / messages / sessions / analysis）。默认给「能回了」的满内容形态；
+// 失败形态由用例自己塞 chatStub —— 微信没开时按钮不能静默，这条最常被漏。
+const CHAT_OK = {
+  ok: true, chat: "117", raw_n: 9, sessions: [],
+  messages: [
+    { kind: "time", text: "23:03" },
+    { kind: "text", text: "@瑜清 红包领一" },
+    { kind: "time", text: "23:15" },
+    { kind: "voice", text: '语音 4"秒', seconds: 4 },
+    { kind: "text", text: "啥东西" },
+    { kind: "media", text: "图片" },
+  ],
+  analysis: {
+    headline: "117 · 5 条可见消息 · 其他会话 2 条未读",
+    highlights: ["有人在会话里 @：@瑜清 红包领一", "最后一条像是提问：「啥东西」"],
+    unread: [], unread_total: 2,
+    suggest: { action: "reply", label: "对方在问，建议回", reason: "啥东西" },
+  },
+};
+let chatStub = null;
 // 歌单桩（2026-10-22 放歌页）：接口只读，但**失败形态**也是契约的一部分 ——
 // 「后端比面板旧」（404）与「后端没起来」要说不同的话，且都只能说在页内。
 let bgmItems = [];
@@ -304,6 +325,11 @@ global.fetch = async (url, opts) => {
     if (typeof precheckStub === "function") return precheckStub();
     if (precheckStub) return precheckStub;
     return { ok: true, status: 200, json: async () => ({ ...PRECHECK_OK }) };
+  }
+  if (u.includes("/api/radar/chat")) {
+    if (typeof chatStub === "function") return chatStub();
+    if (chatStub) return chatStub;
+    return { ok: true, status: 200, json: async () => ({ ...CHAT_OK }) };
   }
   if (u.includes("/api/soundboard/bgm/recent")) {
     if (bgmStatus !== 200) return { ok: false, status: bgmStatus, json: async () => ({ detail: "nope" }) };
@@ -344,18 +370,20 @@ global.fetch = async (url, opts) => {
 // 显式挂一份。`engine` / `runningEngine` 是 let，只能用 getter 闭包读（对象字面量存不住活绑定）。
 // 追加在末尾不影响上面按行号做的错误定位。
 const EXPORT_HOOK = "\n;globalThis.__petFns = { setState, setEngine, playGuide, endGuide, setBubbleVisible, settleSendResult,"
-  + " setLayer, refreshFire, draftKind, resetLayoutState, loadVoices,"
+  + " setLayer, showPanel, analyzeChat, refreshFire, draftKind, resetLayoutState, loadVoices,"
   + " getEngine: function () { return engine; },"
   + " getRunningEngine: function () { return runningEngine; },"
-  // 按住说话（2026-09-29）：micPhase / panelLayer / panelTimer 都是模块作用域的 let，
-  // 只能用 getter 闭包读（对象字面量存不住活绑定）。panelTimer 是「按住时面板不许自己收」
-  // 那条不变量的唯一观测点。
+  // 按住说话（2026-09-29）：micPhase / panelLayer 是模块作用域的 let，
+  // 只能用 getter 闭包读（对象字面量存不住活绑定）。
   + " getMicPhase: function () { return micPhase; },"
   // 发送前预检：形态全靠后端响应决定，只能从外部不同形态地喂（见下面的预检用例）
   + " refreshWechatPrecheck,"
-  // 面板分层（2026-10-23 重构）："" | "tray" | "drawer"，互斥。
+  // 面板分层（2026-10-23 重构）："" | "tray" | "drawer" | "songs" | "radar" | "ana"，互斥。
   + " getPanelLayer: function () { return panelLayer; },"
-  + " getPanelTimer: function () { return panelTimer; } };\n";
+  // 面板常驻（2026-10-23 用户要求「不能关闭」）：panelOpen 是唯一观测点 ——
+  // 旧版的 getPanelTimer 随自动收起一起删掉了，谁把它加回来谁就在推翻常驻。
+  + " getPanelOpen: function () { return panelOpen; },"
+  + " getAnaBusy: function () { return anaBusy; } };\n";
 let thrown = null;
 try {
   (0, eval)(code + EXPORT_HOOK);
@@ -899,18 +927,20 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       assert.strictEqual(after[1], true, "结束按住后应恢复全窗穿透（否则透明窗一直吃鼠标）");
     });
 
-    check("按住期间面板不自动收起（panelTimer 不能被挂上）", () => {
-      const leave = (els.panel._on.mouseleave || [])[0];
-      assert.strictEqual(typeof leave, "function", "面板没有 mouseleave 处理器？");
-      petCbs.mic({ phase: "recording", startedAt: Date.now(), maxSeconds: 59 });
-      leave();
-      assert.strictEqual(petFns.getPanelTimer(), null,
-        "按住期间挂了自动收起定时器 —— 按钮会带着秒数一起消失，而录音还在继续");
-      petCbs.mic({ phase: "idle", startedAt: 0, maxSeconds: 59 });
-      leave();
-      assert.notStrictEqual(petFns.getPanelTimer(), null,
-        "没在按的时候面板应照旧自动收（常驻面板会挡住桌面）");
-      clearTimeout(petFns.getPanelTimer());
+    check("面板常驻（2026-10-23 用户要求「不能关闭」）：没有收起路径，Esc 也收不起来", () => {
+      // 旧版钉的是「按住期间 panelTimer 不能被挂上」；面板改成常驻后那条不变量
+      // 连同自动收起一起作废。现在反过来钉：**根本不许存在**收起路径 ——
+      // 谁把 mouseleave / Esc 处理器加回来，谁就把「常驻不能关闭」这条需求推翻了。
+      assert.strictEqual(els.panel._on.mouseleave, undefined,
+        "面板仍有 mouseleave 处理器 —— 鼠标移开就会收起，面板就不再常驻了");
+      assert.strictEqual(els.pet._on.mouseleave, undefined,
+        "角色离开仍会触发面板收起");
+      els.panel.style.display = "none";        // 构造「收起」态
+      petFns.showPanel();
+      assert.strictEqual(els.panel.style.display, "block", "showPanel 没把面板摆出来");
+      assert.strictEqual(petFns.getPanelOpen(), true, "panelOpen 没跟着置位");
+      for (const fn of (document._on.keydown || [])) fn({ key: "Escape" });
+      assert.strictEqual(els.panel.style.display, "block", "Esc 仍会收起面板 —— 常驻要求被推翻");
     });
 
     check("旧主进程（preload 里没有 micDown）必须说出来，不能静默失败", () => {
@@ -1079,6 +1109,54 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
         "收起托盘后气泡没回来 —— guide 讲到一半就被吞了");
       petFns.setBubbleVisible(false);
     });
+
+    // ---------- 分析聊天（2026-10-23）：读当前会话 + 本地规则结论 ----------
+    //
+    // 用户原话：「有个按钮能自动分析，就是点它就能自动分析。」
+    // 这条链路的价值全在「一键 → 后端只读 UIA → 人说人话」：
+    //   ① 必须真的打 /api/radar/chat（只改 UI 不打接口的按钮等于装饰）；
+    //   ② 结论/要点/消息三块都要落进 DOM（少一块就变成「点了没反应」）；
+    //   ③ 微信没开时必须把后端的人话原因说出来，并把上一次的结论清掉 ——
+    //      否则用户看到的是上一轮的旧结论，还以为刚读到新消息。
+    petFns.resetLayoutState();          // anaBusy 也在这里复位
+    chatStub = null;
+    petFns.setLayer("ana");
+    await petFns.analyzeChat();
+    await flush();
+
+    check("分析聊天：拉 /api/radar/chat 并把结论/要点/消息画进分析层", () => {
+      assert.ok(fetchCalls.some((c) => /\/api\/radar\/chat\?limit=20/.test(c.url)),
+        "没打 /api/radar/chat —— 按钮点了等于没点");
+      assert.strictEqual(petFns.getPanelLayer(), "ana");
+      assert.strictEqual(els.analysisLayer.hidden, false, "分析层没显示");
+      assert.match(String(els.anaTitle.textContent), /117/,
+        "headline 没落进标题：" + JSON.stringify(els.anaTitle.textContent));
+      assert.match(String(els.anaSuggest.textContent), /对方在问/,
+        "建议没落进结论卡：" + JSON.stringify(els.anaSuggest.textContent));
+      assert.strictEqual(els.anaSuggest.className, "s-reply", "「该回了」的建议没上绿色");
+      assert.match(String(els.anaList.innerHTML), /红包领一/, "要点没渲染");
+      assert.match(String(els.anaMsgs.innerHTML), /语音/, "消息列表没渲染（语音那条丢了）");
+      assert.strictEqual(els.anaMsgs.hidden, false);
+    });
+
+    els.anaTitle.textContent = "上一轮的结论";
+    els.anaMsgs.innerHTML = "<span>上一轮的结论</span>";
+    chatStub = {
+      ok: true, status: 200,
+      json: async () => ({ ok: false, error: "读不到微信窗口（没开，或 UIA 未激活）" }),
+    };
+    await petFns.analyzeChat();
+    await flush();
+
+    check("分析聊天失败：微信没开要把人话原因说到 #anaNote，并清掉上一轮结论", () => {
+      assert.match(String(els.anaNote.textContent), /读不到微信窗口/);
+      assert.strictEqual(els.anaNote.className, "err");
+      assert.strictEqual(els.anaTitle.textContent, "读不到当前会话");
+      assert.strictEqual(els.anaMsgs.innerHTML, "", "上一轮的消息还留着 —— 用户会以为是这次读到的");
+      assert.strictEqual(els.anaMsgs.hidden, true);
+    });
+    chatStub = null;
+    petFns.setLayer("");
 
     // ---------- 放歌（2026-10-22）：托盘里的第一行 ----------
     //

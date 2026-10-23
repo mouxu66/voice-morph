@@ -883,6 +883,66 @@
     animation: pulse 1.1s infinite;
   }
 
+  /* —— 聊天分析层 #analysisLayer：「分析聊天」按钮的落点 ——
+     数据全部来自后端 /api/radar/chat（UIA 只读 + 本地规则），前端只渲染：
+     headline / highlights / suggest / messages 都是后端算好的，这里不造结论、不做 OCR。
+     和雷达层一样是一整层（结论 + 要点 + 消息列表塞不进任何一行）；层打开时收起
+     草稿与主按钮 —— 正在读消息的人此刻不想发消息。 */
+  #panel.has-ana #draft,
+  #panel.has-ana #fireRow,
+  #panel.has-ana #gesture,
+  #panel.has-ana #fxPicks { display: none; }
+  #analysisLayer[hidden] { display: none; }
+  #analysisLayer { margin-top: 3px; }
+  #anaHead { display: flex; align-items: center; gap: 4px; }
+  #anaHead .st { font-size: 11px; font-weight: 650; color: rgb(var(--c-t-300)); }
+  /* 「重新分析」：长得像状态字（9px 灰）但可点；压掉 button:not(.primary) 的 flex:1。 */
+  #panel #anaRefresh {
+    flex: 0 0 auto; margin-left: auto; height: auto; padding: 1px 2px;
+    border: 0; background: transparent; box-shadow: none;
+    font-size: 9px; color: rgb(var(--c-t-500));
+  }
+  #panel #anaRefresh:hover { color: rgb(var(--c-accent-h)); }
+  #panel #anaBack {
+    flex: 0 0 auto; width: 22px; height: 20px; padding: 0;
+    border-radius: 7px; font-size: 13px; line-height: 1;
+  }
+  #anaCard {
+    margin-top: 5px; padding: 8px 8px 7px;
+    border-radius: 11px;
+    border: 1px solid rgb(var(--c-border) / 0.9);
+    background: rgb(var(--c-surface-2) / 0.55);
+  }
+  #anaTitle { font-size: 11px; font-weight: 650; line-height: 1.4; color: rgb(var(--c-t-200)); }
+  #anaSuggest { margin-top: 2px; font-size: 10px; line-height: 1.45; color: rgb(var(--c-t-400)); }
+  /* 建议分色：答复（绿）/ 有未读要看（琥珀）；wait / none 保持中性灰 ——
+     「再等等」不是催促，「暂时不用回」也不是成就。 */
+  #anaSuggest.s-reply { color: rgb(var(--c-ok)); }
+  #anaSuggest.s-check { color: rgb(var(--c-warn)); }
+  #anaList { margin: 5px 0 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+  #anaList[hidden] { display: none; }
+  #anaList li {
+    position: relative; padding-left: 9px;
+    font-size: 9.5px; line-height: 1.4; color: rgb(var(--c-t-400));
+  }
+  #anaList li::before { content: "·"; position: absolute; left: 1px; color: rgb(var(--c-t-500)); }
+  /* 消息列表：只给最近几条，超出内滚（面板纵向预算是死的，300px）。 */
+  #anaMsgs {
+    margin-top: 5px; max-height: 84px; overflow-y: auto; overscroll-behavior: contain;
+    display: grid; gap: 2px; scrollbar-width: thin;
+  }
+  #anaMsgs[hidden] { display: none; }
+  #panel .amsg { display: flex; align-items: baseline; gap: 5px; font-size: 9.5px; line-height: 1.38; }
+  #panel .amsg .k { flex: 0 0 auto; font-size: 8.5px; color: rgb(var(--c-t-500)); }
+  #panel .amsg .t {
+    flex: 1 1 auto; min-width: 0; color: rgb(var(--c-t-300));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #panel .amsg.time { font-size: 8.5px; color: rgb(var(--c-t-500)); }
+  #anaNote { margin-top: 3px; font-size: 9.5px; line-height: 1.4; color: rgb(var(--c-t-500)); }
+  #anaNote:empty { display: none; }
+  #anaNote.err { color: rgb(var(--c-err)); }
+
   /* —— 更多抽屉 #drawer：音色 / 引擎 / 最近发送 ——
      这些是「设置」，进来的频率远低于发送；放进抽屉后它们不再跟主按钮抢注意力。
      抽屉打开时收起提示行与音效片：那两样属于「发送」，而抽屉是「配置」——
@@ -904,7 +964,8 @@
   #panel.has-drawer #recs,
   #panel.has-tray #recs,
   #panel.has-songs #recs,
-  #panel.has-radar #recs { display: none; }
+  #panel.has-radar #recs,
+  #panel.has-ana #recs { display: none; }
   #panel .drow { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
   /* .drow 是 display:flex，而 UA 的 [hidden]{display:none} 优先级更低 —— 不写这条
      隐藏不掉（#latRow 靠它整行出现/消失）。 */
@@ -1345,6 +1406,27 @@
         <div id="rdSignals"></div>
       </div>
       <div id="rdNote" aria-live="polite"></div>
+    </div>
+
+    <!-- ── 聊天分析层：当前会话只读视图 + 本地规则结论 ──────────────────────
+         「分析聊天」按钮的落点（建议区里的 analyze.open）。数据全部来自后端
+         /api/radar/chat：UIA 只读 + 本地规则，不截图、不 OCR、不占显存。
+         前端只渲染后端算好的 headline / highlights / suggest / messages ——
+         结论与文案的唯一真相源在 m2_server/chat_read.py，这里不造判断。 -->
+    <div id="analysisLayer" hidden>
+      <div id="anaHead">
+        <button type="button" id="anaBack" title="返回">‹</button>
+        <span class="st">分析聊天</span>
+        <!-- 换会话 / 刚来了新消息：点它重读一遍（不自动轮询 —— 读 UIA 是用户主动动作） -->
+        <button type="button" id="anaRefresh" title="重新读一遍当前会话">重新分析</button>
+      </div>
+      <div id="anaCard">
+        <div id="anaTitle">—</div>
+        <div id="anaSuggest"></div>
+        <ul id="anaList" hidden></ul>
+      </div>
+      <div id="anaMsgs" role="list" hidden></div>
+      <div id="anaNote" aria-live="polite"></div>
     </div>
 
     <!-- ── 更多抽屉：音色 / 引擎 / 最近发送 ─────────────────────────────────
@@ -2027,9 +2109,9 @@ const recentEl = document.getElementById("recent");
 const hintEl = document.getElementById("gesture");
 // 声音托盘（音效 + 放歌）与更多抽屉（音色/引擎/历史）
 const trayEl = document.getElementById("tray");
-// ⚠️ trayBtn 已随 2026-10-23 二次重构从 phead 删掉（♪ 按钮），入口改为抽屉里的 #trayRow。
-//    保留这一行会得到 null，而 setLayer 里有 `if (trayBtn)` 判空，不会炸 —— 但别再加回来。
-const trayBtn = document.getElementById("trayBtn");
+// ⚠️ #trayBtn（phead 的 ♪）已随 2026-10-23 二次重构删掉，入口改为抽屉里的 #trayRow。
+//    别再取 trayBtn：id 不存在 → null，而任何 `if (trayBtn)` 判空都会让那条逻辑静默失效
+//    （test-pet-renderer-script 会直接报「脚本取了 HTML 里没有的 id」）。
 const trayRowEl = document.getElementById("trayRow");
 const trayRowLabelEl = document.getElementById("trayRowLabel");
 const drawerEl = document.getElementById("drawer");
@@ -2074,6 +2156,15 @@ const rdReasonEl = document.getElementById("rdReason");
 const rdSignalsEl = document.getElementById("rdSignals");
 const rdNoteEl = document.getElementById("rdNote");
 const radarLiveEl = document.getElementById("radarLive");
+// 聊天分析层（建议区的「分析聊天」按钮进来）：结论卡 / 要点 / 消息列表 / 提示行
+const analysisLayerEl = document.getElementById("analysisLayer");
+const anaBackEl = document.getElementById("anaBack");
+const anaRefreshEl = document.getElementById("anaRefresh");
+const anaTitleEl = document.getElementById("anaTitle");
+const anaSuggestEl = document.getElementById("anaSuggest");
+const anaListEl = document.getElementById("anaList");
+const anaMsgsEl = document.getElementById("anaMsgs");
+const anaNoteEl = document.getElementById("anaNote");
 const songBtnEl = document.getElementById("songBtn");
 const songBackEl = document.getElementById("songBack");
 const songSrcEl = document.getElementById("songSrc");
@@ -2082,8 +2173,7 @@ const songListEl = document.getElementById("songList");
 const songNoteEl = document.getElementById("songNote");
 // （原 #bgmHint 的引用一并删掉：那一行已从 DOM 移除，缺什么/错在哪改写在 #bgmSel 的 option 与 title 里）
 const VOICE_KEY = "pet_voice_id";
-let panelTimer = null;
-let panelOpen = false;       // 面板是否可见（Esc 收起、点击穿透判定都要用）
+let panelOpen = false;       // 面板是否可见（建议区重排 / 预检刷新要用；常驻后启动即为 true）
 // 试听产物：声明点从「试听/发送」段前移到这里 —— refreshPanel() 会读它来决定主按钮文案，
 // 而 refreshPanel 挂在 mouseenter 上，提前声明可彻底排除 TDZ 隐患。
 let lastPreview = null;      // { wav, url, duration_s } 最近一次试听的合成产物
@@ -2228,36 +2318,23 @@ async function pickEngine(next) {
   await toggleLive();
 }
 
+/**
+ * 面板常驻（2026-10-23 用户原话：「这个桌宠的页面能常驻就是不能关闭」）。
+ *
+ * 旧版是「悬停浮现、移开 500ms 自动收、Esc 快收」。那套逻辑的代价很实：
+ * 鼠标一移向建议区面板就没了；录音中还得靠 `micHolding()` 守卫才不至于让
+ * 按钮带着秒数凭空消失（指针捕获被释放，而录音还在继续）。
+ * 现在面板从启动起就一直摆着，**没有任何隐藏路径** —— 既没有 mouseleave
+ * 收起，也不响应 Esc。桌宠窗口本身的显隐仍归主进程的右键菜单「隐藏桌宠」。
+ * （test-pet-renderer-script.cjs 钉着这条：面板必须没有 mouseleave 处理器。）
+ */
 function showPanel() {
-  if (panelTimer) { clearTimeout(panelTimer); panelTimer = null; }
   panelOpen = true;
   panel.style.display = "block";
   refreshPanel();   // 每次浮现刷新：音色下拉 + 最近发送 + 主按钮文案
 }
-function hidePanel() {
-  if (panelTimer) { clearTimeout(panelTimer); panelTimer = null; }
-  panelOpen = false;
-  panel.style.display = "none";
-}
-function schedulePanelHide() {
-  // 按住说话期间面板不能自己收：面板一 display:none，那颗按钮就没了 ——
-  // 指针捕获被释放、秒数也看不到，而录音还在继续（用户只觉得“按住的东西凭空消失”）。
-  if (micHolding()) return;
-  if (panelTimer) return;
-  panelTimer = setTimeout(() => {
-    panelTimer = null;
-    panelOpen = false;
-    panel.style.display = "none";
-  }, 500);
-}
 petBox.addEventListener("mouseenter", showPanel);
-petBox.addEventListener("mouseleave", schedulePanelHide);
 panel.addEventListener("mouseenter", showPanel);
-panel.addEventListener("mouseleave", schedulePanelHide);
-// Esc 收起面板：面板占了大半屏，鼠标要移开 500ms 才自动收，键盘给一条快路
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && panelOpen) hidePanel();
-});
 
 /**
  * 音色下拉。`/api/voices` 合并了两个来源（音色库档案 + RVC 实验目录），这里挑出**真能用**的：
@@ -2478,15 +2555,16 @@ function esc(s) {
 //   drawer —— 设置：音色 / 引擎 / 最近发送。进来的频率远低于发送，不该常驻。
 // 为什么不分得更细（比如音效一个入口、放歌又一个）：那又会退化成页签 ——
 // 用户得先想「这个声音属于哪一类」，而他要的只是「放个声」。
-let panelLayer = "";           // "" | "tray" | "drawer" | "songs" | "radar"
+let panelLayer = "";           // "" | "tray" | "drawer" | "songs" | "radar" | "ana"
 
 /** 切换分层。next 为 "" 时全部收起。 */
 function setLayer(next) {
-  panelLayer = (next === "tray" || next === "drawer" || next === "songs" || next === "radar") ? next : "";
+  panelLayer = (next === "tray" || next === "drawer" || next === "songs" || next === "radar" || next === "ana") ? next : "";
   if (trayEl) trayEl.hidden = panelLayer !== "tray";
   if (drawerEl) drawerEl.hidden = panelLayer !== "drawer";
   if (songLayerEl) songLayerEl.hidden = panelLayer !== "songs";
   if (radarLayerEl) radarLayerEl.hidden = panelLayer !== "radar";
+  if (analysisLayerEl) analysisLayerEl.hidden = panelLayer !== "ana";
   if (trayRowEl) {
     // 抽屉里的「声音」行：托盘从抽屉进去，所以现在只有「当前在不在这层」的状态色，
     // 没有 aria-expanded —— 它不是一个展开器，是一次跳转。
@@ -2506,6 +2584,7 @@ function setLayer(next) {
   if (panel) panel.classList.toggle("has-tray", panelLayer === "tray");
   if (panel) panel.classList.toggle("has-songs", panelLayer === "songs");
   if (panel) panel.classList.toggle("has-radar", panelLayer === "radar");
+  if (panel) panel.classList.toggle("has-ana", panelLayer === "ana");
   // 分层打开时气泡让位（理由见 applyBubble）：82px 的气泡与 115px 的托盘不可能同时站下。
   if (rootEl) rootEl.classList.toggle("layer-open", !!panelLayer);
   applyBubble();
@@ -3292,6 +3371,92 @@ function resetRadar() {
   }).catch(() => {});
 }
 
+// ---------------- 聊天分析：读当前会话 + 本地规则结论 ----------------
+/**
+ * 「分析聊天」按钮的落点。用户原话：「有个按钮能自动分析，就是点它就能自动分析。」
+ *
+ * 判据全部在后端 `m2_server/chat_read.py`（UIA 只读 + 本地规则，不截图、不 OCR）：
+ *   headline   一句话概述（会话名 · N 条可见消息 · 其他会话 N 条未读）
+ *   highlights 值得看一眼的点（@、提问、语音、图片、当前会话的未读）
+ *   suggest    下一步（reply / wait / check / none）—— 只给方向，不生成本文
+ * 前端只负责渲染；结论与文案只改后端一处（与雷达 verdict 同一约定）。
+ *
+ * 为什么不自动轮询：读消息列表要遍历 UIA 树（~50ms/次），而雷达那 1.5s 的轮询
+ * 刻意只走像素投影。**读 UIA 是用户主动动作** —— 点按钮 / 点「重新分析」。
+ */
+const ANA_KIND_LABEL = { media: "图片/文件", system: "系统" };
+let anaBusy = false;
+
+/** 拉一次 /chat 并渲染。失败按人话写进 #anaNote，不改已有结论卡。 */
+async function analyzeChat() {
+  // ⚠️ 这一行必须保持**逐字** `if (!CAP.radar) return;`：与 radarTick 同一门控约定
+  // （能力关掉时后端根本没有 /api/radar/*，拉就是 404）。
+  if (!CAP.radar) return;
+  if (anaBusy) return;
+  anaBusy = true;
+  if (anaNoteEl) { anaNoteEl.textContent = "正在读当前会话…"; anaNoteEl.className = ""; }
+  try {
+    const r = await fetch(RADAR_BASE + "/chat?limit=20", { cache: "no-store" });
+    if (!r.ok) {
+      if (anaNoteEl) {
+        anaNoteEl.textContent = r.status === 404
+          ? "雷达插件没开：主界面 → 桌面 → 插件里打开「微信状态雷达」"
+          : "分析拉不到（HTTP " + r.status + "）";
+        anaNoteEl.className = "err";
+      }
+      return;
+    }
+    renderAnalysis(await r.json());
+  } catch {
+    if (anaNoteEl) { anaNoteEl.textContent = "后端没连上"; anaNoteEl.className = "err"; }
+  } finally {
+    anaBusy = false;
+  }
+}
+
+/** 把 /chat 的响应画出来。`ok:false` 时保留卡片结构、只说读不到的原因。 */
+function renderAnalysis(j) {
+  const ok = !!(j && j.ok);
+  const a = (j && j.analysis) || {};
+  const s = a.suggest || {};
+  if (anaTitleEl) anaTitleEl.textContent = ok ? (a.headline || j.chat || "当前会话") : "读不到当前会话";
+  if (anaSuggestEl) {
+    anaSuggestEl.textContent = s.label
+      ? ("建议：" + s.label + (s.reason ? "（" + s.reason + "）" : ""))
+      : "";
+    // 只给两种「要动手」的建议上色；wait / none 保持中性灰（「再等等」不是催促）。
+    anaSuggestEl.className = s.action === "reply" ? "s-reply" : (s.action === "check" ? "s-check" : "");
+  }
+  if (anaListEl) {
+    const rows = (ok && Array.isArray(a.highlights)) ? a.highlights : [];
+    anaListEl.innerHTML = rows.map((t) => `<li>${esc(t)}</li>`).join("");
+    anaListEl.hidden = !rows.length;
+  }
+  if (anaMsgsEl) {
+    const msgs = (ok && Array.isArray(j.messages)) ? j.messages : [];
+    anaMsgsEl.innerHTML = msgs.map(anaMsgRow).join("");
+    anaMsgsEl.hidden = !msgs.length;
+  }
+  if (anaNoteEl) {
+    // 雷达结论是锦上添花：拿不到时后端带 verdict_note，消息分析照常给 —— 说出来即可。
+    anaNoteEl.textContent = ok ? (j.verdict_note || "") : ((j && j.error) || "分析不可用");
+    anaNoteEl.className = ok ? "" : "err";
+  }
+}
+
+/** 单条消息行。时间行单独一种样式；其余带一个短类型标签（长文本省略）。
+ *  语音不贴标签：正文本身就是「语音 4"秒」，再贴一个「语音」会读成「语音 语音 4"秒」。 */
+function anaMsgRow(m) {
+  const kind = (m && m.kind) || "text";
+  const text = String((m && m.text) || "");
+  if (kind === "time") return `<span class="amsg time">${esc(text)}</span>`;
+  const k = kind === "voice" ? "" : (ANA_KIND_LABEL[kind] || "·");
+  return `<span class="amsg">${k ? `<span class="k">${esc(k)}</span>` : ""}<span class="t">${esc(text)}</span></span>`;
+}
+
+if (anaBackEl) anaBackEl.addEventListener("click", () => setLayer(""));
+if (anaRefreshEl) anaRefreshEl.addEventListener("click", () => { void analyzeChat(); });
+
 /**
  * 按能力清单收起桌宠上用不到的控件 —— 关掉的能力意味着后端**根本没有那些接口**，
  * 留着就是一按 404 的按钮。
@@ -3321,6 +3486,9 @@ function refreshCapVisibility() {
   // 已经开着雷达层的要被归位收起 —— 并把两档轮询都停掉（radarSetPolling）。
   hide("radarRow", !CAP.radar);
   if (!CAP.radar && panelLayer === "radar") setLayer("");
+  // 「分析聊天」读的是同一个插件的 /api/radar/chat：能力关掉时层不能留在上面
+  // （按钮由 rankActions 的 cap 藏掉，但层可能已经开着）。
+  if (!CAP.radar && panelLayer === "ana") setLayer("");
   radarSetPolling();
   // ⚠️ 主按钮与试听的显隐**不在这里**用 style.display 硬盖：它们的文案/可用性
   // 还要跟着「草稿有没有内容、是不是在录」变，两套机制会互相覆盖
@@ -3390,6 +3558,11 @@ const ACT_META = [
     kw: "放歌 垫歌 背景音乐 停歌 bgm music" },
   { id: "radar.open", label: "该不该回", hint: "看一眼", cap: "radar",
     kw: "雷达 该回 该不该 微信 等多久 回不回 radar" },
+  // 「分析聊天」：读当前会话（UIA 只读）+ 本地规则结论。挂在雷达能力下 ——
+  // 接口是 /api/radar/chat，插件关掉时它就是个 404 按钮。
+  // 用「分析」而不是「读屏」：后者会让用户以为在截图，而这条链路只读 UIA 控件树。
+  { id: "analyze.open", label: "分析聊天", hint: "读当前会话", cap: "radar",
+    kw: "分析 聊天 分析聊天 总结 未读 谁找我 读消息 analyze" },
   { id: "live.toggle", label: "开变声", hint: "", cap: "live",
     kw: "变声 开关 实时 rvc 千问 live voice" },
   { id: "voice.pick", label: "换音色", hint: "", cap: "",
@@ -3415,6 +3588,8 @@ const ACT_RUN = {
   "sfx.play": () => setLayer("tray"),
   "bgm.toggle": () => { setLayer("tray"); void toggleBgm(); },
   "radar.open": () => setLayer("radar"),
+  // 先开层（拉取期间显示「正在读当前会话…」），再打后端的 /api/radar/chat。
+  "analyze.open": () => { setLayer("ana"); void analyzeChat(); },
   "live.toggle": () => { void toggleLive(); },
   "voice.pick": () => { setLayer("drawer"); queueMicrotask(() => voiceSel && voiceSel.focus()); },
   "engine.rvc": () => { void pickEngine("rvc"); },
@@ -3466,7 +3641,10 @@ function labelFor(id, ctx) {
  *    92  雷达判「该回了」      62「可以回了」
  *    88  正在放歌（这时最可能想做的是停/换）
  *    50  输入框有字 → 让路给搜索结果，rankActions 直接返回空（见末尾）
- *   30/26/22  兜底：点歌 / 音效 / 该不该回（空面板会让人以为坏了）
+ *   30/26/24  兜底：点歌 / 音效 / 分析聊天（空面板会让人以为坏了）
+ *    22  该不该回 —— 只在雷达真给了结论时靠 92/62 浮上来；兜底时让位给
+ *        「分析聊天」（用户 2026-10-23 要求「有个按钮能自动分析」，
+ *        而雷达结论本身在 ⋯ 抽屉里有单独一行与绿点，不会丢）
  *    18  变声没开 → 开变声（只在用户用过它之后才靠频率浮上来）
  *   +0~15  使用频率加成（每个 id 每次 +3，封顶 15）—— 常用功能自己浮上来，
  *          这就是「不用每次都打字」的那一半。
@@ -3493,6 +3671,7 @@ function rankActions(ctx) {
   // ── 兜底池（信号只改排序，不清空）──
   put("song.find", 30, "搜 B 站");
   put("sfx.play", 26, "声板");
+  put("analyze.open", 24, "读当前会话");
   put("radar.open", 22, "看一眼");
   if (c.live !== true) put("live.toggle", 18, "没开");
 
@@ -3606,6 +3785,8 @@ const ACT_ICON = {
   "sfx.play": '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>',
   "bgm.toggle": '<polygon points="6 4 20 12 6 20 6 4"/>',
   "radar.open": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  // 带对勾的消息列表：分析聊天的语义是「读一遍、告诉你哪几条要看」。
+  "analyze.open": '<path d="M9 5h11M9 12h11M9 19h11"/><path d="m3 5 1.5 1.5L7 4"/><path d="m3 12 1.5 1.5L7 11"/><circle cx="4.5" cy="19" r="1"/>',
   "live.toggle": '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v4"/>',
   "voice.pick": '<path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M8 21h8"/>',
   "engine.rvc": '<path d="M4 12h4l2-6 4 12 2-6h4"/>',
@@ -4694,6 +4875,14 @@ function resetLayoutState() {
   if (rdNoteEl) { rdNoteEl.textContent = ""; rdNoteEl.className = ""; }
   if (rdCardEl) rdCardEl.className = "v-unknown";
   if (rdotEl) rdotEl.hidden = true;
+  // 分析层：清回骨架（样本由 analysis 形态自己塞）。anaBusy 也要复位 ——
+  // 上一形态若「正在读」就卡在 busy，下一形态的按钮会点不动。
+  if (anaTitleEl) anaTitleEl.textContent = "—";
+  if (anaSuggestEl) { anaSuggestEl.textContent = ""; anaSuggestEl.className = ""; }
+  if (anaListEl) { anaListEl.innerHTML = ""; anaListEl.hidden = true; }
+  if (anaMsgsEl) { anaMsgsEl.innerHTML = ""; anaMsgsEl.hidden = true; }
+  if (anaNoteEl) { anaNoteEl.textContent = ""; anaNoteEl.className = ""; }
+  anaBusy = false;
   setLayer("");
   setStatus("", "");
   renderFxPicks();
@@ -4786,6 +4975,32 @@ const LAYOUT_STATES = {
     setLayer("radar");
     radarBusy = false;
   },
+  // 聊天分析层：结论卡 + 3 条要点 + 8 行消息（这层最挤的形态）。
+  // 直接喂 renderAnalysis，**不走网络** —— 读 UIA 是用户主动动作，样本只负责摆满。
+  analysis: () => {
+    renderAnalysis({
+      ok: true, chat: "117",
+      analysis: {
+        headline: "117 · 7 条可见消息 · 其他会话 2 条未读",
+        highlights: ["有人在会话里 @：@瑜清 红包领一", "最后一条像是提问：「啥东西」",
+                     "含 1 条语音（要点开听）"],
+        unread: [{ chat: "i志愿", unread: 1 }, { chat: "巴黎罗", unread: 1 }],
+        unread_total: 2,
+        suggest: { action: "reply", label: "对方在问，建议回", reason: "啥东西" },
+      },
+      messages: [
+        { kind: "time", text: "23:03" },
+        { kind: "text", text: "@瑜清 红包领一" },
+        { kind: "text", text: "收到" },
+        { kind: "time", text: "23:15" },
+        { kind: "voice", text: '语音 4"秒' },
+        { kind: "text", text: "啥东西" },
+        { kind: "time", text: "23:21" },
+        { kind: "media", text: "图片" },
+      ],
+    });
+    setLayer("ana");
+  },
   // 更多抽屉：音色 + 引擎 + 直出 + 历史（抽屉打开时提示行与音效片收起，见 CSS）。
   drawer: () => setLayer("drawer"),
   // 合成中：主按钮转圈（busy 会把图标换成 spinner，尺寸不同）。
@@ -4805,11 +5020,12 @@ setEngine(engine);
 void (async () => {
   await loadCapabilities();
   refreshCapVisibility();
+  // 面板常驻（用户 2026-10-23 要求）：启动即摆出来，不再有「悬停浮现、移开收起」。
+  // 放在能力清单之后：refreshPanel 会用 CAP 决定哪些行该收（音色/引擎/雷达/托盘）。
+  showPanel();
   // 雷达慢轮询在这里挂上：能力在才挂（radarSetPolling 内部判 CAP.radar）。
   // 绿点常驻面板 —— 用户不开层也能知道「该回了」。
   radarSetPolling();
-  // 首帧：主按钮按空草稿渲染（托盘/抽屉都是收起态 —— 它们是「需要时才长出来」的）
-  refreshFire();
   void tick();
   setInterval(tick, 1000);
   // 皮肤轮询：应用新皮肤后 5s 内热切换（无需重启桌宠）。
