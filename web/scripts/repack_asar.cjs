@@ -70,7 +70,9 @@ function walk(dir, base = dir, out = new Map()) {
   const pkgFile = path.join(oldDir, 'package.json')
   if (fs.existsSync(pkgFile)) {
     const pkg = JSON.parse(fs.readFileSync(pkgFile, 'utf8'))
-    pkg._asarVersion = '0.2.5+2026-10-23 建议面板重构（#recs 上下文推荐 + 输入框搜索 + ♪ 并入抽屉；base 0.2.4）'
+    // 必须用命令行传进来的 NOTE。写成常量就会出现「传了 0.2.6，包里还是上次的标注」——
+    // 而 audit_asar_freshness 正是靠这行判断新旧，标注不更新等于自欺。
+    pkg._asarVersion = NOTE || pkg._asarVersion || pkg.version
     fs.writeFileSync(pkgFile, JSON.stringify(pkg, null, 2) + "\n", 'utf8')
     console.log('标注 →', pkg._asarVersion)
   }

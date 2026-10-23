@@ -3966,7 +3966,13 @@ function refreshHint() {
     // 这里只补一件按钮说不出来的事：**现在已经在听**。
     text = micPhase === "recording" ? "正在录 · 松手就发" : (MIC_TIP[micPhase] || "");
   } else if (wechatNote) {
-    text = wechatNote.text; tone = wechatNote.tone; title = wechatNote.title;
+    // 动作短语（按住说 / 点按钮发送）必须按**当前草稿**现算，不能跟着预检文案缓存 5 秒：
+    // 用户在预检之后才开始打字，那 5 秒里提示会一直说「按住说」，而按住按钮此时是发送语义。
+    const sending = !!((sayEl && sayEl.value) || "").trim();
+    text = wechatNote.act
+      ? wechatNote.text + " · " + (sending ? "点按钮发送" : "按住说，松手就发")
+      : wechatNote.text;
+    tone = wechatNote.tone; title = wechatNote.title;
   } else if (((sayEl && sayEl.value) || "").trim()) {
     // 有文字时按住按钮**不会**录音（主按钮这时是「发送」语义，pointerdown 直接返回）——
     // 所以不能写「或按住直接说」，那是个按了没反应的承诺。要说清怎么改回录音。
@@ -3981,8 +3987,12 @@ function refreshHint() {
 
 /** 微信预检结论（由 renderWechatPrecheck 写，refreshHint 读）—— 单一镜像点。 */
 let wechatNote = null;   // { text, tone, title } | null
-function setWechatNote(text, tone, title) {
-  wechatNote = text ? { text, tone: tone || "", title: title || text } : null;
+function setWechatNote(text, tone, title, act) {
+  // act=true：这条状态后面要接「按住说，松手就发」或「点按钮发送」——
+  // 由 refreshHint 按**当前草稿**决定接哪句。写死在文案里就会出现
+  // 「输入框有一整句话，提示却让用户按住说」：有文字时按住按钮根本不录音
+  // （主按钮这时是发送语义，pointerdown 直接返回），那是个按了没反应的承诺。
+  wechatNote = text ? { text, tone: tone || "", title: title || text, act: !!act } : null;
   refreshHint();
 }
 /** 忙态：禁用 + 把图标换成旋转圈（CSS: #panel button.busy）。
@@ -4254,7 +4264,7 @@ function renderWechatPrecheck(d) {
     setWechatNote("这次会重启微信 · 约十几秒", "warn", d.reason || "");
     return;
   }
-  setWechatNote("微信已打开 · 按住说，松手就发", "ok");
+  setWechatNote("微信已打开", "ok", "", true);
 }
 
 /**
