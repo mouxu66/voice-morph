@@ -103,7 +103,9 @@ def test_dependents_of_names_the_dependents():
     assert plugin_manifest.dependents_of("pet.companion") == ["hook.remote", "pet.market"]
     # 遥控依赖的三项：实时变声 / 微信发送 / 桌宠采集
     assert plugin_manifest.dependents_of("sound.rvc-live") == ["hook.remote"]
-    assert plugin_manifest.dependents_of("hook.wechat") == ["hook.remote"]
+    # hook.assistant（2026-10-23）：会话助理要发东西，所以 requires hook.wechat ——
+    # 依赖的方向是"助理 → 发送"，不是反过来。
+    assert plugin_manifest.dependents_of("hook.wechat") == ["hook.assistant", "hook.remote"]
 
 
 def test_enabled_ids_revives_transitively(monkeypatch):
@@ -311,9 +313,11 @@ def test_scene_presets_are_pinned_literals():
     """三个场景套餐的**起点集**钉死：微信变声 / 声音保存（护嗓）/ 游戏变声。"""
     # hook.radar（2026-10-23）：微信场景天然要「该不该回」雷达 —— 只看屏幕不发消息，
     # 与 hook.wechat 互不依赖，所以单独列出而不是挂进 wechat 的 requires。
+    # hook.assistant（2026-10-23）：会话助理 = 把"发歌/发语音"变成待确认提案，
+    # 是这个场景的主闭环，和雷达一起进套餐；它 requires hook.wechat（依赖闭包自动补）。
     assert plugin_manifest.PRESETS["wechat"] == [
         "sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board", "sound.course",
-        "hook.radar"]
+        "hook.radar", "hook.assistant"]
     assert plugin_manifest.PRESETS["preserve"] == [
         "sound.preserve", "sound.tts", "sound.audiobook", "sound.course"]
     # 游戏变声 = 变声本体本身（实时变声走虚拟声卡进游戏/直播/会议）

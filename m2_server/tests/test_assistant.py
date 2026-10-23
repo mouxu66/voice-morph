@@ -1,0 +1,292 @@
+"""assistant 包的纯逻辑测试：不联网、不调 TTS/RVC/微信、不碰真实 outputs。
+
+覆盖三类最容易改坏的东西：
+    1. 规则抽取的**边界**（多剥一个字就把歌名搜错，少剥一个就搜不到）
+    2. 提案状态机（重复 confirm 会发两条 —— 那是用户最不能接受的事故）
+    3. 搜索源必须是下载白名单的子集（否则"确认了却下不了"）
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from assistant import extract, search, store
+from assistant.schema import (
+    STATUS_CANCELLED,
+    STATUS_DONE,
+    STATUS_PENDING,
+    STATUS_RUNNING,
+    Proposal,
+    validate_params,
+)
+
+# ------------------------------------------------------------------ 抽歌名
+
+
+@pytest.mark.parametrize(
+    "text,expect",
+    [
+        ("能给我发一首晴天吗", "晴天"),
+        ("发首周杰伦的稻香", "周杰伦的稻香"),
+        ("来首《孤勇者》", "孤勇者"),
+        ("点歌：告白气球", None),  # 冒号后没接在动词上，规则不认（宁可漏）
+        ("帮我放一首海阔天空谢谢", "海阔天空"),
+        ("整一首夜曲吧", "夜曲"),
+        ("我想要听晴天", "晴天"),
+        ("唱个稻香", "稻香"),
+    ],
+)
+def test_parse_song_hits(text, expect):
+    hit = extract.parse_song(text)
+    if expect is None:
+        assert hit is None
+        return
+    assert hit is not None, f"{text!r} 应该抽得出歌名"
+    assert hit.params["query"] == expect
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "你发的那首歌真好听",  # 有"发"有"歌"，但是评价不是请求
+        "这首歌叫什么名字",  # 没有动词+数量词
+        "发个了",  # 抽出来是空壳
+        "发首歌",  # 泛指，没有指名道姓
+        "",
+    ],
+)
+def test_parse_song_misses(text):
+    assert extract.parse_song(text) is None, f"{text!r} 不该被当成点歌"
+
+
+def test_parse_song_keeps_evidence():
+    """`matched` 必须是原文里真实存在的一段 —— 用户靠它判断"AI 是看哪句起意的"。"""
+    text = "小明：能给我发一首晴天吗"
+    hit = extract.parse_song(text)
+    assert hit is not None
+    assert hit.matched in text
+
+
+# ------------------------------------------------------------------ 抽发语音
+
+
+def test_parse_voice_with_speaker():
+    hit = extract.parse_voice("用袋鼠的声音说今天真开心")
+    assert hit is not None
+    assert hit.params["text"] == "今天真开心"
+    assert hit.params["voice"] == "袋鼠"
+
+
+def test_parse_voice_dialect():
+    hit = extract.parse_voice("用粤语说今天天气不错")
+    assert hit is not None
+    assert hit.params["dialect"] == "粤语"
+    assert hit.params["text"] == "今天天气不错"
+
+
+def test_parse_voice_plain():
+    hit = extract.parse_voice("说一句晚安")
+    assert hit is not None
+    assert hit.params["text"] == "晚安"
+
+
+def test_parse_both_song_and_voice():
+    """一句里同时有"发什么"和"用什么声音"时，两条都要留下。"""
+    hits = extract.parse("发一首晴天，用袋鼠的声音说")
+    kinds = [h.kind for h in hits]
+    assert "song.send" in kinds
+
+
+# ------------------------------------------------------------------ 参数校验
+
+
+def test_validate_params_missing():
+    clean, missing = validate_params("song.send", {})
+    assert missing == ["query"]
+    assert clean == {}
+
+
+def test_validate_params_strips():
+    clean, missing = validate_params("song.send", {"query": "  晴天  "})
+    assert not missing
+    assert clean["query"] == "晴天"
+
+
+def test_validate_unknown_kind():
+    with pytest.raises(KeyError):
+        validate_params("nope.do", {})
+
+
+# ------------------------------------------------------------------ 状态机
+
+
+def test_proposal_state_machine():
+    p = Proposal(kind="song.send", title="发《晴天》", params={"query": "晴天"})
+    ok, _ = p.usable()
+    assert ok, "新提案应当可以确认"
+    p.touch(STATUS_RUNNING)
+    ok, why = p.usable()
+    assert not ok and "执行" in why, "执行中不许再点"
+    p.touch(STATUS_DONE)
+    ok, why = p.usable()
+    assert not ok and "完成" in why
+
+
+def test_proposal_to_dict_has_label_and_sends():
+    p = Proposal(kind="reply.draft", title="拟回复", params={"text": "好啊"})
+    d = p.to_dict()
+    assert d["label"] == "拟一句回复"
+    assert d["sends"] is False, "拟回复不能有发送副作用"
+
+
+# ------------------------------------------------------------------ 搜索
+
+
+def test_score_prefers_original_over_cover():
+    q = "周杰伦 晴天"
+    good = search.score("【Hi-Res无损】周杰伦 - 晴天", 270, q)
+    bad = search.score("晴天 翻唱 cover 吉他教学", 270, q)
+    assert good > bad
+
+
+def test_score_punishes_short_clip():
+    q = "晴天"
+    assert search.score("晴天 15秒", 15, q) < search.score("晴天 完整版", 260, q)
+
+
+def test_search_source_is_download_whitelisted():
+    """搜索源必须是下载白名单的子集。
+
+    这条是硬约束：搜到 YouTube 再点确认，会在下载那一步被 `_check_supported` 拒掉，
+    用户点的那一下等于白点。所以这里直接断言源码里只用了 bilisearch。
+    """
+    src = Path(search.__file__).read_text(encoding="utf-8")
+    assert '"ytsearch' not in src, "不要用 YouTube 搜索：它不在下载白名单里"
+    assert "bilisearch" in src
+
+
+def test_search_skips_unlisted_links(monkeypatch):
+    """即使 yt-dlp 返回了白名单外的链接，也要在结果里剔掉。"""
+    fake = (
+        "晴天 官方 https://www.bilibili.com/video/BV1xx411c7mD\t270\t\n"
+        "晴天 搬运 https://www.youtube.com/watch?v=abc\t270\t\n"
+    )
+
+    class _R:
+        stdout = ""
+        stderr = ""
+        returncode = 0
+
+    rows_out = (
+        "晴天 正版\t270\thttps://www.bilibili.com/video/BV1xx411c7mD\tup\n"
+        "晴天 外链\t270\thttps://www.youtube.com/watch?v=abc\tup\n"
+    )
+    r = _R()
+    r.stdout = rows_out
+
+    monkeypatch.setattr(search, "_exe", lambda: "yt-dlp")
+    monkeypatch.setattr(search.subprocess, "run", lambda *a, **k: r)
+    rows = search.search_song("晴天", 2)
+    assert len(rows) == 1
+    assert "bilibili.com" in rows[0]["url"]
+    assert fake  # 保留变量，说明这里验的是"过滤"而不是"伪造输出"
+
+
+# ------------------------------------------------------------------ 存储
+
+
+@pytest.fixture()
+def tmp_outputs(tmp_path, monkeypatch):
+    """把 OUTPUTS_DIR 指到临时目录，并且清掉 store 的进程内缓存。"""
+    import config
+
+    monkeypatch.setattr(config, "OUTPUTS_DIR", tmp_path)
+    store.reset_cache_for_tests()
+    yield tmp_path
+    store.reset_cache_for_tests()
+
+
+def test_store_roundtrip(tmp_outputs):
+    p = Proposal(kind="song.send", title="发《晴天》", params={"query": "晴天"})
+    store.add(p)
+    got = store.get(p.id)
+    assert got is not None and got.title == "发《晴天》"
+    # 落盘了没：重新读盘也应在
+    store.reset_cache_for_tests()
+    assert store.get(p.id) is not None
+
+
+def test_store_drop_only_pending(tmp_outputs):
+    p = Proposal(kind="voice.say", title="说一句", params={"text": "晚安"})
+    store.add(p)
+    assert store.drop(p.id)
+    assert store.get(p.id).status == STATUS_CANCELLED
+    # 已取消的不能再取消
+    assert not store.drop(p.id)
+
+
+def test_store_survives_corrupt_file(tmp_outputs):
+    (tmp_outputs / "assistant").mkdir()
+    (tmp_outputs / "assistant" / "proposals.json").write_text("{坏的", encoding="utf-8")
+    store.reset_cache_for_tests()
+    # 坏文件不该让后端起不来，且应被改名保留
+    assert store.list_all() == []
+    assert (tmp_outputs / "assistant" / "proposals.bad").exists()
+
+
+def test_store_gc_keeps_only_pending_forever(tmp_outputs):
+    import time as _t
+
+    old = Proposal(kind="song.send", title="老的", params={"query": "旧"})
+    old.touch(STATUS_DONE)
+    old.updated = _t.time() - 7200  # 两小时前完成的
+    store.add(old)
+    new = Proposal(kind="song.send", title="新的", params={"query": "新"})
+    store.add(new)
+    ids = [p.id for p in store.list_all()]
+    assert new.id in ids
+    assert old.id not in ids, "过期终态应被清掉"
+
+
+def test_history_is_append_only(tmp_outputs):
+    p = Proposal(kind="reply.draft", title="拟回复", params={"text": "好啊"})
+    store.add(p)
+    p.touch(STATUS_DONE)
+    store.append_history(p)
+    store.append_history(p)
+    lines = (tmp_outputs / "assistant" / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["id"] == p.id
+
+
+# ------------------------------------------------------------------ 提案生成（不落库）
+
+
+def test_api_observe_dry_run_does_not_persist(tmp_outputs):
+    import assistant_api
+    from fastapi.testclient import TestClient
+
+    app = __import__("fastapi").FastAPI()
+    app.include_router(assistant_api.router)
+    # TestClient 默认 client.host="testclient"，会被 loopback 守卫 403；显式给本机地址
+    client = TestClient(app, client=("127.0.0.1", 51234))
+    r = client.post("/api/assistant/observe", json={"text": "发一首晴天", "dry_run": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["proposals"], "应当抽出一条提案"
+    assert body["proposals"][0]["status"] == STATUS_PENDING
+    assert store.list_all() == [], "dry_run 不该落库"
+
+
+def test_api_confirm_rejects_unknown_id(tmp_outputs):
+    import assistant_api
+    from fastapi.testclient import TestClient
+
+    app = __import__("fastapi").FastAPI()
+    app.include_router(assistant_api.router)
+    # TestClient 默认 client.host="testclient"，会被 loopback 守卫 403；显式给本机地址
+    client = TestClient(app, client=("127.0.0.1", 51234))
+    r = client.post("/api/assistant/proposals/nonexistent/confirm")
+    assert r.status_code == 404

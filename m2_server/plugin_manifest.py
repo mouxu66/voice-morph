@@ -397,7 +397,7 @@ PRESETS: dict[str, list[str] | None] = {
     #   不带 tts 等于 tab 宿主页整个下架（有声书同理挂在 /tts?tab=book）。
     # ★ sound.course 必须带（2026-10-08）：录课零额外依赖（python=[]，出片才要
     #   PowerPoint），不该被场景切换埋掉 —— 用户三轮"开了又没"全是切模式所致。
-    "wechat": ["sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board", "sound.course", "hook.radar"],
+    "wechat": ["sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board", "sound.course", "hook.radar", "hook.assistant"],
     # 声音保存（护嗓）：建档录老师的声音 → 输字让它说话 → 整篇有声书 → 录课出片。
     # 有声书 requires tts，闭包自动补上；不带实时变声/微信 —— 课堂场景用不上。
     # ★ sound.course 必须带（2026-10-08 用户拍板）：这个模式的目标用户就是录课老师，
