@@ -4,9 +4,9 @@
   "kind": "builtin",
   "category": "sound",
   "order": 145,
-  "summary": "聊天/语音消息中一键插入爆炸、掌声等短音效（实时播进虚拟声卡）",
+  "summary": "聊天/语音消息中一键插入爆炸、掌声等短音效；桌宠 ♪ 里可搜抖音/B站热歌并实时放",
   "requires": [],
-  "routers": ["soundboard"],
+  "routers": ["soundboard", "music_api"],
   "hooks": [],
   "routes": [],
   "legacy_routes": [],
@@ -18,5 +18,5 @@
     "models": []
   },
   "health": null,
-  "disable": { "note": "关闭后微信发送页的音效格子消失（发送链路本身不受影响）" }
+  "disable": { "note": "关闭后微信发送页的音效格子与桌宠 ♪ 里的搜歌入口一起消失（发送链路本身不受影响）" }
 }

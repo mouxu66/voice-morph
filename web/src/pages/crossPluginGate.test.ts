@@ -208,8 +208,11 @@ describe("特效声板的 `sound.fx-board` 门控", () => {
   const hookSrc = readRel(path.join("pages", "Tts", "useSoundboard.ts"))
   const pageSrc = readRel(path.join("pages", "Tts", "WechatSendPage.tsx"))
 
-  it("清单里真有这个插件，且只认领 soundboard 一个 router", () => {
-    expect(readManifest("sound.fx-board").routers).toEqual(["soundboard"])
+  it("清单里真有这个插件，且只认领声板自己的两个 router", () => {
+    // 2026-10-23：`music_api`（抖音/B站榜单 + B站搜歌取音）也归这里，因为用它的
+    // 唯一入口是桌宠 ♪ 放歌卡上的搜歌按钮，而那整块按 `CAP.fx`（本插件）显隐 ——
+    // 拆成独立插件只会造出「声板关着、搜歌入口还在」的 404 按钮。
+    expect(readManifest("sound.fx-board").routers).toEqual(["soundboard", "music_api"])
   })
 
   it("★ 面板**自己**门控 —— 宿主页属 hook.wechat，不是 sound.fx-board", () => {
