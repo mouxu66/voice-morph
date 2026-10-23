@@ -191,9 +191,21 @@
   #steps i.on { background: rgb(var(--c-accent)); width: 14px; border-radius: 999px; }
   #hint { font-size: 10px; color: rgb(var(--c-t-500)); }
 
-  /* ---------------- 快捷面板：悬停角色浮现，输入文字合成发送 / 实时变声开关 ----------------
-     宽度预算：窗口 220px，减去 #root 左右各 8px padding，可用正好 204px。
-     所以面板与内部控件全部 box-sizing: border-box，且纵向排版要按 204px 来算。 */
+  /* ---------------- 快捷面板：「一个装填口，一个扳机」 ----------------
+     2026-10-23 重构。改版前是 4 个页签 × 各自一套表单 + 共用动作行 + 状态行 + 最近发送，
+     整块面板 13 个可点目标，纵向预算只剩 11px（289 / 300）。照那个加法，「发歌曲」
+     只能再开第 5 个页签 —— 必然溢出，而且用户仍然要先想「这条东西属于哪个页」。
+
+     改版后模型只有两层：
+       #draft  装填区 —— 按草稿内容自己变形（空 / 文字 + 音效片 / 按住中的波形）
+       #fire   主按钮 —— 面板上唯一的动作，文案跟着装填区变
+     页签全部删除（它们是按**实现机制**分的：文字合成 / 按键录音 / 声板，不是按用户想做什么）。
+     音效与放歌收进「声音托盘」#tray —— 两者的共同点是「此刻送进虚拟声卡，对面实时听到」；
+     音色 / 引擎 / 历史收进「更多」#drawer —— 都是设置，不该跟发送动作抢地方。
+
+     宽度预算：窗口 220px − #root 左右各 8px = 204px，内部全部 border-box。
+     高度预算：max-height 300px（实测上限见 tools/pet-panel-layout-budget.json），
+     空闲态目标 ≈153px —— 余量留给托盘与抽屉，不再靠「挤一挤」装下功能。 */
   #panel {
     display: none;
     box-sizing: border-box;
@@ -205,7 +217,7 @@
     overscroll-behavior: contain;
     margin-bottom: 6px;
     padding: 10px;
-    border-radius: 16px;                 /* 对齐应用 .glass-panel 的 rounded-2xl */
+    border-radius: 16px;
     border: 1px solid rgb(var(--c-border) / 0.9);
     background: rgb(var(--c-surface) / var(--glass));
     backdrop-filter: blur(18px) saturate(150%);
@@ -227,102 +239,81 @@
     background: rgb(var(--c-border-2) / 0.7); border-radius: 999px;
   }
 
-  /* —— 状态条（2026-09-29）：把原来那行「品牌标 + 标题 + 药丸」改成遥控器的仪表盘 ——
-     一眼看到三件事：变声开没开（药丸，可点）/ 正在用谁的音色 / 这一段的实测推理耗时。
-
-     为什么**不新增一行**：面板纵向预算已经被量测守卫钉死（ok-dark 自然高 289px、上限 300px，
-     只剩 11px），再塞一行就得从别处砍掉 25px 以上的功能。而头部这一行的信息价值本来就最低
-     —— 标题「变声工坊」是重复信息（这个 220px 的透明窗里只有这一个面板），
-     所以拿它换状态条，净新增高度 = 0（这就是这个设计成立的唯一理由）。
-
-     宽度预算 184px（204 - 面板左右各 10px padding），实测（live-dark 场景，最挤的形态）：
-       药丸「RVC 变声中」77.4 + 音色 52 + 耗时 35.6 + 2×4px 间距 = ~173 → 还剩 ~11px。
-     那 11px 是**留给延迟位数**的：实测推理耗时可能是 100ms 以上（3 位数比「82ms」宽 ~6px），
-     而音色 chip 是唯一可压缩的一个 —— 不预留下来，机器一慢音色名就先变省略号。
-     为此把原来那颗**装饰性**的品牌标（#plogo，aria-hidden 的 svg，没有任何 JS 引用）
-     从这一行里去掉了：药丸上的引擎名（RVC / 千问）是 2026-09-26 专门修过的用户诉求
-     （「不确定用的是哪一种」），而音色与耗时是这次新增的，三者都不能让；
-     标识性由按钮/原生窗口与图标承担，不在这一行跟数据抢宽度。 */
-  #phead { display: flex; align-items: center; gap: 4px; margin-bottom: 5px; min-width: 0; }
-  /* 只读状态 chip（音色 / 推理耗时）：没有交互 → 没有 hover 反馈，光标保持默认。
-     ⚠️ 选择器一律带 #panel 前缀：`#panel button` 这种「id + 元素」的通配比单个 #id
-     更具体（0,1,0,1 > 0,1,0,0），不带前缀的话下面 #holdMic 的 padding/display 会被它吃掉。 */
-  #panel #rmVoice, #panel #rmLat {
-    flex: 0 0 auto;
-    display: inline-flex; align-items: center;
-    max-width: 100%;
-    padding: 3px 5px; border-radius: 999px;
-    border: 1px solid rgb(var(--c-border) / 0.8);
-    background: rgb(var(--c-surface-2) / 0.55);
-    font-size: 10px; color: rgb(var(--c-t-400));
+  /* —— 状态条（2026-10-23）：药丸 + 当前音色 + 两个入口 ——
+     改版前这一行是「药丸 + 音色 + 推理耗时」，下面紧跟 4 个页签。现在页签没了，
+     省下的高度换成了两个 26px 入口（♪ 声音 / ⋯ 更多）—— 常驻可点从 13 个降到 5 个
+     （药丸、音色、♪、⋯、主按钮）。
+     耗时是诊断信息，挪进「⋯」抽屉；它原本占 35px 宽，而那 35px 正是两个入口的位置。
+     宽度预算 184px：药丸 77 + 音色 flex + 26 + 26 + 3×4 gap = 149 + 音色（≈40px）。 */
+  #phead { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; min-width: 0; }
+  /* 只读状态 chip（音色）：没有交互 → 没有 hover 反馈。包在 button 里只为可点开抽屉。 */
+  #panel #rmVoice {
+    flex: 1 1 auto; min-width: 0;
+    font-size: 10px; color: rgb(var(--c-t-300));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    font-variant-numeric: tabular-nums;
   }
-  /* 音色文案最长（「卡通·懒羊羊（市场）」这种），所以**只有它**允许被压缩：
-     药丸与耗时都是 flex: 0 0 auto —— 宁可音色出省略号，也不让状态条整体溢出头部。 */
-  #panel #rmVoice { margin-left: auto; flex: 0 1 auto; min-width: 30px; color: rgb(var(--c-t-300)); }
-  #panel #rmLat { color: rgb(var(--c-t-500)); }
+  #panel #rmLat {
+    font-size: 10px; color: rgb(var(--c-t-500));
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   #panel #rmLat[hidden] { display: none; }
-  /* 药丸现在是个真 <button>（可点 = 变声开关）：#panel button 的通用外观会盖掉上面
-     #pill 的几项（padding / border-radius / background / font-size），所以要用更高的
-     优先级收回来。hover/active/focus 的反馈沿用通配的，不重写。
-     ⚠ 选择器里那个 ".pill" 是必需的，不是冗余：#panel button:not(.primary) { flex: 1 }
-     的优先级是 (0,2,0,1)，比 #panel #pill 的 (0,2,0,0) 更高，而且它在本文件里更靠后 ——
-     少了这个类名，药丸会被当成普通按钮 flex:1 撑满头部一行，把两个 chip 顶出窗口。 */
+  /* 音色按钮：外观是一枚 chip，内容是音色名。⚠️ 必须带 .vchip 类：
+     `#panel button:not(.primary) { flex: 1 }` 的优先级 (0,2,0,1) 高过 `#panel #voiceBtn`
+     的 (0,2,0,0)，少了类名它会被撑成整行，把 ♪ / ⋯ 顶出窗口。 */
+  #panel #voiceBtn.vchip {
+    flex: 1 1 auto; min-width: 34px; height: 20px; padding: 0 7px;
+    display: inline-flex; align-items: center; justify-content: flex-end;
+    border-radius: 999px;
+    border: 1px solid transparent; background: transparent; box-shadow: none;
+    font-size: 10px; font-weight: 400;
+  }
+  #panel #voiceBtn.vchip:hover {
+    border-color: rgb(var(--c-border-2) / 0.7);
+    background: rgb(var(--c-surface-2) / 0.8);
+  }
+  /* 图标入口（♪ / ⋯）：26px 见方 —— 鼠标场景的最小舒适点击面，不与主按钮抢视觉权重。
+     选中态（托盘/抽屉打开）用品牌紫描边，让「现在开着什么」一眼可见。 */
+  #panel .icb {
+    flex: 0 0 auto; width: 26px; height: 26px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 9px;
+    border: 1px solid transparent; background: transparent; box-shadow: none;
+    color: rgb(var(--c-t-400));
+  }
+  #panel .icb svg { width: 15px; height: 15px; }
+  #panel .icb:hover {
+    border-color: rgb(var(--c-border-2) / 0.7);
+    background: rgb(var(--c-surface-2) / 0.85);
+    color: rgb(var(--c-t-strong));
+  }
+  #panel .icb.on {
+    border-color: rgb(var(--c-accent) / 0.5);
+    background: rgb(var(--c-accent) / 0.16);
+    color: rgb(var(--c-accent-h));
+  }
+  /* 放歌中：♪ 带一颗常亮的小点（面板收起后由 #bgmBadge 接手这个提示） */
+  #panel .icb.playing::after {
+    content: ""; position: absolute; margin: -12px 0 0 12px;
+    width: 5px; height: 5px; border-radius: 50%;
+    background: rgb(var(--c-ok));
+  }
+  #panel .icb { position: relative; }
+
+  /* 药丸现在是个真 <button>（可点 = 变声开关）。⚠️ 选择器里那个 ".pill" 是必需的：
+     `#panel button:not(.primary) { flex: 1 }` 是 (0,2,0,1)，比 `#panel #pill` (0,2,0,0) 高，
+     少了类名药丸会被撑满头部一行。 */
   #panel #pill.pill {
     flex: 0 0 auto;
     display: inline-flex; align-items: center; gap: 4px;
-    padding: 3px 8px 3px 7px; border-radius: 999px;
+    height: 20px; padding: 0 8px 0 7px; border-radius: 999px;
     border: 1px solid rgb(var(--c-border-2) / 0.7);
     background: rgb(var(--c-surface-2) / 0.8);
     font-size: 10px; font-weight: 400; color: rgb(var(--c-t-400));
-    white-space: nowrap; cursor: pointer;
+    white-space: nowrap; cursor: pointer; box-shadow: none;
   }
   #panel #pill.pill:hover { border-color: rgb(var(--c-accent) / 0.6); color: rgb(var(--c-t-strong)); }
   #panel #pill.pill:active { transform: translateY(1px); }
-
-  /* —— 按住说话（2026-09-29）——
-     为什么单独占一个功能页（第三个页签）而不是塞进「说话」页：那颗按钮要 46px 高才有
-     像样的按压面积，而面板只剩 11px 余量 —— 压成一行就等于放弃了「按住」这件事本身。
-     页签那一行本来就存在（说话/音效），多一页**不多占一个像素**（高度由 CSS 钉死不随数量变）。 */
-  #panel #holdMic {
-    display: flex; flex-direction: column; gap: 3px;
-    width: 100%; height: 46px; padding: 0;
-    border-radius: 12px;
-    font-size: 11.5px; font-weight: 600; color: rgb(var(--c-t-strong));
-    /* 按住期间手指可能滑出按钮、也可能被系统当成滚动手势：都禁掉，
-       否则 pointerup/pointercancel 会以难以预期的方式到达（见 renderer 的手势注释）。 */
-    touch-action: none;
-    user-select: none; -webkit-user-select: none;
-  }
-  #holdMic .mic-ic { width: 15px; height: 15px; }
-  #holdMic .mic-sec {
-    font-size: 10px; font-weight: 500; color: rgb(var(--c-t-500));
-    font-variant-numeric: tabular-nums;
-  }
-  /* 录制中整块转红：绿在本面板里已经表示「已连接 / 正在播」，
-     而「此刻正在录你说话」是需要注意的进行态，用警戒色才不会被误读成成功。 */
-  #holdMic.rec {
-    border-color: rgb(var(--c-err) / 0.55);
-    background: rgb(var(--c-err) / 0.16);
-    color: rgb(var(--c-err));
-  }
-  #holdMic.rec .mic-sec { color: rgb(var(--c-err)); }
-  #holdMic.wait { border-color: rgb(var(--c-accent) / 0.5); color: rgb(var(--c-accent-h)); }
-  #panel #holdHint { margin-top: 4px; font-size: 10px; line-height: 1.45; color: rgb(var(--c-t-500)); }
-  /* 发送前预检（2026-09-29）—— 这条链路最贵的失败是「录完 0..59 秒 + 换声十几秒之后
-     才被告知微信没开」，而那是按下之前就知道的事，所以提到按钮**上面**先说。
-     ★ 钉死单行 + 省略号：它是**状态**，不许因为后端文案变长就把面板顶高
-     （纵向预算见 tools/pet-panel-layout-budget.json；整段原因进 title）。 */
-  #panel #holdPre {
-    margin-bottom: 4px;
-    font-size: 10px; line-height: 1.45;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    color: rgb(var(--c-t-500));
-  }
-  #panel #holdPre.t-ok   { color: rgb(var(--c-ok)); }
-  #panel #holdPre.t-warn { color: rgb(var(--c-warn)); }
-  #panel #holdPre.t-bad  { color: rgb(var(--c-err)); }
   #pill b { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   #pill i {
     width: 5px; height: 5px; border-radius: 50%; flex: 0 0 auto;
@@ -339,7 +330,11 @@
   }
 
   /* —— 表单域：自绘前置图标（原生 input/select 放不进图标，用绝对定位的兄弟节点） —— */
-  #panel .field { position: relative; display: block; margin-bottom: 4px; }
+  #panel .field { position: relative; display: block; margin-bottom: 6px; }
+  /* 录音时输入框整块让位给波形（renderMic 里 field.hidden = rec）。
+     ★ 这条不能省：`.field` 是 display:block，作者样式优先于 UA 的 [hidden]{display:none} ——
+     少了它，录音时会**同时**出现输入框和波形，白占 33px 并把面板顶到 192px。 */
+  #panel .field[hidden] { display: none; }
   #panel .field .lead {
     position: absolute; left: 9px; top: 50%; transform: translateY(-50%);
     width: 13px; height: 13px; color: rgb(var(--c-t-500));
@@ -348,7 +343,7 @@
   #panel .field:focus-within .lead { color: rgb(var(--c-accent-h)); }
   #panel input, #panel select {
     width: 100%; box-sizing: border-box;
-    padding: 6px 10px 6px 28px;
+    padding: 7px 10px 7px 28px;
     border-radius: 11px;
     border: 1px solid rgb(var(--c-border-2) / 0.65);
     outline: none;
@@ -369,7 +364,7 @@
     text-overflow: ellipsis;
   }
   /* 原生下拉箭头在暗色下不可控，自绘一个（与 #panel select 的 appearance:none 配对） */
-  #panel .field.sel::after {
+  #panel .field.sel::after, #panel .drow.sel::after {
     content: ""; position: absolute; right: 12px; top: 50%;
     width: 5px; height: 5px; margin-top: -4px;
     border-right: 1.5px solid rgb(var(--c-t-500));
@@ -377,11 +372,10 @@
     transform: rotate(45deg); pointer-events: none;
   }
 
-  /* —— 按钮行 —— */
-  #panel .row { display: flex; gap: 6px; }
+  /* —— 按钮基础外观 —— */
   #panel button {
     display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-    padding: 6px 0; border-radius: 11px;
+    height: 26px; padding: 0 10px; border-radius: 11px;
     border: 1px solid rgb(var(--c-border-2) / 0.7);
     background: rgb(var(--c-surface-2) / 0.8);
     color: rgb(var(--c-t-300));
@@ -398,21 +392,6 @@
   #panel button:active { transform: translateY(1px); }
   #panel button:disabled { opacity: .45; cursor: default; box-shadow: none; transform: none; }
   #panel button:focus-visible { outline: none; box-shadow: 0 0 0 3px rgb(var(--c-accent) / 0.25); }
-  /* 主按钮：对齐应用 .btn-primary —— 品牌渐变 + 同色系投影，取代纯色块。
-     flex 1.7（不是 1.35）：204px 面板减内边距 22px、再减两个 6px 间距只剩 170px，
-     按 1.35:1:1 分下来主按钮仅 65px，而「合成并发送」+ 图标实测要 69px → 末字被切。
-     1.7:1:1 → 82/49/49，主按钮留出约 9px 余量。 */
-  #panel button.primary {
-    flex: 1.7; border-color: transparent;
-    background: linear-gradient(135deg, rgb(var(--c-accent-h)), rgb(var(--c-accent)));
-    color: #fff;
-    box-shadow: 0 2px 12px rgb(var(--c-accent) / 0.35);
-  }
-  #panel button.primary:hover {
-    color: #fff; filter: brightness(1.1);
-    box-shadow: 0 4px 20px rgb(var(--c-accent) / 0.5);
-  }
-  #panel button:not(.primary) { flex: 1; }
   /* 忙态：图标换成旋转圈 —— 「合成中」要有看得见的进行中信号，不能只靠变灰 */
   #panel button .spin { display: none; }
   #panel button.busy { pointer-events: none; }
@@ -425,16 +404,135 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* —— 状态行：带图标的提示条（图标三选一，由 .ok/.err 决定显示哪个） ——
-     max-height 是**必需**的，不是美化：状态文案里有一条是 `合成失败：${后端 detail}`，
-     长度完全由后端决定。不封顶的话，一条长报错就能把面板撑到 300px 以上、
-     把「最近发送」挤出去（量测里 ok-dark 已经只剩 3px 余量）。
-     封到 42px（= 两行）后内容固定，更长的报错在状态行内部滚动，不再影响整体高度。 */
+  /* —— 主按钮：面板上唯一的动作 ——
+     44px 高。它同时承担三种语义，靠 .m-idle / .m-text / .m-rec 切图标与颜色：
+       空草稿 → 按住说话（pointerdown 起录、pointerup 停）
+       有内容 → 合成并发送
+       录制中 → 松开发送（整块转红：绿在面板里已表示「已连接/正在播」）
+     高度从旧版「动作行 29px」提到 44px 是这次重构最大的空间来源：删掉 4 个页签
+     （22px）+ 引擎行（24px）+ 音色行（29px）+ 最近发送（23px）换来 98px。 */
+  #panel #fireRow { display: flex; align-items: stretch; gap: 6px; }
+  #panel #fire {
+    flex: 1 1 auto; min-width: 0; height: 44px; padding: 0 12px;
+    border-radius: 14px; border-color: transparent;
+    background: linear-gradient(135deg, rgb(var(--c-accent-h)), rgb(var(--c-accent)));
+    color: #fff; font-size: 13px; font-weight: 600;
+    box-shadow: 0 2px 12px rgb(var(--c-accent) / 0.35);
+    /* 按住期间光标可能滑出按钮、也可能被系统当成滚动手势：都禁掉，
+       否则 pointerup/pointercancel 会以难以预期的方式到达（见渲染层的手势注释）。 */
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  #panel #fire:hover {
+    color: #fff; filter: brightness(1.08);
+    box-shadow: 0 4px 20px rgb(var(--c-accent) / 0.5);
+  }
+  #panel #fire .ic { display: none; width: 16px; height: 16px; }
+  #panel #fire.m-idle .ic-mic { display: block; }
+  #panel #fire.m-text .ic-send { display: block; }
+  #panel #fire.m-rec  .ic-rec  { display: block; }
+  #panel #fire.m-rec {
+    background: rgb(var(--c-err) / 0.22);
+    border-color: rgb(var(--c-err) / 0.6);
+    color: rgb(var(--c-err));
+    box-shadow: inset 0 0 0 1px rgb(var(--c-err) / 0.35);
+  }
+  #panel #fire.m-rec .ic-rec { fill: currentColor; }
+  #panel #fire .ic-rec { fill: currentColor; }
+  /* 试听：只在「有文字、没在录」时出现（它试听的是文字合成，与按住那条链路无关）。
+     36×44 —— 比主按钮窄，但比旧版那颗 29px 的「试听」大：它现在是图标钮，
+     靠宽高给足点击面，不再靠文字。 */
+  #panel #preview {
+    flex: 0 0 auto; width: 36px; height: 44px; padding: 0;
+    border-radius: 14px;
+  }
+  #panel #preview svg { width: 14px; height: 14px; }
+  #panel #preview[hidden] { display: none; }
+
+  /* —— 装填区里的音效片（原「预混队列」，2026-10-23 挪进草稿）——
+     从前它在音效页底部、和「发送」按钮一起；现在它是**这条语音的一部分**，
+     所以长在草稿下面。单行横滚：高度必须钉死（换行会让面板高度随素材数浮动）。 */
+  #fxPicks {
+    display: flex; flex-wrap: nowrap; gap: 4px;
+    overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none;
+    margin: -2px 0 6px;
+  }
+  #fxPicks::-webkit-scrollbar { display: none; }
+  #fxPicks:empty { display: none; margin: 0; }
+  #panel .fxchip {
+    display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto;
+    height: 18px; padding: 0 7px; border-radius: 999px;
+    border: 1px solid rgb(var(--c-accent) / 0.45);
+    background: rgb(var(--c-accent) / 0.12);
+    font-size: 10px; color: rgb(var(--c-t-300));
+    cursor: pointer; white-space: nowrap;
+  }
+  /* 混入位置字（叠/头/尾）：点 chip 主体循环切换 —— 一个汉字，9px 下也读得清 */
+  #panel .fxchip .fm { font-size: 9px; color: rgb(var(--c-accent-h)); }
+  #panel .fxchip .fxrm { color: rgb(var(--c-t-500)); font-weight: 600; padding: 0 1px; }
+  #panel .fxchip .fxrm:hover { color: rgb(var(--c-err)); }
+
+  /* —— 按住中的波形（替代输入框）——
+     为什么要有它：改版前「按住说话」是独立页签里的一颗大按钮，按下后除了秒数没有
+     别的反馈，用户不知道「现在有没有在录」。波形 + 红点是那个问题的答案。
+     26px 高：比输入框（32px）矮，所以录制中面板反而更矮 —— 预算不会因此变紧。 */
+  #recBox {
+    display: flex; align-items: center; gap: 6px;
+    height: 30px; padding: 0 10px; margin-bottom: 6px;
+    border-radius: 11px;
+    border: 1px solid rgb(var(--c-err) / 0.5);
+    background: rgb(var(--c-err) / 0.10);
+    color: rgb(var(--c-err));
+  }
+  #recBox[hidden] { display: none; }
+  #recBox .rec-dot {
+    flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+    background: currentColor; animation: pulse 1s infinite;
+  }
+  #recBox .bars { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; }
+  #recBox .bars i {
+    flex: 1 1 0; min-width: 2px; max-width: 4px; height: 4px; border-radius: 2px;
+    background: currentColor; opacity: .8;
+    animation: rec-bar .9s ease-in-out infinite;
+  }
+  #recBox .bars i:nth-child(1) { animation-delay: 0s;    }
+  #recBox .bars i:nth-child(2) { animation-delay: .12s;  }
+  #recBox .bars i:nth-child(3) { animation-delay: .24s;  }
+  #recBox .bars i:nth-child(4) { animation-delay: .36s;  }
+  #recBox .bars i:nth-child(5) { animation-delay: .48s;  }
+  #recBox .bars i:nth-child(6) { animation-delay: .60s;  }
+  #recBox .bars i:nth-child(7) { animation-delay: .72s;  }
+  #recBox .bars i:nth-child(8) { animation-delay: .30s;  }
+  #recBox .bars i:nth-child(9) { animation-delay: .18s;  }
+  @keyframes rec-bar { 0%,100% { height: 4px; } 50% { height: 14px; } }
+  #micSec {
+    flex: 0 0 auto; font-size: 10px; font-variant-numeric: tabular-nums;
+    color: currentColor; opacity: .9;
+  }
+
+  /* —— 手势提示行：#hint ——
+     常驻一行 11px。三件事按优先级轮流显示（JS: refreshHint）：
+       录制中 → 「松手就发」；按住前的预检 → 「微信已打开 / 没在运行」；否则 → 一句用法。
+     旧版预检（#holdPre）只在「按住」页里可见，改版后它跟着主按钮走 ——
+     因为按住就是这个按钮的默认动作。整段原因进 title（省略号会切掉下一步）。 */
+  #panel #gesture {
+    margin-top: 5px;
+    font-size: 10px; line-height: 1.45;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: rgb(var(--c-t-500));
+  }
+  #panel #gesture.t-ok   { color: rgb(var(--c-ok)); }
+  #panel #gesture.t-warn { color: rgb(var(--c-warn)); }
+  #panel #gesture.t-bad  { color: rgb(var(--c-err)); }
+
+  /* —— 状态行：发送/合成的结论 ——
+     max-height 是**必需**的：状态文案里有一条是 `合成失败：${后端 detail}`，
+     长度完全由后端决定。封到 42px（两行）后内容固定，更长的在行内滚动，不再影响整体高度。 */
   #status {
     display: none; align-items: flex-start; gap: 6px;
     box-sizing: border-box;
     max-height: 42px; overflow-y: auto; overscroll-behavior: contain;
-    margin-top: 5px; padding-top: 6px;
+    margin-top: 6px; padding-top: 6px;
     border-top: 1px solid rgb(var(--c-border) / 0.85);
     font-size: 10.5px; line-height: 1.5;
     color: rgb(var(--c-t-400)); overflow-wrap: anywhere;
@@ -453,73 +551,144 @@
   #status.err { color: rgb(var(--c-err)); }
   #status.err .ic-info { display: none; }
   #status.err .ic-err  { display: block; color: rgb(var(--c-err)); }
-  /* 发送成功但录音环境有告警（典型：微信绑的不是 CABLE → 录进去很可能是静音）。
-     2026-09-18 加：此前这种情况显示的是绿勾「已发到微信 ✓」，用户只能靠耳朵发现问题。 */
+  /* 发送成功但录音环境有告警（典型：微信绑的不是 CABLE → 录进去很可能是静音）。 */
   #status.warn { color: rgb(var(--c-warn)); }
   #status.warn .ic-info { display: none; }
   #status.warn .ic-err  { display: block; color: rgb(var(--c-warn)); }
 
-  /* —— 最近发送：胶囊 chip，点一下重发 ——
-     固定单行 + 横向滚动，而不是 flex-wrap 换行。
-     理由：换行时高度随 chip 文案浮动（3 条就占两行 50px），而面板纵向预算是死的，
-     加一行「实时变声」后已经只剩几 px 余量。单行把这块钉死成 25px，宽度不够就横向滚。
-     padding-right 留给右侧渐隐遮罩：内容没溢出时那 14px 是空的、渐隐看不出；
-     溢出了才把被切的那半颗 chip 柔化掉，充当「还有更多」的提示。 */
-  #panel #recent {
-    margin-top: 4px; padding-right: 14px;
-    display: flex; flex-wrap: nowrap; gap: 5px;
-    overflow-x: auto; overflow-y: hidden;
-    scrollbar-width: none;
-    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 14px), transparent);
-    mask-image: linear-gradient(90deg, #000 calc(100% - 14px), transparent);
+  /* —— 声音托盘 #tray：音效 + 放歌 ——
+     为什么两者合成一个托盘而不是各留一个入口：它们的共同点是「此刻送进虚拟声卡，
+     对面实时听到」（与主按钮的「发一条消息」是两条不同的链路），而且**可以同时用**
+     —— 放着歌点音效不会把歌掐断（board_worker 的垫底层是独立音频流）。
+     既然总是一起被用到，就不该让用户先选进哪个页面。
+     托盘高度：放歌区 76 + 音效网格 2 行 78 ≈ 154，加进空闲态 153 → 约 307，
+     所以 #fxGrid 钉死 max-height（超出内滚），面板整体仍受 300 上限保护。 */
+  #tray {
+    margin-top: 6px; padding-top: 7px;
+    border-top: 1px solid rgb(var(--c-border) / 0.85);
   }
-  #panel #recent::-webkit-scrollbar { display: none; }
-  #panel #recent:empty { display: none; }
-  #panel .hitem {
-    display: inline-flex; align-items: center;
-    padding: 3px 9px; border-radius: 999px;
-    border: 1px solid rgb(var(--c-border-2) / 0.6);
-    background: rgb(var(--c-surface-2) / 0.7);
-    font-size: 10.5px; color: rgb(var(--c-t-400));
-    cursor: pointer; white-space: nowrap;
-    font-variant-numeric: tabular-nums;
-    transition: border-color .16s, background .16s, color .16s;
+  #tray[hidden] { display: none; }
+  /* 托盘打开时收起手势提示行：托盘是「此刻出声」，发送手势那句在它打开时不是重点，
+     而 15px 正好把它从 300px 上限外面拉回来（#panel.has-tray，见抽屉那段同一条规则）。 */
+  #panel.has-tray #gesture { display: none; }
+  #bgmRow { display: flex; align-items: center; gap: 4px; }
+  #bgmRow .field2 { position: relative; flex: 1 1 auto; min-width: 0; }
+  /* 歌名单行：托盘里没有空间再放图标，所以 select 不收左内边距、不配 .lead */
+  #panel #bgmSel {
+    padding: 5px 20px 5px 8px; font-size: 10.5px;
+    height: 26px;
   }
-  #panel .hitem:hover {
-    border-color: rgb(var(--c-accent) / 0.6);
-    background: rgb(var(--c-accent) / 0.14);
+  #panel #bgmBtn {
+    flex: 0 0 auto; width: 40px; height: 26px; padding: 0;
+    font-size: 11px; font-weight: 600;
+  }
+  #panel #bgmBtn.on {
+    border-color: rgb(var(--c-accent) / 0.55);
+    background: rgb(var(--c-accent) / 0.20);
     color: rgb(var(--c-accent-h));
   }
-  #panel .hempty { font-size: 10.5px; color: rgb(var(--c-t-500)); }
-  /* 原文件已随会话清理的历史条目 —— **不可点**。
-     ★ hover 也必须不变色：面板上"会变色 = 能点"是用户唯一的暗示，
-       给一个和能点条目一样的 hover，等于骗他点一下、然后什么都不发生。 */
-  #panel .hitem.hgone { cursor: default; opacity: .55; }
-  #panel .hitem.hgone:hover {
-    border-color: rgb(var(--c-border-2) / 0.6);
-    background: rgb(var(--c-surface-2) / 0.7);
-    color: rgb(var(--c-t-400));
+  /* 音量：与歌同一行（旧版是一行独立滑块，占了 18px 且与歌名脱节） */
+  #panel #bgmGain {
+    flex: 0 0 44px; min-width: 0; height: 16px;
+    padding: 0; border: 0; border-radius: 0; background: transparent;
+    accent-color: rgb(var(--c-accent-h)); cursor: pointer;
   }
+  /* ⚠️ 原来这里还有 #bgmHint（9.5px 的第二行灰字）—— 删了，理由见 DOM 那边同一条注释：
+     「放歌行 + 说明行 + 网格」在 300px 上限里滚出 17px，而托盘里已经有放歌行本身
+     在表达状态（选中项 = 正在放的那首；空态/错因写在 option 里）。 */
+  /* 放歌中锁住选歌框：垫层只有一层，选中项与正在放的那首**必须**一致，
+     否则「停」到底停的是哪首就成了猜谜。换歌 = 停 → 选 → 放。 */
+  #panel #bgmSel:disabled { opacity: .55; cursor: default; }
 
-  /* —— 实时变声引擎：RVC 实时 / 千问变声 二选一 ——
-     两个引擎在后端是**互斥**的（互相 409：「两者抢 GPU 且都占 CABLE」），
-     所以这里做成「选一个」的分段控件，而不是两个独立开关 —— 独立开关会让人以为能同时开。
-     行内小标签「麦克风」是必需的：它点明这一行管的是**麦克风实时链路**，
-     跟下面「输入文字 → 合成 → 发微信」那条完全不是一回事（用户反馈过的混淆点）。
-     标签用「麦克风」而不是「实时变声」：后者 4 个字要多占 10px，
-     而分段按钮的文字宽度是硬预算（实测 204px 下每个按钮只有 ~69px）。 */
-  #engRow, #fxModeRow { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
-  #engLabel, #fxModeLabel { flex: 0 0 auto; font-size: 10px; letter-spacing: .2px; color: rgb(var(--c-t-500)); }
-  #engineSeg, #fxModeSeg {
+  /* —— 音效网格 ——
+     2 列 × 36px：204px 宽度下每格 87px，装得下「完结撒花」（4 字 × 10px）。
+     旧版是 3 列 × 34px（每格 57px，名字被省略号吃掉一半）—— 3 列换来的只是
+     「一行多一个」，却让每个名字都不可读，而托盘里本来就可以纵向滚。
+     max-height 钉死两行：样本再多也只在网格内部滚动，不撑高面板。 */
+  #fxGrid {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px;
+    max-height: 76px; overflow-y: auto; overscroll-behavior: contain;
+    margin-top: 5px;
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--c-border-2) / 0.7) transparent;
+  }
+  #fxGrid:empty { display: none; margin-top: 0; }
+  /* 格子 = 「点一下现场播」+ 右上角 ＋「加进这条语音」（仿 Spotify：点行播放、点 + 加歌单）。
+     改版前必须先选「实时播放 / 混进语音」再点格子 —— 一个动作被拆成两步预判。 */
+  #panel .fxc {
+    position: relative;
+    display: flex; align-items: center; gap: 4px;
+    height: 36px; padding: 0 24px 0 7px;
+    border-radius: 10px;
+    border: 1px solid rgb(var(--c-border-2) / 0.7);
+    background: rgb(var(--c-surface-2) / 0.8);
+    color: rgb(var(--c-t-300));
+    font: inherit; line-height: 1.1;
+    cursor: pointer; overflow: hidden;
+    transition: background .16s, border-color .16s, color .16s;
+  }
+  #panel .fxc:hover { border-color: rgb(var(--c-border-2)); background: rgb(var(--c-surface-3) / 0.9); color: rgb(var(--c-t-strong)); }
+  #panel .fxc .fe { flex: 0 0 auto; font-size: 12px; line-height: 1; }
+  #panel .fxc .fn {
+    flex: 1 1 auto; min-width: 0; font-size: 10px; color: rgb(var(--c-t-400));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* 播放中 = 品牌紫；已加进语音 = 品牌紫描边 + ＋ 变 ✓。
+     ⚠️ 这两个状态可以**同时**存在（正放着的那一格也可以被加进语音）。 */
+  #panel .fxc.on {
+    background: rgb(var(--c-accent) / 0.22); border-color: rgb(var(--c-accent) / 0.55);
+    color: rgb(var(--c-accent-h));
+  }
+  #panel .fxc.on .fn { color: rgb(var(--c-accent-h)); }
+  #panel .fxc.pick { border-color: rgb(var(--c-accent) / 0.7); }
+  #panel .fxc.pick .fn { color: rgb(var(--c-accent-h)); }
+  /* ＋ 是格子里的**子按钮**：点格子播、点它加进语音。用绝对定位而不是 flex 子项，
+     这样点它时 e.target 的判断不受布局影响（见事件委托）。 */
+  #panel .fxc .fadd {
+    position: absolute; right: 2px; top: 2px; bottom: 2px;
+    width: 22px; display: flex; align-items: center; justify-content: center;
+    border-radius: 8px;
+    font-size: 11px; font-weight: 700; line-height: 1;
+    color: rgb(var(--c-t-500)); background: transparent;
+  }
+  #panel .fxc .fadd:hover { background: rgb(var(--c-accent) / 0.18); color: rgb(var(--c-accent-h)); }
+  #panel .fxc.pick .fadd { color: rgb(var(--c-accent-h)); }
+  #fxEmpty { margin-top: 5px; font-size: 9.5px; line-height: 1.5; color: rgb(var(--c-t-500)); }
+  #fxEmpty:empty { display: none; }
+
+  /* —— 更多抽屉 #drawer：音色 / 引擎 / 最近发送 ——
+     这些是「设置」，进来的频率远低于发送；放进抽屉后它们不再跟主按钮抢注意力。
+     抽屉打开时收起提示行与音效片：那两样属于「发送」，而抽屉是「配置」——
+     同时在场会让面板在 300px 上限边缘挣扎（见 #panel.has-drawer 那条）。
+     高度：音色 26 + 引擎 26 + 直出 18 + 分隔 7 + 标题 14 + 历史 22 ≈ 120。 */
+  #drawer {
+    margin-top: 6px; padding-top: 7px;
+    border-top: 1px solid rgb(var(--c-border) / 0.85);
+  }
+  #drawer[hidden] { display: none; }
+  /* 每个分层打开时，面板只留**该分层自己**的内容：抽屉是「配置」，托盘是「声音」，
+     而 #hint 讲的是发送手势与微信预检 —— 同时在场就会在 300px 上限边缘挣扎。 */
+  #panel.has-drawer #gesture, #panel.has-drawer #fxPicks { display: none; }
+  #panel .drow { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
+  /* .drow 是 display:flex，而 UA 的 [hidden]{display:none} 优先级更低 —— 不写这条
+     隐藏不掉（#latRow 靠它整行出现/消失）。 */
+  #panel .drow[hidden] { display: none; }
+  #panel .drow:last-child { margin-bottom: 0; }
+  #panel .dl {
+    flex: 0 0 auto; font-size: 10px; letter-spacing: .2px; color: rgb(var(--c-t-500));
+  }
+  #panel .drow select { flex: 1 1 auto; min-width: 0; padding: 4px 20px 4px 7px; height: 24px; font-size: 10.5px; }
+  #panel .drow.sel { position: relative; }
+  /* 引擎二选一：点没选中的 = 切过去；点已选中的 = 启动/停止（唯一启停入口）。
+     两个引擎在后端互斥（互相 409：抢 GPU 且都占 CABLE），所以是「选一个」而不是两个开关。 */
+  #engineSeg {
     flex: 1 1 auto; min-width: 0;
     display: flex; gap: 2px; padding: 2px;
     border-radius: 9px;
     border: 1px solid rgb(var(--c-border) / 0.9);
     background: rgb(var(--c-surface-2) / 0.55);
   }
-  /* 覆盖 #panel button 的通用外观：分段按钮要矮、要平、不要阴影和 translate */
-  #panel #engineSeg button,
-  #panel #fxModeSeg button {
+  #panel #engineSeg button {
     box-sizing: border-box;
     flex: 1 1 0; min-width: 0; height: 18px; padding: 0 3px;
     display: inline-flex; align-items: center; justify-content: center;
@@ -529,12 +698,9 @@
     color: rgb(var(--c-t-400));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  #panel #engineSeg button:hover, #panel #fxModeSeg button:hover { background: rgb(var(--c-surface-3) / 0.75); color: rgb(var(--c-t-200)); }
-  /* 选中 = 品牌紫底；运行中 = 绿底 + 绿描边（放在 .on 之后，运行时绿盖紫）。
-     运行态**不用**额外的小圆点元素：分段按钮宽度实测只剩几 px 余量，
-     再插一个 5px 圆点 + 4px gap 会把它挤到省略号（而且 justify-content: center 的
-     溢出还会让 scrollWidth 测不准）。整块变色同样一眼可辨，且零布局开销。 */
-  #panel #engineSeg button.on, #panel #fxModeSeg button.on {
+  #panel #engineSeg button:hover { background: rgb(var(--c-surface-3) / 0.75); color: rgb(var(--c-t-200)); }
+  /* 选中 = 品牌紫底；运行中 = 绿底 + 绿描边（放在 .on 之后，运行时绿盖紫）。 */
+  #panel #engineSeg button.on {
     background: rgb(var(--c-accent) / 0.20);
     color: rgb(var(--c-accent-h));
     box-shadow: inset 0 0 0 1px rgb(var(--c-accent) / 0.34);
@@ -545,198 +711,69 @@
     box-shadow: inset 0 0 0 1px rgb(var(--c-ok) / 0.45);
     animation: pulse 1.6s infinite;
   }
-
-  /* —— 功能页切换（2026-09-26 两页 → 09-29 三页 → 10-22 四页）：
-     说话 / 按住 / 音效 / 放歌 —— 四个互斥页签，高度由 CSS 钉死不随数量变。
-     用户原话：「全部放到桌面人偶那个功能上……不然用户老点我那个应用，要分屏太难搞了」。
-     面板纵向预算是死的（300px 上限，本次压缩前 ok-dark 只剩 2.5px 余量），
-     塞不下两套完整表单，所以做成两个互斥的功能页：
-       speak —— 原有链路：文字 → 合成 → 发微信（+ 麦克风实时变声引擎）
-       fx    —— 音效声板：点格子立即出声（实时）/ 勾选混进语音一起发（预混）
-     动作行（发送/试听）、状态行、最近发送**不**进 pane：它们两个页共用，
-     藏进 pane 会让发送按钮跟着页切换闪没，徒增"按钮去哪了"的困惑。
-     高度 20px（按钮 16 + 分段 padding 4），是给 fx 页腾地的代价 ——
-     与本文件顶部那组全局压缩（field/input/button/status/recent 各收 1~2px）配套。 */
-  #tabRow {
-    display: flex; gap: 2px; padding: 2px; margin-bottom: 3px;
-    border-radius: 9px;
-    border: 1px solid rgb(var(--c-border) / 0.9);
-    background: rgb(var(--c-surface-2) / 0.55);
+  /* 「千问直出」：勾上 = 纯千问零样本克隆（快、语气自然，不过 RVC）；
+     不勾 = 合成后再过 RVC 换声（音色更像训练目标）。 */
+  #noRvcField { display: flex; align-items: center; gap: 5px; height: 18px; cursor: pointer; }
+  #noRvcField input {
+    width: auto; flex: 0 0 auto; margin: 0; padding: 0; border: 0;
+    accent-color: rgb(var(--c-accent-h));
   }
-  #panel #tabRow button {
-    box-sizing: border-box;
-    flex: 1 1 0; min-width: 0; height: 16px; padding: 0 3px;
-    display: inline-flex; align-items: center; justify-content: center;
-    border: 0; border-radius: 7px; background: transparent;
-    box-shadow: none; transform: none;
-    font-size: 10px; font-weight: 600; line-height: 1;
-    color: rgb(var(--c-t-400));
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  #panel #tabRow button:hover { background: rgb(var(--c-surface-3) / 0.75); color: rgb(var(--c-t-200)); }
-  #panel #tabRow button.on {
-    background: rgb(var(--c-accent) / 0.20);
-    color: rgb(var(--c-accent-h));
-    box-shadow: inset 0 0 0 1px rgb(var(--c-accent) / 0.34);
-  }
-  /* 功能页容器：.on 的那个显示，另一个 display:none（不占布局） */
-  #panel .pane { display: none; }
-  #panel .pane.on { display: block; }
-
-  /* —— 说话页的「插音效」胶囊行（2026-10-01）——
-     一行横向滚动的小胶囊，点一下把 `[名字] ` 插进上面的输入框（光标处）。
-     ★ 它**必须**跟「千问直出」同一行（这就是 #sayRow 存在的唯一理由）：面板纵向预算
-       是死的，最紧的 offline 场景只剩 2px 余量，另起一行会把底部「最近发送」切掉 ——
-       上次加「千问直出」那一行就是这么溢出的（docs/犯错档案-工程.md §8.57）。
-       胶囊高 14px（10px 字 + 1px 上下 padding + 1px 边框），压在那行 label 的 18px 之内，
-       所以这一行的高度仍由 label 决定，**净新增 = 0**。加控件前先看
-       tools/pet-panel-layout-budget.json，改完必跑 node tools/test-pet-panel-layout.cjs。
-     为什么 label 用 id 不用 class="field"：`#root.compact #panel .field{margin-bottom:3px}`
-     会连 flex 行内的 label 一起改（那 3px 会**实打实**加进行高）；拆出 id 就没有这场
-     具体度之争。另外它是 #speakPane 的最后一个子块，margin-bottom 本就不计入父高。 */
-  #sayRow { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
-  #noRvcField { flex: 0 0 auto; display: inline-flex; align-items: center; cursor: pointer; }
-  /* 横向滚动单行（与 #fxPicks / #recent 同款：高度钉死，宽了就滚、绝不换行长高）。
-     padding-right + 右侧渐隐遮罩同 #recent：样本多时最后一颗必然被切在半路，
-     直接切会看成"排版坏了"，渐隐才读得出"右边还有，横向拖"（实测 ~110px 只够两颗）。 */
-  #sayFx {
-    flex: 1 1 auto; min-width: 0;
-    display: flex; flex-wrap: nowrap; align-items: center; gap: 3px;
-    overflow-x: auto; overflow-y: hidden;
-    scrollbar-width: none;
-    padding-right: 10px;
-    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 10px), transparent);
-    mask-image: linear-gradient(90deg, #000 calc(100% - 10px), transparent);
-  }
-  #sayFx::-webkit-scrollbar { display: none; }
-  #sayFx:empty { display: none; }
-  /* 文案用「插音效」而不是「音效」：它右边紧挨着「千问直出」那个复选框，只写"音效"
-     会被读成"千问直出音效"一个词；「插」字点明这是**动作**（点一下插进输入框）。 */
-  #sayFxLabel { flex: 0 0 auto; font-size: 10px; letter-spacing: .2px; color: rgb(var(--c-t-500)); }
-  /* ⚠️ 选择器必须带 #sayFx：通用的 `#panel button:not(.primary)` 是 (0,1,1,1)，比
-     `#panel .fxq` (0,1,1,0) 更具体 —— 会拿它的 `flex:1` 把胶囊撑成等宽，名字长的那颗
-     随即被裁成省略号（那种裁法在量测里是**红条**，不是"看着也行"）。 */
-  #panel #sayFx .fxq {
-    box-sizing: border-box;
-    flex: 0 0 auto; height: 14px; padding: 0 5px;
-    display: inline-flex; align-items: center;
-    border: 1px solid rgb(var(--c-border-2) / 0.7);
-    border-radius: 999px;
-    background: rgb(var(--c-surface-2) / 0.8);
-    box-shadow: none; transform: none;
-    font: inherit; font-size: 10px; font-weight: 500; line-height: 1;
-    color: rgb(var(--c-t-400));
-    white-space: nowrap; overflow: hidden;
-    cursor: pointer;
-  }
-  #panel #sayFx .fxq:hover {
-    border-color: rgb(var(--c-border-2));
-    background: rgb(var(--c-surface-3) / 0.9);
-    color: rgb(var(--c-t-strong));
-  }
-
-  /* —— 音效声板（fx 页）：3 列格子 + 预混勾选 ——
-     格子两行内容（emoji + 名字），34px 高 × 3 列；max-height 钉死两行
-     （34+4+34=72，整两行不多不少），样本多时内部滚动 —— 与 #panel 同款
-     "超预算就内滚，绝不撑破窗口" 的策略。max-height 是硬预算的一部分：
-     fxpick 场景（网格满 + 勾了 2 个）面板总高必须 ≤ 298px，量测守卫盯着。 */
-  #fxGrid {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;
-    max-height: 72px; overflow-y: auto; overscroll-behavior: contain;
-    margin-bottom: 2px;
-    scrollbar-width: thin;
-    scrollbar-color: rgb(var(--c-border-2) / 0.7) transparent;
-  }
-  #fxGrid:empty { display: none; }
-  #panel .fxc {
-    height: 34px; padding: 0 2px;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 1px; border-radius: 9px;
-    border: 1px solid rgb(var(--c-border-2) / 0.7);
-    background: rgb(var(--c-surface-2) / 0.8);
-    color: rgb(var(--c-t-300));
-    font: inherit; line-height: 1.1;
-    cursor: pointer; overflow: hidden;
-    transition: background .16s, border-color .16s, color .16s;
-  }
-  #panel .fxc:hover { border-color: rgb(var(--c-border-2)); background: rgb(var(--c-surface-3) / 0.9); color: rgb(var(--c-t-strong)); }
-  #panel .fxc .fe { font-size: 13px; line-height: 1; }
-  #panel .fxc .fn {
-    max-width: 100%; font-size: 9px; color: rgb(var(--c-t-500));
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  /* 播放中 = 品牌紫；已勾选（预混队列里）= 绿描边（主界面声板同款语义）。
-     .on 与 .pick 可同时存在（播放的是已勾选的格子），绿描边盖在紫底外圈。 */
-  #panel .fxc.on {
-    background: rgb(var(--c-accent) / 0.22); border-color: rgb(var(--c-accent) / 0.55);
-    color: rgb(var(--c-accent-h));
-  }
-  #panel .fxc.pick {
-    border-color: rgb(var(--c-ok) / 0.65);
-    box-shadow: inset 0 0 0 1px rgb(var(--c-ok) / 0.35);
-  }
-  #panel .fxc.pick .fn { color: rgb(var(--c-ok)); }
-  #fxEmpty { font-size: 10px; color: rgb(var(--c-t-500)); margin-bottom: 4px; }
-  #fxEmpty:empty { display: none; }
-  /* 预混队列 chips：单行横滚（同 #recent 的理由 —— 高度必须钉死）。
-     chip = 「icon 名 模式字 ×」：点 chip 主体轮换混入位置（叠→头→尾），
-     点 × 移出队列。模式字用一个汉字（叠/头/尾），9px 下也看得清。 */
-  #fxPicks {
+  #noRvcField span { font-size: 10px; color: rgb(var(--c-t-500)); }
+  #panel .dsep { height: 1px; margin: 6px 0; background: rgb(var(--c-border) / 0.85); }
+  #panel .dgroup { margin-bottom: 3px; font-size: 9.5px; letter-spacing: .2px; color: rgb(var(--c-t-500)); }
+  /* 最近发送：单行横滚（换行会让高度随条目数浮动）。点一条 = 重发。 */
+  #panel #recent {
     display: flex; flex-wrap: nowrap; gap: 4px;
     overflow-x: auto; overflow-y: hidden;
     scrollbar-width: none;
-    margin-bottom: 2px;
   }
-  #fxPicks::-webkit-scrollbar { display: none; }
-  #fxPicks:empty { display: none; }
-  #panel .fxchip {
-    display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto;
-    padding: 2px 6px; border-radius: 999px;
-    border: 1px solid rgb(var(--c-ok) / 0.5);
-    background: rgb(var(--c-ok) / 0.10);
-    font-size: 10px; color: rgb(var(--c-t-300));
+  #panel #recent::-webkit-scrollbar { display: none; }
+  #panel #recent:empty { display: none; }
+  #panel .hitem {
+    display: inline-flex; align-items: center; flex: 0 0 auto;
+    height: 20px; padding: 0 8px; border-radius: 999px;
+    border: 1px solid rgb(var(--c-border-2) / 0.6);
+    background: rgb(var(--c-surface-2) / 0.7);
+    font-size: 10px; color: rgb(var(--c-t-400));
     cursor: pointer; white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    transition: border-color .16s, background .16s, color .16s;
   }
-  #panel .fxchip .fm { font-size: 9px; color: rgb(var(--c-ok)); }
-  #panel .fxchip .fxrm {
-    color: rgb(var(--c-t-500)); font-weight: 600; padding: 0 1px;
-  }
-  #panel .fxchip .fxrm:hover { color: rgb(var(--c-err)); }
-
-  /* —— 放歌页（2026-10-22）：把一首歌**实时垫进虚拟声卡** ——
-     两行：歌名下拉（复用 .field sel）+ 46px 主按钮 + 音量滑块，再一行 15px 提示。
-     高度预算 ≈ 100px，与「按住说话」页（98px）同级 —— 那一页也是 46px 主按钮，
-     所以余量是**已知能装下**的（tools/pet-panel-layout-budget.json 里 hold 页的账）。
-     ⚠️ 这页同样收起动作行：「合成并发送 / 试听」作用的是说话页的输入框（同按住页）。 */
-  #bgmCtlRow { display: flex; align-items: center; gap: 6px; }
-  /* 主按钮与 #holdMic 同规格（46px 高 = 整行唯一的按压面）。
-     ⚠️ 必须两段选择器：#panel button 的 (0,2,0,1) 高于单个 #id，而且
-        `#panel button:not(.primary){flex:1}` 会把它撑满整行（犯错指南速查表同条）。 */
-  #panel #bgmBtn {
-    flex: 0 0 auto; width: 92px; height: 46px; padding: 0;
-    border-radius: 11px; font-size: 12px; font-weight: 600;
-  }
-  #panel #bgmBtn .ic { font-size: 10px; line-height: 1; }
-  #panel #bgmBtn.on {
-    border-color: rgb(var(--c-accent) / 0.55);
-    background: rgb(var(--c-accent) / 0.20);
+  #panel .hitem:hover {
+    border-color: rgb(var(--c-accent) / 0.6);
+    background: rgb(var(--c-accent) / 0.14);
     color: rgb(var(--c-accent-h));
   }
-  /* 音量滑块：#panel input 的通用外观（28px 左内边距 + 边框 + 背景）对 range 是错的，
-     这里整组压回去，只留一根细轨 + 品牌紫的滑块。 */
-  #panel #bgmGain {
-    flex: 1 1 auto; min-width: 0; height: 18px;
-    padding: 0; border: 0; border-radius: 0; background: transparent;
-    accent-color: rgb(var(--c-accent-h)); cursor: pointer;
+  #panel .hempty { font-size: 10px; color: rgb(var(--c-t-500)); }
+  /* 原文件已随会话清理的历史条目 —— **不可点**。
+     ★ hover 也必须不变色：面板上"会变色 = 能点"是用户唯一的暗示，
+       给一个和能点条目一样的 hover，等于骗他点一下、然后什么都不发生。 */
+  #panel .hitem.hgone { cursor: default; opacity: .55; }
+  #panel .hitem.hgone:hover {
+    border-color: rgb(var(--c-border-2) / 0.6);
+    background: rgb(var(--c-surface-2) / 0.7);
+    color: rgb(var(--c-t-400));
   }
-  /* 放歌中锁住选歌框：垫层只有一层，选中项与正在放的那首**必须**一致，
-     否则「停」到底停的是哪首就成了猜谜。换歌 = 停 → 选 → 放。 */
-  #panel #bgmSel:disabled { opacity: .55; cursor: default; }
-  #bgmHint { margin-top: 3px; font-size: 10px; line-height: 1.5; color: rgb(var(--c-t-500)); }
-  #bgmHint.warn { color: rgb(var(--c-err)); }
-  /* 放歌角标：面板会在鼠标移开后自己收（500ms），歌却还在放 —— 得有个东西回答
-     「现在是不是还在放」。挂桌宠右上角，pointer-events:none（不抢拖拽），
-     不用可点：悬停宠物本体本来就会把面板叫回来。 */
+
+  /* —— 气泡在屏时的「让位」规则 ——
+     气泡与面板共用同一个 480px 高的窗口，可用高是：
+       480(窗高) - 18(#root 上下留白) - 150(角色) - 6(面板下边距) - 气泡 - 6(气泡下边距)。
+     气泡一起来面板就被压扁。改版前面板自然高 289px（只剩 11px 余量），所以要让位；
+     改版后空闲态只有 ~153px，最紧的形态是「托盘打开 + 大头气泡」——
+     那时收起的不再是「最近发送」（它已经在抽屉里），而是**提示行与音效片**
+     （它们都是可以稍后再看的辅助信息）。 */
+  #root.compact #panel #gesture { display: none; }
+  #root.compact #panel .field { margin-bottom: 4px; }
+  #root.compact #panel #fxGrid { max-height: 40px; }
+  /* 气泡在屏时收起音色 chip：头部这一行只有 184px，而药丸在「RVC 变声中」「后端离线」
+     这类状态下要 66~77px，音色名（袋鼠骑士 = 40px）再占 72px 就装不下了 ——
+     实测被压到 25px，「袋鼠骑士」变成「袋鼠…」，等于没显示。
+     收掉它之后这一行只剩「状态 + ♪ + ⋯」，三样都读得全；音色名在气泡收起后立刻回来，
+     而且抽屉里一直有。让位给**正在说话的那块气泡**，比让状态或入口变省略号合理。 */
+  #root.compact #panel #voiceBtn { display: none; }
+
+  /* 放歌中角标：面板收起后（鼠标不在桌宠上）这是「歌还在放」的唯一提示。
+     默认 display:none，靠 JS 挂 .on 才出现 —— 空闲时它不该在角色身上挂着。 */
   #bgmBadge {
     display: none; position: absolute; top: 6px; right: 6px; z-index: 3;
     width: 18px; height: 18px; border-radius: 999px;
@@ -750,39 +787,6 @@
   }
   #bgmBadge.on { display: flex; }
   @keyframes bgm-pop { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
-
-  /* —— 气泡在屏时的「让位」规则 ——
-     气泡与面板共用同一个 480px 高的窗口，可用高是：
-       480(窗高) - 18(#root 上下留白) - 150(角色) - 6(面板下边距) - 气泡 - 6(气泡下边距)。
-     实测（tools/pet-panel-preview.cjs --measure）气泡一起来面板就被压扁，
-     底部「最近发送」那行被切掉一截并冒出内部滚动条：
-       guide   气泡 82 → 面板只剩 217.8，自然高 224 → 切 6px
-       think   气泡 60 → 面板只剩 240，  自然高 256 → 切 16px
-       offline 气泡 78 → 面板只剩 222，  自然高 256 → 切 34px
-     修法不是把面板整体做小（常态下那会牺牲呼吸感，而且最坏情况要砍掉 80px 才够），
-     而是让它在【气泡占着地方】时主动让位：
-       · 隐藏「最近发送」：气泡正在报当前状态时，重发上一条既不是重点、又恰好最占地方
-         （50px 高 + 9px 上边距 = 59px，一让就够）。#recent 本来就会随数据在「有/无」
-         之间切换（#panel #recent:empty 也是 display:none），所以它的出现/消失不是新行为。
-         组合起来正好：待机时（无气泡）面板完整，一有活动就精简 —— 而活动期间本来也不重发。
-       · 头部与字段的行距各收 2~3px，给更长的状态/导览文案留余量。
-     让位后 guide 场景面板自然高降到 156，余量 60px（够再长 60px 的气泡）。
-     JS 侧由 setBubbleVisible() 统一挂/摘 #root 上的 .compact —— 见那里的注释。 */
-  #root.compact #panel #recent { display: none; }
-  /* 功能页切换器也参与让位：气泡在屏时用户本来就不该操作面板（合成中别动键鼠），
-     待机时（无气泡）才是切页的时机 —— 与 #recent 的让位逻辑同一条线。
-     offline-dark 的量测守卫（220px 可用高）就是靠这条才装得下。
-
-     ⚠️ 2026-09-29 实测确认（把下面这行删掉后 offline / live / qwen / think 四个场景全红），
-     所以「把页签一直留着」不是可选方案。它对新增的「按住说话」页的**实际**影响：
-       · 想切到那一页 ⇒ 需要气泡不在屏（待机时就满足）；
-       · 已经停在那一页 ⇒ 不受影响 —— 那颗按钮在 #holdPane 里，不参与让位，
-         而且页签选择写进了 localStorage，固定在「按住」页的人一悬停就是它。
-     实时变声开着时桌宠会一直挂着「变声中 · 我听着」气泡（renderLive），那一页就切不过去；
-     但那正是开着实时变声的时刻 —— 它本来就不需要「按住说话」这条另走麦克风的链路。 */
-  #root.compact #panel #tabRow { display: none; }
-  #root.compact #panel #phead { margin-bottom: 4px; }
-  #root.compact #panel .field { margin-bottom: 3px; }
 
   /* ---------------- 角色 ---------------- */
   /* 尺寸由 JS 按皮肤 frameW/frameH 注入（--dw/--dh 显示尺寸，含整数倍放大），
@@ -889,217 +893,202 @@
     <div id="foot"><span id="steps"></span><span id="hint">点我跳过</span></div>
   </div>
   <div id="panel">
-    <!-- 状态条（2026-09-29）：桌宠从「装饰」变遥控器——常驻显示【变声开关 / 当前音色 / 推理耗时】。
-         药丸是个真 <button>：点一下开、再点一下关。为什么它可以和下面的「麦克风」分段重复：
-         分段在「说话」页里，切到「按住」「音效」页就看不见了，而这两页也需要能开关变声
-         —— 遥控器上的开关不该跟着页签消失。（它调的仍是同一个 toggleLive()，不存在两套开关逻辑。）
-         文案限 3 个汉字内，引擎名放 tooltip（见 CSS #phead 的宽度预算）。 -->
+    <!-- ══ 状态条（2026-10-23 重构）═════════════════════════════════════════════
+         只有四样：变声开关（药丸）、当前音色、声音托盘 ♪、更多 ⋯。
+         改版前这里是「药丸 + 音色 + 耗时」+ 下面 4 个页签（说话 / 按住 / 音效 / 放歌），
+         整块面板 13 个可点目标，发一条语音要做 5 个决定：切页签 → 选引擎 → 选音色
+         → 过不过 RVC → 发送还是先试听。用户原话：「按钮太多了，一看就是没设计好」。
+         耗时是诊断信息，挪进「⋯」抽屉 —— 它原来那 35px 正好是两个入口的位置。
+         药丸是**唯一**的变声开关（旧版还有一组「RVC / 千问」分段调的是同一个
+         toggleLive()，一个功能两个开关，代码注释里自己都写着"不存在两套逻辑"）。 -->
     <div id="phead">
       <button type="button" id="pill" class="pill t-idle"
               title="实时变声开关（点一下开 / 再点一下关）"><i></i><b id="pillText">待机</b></button>
-      <span id="rmVoice" title="当前音色">—</span>
-      <span id="rmLat" hidden title="实测推理耗时">—</span>
-    </div>
-
-    <!-- 功能页切换（2026-09-26 两页 → 2026-09-29 三页）：把「发微信语音」的全部入口收进桌宠面板，
-         免得用户频繁切回主应用分屏操作。面板纵向预算装不下三套表单 → 互斥页签。
-         动作行/状态行/最近发送共用（见 CSS #tabRow 段的说明）。
-         sound.fx-board 被关掉时「音效」页签收起、hook.wechat 关掉时「按住」收起（CAP 门控）。 -->
-    <div id="tabRow" role="tablist" aria-label="面板功能页">
-      <button type="button" id="tabSpeak" data-tab="speak"
-              title="输入文字合成发微信 / 麦克风实时变声">说话</button>
-      <!-- 页签名限 2~3 个汉字（2026-10-22 加第 4 页时从「按住说话」改成「按住」）：
-           204px 分给 4 颗页签，每颗内容宽只剩 ~37px，而「按住说话」实测 40px —— 被
-           省略号吃掉一半。完整名字在 title 与页内那颗大按钮上，不靠页签背。 -->
-      <button type="button" id="tabHold" data-tab="hold"
-              title="按住说话：录真实麦克风 → 换声 → 直接发微信（不用先打字合成）">按住</button>
-      <button type="button" id="tabFx" data-tab="fx"
-              title="音效声板：点格子立即出声，或勾选混进语音一起发">音效</button>
-      <button type="button" id="tabBgm" data-tab="bgm"
-              title="放歌：把一首歌实时垫进虚拟声卡 —— 通话/录音时对面也听得到，与人声由系统混音">放歌</button>
-    </div>
-
-    <div id="speakPane" class="pane on">
-    <!-- 实时变声引擎（麦克风链路）：RVC 实时 / 千问变声 二选一。
-         两者互斥（后端互相 409：抢 GPU 且都占 CABLE），所以是「选一个」而不是两个开关。
-         2026-09-26 去重（用户反馈"有两个rvc变声"）：原来的第三颗按钮「开 RVC/开 千问」
-         与分段里已选中的那一项永远是同一个引擎，纯属重复 —— 砍掉。
-         启停合并进分段本身：点**没选中**的 = 切过去；点**已选中**的 = 启动/停止。
-         运行态靠整块变绿表达（.running），选中态是品牌紫（.on）。
-         （改主进程 .cjs 才要重打 asar；本文件是渲染侧，热替换即生效。） -->
-    <div id="engRow">
-      <span id="engLabel">麦克风</span>
-      <div id="engineSeg" role="group" aria-label="实时变声引擎（点已选中的引擎启动或停止）">
-        <button type="button" id="engRvc" data-eng="rvc"
-                title="RVC 实时：逐帧套音色，保留你的说话习惯，适合真人音色 / 低延迟。再点一下已选中的引擎 = 启动 / 停止">
-          RVC 实时
-        </button>
-        <button type="button" id="engQwen" data-eng="qwen"
-                title="千问变声：先识别成文字再合成换嗓，适合卡通 / 角色音色，比 RVC 慢一点。再点一下已选中的引擎 = 启动 / 停止">
-          千问变声
-        </button>
-      </div>
-    </div>
-
-    <label class="field" for="say">
-      <svg class="lead" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-      </svg>
-      <!-- 文案写「自动合成发微信」而不是「发微信语音」：把这条链路跟上面的实时变声分开。
-          完整解释（文字 → TTS 合成 → RVC 换声 → 自动录进微信，不是实时变声）放在 title 里，
-          204px 宽塞不下，但鼠标悬停能看全。 -->
-      <input id="say" placeholder="输入文字，自动合成发微信" maxlength="200"
-             title="文字 → TTS 合成 → RVC 换声 → 自动录进微信。这条不是实时变声，用的是主界面选中的音色。" />
-    </label>
-
-    <div class="field sel">
-      <svg class="lead" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
-        <path d="M2 10v3" /><path d="M6 6v11" /><path d="M10 3v18" /><path d="M14 8v7" /><path d="M18 5v13" /><path d="M22 10v3" />
-      </svg>
-      <select id="voiceSel" title="合成用的音色（默认=主界面当前选中）"></select>
-    </div>
-
-    <!-- 音色引擎开关「千问直出」（2026-09-26 A/B：千问直出与"千问+RVC"听感接近，交给用户自己选）
-         + 「插音效」胶囊（2026-10-01），**同一行**。
-         勾选 = 纯千问零样本克隆（要求音色自带参考音，市场装的只有 RVC 权重的音色不适用）；
-         不勾 = 默认链路：千问合成后再过 RVC 换声，音色由 RVC 权重决定。
-         文案只写「千问直出」不写「（不过 RVC）」—— 面板上"RVC"字样出现的次数
-         已经太多了（用户 2026-09-26 点名"有点多东西"），完整解释放 title 里。
-
-         ⚠️ 音效胶囊**为什么挤在这一行**：面板纵向预算是死的（最紧的 offline 场景只剩 2px，
-         见 tools/pet-panel-layout-budget.json），另起一行必然把底部「最近发送」切掉 ——
-         上次加「千问直出」这一行就是这么溢出的（docs/犯错档案-工程.md §8.57）。
-         胶囊 14px 高，压在这行 label 的 18px 之内 → 这一行的净新增高度 = 0。 -->
-    <div id="sayRow">
-      <label id="noRvcField" for="noRvc"
-             title="勾上：纯千问克隆（快、语气自然，不过 RVC）；不勾：合成后再过 RVC 换声（音色更像训练目标）">
-        <input id="noRvc" type="checkbox"
-               style="width:auto; margin:0 6px 0 2px; vertical-align:middle; accent-color:rgb(var(--c-accent-h))" />
-        <span style="font-size:11px; color:rgb(var(--c-t-500)); vertical-align:middle">千问直出</span>
-      </label>
-      <!-- 点一下把 `[名字] ` 插到上面输入框的光标处（见 insertSayMark）：合成时音效拌进语音，
-           标记本身**不会**被念出来。名字取自与「音效」页同一次的 /catalog 拉取（renderSayFx），
-           所以两处素材永远一致；声板关掉/没素材时这里是空的（CSS `:empty` 收起，不占高度）。 -->
-      <div id="sayFx" role="group" aria-label="插入音效标记"
-           title="点一下把 [名字] 插到光标处 —— 合成时这个音效拌进语音，标记本身不会被念出来"></div>
-    </div>
-    </div><!-- /#speakPane -->
-
-    <!-- 按住说话页（2026-09-29）：桌宠当遥控器的主手势。
-         后端链路：`/api/capture/mic/start`（抓**真实麦克风**，不是默认录音设备——
-         变声开着时默认设备已被切到 CABLE Output，按默认去录会录到已经变好的声音，
-         再换一次声就是双重变声）→ 松手 `/api/capture/mic/stop`（顺手 RVC 换声）
-         → 复用既有 `sendWechatWav` 发进微信。全程**不需要开实时变声、不碰虚拟声卡切换**
-         （切声卡的物理代价 3~6 秒，按住几秒说话根本来不及）。
-         手势与状态机在主进程（pet-actions.micHoldStart）：松手早于 start 响应、
-         手指滑出按钮、按住不放超上限，三种情况都要有归属。 -->
-    <div id="holdPane" class="pane">
-      <!-- 发送前预检（只读）：微信开没开、这次会不会重启、这次是不是**注定失败**。
-           放在按钮上面 —— 它是按下去的前提，顺序上先读它再读按钮。 -->
-      <div id="holdPre" aria-live="polite">微信状态检查中…</div>
-      <button type="button" id="holdMic" title="按住不放说话（0.3~59 秒），松手自动换声发微信">
-        <svg class="mic-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v1a7 7 0 0 0 14 0v-1" /><path d="M12 18v4" />
-        </svg>
-        <span id="micLabel">按住说话</span>
-        <span id="micSec" class="mic-sec"></span>
+      <button type="button" id="voiceBtn" class="vchip" title="当前音色：点一下打开「更多」换">
+        <span id="rmVoice">—</span>
       </button>
-      <div id="holdHint">按住不放、说完松手，自动换声发微信（单次 0.3~59 秒）</div>
-    </div><!-- /#holdPane -->
-
-    <!-- 音效声板（fx 页）：sound.fx-board 插件的快捷入口。
-         「实时播放」= 点格子立即出声（one-shot POST /play，走虚拟声卡）——
-         前提是微信正在录/在放，这正是桌宠场景的主用法；
-         「混进语音」= 点格子勾进预混队列（绿描边），点下方「发送」时后端离线混成
-         一条新 wav 再走正常发送链路（/soundboard/premix → sendWav）。
-         预混的底：面板上刚试听的产物；没有就用后端「最近一条 TTS 产物」（同发送链路口径），
-         两样都没有时后端 404，状态行会引导先去「说话」页合成一条。 -->
-    <div id="fxPane" class="pane">
-      <div id="fxModeRow">
-        <span id="fxModeLabel">模式</span>
-        <div id="fxModeSeg" role="group" aria-label="音效用法：实时播放或混进语音发送">
-          <button type="button" id="fxModeLive" data-mode="live"
-                  title="点格子立即播放：音效进虚拟声卡，微信那边听得到；本机扬声器不外放（想自己听请开「自我监听」）">实时播放</button>
-          <button type="button" id="fxModePremix" data-mode="premix"
-                  title="点格子先勾选，点下方「发送」时把勾选的音效混进一条语音里一起发出">混进语音</button>
-        </div>
-      </div>
-      <div id="fxEmpty"></div>
-      <div id="fxGrid"></div>
-      <div id="fxPicks"></div>
-    </div><!-- /#fxPane -->
-
-    <!-- 放歌页（2026-10-22）：把一首歌**实时垫进虚拟声卡**，与说话/变声/音效一起
-         被微信录走（POST /bgm/start → 声板 worker 的「垫底层」，独立音频流：
-         点音效格子不会把歌掐断 —— 见 board_worker.py 头注释）。
-         ⚠️ 面板里刻意**不做**「垫进一条语音再发」（那是主界面 BgmPanel 的 A 档）：
-          它要 lead_db / start_s 两个参数，204px 塞不下；而且它发生在"发送之前"，
-          与这一页「此刻放给对面听」不是同一时刻的事。
-         ⚠️ 本机扬声器**不出声**（歌只进 CABLE 渲染端）→ 提示行与 title 都要说清楚。
-          音效格子 2026-10-01 就是漏了这句，用户全在问「我怎么听不到」。 -->
-    <div id="bgmPane" class="pane">
-      <div class="field sel">
-        <svg class="lead" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+      <!-- 声音托盘：音效 + 放歌。两者的共同点是「此刻送进虚拟声卡，对面实时听到」，
+           与主按钮的「发一条消息到微信」是两条不同的链路，而且可以同时用。
+           既然总是一起被用到，就不该让用户先选进哪个页。 -->
+      <button type="button" id="trayBtn" class="icb" aria-expanded="false" aria-controls="tray"
+              title="声音：音效声板 + 放歌（都是此刻进虚拟声卡，微信那边听得到；本机喇叭不出声）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
         </svg>
-        <select id="bgmSel" title="选一首歌：本次导入/翻唱的（退出应用会清空），或 media/songs 里常驻的">
-          <option value="">加载中…</option>
-        </select>
+      </button>
+      <!-- 更多：音色 / 引擎 / 最近发送。都是「设置」，不该跟发送动作抢地方。 -->
+      <button type="button" id="moreBtn" class="icb" aria-expanded="false" aria-controls="drawer"
+              title="音色 / 引擎 / 最近发送">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="5" cy="12" r="1.9" /><circle cx="12" cy="12" r="1.9" /><circle cx="19" cy="12" r="1.9" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- ── 装填区：一条草稿 ──────────────────────────────────────────────────
+         类型由**内容**决定，不由页签决定：
+           空         → 输入框等打字（主按钮 = 按住说话）
+           有文字     → 文字 + 音效片（主按钮 = 合成并发送）
+           按住中     → 波形 + 秒数（主按钮 = 松开发送）
+         这是整个重构的核心：三个页签（说话 / 按住 / 音效）是按**实现机制**分的，
+         而用户脑子里只有「我要发一条」。删掉那层选择，发一条语音就只剩 1 个决定。 -->
+    <div id="draft">
+      <label class="field" for="say">
+        <svg class="lead" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+        <!-- 文案从「输入文字，自动合成发微信」收到「说点什么…」：
+             那条链路（文字 → TTS → RVC → 自动录进微信）写进 title，
+             204px 宽的占位文字只能是「邀请」，不能是「说明书」。 -->
+        <input id="say" placeholder="说点什么…" maxlength="200"
+               title="打一行字：合成 → 换声 → 发进微信。空着不写就按住按钮直接说。" />
+      </label>
+      <!-- 这条语音里的音效片（原「预混队列」）。点 chip 主体循环切换混入位置（叠→头→尾），
+           点 × 移出。它长在草稿下面，因为它**就是这条语音的一部分**。 -->
+      <div id="fxPicks" aria-label="这条语音里的音效"></div>
+      <!-- 录音中的波形：替代输入框。旧版按下去只有一个秒数，用户不确定「到底在不在录」。 -->
+      <div id="recBox" hidden aria-live="polite">
+        <span class="rec-dot" aria-hidden="true"></span>
+        <span class="bars" aria-hidden="true">
+          <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        </span>
+        <span id="micSec">0.0s</span>
       </div>
-      <div id="bgmCtlRow">
+    </div>
+
+    <!-- ── 主按钮：面板上唯一的动作 ──────────────────────────────────────────
+         文案与颜色跟着装填区变（见 CSS 的 .m-idle / .m-text / .m-rec）：
+           空草稿：🎙 按住说话   —— pointerdown 起录、pointerup 停
+           有内容：✈ 合成并发送
+           录制中：● 松开发送
+         为什么一个按钮能同时有两种手势：因为「有没有内容」已经把场景分开了 ——
+         空草稿时按下去只能是说话，有内容时按下去只能是发送，没有歧义。
+         ⚠️ 不做「上滑取消」：这是鼠标场景（桌面端），不是触屏；主进程也没有取消接口
+         （改 *.cjs 要重打 asar）。松手即发，录音太短由后端拒掉并给提示。 -->
+    <div id="fireRow">
+      <button type="button" id="fire" class="m-idle"
+              title="按住说话（松手就发）／ 输入框有字时点一下合成并发送">
+        <span class="spin"></span>
+        <svg class="ic ic-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v1a7 7 0 0 0 14 0v-1" /><path d="M12 18v4" />
+        </svg>
+        <svg class="ic ic-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" />
+        </svg>
+        <svg class="ic ic-rec" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="12" cy="12" r="6" />
+        </svg>
+        <span id="fireLabel">按住说话</span>
+      </button>
+      <!-- 试听：只在「有文字、没在录」时出现。旧版它是动作行里一颗 49px 的按钮，
+           与「合成并发送」并排、权重相当 —— 试听只是发送的前置检查，不该平起平坐。 -->
+      <button type="button" id="preview" hidden title="只合成试听，满意再点发送">
+        <span class="spin"></span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polygon points="7 4 20 12 7 20 7 4" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- ── 手势提示行 ──────────────────────────────────────────────────────
+         三件事按优先级轮流显示（JS: refreshHint）：录制中 → 「松手就发」；
+         按之前 → 微信预检（开没开 / 会不会重启）；其余 → 一句用法。
+         旧版它是「按住」页里的 #holdPre，只在那一页可见；现在跟着主按钮走 ——
+         因为按住就是这个按钮的默认动作，"微信没开"必须在按下**之前**说。 -->
+    <div id="gesture" aria-live="polite">按住说，松手就发</div>
+
+    <!-- ── 声音托盘：音效 + 放歌 ────────────────────────────────────────────
+         两个都是「此刻送进虚拟声卡」的东西，所以放同一个托盘；发送链路留在主按钮。
+         改版前音效页自己有一套「实时播放 / 混进语音」模式分段 + 网格 + 队列 + 发送按钮，
+         放歌页又有一套「选歌 + 放歌 + 音量 + 提示」—— 41px 的页签把它们隔开，
+         用户要先想「这个声音属于哪一类」才能找到入口。 -->
+    <div id="tray" hidden>
+      <div id="bgmRow">
+        <div class="field2">
+          <select id="bgmSel" title="选一首歌：本次导入/翻唱的（退出应用会清空），或 media/songs 里常驻的">
+            <option value="">加载中…</option>
+          </select>
+        </div>
         <button type="button" id="bgmBtn"
-                title="放歌：把歌实时垫进虚拟声卡，微信那边听得到；本机扬声器不出声（想自己听请开「自我监听」）。歌比说话短时循环补满">
-          <span class="ic" id="bgmIc">▶</span><span id="bgmLabel">放歌</span>
+                title="放歌：把歌实时垫进虚拟声卡，微信那边听得到；本机扬声器不出声。歌比说话短时循环补满">
+          <span id="bgmIc">▶</span>
         </button>
         <input id="bgmGain" type="range" min="0" max="1" step="0.05" value="0.3"
                aria-label="歌的音量"
                title="歌的音量（默认 0.3 ≈ -10dB：垫在人声下面，说话才听得清）" />
       </div>
-      <!-- 提示行兼做「缺什么」的说明（见 renderBgm）。空的时候必须写明**去哪个页面**：
-           写「主界面「垫歌」」时用户找了一圈也没找到 —— 那不是一个页面名，真正的入口是
-           实时变声页里 BgmPanel 那张卡（标题才叫「实时垫歌」）。 -->
-      <div id="bgmHint"
-           title="歌从哪来：① 主界面 → 实时变声 → 实时垫歌 → 选一首歌；② 或直接把 mp3 放进后端 media/songs（安装版：%APPDATA%\voice-morph-desktop\media\songs）">进微信，本机不出声 · 歌短会循环</div>
-    </div><!-- /#bgmPane -->
-
-    <!-- 底部动作行：合成并发送 + 试听。
-         （2026-09-26 去重：第三颗「开 RVC / 开 千问」已并进上面的引擎分段 ——
-          它与分段里已选中的引擎永远是同一个，两处文案都在报"RVC"。）
-         音色下拉独占一行是历史布局决定：204px 分给 4 个控件后每个只剩 ~41px，
-         「合成并发送」被 nowrap 挤到溢出。 -->
-    <div class="row" id="actRow">
-      <button id="send" class="primary" type="button" title="用选中音色合成，并录成微信语音消息">
-        <span class="spin"></span>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" />
-        </svg>
-        <span id="sendLabel">合成并发送</span>
-      </button>
-      <button id="preview" type="button" title="只合成并试听，满意再点发送">
-        <span class="spin"></span>
-        <!-- 用播放三角而不是耳机：耳机在 13px 下两个耳罩会糊成一团墨点，三角轮廓始终清楚 -->
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="7 4 20 12 7 20 7 4" />
-        </svg>
-        <span>试听</span>
-      </button>
+      <!-- ⚠️ 这里原来还有一行 #bgmHint（「进微信，本机不出声 · 歌短会循环」+ 拉不到歌单的错因），
+           2026-10-23 删掉：托盘里「放歌行 26 + 灰色说明 17 + 网格 81」已经 317px，
+           而面板上限是 300 —— 它正是让托盘态溢出的那 17px。
+           那句话不是每次都要看的：歌名/空态/错因都已经写在 select 的 option 与 title 里
+           （见 renderBgmOptions / renderBgm），而「本机不出声」在第一次点音效时
+           由状态行说一次就够（sfxLiveHintShown）。常驻的说明书才是「面板太乱」的来源。 -->
+      <!-- 音效空态说明（声板没开 / 还是空的 / 后端没连上），有素材时为空。 -->
+      <div id="fxEmpty"></div>
+      <!-- 音效网格：点格子 = 现场播，点格子右上角的 ＋ = 加进这条语音。
+           两种用法同时存在，不用先选模式（旧版必须先切「实时播放 / 混进语音」）。 -->
+      <div id="fxGrid"></div>
     </div>
 
-    <!-- 状态行：三个图标常驻、由 .ok/.err 决定显示哪一个（CSS 里切换，JS 只写文案与类名） -->
+    <!-- ── 更多抽屉：音色 / 引擎 / 最近发送 ─────────────────────────────────
+         三样都是「设置」，进来的频率远低于发送。放在抽屉里之后，它们不再跟主按钮
+         抢注意力；抽屉打开时提示行与音效片收起（见 CSS #panel.has-drawer）。 -->
+    <div id="drawer" hidden>
+      <div class="drow sel" title="合成用的音色（「主界面选中」= 跟主界面走）">
+        <span class="dl">音色</span>
+        <select id="voiceSel"></select>
+      </div>
+      <!-- 实时变声引擎：RVC 实时 / 千问变声 二选一。
+           两者互斥（后端互相 409：抢 GPU 且都占 CABLE），所以是「选一个」而不是两个开关。
+           启停合并进分段：点没选中的 = 切过去；点已选中的 = 启动/停止。
+           运行态靠整块变绿表达（.running），选中态是品牌紫（.on）。 -->
+      <div class="drow" id="engRow">
+        <span class="dl" id="engLabel">引擎</span>
+        <div id="engineSeg" role="group" aria-label="实时变声引擎（点已选中的引擎启动或停止）">
+          <button type="button" id="engRvc" data-eng="rvc"
+                  title="RVC 实时：逐帧套音色，保留你的说话习惯，适合真人音色 / 低延迟。再点一下已选中的引擎 = 启动 / 停止">RVC 实时</button>
+          <button type="button" id="engQwen" data-eng="qwen"
+                  title="千问变声：先识别成文字再合成换嗓，适合卡通 / 角色音色，比 RVC 慢一点。再点一下已选中的引擎 = 启动 / 停止">千问</button>
+        </div>
+      </div>
+      <label id="noRvcField" for="noRvc"
+             title="勾上：纯千问克隆（快、语气自然，不过 RVC）；不勾：合成后再过 RVC 换声（音色更像训练目标）">
+        <input id="noRvc" type="checkbox" />
+        <span>千问直出</span>
+      </label>
+      <!-- 推理耗时：诊断信息。旧版常驻状态条（35px 宽），把它挪进来才腾得出 ♪ / ⋯ 的位置。
+           ⚠️ 整行随数据出现：没在变声时这一行只有「耗时 —」，是一行噪音（也是抽屉里
+           最容易被误认为设置项的那一行）。变声跑起来它自己长出来，那时才有人要看。 -->
+      <div class="drow" id="latRow" hidden style="margin-top:4px" title="实时变声的实测推理耗时（p95）">
+        <span class="dl">耗时</span>
+        <span id="rmLat" hidden>—</span>
+      </div>
+      <div class="dsep"></div>
+      <div class="dgroup">最近发送</div>
+      <div id="recent" title="最近发送的语音，点一下重发"></div>
+    </div>
+
+    <!-- 状态行：发送/合成的结论（图标三选一，由 .ok/.err/.warn 决定显示哪个） -->
     <div id="status">
-      <svg class="sic ic-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <svg class="sic ic-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" />
       </svg>
-      <svg class="sic ic-ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <svg class="sic ic-ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
       </svg>
-      <svg class="sic ic-err" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <svg class="sic ic-err" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="10" /><path d="M12 8v4" /><path d="M12 16h.01" />
       </svg>
       <span id="statusText"></span>
     </div>
-
-    <div id="recent" title="最近发送的语音，点一下重发"></div>
   </div>
   <div id="pet"><div id="sprite"></div><span id="bgmBadge" title="正在放歌">♪</span></div>
 </div>
@@ -1360,9 +1349,25 @@ function setPill(text, tone, title) {
  * 让位规则（#root.compact，见 CSS）只在气泡真的在屏时生效，所以这里必须与 display 同步。
  * 以前各处直接写 bubble.style.display，漏掉任何一处都会让面板带着多余的 #recent 去抢高度。
  */
-function setBubbleVisible(show) {
+let bubbleWanted = false;
+/**
+ * 气泡的**实际**显隐 = 想显示 且 没有分层开着。
+ *
+ * 为什么分层要比气泡优先：气泡是 82px，占面板可高（298px）的 27%。
+ * 打开托盘/抽屉那一刻，两者同时在场必然溢出 —— 实测 tray -26px、drawer -56px
+ * （204×300 上限就在那里，不是能靠缩字号挤回来的量）。
+ * 而这两件事本来就是两种模式：气泡是「宠物在说话」，托盘/抽屉是「我在操作它」。
+ * 让位只影响显示：guide 的计时器、文案、当前步骤都不动，收起分层立刻回到原样。
+ */
+function applyBubble() {
+  const blocked = !!(rootEl && rootEl.classList.contains("layer-open"));
+  const show = bubbleWanted && !blocked;
   bubble.style.display = show ? "block" : "none";
-  rootEl.classList.toggle("compact", !!show);
+  rootEl.classList.toggle("compact", show);
+}
+function setBubbleVisible(show) {
+  bubbleWanted = !!show;
+  applyBubble();
 }
 
 /**
@@ -1585,7 +1590,7 @@ async function tick() {
       refreshRemoteLatency(null);   // 离线时不能留着上次的推理耗时（看着像还在变声）
       // 预检条同理：后端都没了，预检不可能有结论。留着上次那句「微信已打开」
       // 会让用户以为这条链路的收尾（发送）是通的。
-      setHoldPre("后端没起来 · 预检不可用", "bad");
+      setWechatNote("后端没起来 · 预检不可用", "bad");
       precheckAt = 0;               // 恢复在线时重新拉，不穿用离线前的时刻
       // 抖一下提醒，然后收成静态的 error 姿势 —— 后端长时间不恢复时不该一直晃
       setTimeout(() => { if (backendOffline && !guide) setMotion(null); }, 1800);
@@ -1611,7 +1616,7 @@ async function tick() {
   refreshRemoteLatency(live);
   // 发送前预检：只在看着「按住说话」那一页时刷（它是那一页的东西，别人不看时
   // 每 5s 去枚举一次进程/窗口纯属浪费）。进页与刚发完那两次是 force 的，见 setTab / onMicState。
-  if (activeTab === "hold") void refreshWechatPrecheck(false);
+  if (panelOpen) void refreshWechatPrecheck(false);
   // 谁在跑：级联优先（两者互斥，真同时出现也只可能是切换的那一瞬间）
   runningEngine = (cascadeData && cascadeData.running) ? "qwen"
                 : (live && live.live_running) ? "rvc" : null;
@@ -1654,52 +1659,55 @@ let movedFar = false;    // 本次按下是否拖出了死区（区分单击 vs 
 let downX = 0, downY = 0;
 
 // ---------------- 快捷面板：悬停角色浮现 ----------------
+// 2026-10-23 重构后的引用表。整块面板只剩**一个动作**（#fire）+ 两个入口
+// （#trayBtn 声音 / #moreBtn 更多），所以这里的引用也按这个结构重排：
+//   装填区  sayEl / fxPicksEl / recBoxEl
+//   扳机    fireEl（= sendBtn，发送与按住共用）+ previewBtn
+//   托盘    trayEl / bgm* / fxGridEl
+//   抽屉    drawerEl / voiceSel / engineSeg / recentEl
 const panel = document.getElementById("panel");
 const sayEl = document.getElementById("say");
-const sendBtn = document.getElementById("send");
-const sendLabel = document.getElementById("sendLabel");
+// ★ 主按钮：旧版是 #send（合成并发送）+ #holdMic（按住说话）两颗，分在两个页签里。
+//   现在合成一颗：空草稿按下去是说话、有内容点一下是发送（见 refreshFire）。
+//   保留 sendBtn 别名，是因为「忙态/发送」那几处既有代码用的是这个名字。
+const fireEl = document.getElementById("fire");
+const sendBtn = fireEl;
+const fireLabel = document.getElementById("fireLabel");
+const sendLabel = fireLabel;
+const previewBtn = document.getElementById("preview");
 const engRvcBtn = document.getElementById("engRvc");
 const engQwenBtn = document.getElementById("engQwen");
 const voiceSel = document.getElementById("voiceSel");
-const previewBtn = document.getElementById("preview");
 const statusEl = document.getElementById("status");
 const statusText = document.getElementById("statusText");
 const recentEl = document.getElementById("recent");
-const tabSpeakBtn = document.getElementById("tabSpeak");
-const tabHoldBtn = document.getElementById("tabHold");
-const tabFxBtn = document.getElementById("tabFx");
-const speakPaneEl = document.getElementById("speakPane");
-// 说话页的「插音效」胶囊条（与「音效」页共用同一份 sfxItems，见 renderSayFx）
-const sayFxEl = document.getElementById("sayFx");
-const holdPaneEl = document.getElementById("holdPane");
-const fxPaneEl = document.getElementById("fxPane");
-const actRowEl = document.getElementById("actRow");
-// 状态条（#phead）三件套：药丸(pillEl/pillText)在文件上半段就已取到，这里补两个只读 chip
+// 手势提示行（原 #holdPre）：预检 + 录制提示 + 一句用法，三件事按优先级轮显
+const hintEl = document.getElementById("gesture");
+// 声音托盘（音效 + 放歌）与更多抽屉（音色/引擎/历史）
+const trayEl = document.getElementById("tray");
+const trayBtn = document.getElementById("trayBtn");
+const drawerEl = document.getElementById("drawer");
+const moreBtn = document.getElementById("moreBtn");
+const voiceBtn = document.getElementById("voiceBtn");
+// 装填区：录音中的波形块（替代输入框）
+const recBoxEl = document.getElementById("recBox");
+// 状态条（#phead）：药丸(pillEl/pillText)在文件上半段已取到，这里补两个只读 chip
 const rmVoiceEl = document.getElementById("rmVoice");
 const rmLatEl = document.getElementById("rmLat");
-// 按住说话：按钮 + 两行文案（#holdMic 内部不能直写 textContent —— 里面还有 <svg> 图标）
-const holdMicEl = document.getElementById("holdMic");
-const micLabelEl = document.getElementById("micLabel");
+const latRowEl = document.getElementById("latRow");
+// 录音秒数（在 #recBox 里，不再是 #holdMic 内部的一行小字）
 const micSecEl = document.getElementById("micSec");
-// 发送前预检条（按住页最上面那行）。声明在这里而不是函数旁边：setTab 恢复上次页签时
-// 就可能碰它，而那个调用点在文件更后面 —— 提前声明可彻底排除 TDZ 隐患（同 lastPreview）。
-const holdPreEl = document.getElementById("holdPre");
 const fxGridEl = document.getElementById("fxGrid");
 const fxPicksEl = document.getElementById("fxPicks");
 const fxEmptyEl = document.getElementById("fxEmpty");
-const fxModeLiveBtn = document.getElementById("fxModeLive");
-const fxModePremixBtn = document.getElementById("fxModePremix");
-// 放歌页（2026-10-22）：选歌框 / 放-停主按钮（内含图标与文字两个 span，不能直写
-// textContent —— 同 #holdMic）/ 音量滑块 / 桌宠身上的 ♪ 角标
-const tabBgmBtn = document.getElementById("tabBgm");
-const bgmPaneEl = document.getElementById("bgmPane");
+// 放歌（托盘内）：
+// 选歌框 / 放-停按钮（内含 #bgmIc 图标）/ 音量滑块 / 桌宠身上的 ♪ 角标
 const bgmSelEl = document.getElementById("bgmSel");
 const bgmBtnEl = document.getElementById("bgmBtn");
 const bgmIcEl = document.getElementById("bgmIc");
-const bgmLabelEl = document.getElementById("bgmLabel");
 const bgmGainEl = document.getElementById("bgmGain");
 const bgmBadgeEl = document.getElementById("bgmBadge");
-const bgmHintEl = document.getElementById("bgmHint");
+// （原 #bgmHint 的引用一并删掉：那一行已从 DOM 移除，缺什么/错在哪改写在 #bgmSel 的 option 与 title 里）
 const VOICE_KEY = "pet_voice_id";
 let panelTimer = null;
 let panelOpen = false;       // 面板是否可见（Esc 收起、点击穿透判定都要用）
@@ -1707,6 +1715,22 @@ let panelOpen = false;       // 面板是否可见（Esc 收起、点击穿透�
 // 而 refreshPanel 挂在 mouseenter 上，提前声明可彻底排除 TDZ 隐患。
 let lastPreview = null;      // { wav, url, duration_s } 最近一次试听的合成产物
 let previewAudio = null;
+// 文字 + 音效片的那条链：先 previewText 合成，等 onPreviewResult 回来再 premixAndSend。
+// 声明点必须在 refreshFire / 发送段之前（同一批 TDZ 隐患，见上面 lastPreview 的注释）。
+let pendingPremix = false;
+// 录音状态镜像（真值在主进程，这里只用于显示）。声明提前到这一段的理由同上：
+// refreshFire 会读 micPhase 决定主按钮长什么样，而它在文件更后面才被定义/调用。
+let micPhase = "idle";        // idle | arming | recording | converting | sending
+let micStartedAt = 0;         // 由主进程报的 startedAt（不用本地时刻：start 要等后端响应）
+let micMaxS = 59;             // 单次按住上限，主进程随 mic-state 报回来
+let micTicker = null;
+// 录制各阶段的一句话（主按钮文案与提示行共用这张表 —— 同一个阶段不能有两种说法）
+const MIC_TIP = {
+  arming:     "正在开麦克风…",
+  recording:  "松手结束并发送",
+  converting: "正在换声…",
+  sending:    "正在发进微信…",
+};
 
 // ---------------- 实时变声引擎：RVC 实时 / 千问变声 ----------------
 /**
@@ -1739,6 +1763,10 @@ function refreshEngineSeg() {
     engQwenBtn.classList.toggle("on", engine === "qwen");
     engQwenBtn.classList.toggle("running", runningEngine === "qwen");
   }
+  // 「千问直出」只对千问引擎有意义（RVC 引擎下它描述的是一个不会发生的分支）。
+  // 显示一个永远不起作用的勾选框比不显示更糟 —— 用户会以为勾上就能改变什么。
+  const noRvc = document.getElementById("noRvcField");
+  if (noRvc) noRvc.style.display = (!CAP.live || engine !== "qwen") ? "none" : "";
 }
 
 /** 启停进行中时分段的忙态：两颗按钮一起禁用（引擎互斥，中途谁都不能点）。 */
@@ -1971,6 +1999,9 @@ function refreshRemoteVoice() {
 function refreshRemoteLatency(live) {
   if (!rmLatEl) return;
   const ms = live && live.live_running ? Number(live.infer_ms) || 0 : 0;
+  // 整行一起显隐（#latRow）：没在变声时抽屉里那一行只有「耗时 —」，
+  // 是一行噪音，也最像「一个没填完的设置项」。
+  if (latRowEl) latRowEl.hidden = !(ms > 0);
   rmLatEl.hidden = !(ms > 0);
   rmLatEl.textContent = ms > 0 ? Math.round(ms) + "ms" : "";
   if (!(ms > 0)) { rmLatEl.title = "变声开启后显示实测推理耗时"; return; }
@@ -2039,31 +2070,25 @@ recentEl.addEventListener("click", (e) => {
  * 状态行引导用户先去「说话」页合成一条。产物 sfxmix_*.wav 直接 sendWav 发送。
  */
 const SFX_BASE = "http://127.0.0.1:8000/api/soundboard";
-const TAB_KEY = "pet_panel_tab";
-const FX_MODE_KEY = "pet_fx_mode";
-const FX_MODES = { live: "实时播放", premix: "混进语音" };
 // chip 上的混入位置标记（一个汉字）：点击 chip 主体按 叠→头→尾 循环
 const PICK_LABEL = { layer: "叠", prepend: "头", append: "尾" };
 
-let activeTab = "speak";      // 当前功能页（localStorage 恢复，见 bootstrap）
+// ⚠️ 2026-10-23 删掉的三样东西（都在这一段的旧版里），别再捡回来：
+//   · `activeTab` / `TAB_KEY` / `setTab()` —— 四个功能页签（说话/按住/音效/放歌）
+//     「记住上次的页」这类需求，本质是页签本身不该存在；
+//   · `sfxMode` / `FX_MODE_KEY` / `FX_MODES` —— 「实时播放 / 混进语音」模式分段。
+//     一个动作被拆成「先选模式、再点格子」两步，而两种用法本来可以同时存在；
+//   · 说话页的「插音效」胶囊条（`renderSayFx` / `insertSayMark`）。
+//     `[名字]` 标记语法后端仍然支持（老历史、手打依旧生效），但面板里不再开**第二种**
+//     加音效的入口 —— 两条路并存正是「按钮太多」的来源（用户 2026-10-23 反馈）。
 let sfxItems = [];            // 声板样本（/catalog 的 items）
-let sfxMode = "live";         // live=点格子立即出声；premix=点格子勾进预混队列
-let sfxPicks = [];            // 预混队列：{ id, name, icon, mode, at_s }
+let sfxPicks = [];            // 这条语音里的音效：{ id, name, icon, mode, at_s }
 let sfxPlayingId = null;      // 正在响的格子（乐观高亮用，超时后自动熄灭）
 let sfxLoadedAt = 0;          // 上次拉 catalog 的时间（60s 节流，别每次悬停都打）
 let sfxWarmDone = false;      // /warm 只发一次
 // 「音效走虚拟声卡、本机扬声器不出声」那句话每次点格子都刷会把状态行占满，
 // 而它是个一次性知识 → 首次实时播放时报一次就够（用户反馈"我都听不到"，2026-10-01）。
 let sfxLiveHintShown = false;
-
-// 记住上次的页：常驻遥控器的用户往往固定在一页（比如就用「按住说话」），
-// 每次悬停都要先点一下页签的话，那个「常驻」就没意义了。
-const TAB_NAMES = ["speak", "hold", "fx", "bgm"];
-try {
-  const saved = localStorage.getItem(TAB_KEY);
-  if (TAB_NAMES.includes(saved)) activeTab = saved;
-} catch {}
-try { if (localStorage.getItem(FX_MODE_KEY) === "premix") sfxMode = "premix"; } catch {}
 
 /** innerHTML 转义：样本名/图标来自后端与用户导入，不能裸拼。 */
 function esc(s) {
@@ -2072,71 +2097,38 @@ function esc(s) {
   ));
 }
 
-/** 切功能页。save=false 用于恢复/门控归位（不重复写 localStorage）。 */
-function setTab(next, save) {
-  activeTab = TAB_NAMES.includes(next) ? next : "speak";
-  if (save) { try { localStorage.setItem(TAB_KEY, activeTab); } catch {} }
-  for (const [btn, name] of [[tabSpeakBtn, "speak"], [tabHoldBtn, "hold"], [tabFxBtn, "fx"], [tabBgmBtn, "bgm"]]) {
-    if (btn) btn.classList.toggle("on", activeTab === name);
-  }
-  for (const [pane, name] of [[speakPaneEl, "speak"], [holdPaneEl, "hold"], [fxPaneEl, "fx"], [bgmPaneEl, "bgm"]]) {
-    if (pane) pane.classList.toggle("on", activeTab === name);
-  }
-  if (activeTab === "fx") void loadSfx(true);   // 进音效页就刷新清单（强制，绕过节流）
-  // 放歌页同理：歌是会话产物，用户可能刚在主界面导入/翻唱完 —— 进页必须看到此刻
-  // 真能放的那些，而不是 60s 前缓存的那份。
-  if (activeTab === "bgm") void loadBgm(true);
-  // 进「按住说话」页就复查预检（强制）：切过来时看到的必须是**此刻**的微信状态，
-  // 否则刚把微信关掉的人会拿着上一次的「已打开」按下去。
-  if (activeTab === "hold") void refreshWechatPrecheck(true);
-  refreshFxActions();
-}
+// ---------------- 面板的分层：声音托盘 / 更多抽屉 ----------------
+// 两种「需要时才长出来」的区域，**互斥**（同时开会把面板顶到 300px 上限）：
+//   tray   —— 声音：音效 + 放歌。共同点是「此刻送进虚拟声卡」，与主按钮的发送不是一条链路。
+//   drawer —— 设置：音色 / 引擎 / 最近发送。进来的频率远低于发送，不该常驻。
+// 为什么不分得更细（比如音效一个入口、放歌又一个）：那又会退化成页签 ——
+// 用户得先想「这个声音属于哪一类」，而他要的只是「放个声」。
+let panelLayer = "";           // "" | "tray" | "drawer"
 
-/**
- * 说话页的「插音效」胶囊（2026-10-01）。
- *
- * 与「音效」页**同源**：都用同一份 `sfxItems`（同一次 /catalog），所以两处的名字永远一致
- * （各拉一份的话，新导入的音效会只在一处出现 —— 用户只会以为"这里坏了"）。
- * 声板关掉或没有素材时清空：空 div 由 CSS `:empty` 收起，不占面板高度（预算只剩 2px）。
- *
- * 为什么只写名字不写图标：这一条横滚条实际可用宽度只有 ~110px（外面那行还要放
- * 「千问直出」），带图标就只剩一颗半可见 —— 名字才是用户要挑的那个东西。
- */
-function renderSayFx() {
-  if (!sayFxEl) return;
-  if (!CAP.fx || !sfxItems.length) { sayFxEl.innerHTML = ""; return; }
-  sayFxEl.innerHTML = '<span id="sayFxLabel">插音效</span>' + sfxItems.map((it) =>
-    '<button type="button" class="fxq" data-name="' + esc(it.name) + '" title="插入 ['
-    + esc(it.name) + ']：合成时拌进语音，不会被念出来">' + esc(it.name) + "</button>").join("");
-}
-
-/**
- * 把 `[名字] ` 插到说话页输入框的**光标处**（没有光标信息就追加到末尾）。
- *
- * ⚠️ `#say` 是 `<input>` 不是 `<textarea>` —— 用 selectionStart/setSelectionRange，
- *    没有 textarea 那套 API。
- * ⚠️ `maxlength=200` 只拦**键盘输入**，不拦程序赋值 —— 所以这里自己挡一道：
- *    插完超长就给一句提示，而不是留下一个"看起来还能打、其实再也打不进字"的输入框。
- * 规则与主界面「插音效」工具栏（`useTts.insertMark` / 有声书页）逐字对齐：
- * 前导空格按需补、片段后补一个空格、越界夹住 —— 同一个按钮在不同界面必须留下同一种文字。
- */
-function insertSayMark(name) {
-  if (!sayEl || !name) return;
-  const snip = "[" + name + "] ";
-  const cur = sayEl.value;
-  const raw = sayEl.selectionStart == null ? -1 : sayEl.selectionStart;
-  const at = raw < 0 || raw > cur.length ? cur.length : raw;
-  const before = cur.slice(0, at);
-  const after = cur.slice(at);
-  const lead = before === "" || /\s$/.test(before) ? "" : " ";
-  if (cur.length + lead.length + snip.length > 200) {
-    setStatus("输入框快满了（上限 200 字），先删几个字再插音效", "err");
-    return;
+/** 切换分层。next 为 "" 时全部收起。 */
+function setLayer(next) {
+  panelLayer = (next === "tray" || next === "drawer") ? next : "";
+  if (trayEl) trayEl.hidden = panelLayer !== "tray";
+  if (drawerEl) drawerEl.hidden = panelLayer !== "drawer";
+  if (trayBtn) {
+    trayBtn.classList.toggle("on", panelLayer === "tray");
+    trayBtn.setAttribute("aria-expanded", panelLayer === "tray" ? "true" : "false");
   }
-  sayEl.value = before + lead + snip + after;
-  const pos = at + lead.length + snip.length;
-  sayEl.focus();
-  try { sayEl.setSelectionRange(pos, pos); } catch {}
+  if (moreBtn) {
+    moreBtn.classList.toggle("on", panelLayer === "drawer");
+    moreBtn.setAttribute("aria-expanded", panelLayer === "drawer" ? "true" : "false");
+  }
+  // 分层打开时收起「属于别处」的行（见 CSS #panel.has-drawer / #panel.has-tray）：
+  // 抽屉收起手势行与音效片，托盘收起手势行 —— 都是为了让当前分层在 300px 里站得下。
+  if (panel) panel.classList.toggle("has-drawer", panelLayer === "drawer");
+  if (panel) panel.classList.toggle("has-tray", panelLayer === "tray");
+  // 分层打开时气泡让位（理由见 applyBubble）：82px 的气泡与 115px 的托盘不可能同时站下。
+  if (rootEl) rootEl.classList.toggle("layer-open", !!panelLayer);
+  applyBubble();
+  // 打开托盘就强制刷新两批清单：音效是用户刚在声板里加的，歌是刚导入/翻唱的。
+  // （不进托盘就不拉 —— 失败会把提示写进共用状态行，还可能把刚发完微信的结果顶掉。）
+  if (panelLayer === "tray") { void loadSfx(true); void loadBgm(true); }
+  refreshFire();
 }
 
 /** 拉声板清单并渲染。force=false 时 60s 内不重复拉（refreshPanel 每次悬停都跑）。 */
@@ -2177,25 +2169,31 @@ async function loadSfx(force) {
   }
 }
 
+/** 渲染音效网格。
+ *  一个格子两个动作（仿 Spotify：点行播放、点 + 加进歌单）：
+ *    · 点格子主体 → 现场播（one-shot 进虚拟声卡，微信那边听得到，本机不外放）
+ *    · 点右上角 ＋ → 加进**这条语音**（草稿区下面长出音效片，发送时混进去）
+ *  改版前这里必须先选「实时播放 / 混进语音」再点格子 —— 一个动作被拆成两步预判，
+ *  而两种用法本来可以同时存在（正放着的那一格也完全可以被加进语音）。
+ *  ＋ 用 <span role="button"> 而不是嵌套 <button>：HTML 不允许 button 套 button。 */
 function renderFxGrid() {
-  // 说话页的胶囊与这些格子同源（都是 sfxItems）→ 顺手一起刷，避免两处只有一处更新。
-  // 放在最前面：即使 fxGridEl 意外缺失，胶囊也不该跟着哑掉。
-  renderSayFx();
   if (!fxGridEl) return;
   fxGridEl.innerHTML = sfxItems.map((it) => {
     const playing = sfxPlayingId === it.id ? " on" : "";
     const picked = sfxPicks.some((p) => p.id === it.id) ? " pick" : "";
+    const dur = it.duration_s ? "（" + it.duration_s + "s）" : "";
     return `<button type="button" class="fxc${playing}${picked}" data-id="${esc(it.id)}"
-      title="${esc(it.name)}${it.duration_s ? "（" + it.duration_s + "s）" : ""}">
-      <span class="fe">${esc(it.icon || "🎵")}</span><span class="fn">${esc(it.name)}</span>
+      title="${esc(it.name)}${dur}：点这里现场播（进虚拟声卡，本机不响）；点右上角 ＋ 加进这条语音">
+      <span class="fe">${esc(it.icon || "🎵")}</span><span class="fn">${esc(it.name)}</span><span class="fadd" role="button" aria-label="加进这条语音">${picked ? "✓" : "＋"}</span>
     </button>`;
   }).join("");
 }
 
+/** 草稿区的音效片：点主体轮换混入位置（叠→头→尾），点 × 移出。 */
 function renderFxPicks() {
   if (!fxPicksEl) return;
   fxPicksEl.innerHTML = sfxPicks.map((p, i) => {
-    return `<span class="fxchip" data-idx="${i}" title="点一下换混入位置（叠→头→尾），× 移出">
+    return `<span class="fxchip" data-idx="${i}" title="点一下换混入位置（叠→头→尾），× 移出这条语音">
       ${esc(p.icon || "🎵")} ${esc(p.name)} <span class="fm">${PICK_LABEL[p.mode] || "叠"}</span><span class="fxrm" title="移出">×</span>
     </span>`;
   }).join("");
@@ -2234,30 +2232,26 @@ async function sfxPlay(it) {
   }, dur);
 }
 
-/** 预混队列：已勾 → 移出；没勾 → 入队（混入位置默认「叠」，可在 chip 上轮换）。 */
+/** 加进这条语音 / 移出：已加 → 移出；没加 → 入队（混入位置默认「叠」，可在 chip 上轮换）。 */
 function togglePick(it) {
   const i = sfxPicks.findIndex((p) => p.id === it.id);
   if (i >= 0) sfxPicks.splice(i, 1);
   else sfxPicks.push({ id: it.id, name: it.name, icon: it.icon, mode: "layer", at_s: 0 });
   renderFxGrid();
   renderFxPicks();
-  refreshFxActions();
+  refreshFire();
 }
 
-// 事件委托：格子/chip 都是 innerHTML 批量生成的，监听器挂容器上
+// 事件委托：格子/chip 都是 innerHTML 批量生成的，监听器挂容器上。
+// ⚠️ `.fadd` 的判断必须在 `.fxc` 之前：它是格子内部的子元素，
+//    先判断格子会把「点 ＋」吞成「点格子播一遍」（用户只想加进语音，却听了一耳朵）。
 if (fxGridEl) fxGridEl.addEventListener("click", (e) => {
   const cell = e.target.closest(".fxc");
   if (!cell) return;
   const it = sfxItems.find((x) => x.id === cell.dataset.id);
   if (!it) return;
-  if (sfxMode === "premix") togglePick(it);
+  if (e.target.closest(".fadd")) togglePick(it);
   else void sfxPlay(it);
-});
-// 说话页的「插音效」胶囊：点一下把 `[名字] ` 插进输入框（与「音效」页同一份素材清单）。
-// 委托挂容器上：胶囊是 innerHTML 批量生成的，逐个挂监听每次重渲染都要重来一遍。
-if (sayFxEl) sayFxEl.addEventListener("click", (e) => {
-  const chip = e.target.closest(".fxq");
-  if (chip) insertSayMark(chip.dataset.name || "");
 });
 if (fxPicksEl) fxPicksEl.addEventListener("click", (e) => {
   const chip = e.target.closest(".fxchip");
@@ -2271,11 +2265,17 @@ if (fxPicksEl) fxPicksEl.addEventListener("click", (e) => {
   }
   renderFxGrid();
   renderFxPicks();
-  refreshFxActions();
+  refreshFire();
 });
-[tabSpeakBtn, tabHoldBtn, tabFxBtn, tabBgmBtn].forEach((b) => {
-  if (b) b.addEventListener("click", () => setTab(b.dataset.tab, true));
+// 两个入口：♪ 声音托盘 / ⋯ 更多抽屉。互斥（setLayer 内部保证）。
+if (trayBtn) trayBtn.addEventListener("click", () => {
+  setLayer(panelLayer === "tray" ? "" : "tray");
 });
+if (moreBtn) moreBtn.addEventListener("click", () => {
+  setLayer(panelLayer === "drawer" ? "" : "drawer");
+});
+// 点状态条上的音色名 → 直接开抽屉（用户意图就是「换一个」）
+if (voiceBtn) voiceBtn.addEventListener("click", () => setLayer("drawer"));
 
 // ---------------- 放歌页（sound.fx-board 的「垫底层」）----------------
 /**
@@ -2345,18 +2345,16 @@ function renderBgm() {
       : "放歌：把歌实时垫进虚拟声卡，微信那边听得到；本机扬声器不出声（想自己听请开「自我监听」）。歌比说话短时循环补满";
   }
   if (bgmIcEl) bgmIcEl.textContent = playing ? "■" : "▶";
-  if (bgmLabelEl) bgmLabelEl.textContent = playing ? "停" : "放歌";
   if (bgmSelEl) bgmSelEl.disabled = playing;   // 不变量 3：选中项必须就是正在放的那首
   if (bgmGainEl && document.activeElement !== bgmGainEl) bgmGainEl.value = String(bgmGainV);
   if (bgmBadgeEl) bgmBadgeEl.classList.toggle("on", playing);
-  // 提示行兼做「缺什么」的说明：204px 里没有第二行可以用来报错，而共用状态行
-  // （`setStatus`）属于发送链路 —— 在这里写会**把刚发完微信的结果顶掉**。
-  if (bgmHintEl) {
-    const msg = bgmNote || (bgmSongs.length
-      ? "进微信，本机不出声 · 歌短会循环"
-      : "还没有歌：主界面 → 实时变声 → 实时垫歌");
-    bgmHintEl.textContent = msg;
-    bgmHintEl.classList.toggle("warn", !!bgmNote);
+  // 缺什么 / 错在哪只写进 select（一行）：它原来是一行独立的 #bgmHint，
+  // 而「放歌行 26 + 说明 17 + 网格 81」在 300px 上限里滚出 17px —— 那行就是溢出的来源。
+  // 空态与错因本来就由 renderBgmOptions 写成 option 文案，这里只补 title（悬停能看全）。
+  if (bgmSelEl) {
+    bgmSelEl.title = bgmNote || (bgmSongs.length
+      ? "选一首歌：点右边的放歌键，实时垫进虚拟声卡（微信那边听得到，本机扬声器不出声）"
+      : "还没有歌：主界面 → 实时变声 → 实时垫歌；或把 mp3 放进后端 media/songs");
   }
 }
 
@@ -2462,21 +2460,6 @@ if (bgmSelEl) bgmSelEl.addEventListener("change", () => {
 });
 if (bgmBtnEl) bgmBtnEl.addEventListener("click", () => void toggleBgm());
 if (bgmGainEl) bgmGainEl.addEventListener("input", onBgmGainInput);
-function refreshFxModeSeg() {
-  if (fxModeLiveBtn) fxModeLiveBtn.classList.toggle("on", sfxMode === "live");
-  if (fxModePremixBtn) fxModePremixBtn.classList.toggle("on", sfxMode === "premix");
-}
-[fxModeLiveBtn, fxModePremixBtn].forEach((b) => {
-  if (b) b.addEventListener("click", () => {
-    if (!b || !FX_MODES[b.dataset.mode]) return;
-    sfxMode = b.dataset.mode;
-    try { localStorage.setItem(FX_MODE_KEY, sfxMode); } catch {}
-    refreshFxModeSeg();
-    renderFxGrid();
-    refreshFxActions();
-  });
-});
-
 /**
  * 按能力清单收起桌宠上用不到的控件 —— 关掉的能力意味着后端**根本没有那些接口**，
  * 留着就是一按 404 的按钮。
@@ -2490,79 +2473,131 @@ function refreshCapVisibility() {
     const el = document.getElementById(id);
     if (el) el.style.display = off ? "none" : "";
   };
-  hide("engRow", !CAP.live);      // 「麦克风」+ 引擎二选一分段（启停已并入分段，无独立按钮）
-  // ⚠️ 「最近发送」「试听」「发送」三个都属于 hook.wechat（后两个打的是
-  //    wechat 那几个端点）—— 关掉它之后这些接口根本不存在，留着就是一按 404 的按钮。
-  //    试听曾经就是这么给市场音色变成死钮的（那次是把按钮禁用，也不是消失），
-  //    所以这里一并收：能力没了就该看不见，而不是点了才知道。
-  hide("recent", !CAP.wechat);    // 「最近发送」（点一条重发）
-  hide("preview", !CAP.wechat);   // 「试听」（不发送的 TTS+RVC 试听）
-  hide("send", !CAP.wechat);      // 「合成并发送」
-  // 「音效」页整体归 sound.fx-board：入口（tabRow）和页体（fxPane）一起收，
-  // 只藏 tabRow 不藏 fxPane 的话，localStorage 里残留 tab=fx 的用户会看到一个
-  // 没法切走、还打 404 的死页。收掉后强制回「说话」页。
-  hide("tabRow", !CAP.fx);
-  hide("fxPane", !CAP.fx);
-  // 「放歌」页同样归 sound.fx-board（bgm 那组端点都挂在那支 router 上）：入口与页体一起收，
-  // 否则 localStorage 里残留 tab=bgm 的用户会看到一个全 404 的死页。
-  hide("tabBgm", !CAP.fx);
-  hide("bgmPane", !CAP.fx);
-  if (!CAP.fx && activeTab === "fx") setTab("speak", false);
-  if (!CAP.fx && activeTab === "bgm") setTab("speak", false);
-  // 「按住说话」整条链路的终点是 `sendWechatWav` → 同样归 hook.wechat。
-  // （录/换声那两步的 capture/mic 端点在 pet.companion 里，也就是桌宠自身的能力，
-  //   它关掉的话桌宠入口本身就没了，所以这里只需盯 wechat 这一道。
-  //   ⚠ 上面别写成带星号的接口名 —— `斜杠+星号` 会被任何用正则剥块注释的工具当成
-  //   块注释开头，一路吃到下一个 `星号+斜杠`，把下面几行代码一起呑掉（已踩）。）
-  hide("tabHold", !CAP.wechat);
-  hide("holdPane", !CAP.wechat);
-  if (!CAP.wechat && activeTab === "hold") setTab("speak", false);
-  // 药丸（变声开关）扫不到路由时不能装成能点：这一页上点它只会 404。
+  // 引擎二选一分段归 CAP.live（没实时变声能力时它只会 404）。
+  // 「千问直出」的显隐由 refreshEngineSeg 管：**除了能力，还要看当前引擎**
+  // （RVC 引擎下它是一个永远不起作用的勾选框）。这里再 hide 一次就会把那条判断盖掉。
+  hide("engRow", !CAP.live);
+  // 「最近发送」归 hook.wechat（点一条重发打的是 wechat 那几个端点）。
+  hide("recent", !CAP.wechat);
+  // 声音托盘（音效 + 放歌）整体归 sound.fx-board：入口和盘体一起收，
+  // 只收一个的话，已经开着托盘的用户会看到一个全 404 的空盘。
+  hide("trayBtn", !CAP.fx);
+  if (!CAP.fx && panelLayer === "tray") setLayer("");
+  // ⚠️ 主按钮与试听的显隐**不在这里**用 style.display 硬盖：它们的文案/可用性
+  // 还要跟着「草稿有没有内容、是不是在录」变，两套机制会互相覆盖
+  // （CAP 收起来 → refreshFire 又亮回去）。统一由 refreshFire 决定。
+  // 药丸（变声开关）扫不到路由时不能装成能点：点它只会 404。
   // 不禁用（它同时也在报后端离线/在线），改由点击时给一句方向明确的提示。
   if (pillEl) pillEl.title = CAP.live
     ? (pillEl.title || "实时变声开关：点一下开 / 再点一下关")
     : "实时变声能力已关闭（主界面 → 桌面 → 插件里打开它）";
+  // 能力刚变过：让依赖「能力 + 引擎」两者的行（千问直出）重算一次。
+  refreshEngineSeg();
 }
 
 function refreshPanel() {
-  loadVoices(); loadRecent(); loadSfx(false); refreshSendLabel(); refreshEngineSeg();
-  refreshFxModeSeg(); refreshCapVisibility(); refreshFxActions();
-  // 歌单只在「放歌」页可见时才拉：这一页的数据对其它页没用，而在后台拉失败会把
-  // 提示写进共用状态行 —— 轻则占掉一行高度（纵向预算只剩 2px），重则把刚发完
-  // 微信的结果顶掉。进页本身由 setTab 强制拉一次（绕过节流）。
-  if (activeTab === "bgm") loadBgm(false);
+  loadVoices(); loadRecent(); refreshEngineSeg(); refreshCapVisibility(); refreshFire();
+  // 托盘里的两批清单只在托盘可见时拉：它们对未打开托盘的场景没用，而拉失败会把提示
+  // 写进共用状态行 —— 轻则占一行高度，重则把刚发完微信的结果顶掉。
+  // 打开托盘那一下由 setLayer 强制拉（绕过节流：音效/歌往往刚在主界面加过）。
+  if (panelLayer === "tray") { loadSfx(false); loadBgm(false); }
 }
 
-// ---------------- 试听 / 发送 / 结果反馈 ----------------
-// lastPreview / previewAudio 的声明已前移到「快捷面板」段的 DOM 引用处（排除 TDZ 隐患）。
+// ---------------- 主按钮：面板上唯一的动作 ----------------
 
-/** 主按钮/试听按钮的显隐与文案跟着功能页走：
-    说话页 —— 试听 + 「合成并发送 / 发送试听」（原有语义）；
-    音效页 —— 试听没有意义（它试听的是文字合成）→ 藏；主按钮 = 发送预混队列，
-              没勾选时无从谈起 → 禁用。 */
-function refreshSendLabel() {
-  if (!sendLabel) return;
-  if (activeTab === "fx") {
-    sendLabel.textContent = sfxPicks.length ? `发送（${sfxPicks.length} 个音效）` : "发送";
-  } else {
-    sendLabel.textContent = lastPreview ? "发送试听" : "合成并发送";
+/**
+ * 草稿类型 —— 整个重构的核心判断。**类型由内容决定，不由页签决定**：
+ *   rec  按住中（micPhase ≠ idle）—— 波形在装填区，主按钮变「松开发送」
+ *   text 有内容（文字 / 试听产物 / 音效片）—— 主按钮变「合成并发送」
+ *   idle 空 —— 主按钮变「按住说话」
+ * 改版前这一步是「先选页签」：三个页签按**实现机制**分（文字合成 / 按键录音 / 声板），
+ * 用户脑子里只有「我要发一条」，所以那层选择纯属翻译负担。
+ */
+function draftKind() {
+  if (micPhase !== "idle") return "rec";
+  const text = ((sayEl && sayEl.value) || "").trim();
+  return (text || lastPreview || sfxPicks.length) ? "text" : "idle";
+}
+
+/**
+ * 主按钮 / 试听 / 提示行的**唯一**刷新点 —— 任何状态变化后只调它。
+ * （旧版是 refreshSendLabel + refreshFxActions 两处各算一半，同一件事两个真相源，
+ *   于是「按钮写着发送、实际发的是另一页的东西」这种错必然会发生。）
+ */
+function refreshFire() {
+  const kind = draftKind();
+  const text = ((sayEl && sayEl.value) || "").trim();
+  const picks = sfxPicks.length;
+  const rec = kind === "rec";
+
+  if (fireEl) {
+    fireEl.classList.toggle("m-idle", kind === "idle");
+    fireEl.classList.toggle("m-text", kind === "text");
+    fireEl.classList.toggle("m-rec", kind === "rec");
+    fireEl.title = kind === "idle"
+      ? "按住不放说话（0.3~59 秒），松手自动换声发微信；想打字就点上面输入框"
+      : kind === "rec"
+        ? "松手结束并发送"
+        : (lastPreview ? "把刚试听的那条发到微信" : "用选中音色合成，并录成微信语音消息");
+    // 忙态（合成中/发送中）由 setBusy 管 disabled，这里别把它掰回来
+    if (!fireEl.classList.contains("busy")) fireEl.disabled = !CAP.wechat;
   }
+
+  if (fireLabel) {
+    let label;
+    if (kind === "rec") {
+      // arming（等后端开麦）/ converting（换声）/ sending（发微信）都在这条分支里：
+      // 那几秒按钮上写的是进度，不是手势 —— 用户松手后最想知道「现在到哪一步了」。
+      label = (micPhase === "arming" || micPhase === "recording")
+        ? "松开发送"
+        : (MIC_TIP[micPhase] || "处理中…");
+    } else if (kind === "text") {
+      if (lastPreview) label = "发送试听";
+      else if (text && picks) label = `合成并发送 · ${picks}`;
+      else if (text) label = "合成并发送";
+      else label = picks ? `发送 ${picks} 个音效` : "合成并发送";
+    } else {
+      // 微信能力关掉时不能说「按住说话」—— 按了发不出去。说清缺什么。
+      label = CAP.wechat ? "按住说话" : "微信能力已关闭";
+    }
+    fireLabel.textContent = label;
+  }
+
+  // 试听：只在「有文字、没在录、微信能力在」时出现。它试听的是**文字合成**，
+  // 与按住那条链路无关，所以按住中/空草稿时它没有意义。
+  if (previewBtn) previewBtn.hidden = !(kind === "text" && !!text && CAP.wechat);
+
+  refreshHint();
 }
 
-function refreshFxActions() {
-  const fx = activeTab === "fx";
-  // 试听按钮：fx 页藏（没有文字可合成）；CAP.wechat 关掉时 refreshCapVisibility 已藏，
-  // 这里的条件取并集，避免切页时把 CAP 收起来的按钮又亮回去。
-  if (previewBtn) previewBtn.style.display = (fx || !CAP.wechat) ? "none" : "";
-  if (sendBtn) sendBtn.disabled = fx && !sfxPicks.length ? true : false;
-  // 整行动作行在「按住说话」页收起：那一页的动作是按住那颗大按钮本身，
-  // 「合成并发送 / 试听」在那里只会让人以为还要先打字（它们作用的是「说话」页的输入框）。
-  // 「按住说话」页与「放歌」页都收起整行动作：「合成并发送 / 试听」作用的是说话页的
-  // 输入框，在这两页里只会让人以为还要先打字/先合成（同按住页 2026-09-29 的理由）。
-  if (actRowEl) actRowEl.style.display = (activeTab === "hold" || activeTab === "bgm") ? "none" : "";
-  refreshSendLabel();
+/** 手势提示行。三件事按优先级：录制中 > 微信预检 > 一句用法。 */
+function refreshHint() {
+  if (!hintEl) return;
+  let text = "", tone = "", title = "";
+  if (micPhase !== "idle") {
+    // 说「正在录」而不是重复按钮上的「松开发送」；秒数在波形右边已经有了，
+    // 这里只补一件按钮说不出来的事：**现在已经在听**。
+    text = micPhase === "recording" ? "正在录 · 松手就发" : (MIC_TIP[micPhase] || "");
+  } else if (wechatNote) {
+    text = wechatNote.text; tone = wechatNote.tone; title = wechatNote.title;
+  } else if (((sayEl && sayEl.value) || "").trim()) {
+    // 有文字时按住按钮**不会**录音（主按钮这时是「发送」语义，pointerdown 直接返回）——
+    // 所以不能写「或按住直接说」，那是个按了没反应的承诺。要说清怎么改回录音。
+    text = "点按钮发送 · 要录音先清空文字";
+  } else {
+    text = "按住说，松手就发";
+  }
+  hintEl.textContent = text;
+  hintEl.className = tone ? "t-" + tone : "";
+  hintEl.title = title || text;
 }
 
+/** 微信预检结论（由 renderWechatPrecheck 写，refreshHint 读）—— 单一镜像点。 */
+let wechatNote = null;   // { text, tone, title } | null
+function setWechatNote(text, tone, title) {
+  wechatNote = text ? { text, tone: tone || "", title: title || text } : null;
+  refreshHint();
+}
 /** 忙态：禁用 + 把图标换成旋转圈（CSS: #panel button.busy）。
     「合成中」动辄十几秒，只把按钮变灰用户会以为卡死，转圈才看得见在动。 */
 function setBusy(btn, on) {
@@ -2597,9 +2632,20 @@ function doPreview() {
   window.pet.previewText(text, voiceId, document.getElementById("noRvc")?.checked === true);
 }
 
-async function doSendText() {
+/**
+ * 主按钮的发送 —— 草稿里有什么就发什么。
+ *
+ * 四种组合（原来要靠四个页签分开做的四件事，现在由**内容**决定）：
+ *   文字 + 音效片 → 先合成试听产物，再混音效，再发送（三段串成一条链，见 pendingPremix）
+ *   文字          → 一步到位 sendText（主进程做 TTS → RVC → 录进微信）
+ *   只有音效片     → 混进「最近一条 TTS 产物」再发（底由后端自己取，与发送链路同口径）
+ *   只有试听产物   → 直接发它（试听 → 发送两步走）
+ */
+async function fireSend() {
   const text = sayEl.value.trim();
+  const picks = sfxPicks.length;
   if (!window.pet) return;
+  if (!CAP.wechat) { setStatus("微信发送能力已关闭：主界面 → 桌面 → 插件里打开它", "err"); return; }
   // 发前探活：连不上后端立即提示，不闷头转圈被误判成卡死。
   // 报错分两种因（2026-09-18）：「没服务在听」该去启动后端，「HTTP 异常」该看日志，
   // 以前一律一句「后端未连接」，用户分不清。
@@ -2611,40 +2657,53 @@ async function doSendText() {
     probeErr = "后端没连上：8000 端口没有服务在监听（变声后端未启动或已退出）。打开主界面会自动拉起后端，等就绪后再试";
   }
   if (probeErr) { setStatus(probeErr, "err"); return; }
-  // 音效页：发送 = 把预混队列混进一条语音一起发（见 premixAndSend 注释）
-  if (activeTab === "fx") {
-    if (!sfxPicks.length) return;
-    await premixAndSend();
-    return;
-  }
-  // 有试听产物就直接发它（试听→发送两步走），否则一步到位「合成并发送」
-  if (lastPreview && window.pet.sendWav) {
-    setStatus(`发送中… 自动发到微信，全程别动键鼠`, "ok");
+
+  // ① 有试听产物、且没有音效片 → 直接发它
+  if (lastPreview && !picks && window.pet.sendWav) {
+    setStatus("发送中… 自动发到微信，全程别动键鼠", "ok");
     window.pet.sendWav(lastPreview.wav);
     lastPreview = null;
-    refreshSendLabel();          // 待发产物已消费，主按钮立刻退回「合成并发送」
-  } else {
-    if (!text) return;
+    refreshFire();               // 待发产物已消费，主按钮立刻退回「按住说话」
+    setBusy(sendBtn, true);
+    setTimeout(() => { setBusy(sendBtn, false); refreshPanel(); }, 25000);
+    return;
+  }
+  // ② 文字 + 音效片 → 先合成（onPreviewResult 里接着调 premixAndSend）
+  if (text && picks) {
+    pendingPremix = true;
+    setStatus(`合成中… 完成后混入 ${picks} 个音效发微信`, "ok");
+    setBusy(sendBtn, true);
+    setTimeout(() => { setBusy(sendBtn, false); pendingPremix = false; }, 60000);
+    const voiceId = voiceSel.value || "";
+    if (voiceId) localStorage.setItem(VOICE_KEY, voiceId);
+    window.pet.previewText(text, voiceId, document.getElementById("noRvc")?.checked === true);
+    return;
+  }
+  // ③ 只有音效片 → 混进最近一条 TTS 产物再发
+  if (!text && picks) { await premixAndSend(); return; }
+  // ④ 只有文字 → 一步到位
+  if (text) {
     const voiceId = voiceSel.value || "";
     if (voiceId) localStorage.setItem(VOICE_KEY, voiceId);   // 记住上次选的音色
     setStatus("合成中… 完成后自动发到微信，全程别动键鼠", "ok");
     if (window.pet.sendText) {
       window.pet.sendText(text, voiceId, document.getElementById("noRvc")?.checked === true);
       sayEl.value = "";
+      refreshFire();
       void watchSendOutcome();   // 主进程旧版不回传结果时的兜底收尾（见函数注释）
     }
+    setBusy(sendBtn, true);
+    setTimeout(() => { setBusy(sendBtn, false); refreshPanel(); }, 25000);   // TTS+录音发送可能要十几秒
   }
-  setBusy(sendBtn, true);
-  setTimeout(() => { setBusy(sendBtn, false); refreshPanel(); }, 25000);   // TTS+录音发送可能要十几秒
 }
 
 /**
- * 音效页的发送：预混队列 → 一条新 wav → 正常发送链路。
+ * 音效片 → 一条新 wav → 正常发送链路。
  *
  * 底的选择（/soundboard/premix 的 wav 参数）：
  *   · 面板上有刚试听的产物（lastPreview）→ 混进它（用户刚听过，最明确）；
  *   · 没有就传 null —— 后端自己取「最近一条 TTS 产物」（与发送链路同口径），
- *     典型场景：刚在说话页发过一条，切到音效页勾上「鼓掌」再点发送 = 给那条语音加个掌声；
+ *     典型场景：刚发过一条语音，打开托盘给「鼓掌」点＋，再点主按钮 = 给那条加个掌声；
  *   · 两样都没有 → 后端 404「还没有 TTS 产物」，原样透传，状态行引导先合成。
  * 产物（sfxmix_*.wav）设进 lastPreview 后直接 sendWav，走与「发送试听」完全相同的
  * 发送/回传/看门狗链路 —— 不新造一条发送路径。
@@ -2683,23 +2742,69 @@ async function premixAndSend() {
   setStatus("发送中… 自动发到微信，全程别动键鼠", "ok");
   window.pet.sendWav(j.wav);
   lastPreview = null;            // 与「发送试听」同口径：待发产物已消费
-  refreshSendLabel();
-  void watchSendOutcome();       // sendWav 路径旧版主进程不回传结果，兜底收尾（同 doSendText）
+  // 音效片发完就清空：它们属于**这一条**语音。留着的话下一条会被悄悄加上同样的音效。
+  sfxPicks = [];
+  renderFxGrid();
+  renderFxPicks();
+  refreshFire();
+  void watchSendOutcome();       // sendWav 路径旧版主进程不回传结果，兜底收尾（同 fireSend）
   setTimeout(() => { setBusy(sendBtn, false); refreshPanel(); }, 25000);
 }
+
 previewBtn.addEventListener("click", doPreview);
 voiceSel.addEventListener("change", syncVoiceGates);
-sendBtn.addEventListener("click", doSendText);
-sayEl.addEventListener("keydown", (e) => { if (e.key === "Enter") doSendText(); });
+// 输入框内容一变，主按钮的文案/图标/试听显隐就跟着变 —— 「内容决定类型」的唯一触发器。
+sayEl.addEventListener("input", () => refreshFire());
+sayEl.addEventListener("keydown", (e) => { if (e.key === "Enter") void fireSend(); });
+
+// —— 主按钮的两种手势 ——
+// 空草稿：pointerdown 起录、pointerup 停（按住说话）
+// 有内容：click 发送
+// ★ 冲突点：pointerdown + pointerup 也会产生一次 click。用 fireArmed 吞掉那一次 ——
+//   否则每按完一次录音就会紧接一次「发送」，把刚录的东西发两遍（或对着空草稿发呆）。
+let fireArmed = false;
+if (fireEl) {
+  fireEl.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;                 // 右键留给上下文菜单
+    if (draftKind() !== "idle") return;         // 有内容：这个按钮是「发送」，不是「录音」
+    fireArmed = true;
+    micDown(e);
+  });
+  fireEl.addEventListener("pointerup", () => {
+    if (!fireArmed) return;
+    micUp();
+    // click 在本轮事件之后派发 → setTimeout(0) 排在它后面清标记，正好吞掉那一次
+    setTimeout(() => { fireArmed = false; }, 0);
+  });
+  for (const ev of ["pointercancel", "lostpointercapture"]) {
+    fireEl.addEventListener(ev, () => {
+      if (!fireArmed) return;
+      micUp();
+      fireArmed = false;
+    });
+  }
+  // 右键/长按菜单在按住手势里是干扰项
+  fireEl.addEventListener("contextmenu", (e) => e.preventDefault());
+  fireEl.addEventListener("click", () => {
+    if (fireArmed) { fireArmed = false; return; }   // 刚按完录音的那一次 click，吞掉
+    if (draftKind() === "idle") {
+      // 点了一下但没按住：不报错，只说清手势（与微信点麦克风同款处理）
+      setStatus("按住不放说话，松手就发", "");
+      return;
+    }
+    void fireSend();
+  });
+}
+
 // 引擎分段（唯一启停入口）：点已选中的 = 启动/停止，点另一个 = 切过去。
 // dataset.eng 与 ENGINES 的键一一对应。
 [engRvcBtn, engQwenBtn].forEach((b) => {
   if (b) b.addEventListener("click", () => { void pickEngine(b.dataset.eng); });
 });
 
-// 状态条上的药丸也是变声开关：走同一个 toggleLive()，
-// 但它在「按住说话」「音效」两页也能用 —— 引擎分段只在「说话」页里，
-// 而遥控器上的开关不该跟着页签消失（两处不会出现两套逻辑，都是 toggleLive）。
+// 状态条上的药丸是**唯一**的变声开关：引擎分段只是「选哪个引擎 + 启停已选中的」。
+// （改版前药丸与「RVC / 千问」分段都能启停，同一个 toggleLive 挂了两处入口 ——
+//   代码注释里自己都写着"不存在两套逻辑"，那是解释，不是理由。）
 if (pillEl && pillEl.addEventListener) pillEl.addEventListener("click", () => {
   if (!CAP.live) {
     setStatus("实时变声能力已关闭：主界面 → 桌面 → 插件里打开它", "err");
@@ -2708,26 +2813,16 @@ if (pillEl && pillEl.addEventListener) pillEl.addEventListener("click", () => {
   void toggleLive();
 });
 
-// ---------------- 按住说话（第三个功能页）----------------
+// ---------------- 按住说话（主按钮的默认手势）----------------
 //
-// 手势：按下 → `micDown` → 主进程 POST `/api/capture/mic/start`；松手 → `micUp` →
+// 手势：按住主按钮 → `micDown` → 主进程 POST `/api/capture/mic/start`；松手 → `micUp` →
 // 主进程 POST `/api/capture/mic/stop`（顺手 RVC 换声）→ `sendWechatWav` 发进微信。
 //
 // ★ 为什么状态机在主进程、这里只镜像：录音什么时候停由**用户松手**决定，而松手有三种意外
-//   ——早于 start 的响应、手指滑出按钮、根本不松手。主进程必须把「已经按下了」这件事
+//   ——早于 start 的响应、指针滑出按钮、根本不松手。主进程必须把「已经按下了」这件事
 //   持有一段跨 IPC 的时间；渲染进程做不到（面板在鼠标移开 500ms 后就会收起）。
-//   所以下面的 micPhase 只是**显示用**的镜像，真值由 `pet:mic-state` 推回来。
-let micPhase = "idle";        // idle | arming | recording | converting | sending
-let micStartedAt = 0;         // 由主进程报的 startedAt（不用本地时刻：start 要等后端响应）
-let micMaxS = 59;             // 单次按住上限，主进程随 mic-state 报回来
-let micTicker = null;
-
-const MIC_TIP = {
-  arming:     "正在开麦克风…",
-  recording:  "松手结束并发送",
-  converting: "正在换声…",
-  sending:    "正在发进微信…",
-};
+//   所以 micPhase 只是**显示用**的镜像，真值由 `pet:mic-state` 推回来。
+//   （它的声明与 MIC_TIP 一起前移到了 DOM 引用段 —— refreshFire 会读它们。）
 
 // ---------------- 发送前预检：微信开没开 / 这次会不会重启 ----------------
 //
@@ -2741,52 +2836,46 @@ const MIC_TIP = {
 const PRECHECK_TTL = 5000;   // precheck 要枚举进程/窗口，别跟 tick 的 1s 轮询同频
 let precheckAt = 0;
 
-/** 单行状态条：整段原因进 title（省略号会切掉尾巴，而尾巴往往正是下一步）。 */
-function setHoldPre(text, tone) {
-  if (!holdPreEl) return;
-  holdPreEl.textContent = text;
-  holdPreEl.className = tone ? "t-" + tone : "";
-  holdPreEl.title = text;
-}
-
 /** 取分因文案的第一句（冒号/句号/括号之前）——只做截断，不改写后端的判据。 */
 function firstClause(s) {
   return String(s || "").split(/[：:。；;，,（(]/)[0].trim();
 }
 
 function renderWechatPrecheck(d) {
-  if (!holdPreEl) return;
   const running = d && typeof d.wechat_running === "boolean" ? d.wechat_running : null;
   if (running === null) {
     // 200 但没有这个字段 = 前后端版本不一致（pet.html 是热替换的，后端可能还是旧的）。
     // 绝不能当成「微信没开」—— 那会把用户指去查微信，方向完全错。
-    setHoldPre("预检没有结论（后端版本比桌宠旧？）", "warn");
+    setWechatNote("预检没有结论（后端版本比桌宠旧？）", "warn");
     return;
   }
   if (d.block_reason) {
     // 非空 = 后端已判定这次**注定失败**（分因来自 find_wechat_hwnd）。
     // 完整原因进 title：单行条放不下，而省略号正好会切掉最该看的那半句。
-    setHoldPre("⚠ " + firstClause(d.block_reason), "bad");
-    holdPreEl.title = d.block_reason;
+    setWechatNote("⚠ " + firstClause(d.block_reason), "bad", d.block_reason);
     return;
   }
   if (!running) {
     // 没有硬失败 = auto/1 模式会自己把它拉起来 → 说清要等，而不是说「发不出去」
-    setHoldPre("微信没在运行 · 这次会先拉起它（要等十几秒）", "warn");
+    setWechatNote("微信没在运行 · 这次会先拉起它（要等十几秒）", "warn");
     return;
   }
   if (d.restart_needed) {
-    setHoldPre("这次会重启微信 · 约十几秒", "warn");
-    holdPreEl.title = d.reason || "";    // 为什么重启（遥测判据）只放 tooltip
+    setWechatNote("这次会重启微信 · 约十几秒", "warn", d.reason || "");
     return;
   }
-  setHoldPre("微信已打开 · 直接切麦克风", "ok");
+  setWechatNote("微信已打开 · 按住说，松手就发", "ok");
 }
 
-/** 拉一次预检并上屏。force=false 时 5s 内不重复（tick 每 1s 都会路过这里）。 */
+/**
+ * 拉一次预检并上屏。force=false 时 5s 内不重复（tick 每 1s 都会路过这里）。
+ *
+ * 改版前的判据是「只在看着『按住』那一页时刷」。页签没了之后换成「面板可见时刷」——
+ * 预检只在悬停看面板时才有意义，而按住就是这个面板的默认手势，所以不能再等一次切页。
+ */
 async function refreshWechatPrecheck(force) {
-  if (MOCK || !holdPreEl) return;
-  if (!CAP.wechat) return;            // 能力关掉时整个 #holdPane 都收起来了
+  if (MOCK || !hintEl) return;
+  if (!CAP.wechat) return;            // 能力关掉时主按钮直接写「微信能力已关闭」
   if (micHolding()) return;           // 按住/换声期间不抢后端，也不改文案（那几秒该显示进度）
   const now = Date.now();
   if (!force && now - precheckAt < PRECHECK_TTL) return;
@@ -2795,13 +2884,13 @@ async function refreshWechatPrecheck(force) {
     const r = await fetch(PRECHECK_API, { cache: "no-store" });
     if (!r.ok) {
       // 预检打不开**不影响发送**（它只是提前告知），所以只给 warn，不吓人
-      setHoldPre(r.status === 404 ? "预检接口不在（后端比桌宠旧）" : "预检打不开（HTTP " + r.status + "）", "warn");
-      holdPreEl.title = "预检是只读的，打不开不影响发送；但「微信没开」这类问题会退化成松手后才发现";
+      setWechatNote(r.status === 404 ? "预检接口不在（后端比桌宠旧）" : "预检打不开（HTTP " + r.status + "）", "warn",
+        "预检是只读的，打不开不影响发送；但「微信没开」这类问题会退化成松手后才发现");
       return;
     }
     renderWechatPrecheck(await r.json());
   } catch {
-    setHoldPre("预检打不开（后端没起来？）", "warn");
+    setWechatNote("预检打不开（后端没起来？）", "warn");
   }
 }
 
@@ -2817,16 +2906,21 @@ function tickMicSec() {
   micSecEl.textContent = `${sec.toFixed(1)}s / ${micMaxS}s`;
 }
 
+/**
+ * 录音状态的**唯一**镜像点：装填区的波形块 + 主按钮 + 提示行，一次刷完。
+ * 改版前这里只改 #holdMic 的 class 和文案 —— 那颗按钮只在「按住」页里存在，
+ * 切走了就看不见。现在主按钮常驻，所以「按着时它是什么样」必须在这里统一表达。
+ */
 function renderMic() {
-  if (holdMicEl) {
-    // 录制中整块转红（见 CSS）：绿在本面板里已经是「已连接/正在播」的意思，
-    // 而「正在录你的声音」是需要注意的进行态。
-    holdMicEl.classList.toggle("rec", micPhase === "recording");
-    holdMicEl.classList.toggle("wait",
-      micPhase === "arming" || micPhase === "converting" || micPhase === "sending");
+  const rec = micPhase !== "idle";
+  // 装填区：录音时输入框让位给波形（两者不同时出现 —— 语音和打字是两条路）
+  if (recBoxEl) recBoxEl.hidden = !rec;
+  if (sayEl) {
+    const field = sayEl.closest(".field");
+    if (field) field.hidden = rec;
   }
-  // 按钮主文案恒为「按住说话」（它就是那个手势的名字），进度写在下面的 #micSec 里
   tickMicSec();
+  refreshFire();   // 主按钮的 .m-* / 文案 / 提示行都跟着 micPhase 变
 }
 
 /** 秒表只靠需要的时候跑：面板平时是 1s 轮询，录制时才有“秒数在跳”的需求。 */
@@ -2856,7 +2950,7 @@ function micDown(e) {
   renderMic();
   // 指针捕获：光标滑出按钮后 pointerup 仍送回这里。否则松手事件丢掉，
   // 只能等主进程那个 59s 上限兜底 —— 用户看到的是「按了没反应，还在录」。
-  try { holdMicEl.setPointerCapture(e.pointerId); } catch {}
+  try { if (fireEl && e) fireEl.setPointerCapture(e.pointerId); } catch {}
   window.pet.micDown(voiceSel.value || "");
 }
 
@@ -2869,16 +2963,9 @@ function micUp() {
   if (window.pet && window.pet.micUp) window.pet.micUp();
 }
 
-if (holdMicEl && holdMicEl.addEventListener) {
-  holdMicEl.addEventListener("pointerdown", micDown);
-  // pointerup 可能落在任意位置（捕获后仍回到按钮），单独用一个什么也不查的处理器：
-  // 按住期间任何形式的“松开”都应当收尾，包括 pointercancel（系统抢走手势，比如触屏滚动）。
-  for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) {
-    holdMicEl.addEventListener(ev, micUp);
-  }
-  // 右键/长按菜单在按住手势里是干扰项
-  holdMicEl.addEventListener("contextmenu", (e) => e.preventDefault());
-}
+// ⚠️ 主按钮的 pointerdown/up/click 只在一处挂（见上面「主按钮的两种手势」那段）。
+//    改版前 holdMic 与 send 是两颗按钮，各挂一套；合并成一颗之后如果两处都挂，
+//    录音会起两次、发送会触发两遍 —— 那是这次重构最容易犯的错。
 
 // 主进程回传的录音状态：按钮文案/颜色/秒数全靠它（没有它就只能瞎显示）。
 if (window.pet && window.pet.onMicState) {
@@ -2906,11 +2993,21 @@ if (window.pet && window.pet.onPreviewResult) {
     // 否则主按钮会变成「发送试听」，发出去的是样板句而不是你打的字。
     if (r.sendable === false) {
       lastPreview = null;
-      refreshSendLabel();         // 保持「合成并发送」
+      pendingPremix = false;
+      refreshFire();              // 保持「合成并发送」
       setStatus(`${r.note || "你的文字没合出可用声音，改听固定样板句"}（${r.duration_s || "?"}s）`, "ok");
     } else {
       lastPreview = { wav: r.wav, url: r.url, duration_s: r.duration_s };
-      refreshSendLabel();         // 主按钮切到「发送试听」
+      // ★ 文字 + 音效片的那条链在这里接上：合成产物已经进了 lastPreview，
+      //   直接交给 premixAndSend（它会读 lastPreview 当底，混完自己 sendWav）。
+      //   注意**不能**再往下走去播试听 —— 用户要的是发出去，不是听一遍。
+      if (pendingPremix) {
+        pendingPremix = false;
+        setBusy(sendBtn, false);
+        void premixAndSend();
+        return;
+      }
+      refreshFire();              // 主按钮切到「发送试听」
       setStatus(`已合成 ${r.duration_s || "?"}s，试听中…满意就点「发送试听」`, "ok");
     }
     try {
@@ -3138,6 +3235,89 @@ setInterval(() => {
   playGuide({ title: dozy ? "打盹" : "闲聊", lines: s.lines, action: s.action, motion: s.motion, duration: dozy ? 9000 : 6000 });
 }, 5000);
 
+// ---------------- 布局形态表（纵向预算门禁的枚举源）----------------
+// 为什么需要它：面板纵向预算是**死的**（max-height 300px），而「哪个形态最挤」
+// 不能靠人记得。tools/pet-panel-layout.cjs 会遍历这张表，逐个进入形态量高度
+// （× 2 种气泡），再跟 tools/pet-panel-layout-budget.json 的基线比。
+// **加形态必须重算基线**，否则门禁会红；这条约束替代了旧版「新页签必须有基线」。
+// 每个形态都是「重置 → 摆出这一态」，不返回清理函数：门禁每次进形态前统一重置，
+// 顺序扫描才不会互相污染（比如上一条的录音中状态漏到下一条）。
+function resetLayoutState() {
+  if (sayEl) sayEl.value = "";
+  sfxPicks = [];
+  lastPreview = null;
+  pendingPremix = false;
+  micPhase = "idle";
+  wechatNote = null;
+  if (recBoxEl) recBoxEl.hidden = true;
+  const field = sayEl && sayEl.closest(".field");
+  if (field) field.hidden = false;
+  setBusy(sendBtn, false);
+  setBusy(previewBtn, false);
+  setLayer("");
+  setStatus("", "");
+  renderFxPicks();
+  renderFxGrid();
+  refreshFire();
+}
+
+/**
+ * 形态里要用的样本。**不能只读 sfxItems**：门禁与截图都要能离线摆出这一态，
+ * 而 catalog 是异步拉的 —— 拿空数组切两片，量到的「有音效片」会是个没有 chips 的空壳，
+ * 这一态的最挤高度就永远量不到（那正是门禁存在的理由）。
+ */
+function fxPickSample(i) {
+  return sfxItems[i] || { id: "s" + (i + 1), name: "音效" + (i + 1), icon: "🔔" };
+}
+
+const LAYOUT_STATES = {
+  // 空草稿：主按钮 = 按住说话。这是用户 90% 时间看到的样子。
+  idle: () => {},
+  // 有文字：主按钮 = 合成并发送，试听出现。
+  typed: () => {
+    if (sayEl) sayEl.value = "今天真热啊，出去了";
+    refreshFire();
+  },
+  // 文字 + 2 个音效片：装填区最高的形态（音效片单独一行）。
+  picked: () => {
+    if (sayEl) sayEl.value = "今天真热啊，出去了";
+    sfxPicks = [0, 1].map((i) => {
+      const it = fxPickSample(i);
+      return { id: it.id, name: it.name, icon: it.icon,
+               mode: i === 0 ? "layer" : "append", at_s: 0 };
+    });
+    renderFxPicks();
+    renderFxGrid();
+    refreshFire();
+  },
+  // 录制中：输入框让位给波形，主按钮转红。
+  rec: () => {
+    micPhase = "recording";
+    micStartedAt = Date.now() - 2300;
+    renderMic();
+  },
+  // 声音托盘：放歌行 + 音效网格 + 草稿（最挤的组合：有文字、有音效片）。
+  tray: () => {
+    if (sayEl) sayEl.value = "今天真热啊，出去了";
+    sfxPicks = [0, 1].map((i) => {
+      const it = fxPickSample(i);
+      return { id: it.id, name: it.name, icon: it.icon, mode: "layer", at_s: 0 };
+    });
+    renderFxPicks();
+    renderFxGrid();
+    refreshFire();
+    setLayer("tray");
+  },
+  // 更多抽屉：音色 + 引擎 + 直出 + 历史（抽屉打开时提示行与音效片收起，见 CSS）。
+  drawer: () => setLayer("drawer"),
+  // 合成中：主按钮转圈（busy 会把图标换成 spinner，尺寸不同）。
+  busy: () => setBusy(sendBtn, true),
+};
+// 门禁从 window 上读（页面脚本与外部分析脚本的唯一契约）。别改名 ——
+// tools/test-pet-panel-layout.cjs 的静态检查拿它当「形态是否登记」的真相源。
+window.__petLayoutStates = LAYOUT_STATES;
+window.__petResetLayoutState = resetLayoutState;
+
 // 引擎分段的初始选中态（从 localStorage 恢复）。必须在 void tick() 之前 ——
 // tick 会调 refreshEngineSeg()，但那时 runningEngine 还是 null，先渲染一次选中态。
 setEngine(engine);
@@ -3147,9 +3327,8 @@ setEngine(engine);
 void (async () => {
   await loadCapabilities();
   refreshCapVisibility();
-  // 恢复上次的功能页（localStorage 残留 tab=fx 时上面 CAP 门控已把它归位到 speak）
-  setTab(activeTab, false);
-  refreshFxModeSeg();
+  // 首帧：主按钮按空草稿渲染（托盘/抽屉都是收起态 —— 它们是「需要时才长出来」的）
+  refreshFire();
   void tick();
   setInterval(tick, 1000);
   // 皮肤轮询：应用新皮肤后 5s 内热切换（无需重启桌宠）。

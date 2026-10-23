@@ -162,6 +162,8 @@ function mkEl(id) {
     appendChild() {},
     add() {},
     focus() {},
+    setAttribute(k, v) { this[".attr." + k] = String(v); },
+    getAttribute(k) { return this[".attr." + k] === undefined ? null : this[".attr." + k]; },
     closest() { return null; },
     querySelectorAll() { return []; },
   };
@@ -342,16 +344,17 @@ global.fetch = async (url, opts) => {
 // 显式挂一份。`engine` / `runningEngine` 是 let，只能用 getter 闭包读（对象字面量存不住活绑定）。
 // 追加在末尾不影响上面按行号做的错误定位。
 const EXPORT_HOOK = "\n;globalThis.__petFns = { setState, setEngine, playGuide, endGuide, setBubbleVisible, settleSendResult,"
-  + " setTab, loadVoices,"
+  + " setLayer, refreshFire, draftKind, resetLayoutState, loadVoices,"
   + " getEngine: function () { return engine; },"
   + " getRunningEngine: function () { return runningEngine; },"
-  // 按住说话（2026-09-29）：micPhase / activeTab / panelTimer 都是模块作用域的 let，
+  // 按住说话（2026-09-29）：micPhase / panelLayer / panelTimer 都是模块作用域的 let，
   // 只能用 getter 闭包读（对象字面量存不住活绑定）。panelTimer 是「按住时面板不许自己收」
   // 那条不变量的唯一观测点。
   + " getMicPhase: function () { return micPhase; },"
   // 发送前预检：形态全靠后端响应决定，只能从外部不同形态地喂（见下面的预检用例）
   + " refreshWechatPrecheck,"
-  + " getActiveTab: function () { return activeTab; },"
+  // 面板分层（2026-10-23 重构）："" | "tray" | "drawer"，互斥。
+  + " getPanelLayer: function () { return panelLayer; },"
   + " getPanelTimer: function () { return panelTimer; } };\n";
 let thrown = null;
 try {
@@ -367,11 +370,6 @@ const petFns = globalThis.__petFns || {};
 for (const mm of html.matchAll(/id="(eng[A-Za-z]+)"\s+data-eng="([a-z]+)"/g)) {
   els[mm[1]] = els[mm[1]] || mkEl(mm[1]);
   els[mm[1]].dataset = { eng: mm[2] };
-}
-// 页签同理（setTab 读 b.dataset.tab）。从 HTML 抠出来，改了页签 id/名字测试会跟着走。
-for (const mm of html.matchAll(/id="(tab[A-Za-z]+)"\s+data-tab="([a-z]+)"/g)) {
-  els[mm[1]] = els[mm[1]] || mkEl(mm[1]);
-  els[mm[1]].dataset = { tab: mm[2] };
 }
 // 音色下拉：真实 <select> 永远有 options（HTMLOptionsCollection），而 DOM 桩不是解析器。
 // 不补上，refreshRemoteVoice 的「反查名字」路径就永远跑不到，测试会假绿。
@@ -469,7 +467,7 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
 
   check("不对含图标子节点的元素直写 textContent（会把图标整个抹掉）", () => {
     // 这些元素内部现在有 <svg> 图标 / <span class="spin">，赋 textContent 会清空子节点。
-    // 正确做法是写它们内部的纯文本节点（#sendLabel / #statusText / #pillText）。
+    // 正确做法是写它们内部的纯文本节点（#fireLabel / #statusText / #pillText）。
     // （#liveLabel 已随 2026-09-26 的面板去重删除：启停并入引擎分段。）
     // 注意 #recent 不在此列：它的子节点本来就是按数据生成的，写 innerHTML 才是正确用法。
     const guarded = ["liveBtn", "sendBtn", "previewBtn", "statusEl", "pillEl"];
@@ -542,8 +540,8 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     assert.strictEqual(els.status.className, "show ok", "合成成功应为 show ok");
     assert.match(els.statusText.textContent, /已合成 3\.2s/);
     // 待发产物就位后主按钮文案要跟着变
-    assert.strictEqual(els.sendLabel.textContent, "发送试听",
-      "试听成功后主按钮应变成「发送试听」，实际 " + JSON.stringify(els.sendLabel.textContent));
+    assert.strictEqual(els.fireLabel.textContent, "发送试听",
+      "试听成功后主按钮应变成「发送试听」，实际 " + JSON.stringify(els.fireLabel.textContent));
     petCbs.preview({ ok: false, error: "微信没开" });
     assert.strictEqual(els.status.className, "show err", "合成失败应为 show err");
     assert.match(els.statusText.textContent, /合成失败：微信没开/);
@@ -551,27 +549,36 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
 
   // ---------- 面板让位规则（回归点 12） ----------
 
-  check("气泡显隐只有一个写入口：bubble.style.display 只出现在 setBubbleVisible 里", () => {
+  check("气泡显隐只有一个写入口：bubble.style.display 只出现在 applyBubble 里", () => {
     const writes = [...codeStripped.matchAll(/bubble\.style\.display\s*=/g)];
     assert.strictEqual(writes.length, 1,
-      "bubble.style.display 被写了 " + writes.length + " 次，应恰好 1 次（都在 setBubbleVisible 内）；" +
-      "散着写的地方不会同步 #root.compact，那一处就会带着多余的 #recent 去和气泡抢高度");
-    const fnIdx = codeStripped.indexOf("function setBubbleVisible");
-    assert.ok(fnIdx > -1, "找不到 setBubbleVisible() —— 气泡显隐与让位标记没有统一入口");
+      "bubble.style.display 被写了 " + writes.length + " 次，应恰好 1 次（都在 applyBubble 内）；" +
+      "散着写的地方不会同步 #root.compact，那一处就会带着多余的控件去和气泡抢高度");
+    const fnIdx = codeStripped.indexOf("function applyBubble");
+    assert.ok(fnIdx > -1, "找不到 applyBubble() —— 气泡显隐与让位标记没有统一入口");
     const body = cssBlockBody(codeStripped, codeStripped.indexOf("{", fnIdx));
     assert.ok(/bubble\.style\.display\s*=/.test(body),
-      "唯一那处 bubble.style.display 不在 setBubbleVisible() 里");
+      "唯一那处 bubble.style.display 不在 applyBubble() 里");
     assert.ok(/classList\.(toggle|add|remove)\(\s*"compact"/.test(body),
-      "setBubbleVisible() 没有同步 #root 上的 .compact —— 让位规则永远不会生效");
+      "applyBubble() 没有同步 #root 上的 .compact —— 让位规则永远不会生效");
+    // 「想显示」与「能不能显示」必须分开存：分层打开时气泡要被压住，收起分层后要自己回来。
+    // 只存一个 display 的话，托盘关掉时没人知道气泡原本该不该在屏。
+    assert.ok(/bubbleWanted/.test(body) || /bubbleWanted/.test(codeStripped),
+      "没有 bubbleWanted —— 分层让位之后就再也不知道气泡原本该不该在了");
   });
 
-  check("CSS 里有 #root.compact 收起 #recent 的规则（气泡在屏时面板让位）", () => {
+  check("CSS 里有 #root.compact 的让位规则（气泡在屏时面板要让出高度）", () => {
     const hits = [...cssStripped.matchAll(/#root\.compact[^{]*\{([^}]*)\}/g)];
     assert.ok(hits.length > 0, "找不到任何 #root.compact 规则");
-    const hidesRecent = hits.some((h) =>
-      h[0].includes("#recent") && /display\s*:\s*none/.test(h[1]));
-    assert.ok(hidesRecent,
-      "没有「#root.compact 下 #recent 隐藏」的规则 —— 面板省不出高度，气泡一起来底部那行就会被切");
+    const hides = (sel) => hits.some((h) => h[0].includes(sel) && /display\s*:\s*none/.test(h[1]));
+    // 气泡 82px 是从面板的可用高里直接扣的，能省的只有「稍后再看」的那几样：
+    // 手势行（一句话用法）、音色 chip（抽屉里一直有）、音效网格（78px → 40px 一行）。
+    assert.ok(hides("#gesture"),
+      "没有「.compact 下收起提示行」的规则 —— 气泡一起来面板就少 82px 可用高");
+    assert.ok(hides("#voiceBtn"),
+      "没有「.compact 下收起音色 chip」的规则 —— 184px 的头部装不下长药丸 + 音色名，只会两边都变省略号");
+    assert.ok(/#root\.compact[^{]*#fxGrid[^{]*\{[^}]*max-height/.test(cssStripped),
+      "没有「.compact 下压扁音效网格」的规则 —— 托盘打开时网格会占满 78px");
   });
 
   // ⚠️ 这一组只在在线模式跑：它会 setState/playGuide，把「离线」场景的既有状态冲掉
@@ -790,9 +797,13 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     });
 
     // ---------- 按住说话：手势 → IPC → 状态回传 ----------
+    // 2026-10-23 重构后主按钮是面板上**唯一**的动作：空草稿按住 = 录音，有内容点按 = 发送。
+    // 所以这里先清回空草稿，再模拟一次真实按下（真 pointerdown 必带 button:0 —— 处理器要靠它
+    // 挡掉右键）。
+    petFns.resetLayoutState();
     petIpc.length = 0;
     els.voiceSel.value = "kangaroo";
-    (els.holdMic._on.pointerdown || [])[0]({ pointerId: 1 });
+    (els.fire._on.pointerdown || [])[0]({ pointerId: 1, button: 0 });
 
     check("按住说话：pointerdown → pet:mic-down，且带上面板选中的音色", () => {
       assert.deepStrictEqual(petIpc.filter((c) => c[0] === "micDown"), [["micDown", "kangaroo"]],
@@ -801,29 +812,73 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     });
 
     check("按住说话：pointerup → pet:mic-up（松手只表示「要停」，不停在本地）", () => {
-      (els.holdMic._on.pointerup || [])[0]();
+      (els.fire._on.pointerup || [])[0]();
       assert.ok(petIpc.some((c) => c[0] === "micUp"), "松手没有下发 pet:mic-up —— 录音只能等 59s 上限自己停");
       assert.strictEqual(petFns.getMicPhase(), "arming",
         "松手不该直接把相位改成 idle —— 真正的下一个状态由主进程回传（换声可能要十几秒）");
     });
 
     check("按住说话：pointercancel 也算松手（系统抢走手势时不能挂着）", () => {
+      petCbs.mic({ phase: "idle", startedAt: 0, maxSeconds: 59 });
+      (els.fire._on.pointerdown || [])[0]({ pointerId: 2, button: 0 });
       const before = petIpc.filter((c) => c[0] === "micUp").length;
-      (els.holdMic._on.pointercancel || [])[0]();
-      assert.ok(petIpc.filter((c) => c[0] === "micUp").length > before);
+      (els.fire._on.pointercancel || [])[0]();
+      assert.ok(petIpc.filter((c) => c[0] === "micUp").length > before,
+        "手势被系统抢走时没下发 mic-up —— 主进程会一直录到 59s 上限");
+      petCbs.mic({ phase: "idle", startedAt: 0, maxSeconds: 59 });
     });
 
     check("mic-state 回传驱动按钮：录制中整块转红 + 秒数在跳", () => {
       assert.strictEqual(typeof petCbs.mic, "function", "onMicState 没被订阅（按钮状态就没人驱动了）");
       petCbs.mic({ phase: "recording", startedAt: Date.now() - 2300, maxSeconds: 59 });
       assert.strictEqual(petFns.getMicPhase(), "recording");
-      assert.ok(els.holdMic.classList.contains("rec"), "录制中按钮没转红（分不清在不在录）");
+      assert.ok(els.fire.classList.contains("m-rec"), "录制中主按钮没转红（分不清在不在录）");
       assert.match(String(els.micSec.textContent), /^2\.[0-9]s \/ 59s$/,
         "秒数没显示出来：" + JSON.stringify(els.micSec.textContent));
       petCbs.mic({ phase: "idle", startedAt: 0, maxSeconds: 59 });
       assert.strictEqual(petFns.getMicPhase(), "idle");
-      assert.ok(!els.holdMic.classList.contains("rec"), "结束后按钮还红着");
+      assert.ok(!els.fire.classList.contains("m-rec"), "结束后按钮还红着");
       assert.strictEqual(els.micSec.textContent, "");
+    });
+
+    // ★ 一颗按钮两种语义，是这次重构最容易退化的地方：守卫写反（或漏了）就会
+    //   「想发文字，结果按出一次录音」。相反方向同样要防：空草稿点一下不能变成发送。
+    check("有内容时按住主按钮不录音（这时它是「发送」不是「录音」）", () => {
+      petFns.resetLayoutState();
+      els.say.value = "打字的内容";
+      petFns.refreshFire();
+      assert.strictEqual(petFns.draftKind(), "text", "有文字时草稿类型应为 text");
+      petIpc.length = 0;
+      (els.fire._on.pointerdown || [])[0]({ pointerId: 3, button: 0 });
+      assert.ok(!petIpc.some((c) => c[0] === "micDown"),
+        "有文字时按下仍在录音 —— 用户以为在发送，其实在录");
+      assert.strictEqual(petFns.getMicPhase(), "idle", "不该进入录音相位");
+      els.say.value = "";
+      petFns.refreshFire();
+    });
+
+    check("空草稿点一下 = 只说手势，不发任何东西", () => {
+      petFns.resetLayoutState();
+      petIpc.length = 0;
+      (els.fire._on.click || [])[0]();
+      assert.ok(!petIpc.some((c) => c[0] === "sendLast" || c[0] === "sendText"),
+        "空草稿点一下触发了发送");
+      assert.strictEqual(els.statusText.textContent, "按住不放说话，松手就发",
+        "点了一下但没按住，应给一句手势提示（不能静默，也不能报错）");
+    });
+
+    // 浏览器在 pointerup 之后还会派发一次 click —— 那颗 click 走的是「发送」分支。
+    // 两个方向都要钉：① 刚按完的那一次必须被吞掉；② 复位之后必须能正常点。
+    // 这里断言**机制**而不是当时的现象：录音时草稿是空的，就算漏吞也发不出东西，
+    // 所以只能从代码结构上钉（真的退化时用户看到的是「按完又发一次上一次的试听产物」）。
+    check("松手后紧跟的那次 click 被 fireArmed 吞掉（否则会多发一条）", () => {
+      const idx = codeStripped.indexOf('fireEl.addEventListener("click"');
+      assert.ok(idx > -1, "找不到主按钮的 click 处理器");
+      const body = cssBlockBody(codeStripped, codeStripped.indexOf("{", idx));
+      assert.ok(/if\s*\(\s*fireArmed\s*\)/.test(body),
+        "click 处理器没有 fireArmed 守卫 —— pointerup 之后那次 click 会把刚录的东西再发一遍");
+      assert.ok(/setTimeout\([^;]*fireArmed\s*=\s*false/.test(codeStripped),
+        "fireArmed 没有在 pointerup 之后复位（setTimeout(0)）—— 守卫会把**之后**的正常点按也一起吞掉");
     });
 
     // 按住期间的两条集成级不变量。它们不属于「功能」，而是「手势能不能真的走完」：
@@ -861,8 +916,9 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     check("旧主进程（preload 里没有 micDown）必须说出来，不能静默失败", () => {
       const saved = window.pet.micDown;
       delete window.pet.micDown;
+      petFns.resetLayoutState();
       petIpc.length = 0;
-      (els.holdMic._on.pointerdown || [])[0]({ pointerId: 3 });
+      (els.fire._on.pointerdown || [])[0]({ pointerId: 3, button: 0 });
       assert.match(String(els.statusText.textContent), /新版桌面端|asar/,
         "旧主进程时静默失败 —— 用户按半天会以为是自己没按住，而这他解决不了；" +
         "实际状态行：" + JSON.stringify(els.statusText.textContent));
@@ -870,39 +926,23 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       window.pet.micDown = saved;
     });
 
-    check("「按住说话」是第三个页签：切过去时显示页体、收起动作行（并记住这一页）", () => {
-      (els.tabHold._on.click || [])[0]();
-      assert.strictEqual(petFns.getActiveTab(), "hold");
-      assert.ok(els.holdPane.classList.contains("on"), "按住页的页体没显示");
-      assert.ok(!els.speakPane.classList.contains("on"), "说话页没有让位");
-      assert.strictEqual(els.actRow.style.display, "none",
-        "「按住」页里还留着「合成并发送/试听」—— 它们作用的是说话页的输入框，会让人以为还要先打字");
-      assert.strictEqual(localStorageStore.get("pet_panel_tab"), "hold",
-        "页签没记住 —— 固定用「按住」的人每次悬停都要重新点一次");
-      // 这一页的入口同样受 hook.wechat 门控（整条链路终点是发微信）
-      assert.ok(/hide\("tabHold"/.test(codeStripped) && /hide\("holdPane"/.test(codeStripped),
-        "refreshCapVisibility 没有收起「按住说话」的页签/页体：关掉微信能力后它就是个一按必 404 的死页");
-      (els.tabSpeak._on.click || [])[0]();
-      assert.strictEqual(petFns.getActiveTab(), "speak");
-      assert.strictEqual(els.actRow.style.display, "", "回到说话页应把动作行放回来");
-    });
-
     // ---------- 发送前预检：微信开没开 / 会不会重启，要**按下之前**就说 ----------
     //
     // 这一组钉的是那条最贵的失败路径：录 0..59 秒 + 换声十几秒，然后才被告知「微信没开」。
     // 判据全部来自后端 /api/wechat/precheck（只读），前端只负责「把不同结论说成不同的话」。
-    const holdPre = els.holdPre;
+    // 改版后结论写在**主按钮下面那条提示行**（#gesture）—— 旧版它有自己的一行 #holdPre。
+    const hint = els.gesture;
     const preFetches = () => fetchCalls.filter((c) => c.url.includes("/api/wechat/precheck")).length;
 
     // ① 常态：微信在跑、不重启
+    petFns.resetLayoutState();
     precheckStub = null;
-    (els.tabHold._on.click || [])[0]();     // 进页 → 强制拉一次（绕过节流）
-    await flush();
-    check("进「按住说话」页就把预检拉出来：常态写「微信已打开」", () => {
-      assert.strictEqual(holdPre.className, "t-ok",
-        "常态预检的色调不对（应 t-ok）：" + JSON.stringify(holdPre.className));
-      assert.match(String(holdPre.textContent), /已打开|直接切麦克风/,
-        "预检行没显示常态结论：" + JSON.stringify(holdPre.textContent));
+    await petFns.refreshWechatPrecheck(true);
+    check("预检结论写进提示行：常态说「微信已打开」", () => {
+      assert.strictEqual(hint.className, "t-ok",
+        "常态预检的色调不对（应 t-ok）：" + JSON.stringify(hint.className));
+      assert.match(String(hint.textContent), /已打开/,
+        "预检行没显示常态结论：" + JSON.stringify(hint.textContent));
     });
 
     // ② 注定失败（block_reason 非空）：这才是「松手之后才报错」要治的那件事
@@ -913,20 +953,30 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     }) };
     await petFns.refreshWechatPrecheck(true);
     check("注定失败要在按下之前说，并转述后端的**分因**（没开 / 收托盘 / 登录页是三件事）", () => {
-      assert.strictEqual(holdPre.className, "t-bad", "注定失败应是 t-bad：" + JSON.stringify(holdPre.className));
-      assert.match(String(holdPre.textContent), /没有在运行/,
-        "应转述后端分因的首句，而不是自己编一句「出错了」：" + JSON.stringify(holdPre.textContent));
-      assert.strictEqual(holdPre.title, "微信没有在运行：请先打开微信并登录、进入聊天窗口，再重试发送",
+      assert.strictEqual(hint.className, "t-bad", "注定失败应是 t-bad：" + JSON.stringify(hint.className));
+      assert.match(String(hint.textContent), /没有在运行/,
+        "应转述后端分因的首句，而不是自己编一句「出错了」：" + JSON.stringify(hint.textContent));
+      assert.strictEqual(hint.title, "微信没有在运行：请先打开微信并登录、进入聊天窗口，再重试发送",
         "完整原因（含下一步）必须进 title —— 单行条的省略号正好会切掉最该看的那半句");
+    });
+
+    // 提示行只有一行：告警优先于「怎么发」的用法提示（警告压过去才有意义）。
+    check("有文字时告警仍压住「怎么发」的提示（不然最该看的那句会被用法盖掉）", () => {
+      els.say.value = "有字要发";
+      petFns.refreshFire();
+      assert.match(String(hint.textContent), /没有在运行/,
+        "一打字就把「微信没开」顶掉了：" + JSON.stringify(hint.textContent));
+      els.say.value = "";
+      petFns.refreshFire();
     });
 
     check("预检只告警、不拦人：数据可能已过期，不许因此禁用按钮", () => {
       // 必须直接查 disabled：DOM 桩是直接调处理器，绕过了浏览器的「禁用按钮不发事件」——
       // 只靠下面那行行为断言的话，把按钮禁掉这种实现**测不出来**（变异测试实测过）。
-      assert.ok(!els.holdMic.disabled,
+      assert.ok(!els.fire.disabled,
         "预检说必败时把按钮禁掉了 —— 刚把微信打开的人会按不动，比不告警更糟");
       petIpc.length = 0;
-      (els.holdMic._on.pointerdown || [])[0]({ pointerId: 4 });
+      (els.fire._on.pointerdown || [])[0]({ pointerId: 4, button: 0 });
       assert.strictEqual(petFns.getMicPhase(), "arming",
         "预检为 bad 时按不下去了 —— 刚把微信打开的人会按不动，比不告警更糟");
       assert.ok(petIpc.some((c) => c[0] === "micDown"), "预检存在时 micDown 没发给主进程");
@@ -942,19 +992,19 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     }) };
     await petFns.refreshWechatPrecheck(true);
     check("会重启微信也要提前说，原因进 tooltip", () => {
-      assert.strictEqual(holdPre.className, "t-warn", "会重启应是 t-warn（不是错误）：" + JSON.stringify(holdPre.className));
-      assert.match(String(holdPre.textContent), /重启/);
-      assert.match(String(holdPre.title), /重新枚举/, "重启的原因没进 tooltip");
+      assert.strictEqual(hint.className, "t-warn", "会重启应是 t-warn（不是错误）：" + JSON.stringify(hint.className));
+      assert.match(String(hint.textContent), /重启/);
+      assert.match(String(hint.title), /重新枚举/, "重启的原因没进 tooltip");
     });
 
     // ④ 200 但字段缺失 = 前后端版本不一致（pet.html 是热替换的）
     precheckStub = { ok: true, status: 200, json: async () => ({ ok: true, hint: "旧版后端" }) };
     await petFns.refreshWechatPrecheck(true);
     check("预检字段缺失时说「没有结论」，绝不猜成「微信没开」", () => {
-      assert.strictEqual(holdPre.className, "t-warn");
-      assert.match(String(holdPre.textContent), /没有结论|后端版本/,
-        "实际：" + JSON.stringify(holdPre.textContent));
-      assert.doesNotMatch(String(holdPre.textContent), /没开|没在运行/,
+      assert.strictEqual(hint.className, "t-warn");
+      assert.match(String(hint.textContent), /没有结论|后端版本/,
+        "实际：" + JSON.stringify(hint.textContent));
+      assert.doesNotMatch(String(hint.textContent), /没开|没在运行/,
         "把版本不一致说成「微信没开」会把用户指去查微信，方向完全错");
     });
 
@@ -962,17 +1012,17 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     precheckStub = { ok: false, status: 404, json: async () => ({}) };
     await petFns.refreshWechatPrecheck(true);
     check("预检 404 不吓人：它是只读咨询，打不开不影响发送", () => {
-      assert.strictEqual(holdPre.className, "t-warn", "预检打不开不该是红色警报：" + JSON.stringify(holdPre.className));
-      assert.match(String(holdPre.textContent), /旧|不在/);
-      assert.match(String(holdPre.title), /不影响发送/);
+      assert.strictEqual(hint.className, "t-warn", "预检打不开不该是红色警报：" + JSON.stringify(hint.className));
+      assert.match(String(hint.textContent), /旧|不在/);
+      assert.match(String(hint.title), /不影响发送/);
     });
 
     precheckStub = () => { throw new Error("后端没起来"); };
     await petFns.refreshWechatPrecheck(true);
     check("预检请求抛错时也要有个说法（不能停在上一句结论上）", () => {
-      assert.strictEqual(holdPre.className, "t-warn");
-      assert.match(String(holdPre.textContent), /打不开|没起来/,
-        "实际：" + JSON.stringify(holdPre.textContent));
+      assert.strictEqual(hint.className, "t-warn");
+      assert.match(String(hint.textContent), /打不开|没起来/,
+        "实际：" + JSON.stringify(hint.textContent));
     });
 
     // ⑥ 节流：tick 每 1s 都会路过，但真请求 5s 才有一次
@@ -980,43 +1030,76 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     await petFns.refreshWechatPrecheck(true);
     const afterForce = preFetches();
     await petFns.refreshWechatPrecheck(false);   // 刚拉过 → 5s 内不重复
-    tickInterval()();                            // 就是 tick 那一帧（此刻正停在「按住」页）
+    tickInterval()();                            // 就是 tick 那一帧
     await flush();
     check("预检有节流：1s 轮询不会把它带着每秒枚举一次进程/窗口", () => {
       assert.strictEqual(preFetches(), afterForce,
         "多发了 " + (preFetches() - afterForce) + " 次预检请求");
     });
 
-    // ---------- 放歌（2026-10-22）：第四个页签 ----------
+    // ---------- 面板分层：托盘（声音）/ 抽屉（配置），互斥且不记忆 ----------
     //
-    // 这一页的价值全在「此刻把歌放给对面听」，所以钉三件事：
-    //   ① 入口是页签（204px 里放不下第三行），切过去要显示页体、收起动作行；
-    //   ② 放歌必须走 /bgm/start 且 **loop=true** —— /play 是抢占式 one-shot，
+    // 改版前这里是 4 个页签，按**实现机制**分（说话/按住/音效/放歌），用户得先想
+    // 「这个声音属于哪一类」才找得到入口。现在只有两个分层，而且都挂在状态条的图标上。
+    petFns.resetLayoutState();
+    petFns.setBubbleVisible(false);
+
+    check("托盘与抽屉互斥：一次只开一个，再点一次 = 关", () => {
+      petFns.setLayer("tray");
+      assert.strictEqual(petFns.getPanelLayer(), "tray");
+      assert.strictEqual(els.tray.hidden, false, "托盘没显示");
+      assert.strictEqual(els.drawer.hidden, true, "托盘开着时抽屉也显示 —— 两个分层会一起挤 300px");
+      petFns.setLayer("drawer");
+      assert.strictEqual(petFns.getPanelLayer(), "drawer");
+      assert.strictEqual(els.tray.hidden, true, "切到抽屉时托盘没让位");
+      assert.strictEqual(els.drawer.hidden, false);
+      petFns.setLayer("");
+      assert.strictEqual(petFns.getPanelLayer(), "");
+      assert.strictEqual(els.tray.hidden, true);
+      assert.strictEqual(els.drawer.hidden, true, "关不掉 —— 面板会一直占着那 115px");
+    });
+
+    check("分层不进 localStorage（每次悬停都恢复上次打开的抽屉会像 bug）", () => {
+      petFns.setLayer("tray");
+      assert.ok(![...localStorageStore.keys()].some((k) => /layer|tab/i.test(k)),
+        "分层被持久化了：" + JSON.stringify([...localStorageStore.keys()]));
+      petFns.setLayer("");
+    });
+
+    check("分层打开时气泡让位（82px 气泡 + 115px 托盘放不进 298px，实测溢出 26px）", () => {
+      petFns.setBubbleVisible(true);
+      assert.strictEqual(els.bubble.style.display, "block", "气泡没上屏（前置状态没构造出来）");
+      petFns.setLayer("tray");
+      assert.strictEqual(els.bubble.style.display, "none",
+        "托盘开着但气泡还占着 82px —— 面板会被顶出滚动条");
+      assert.ok(!els.root.classList.contains("compact"),
+        "气泡已收起却还挂着 .compact —— 面板会白白精简（收起音色 chip、压扁网格）");
+      petFns.setLayer("");
+      assert.strictEqual(els.bubble.style.display, "block",
+        "收起托盘后气泡没回来 —— guide 讲到一半就被吞了");
+      petFns.setBubbleVisible(false);
+    });
+
+    // ---------- 放歌（2026-10-22）：托盘里的第一行 ----------
+    //
+    // 这一行存在的意义全在「此刻把歌放给对面听」，所以钉三件事：
+    //   ① 放歌必须走 /bgm/start 且 **loop=true** —— /play 是抢占式 one-shot，
     //      下一格音效会把歌掐断；而 loop=false 播完时 worker 不发消息（协议不变量），
     //      面板会永远停在「放歌中」；
-    //   ③ 拉歌单失败要说在**页内提示行**，不许写共用状态行 —— 那既会顶掉刚发完
-    //      微信的结果，也会凭空多吃 39px 高度（纵向预算最紧只剩 2px）。
+    //   ② 放着歌时不许换歌（否则「停」到底停的是哪首成了猜谜）；
+    //   ③ 拉歌单失败要说在**这一行里**（select 的文案 + title），不许写共用状态行 ——
+    //      那既会顶掉刚发完微信的结果，也会凭空多吃一行高度。
     bgmItems = [
       { name: "bgm_1792678124662.wav", id: "bgm_1792678124662", duration_s: 252.4, source: "session" },
       { name: "kangaroo_cover.wav", id: "kangaroo_cover", duration_s: 61, source: "library" },
     ];
     bgmLast = "";
     bgmStatus = 200;
-    (els.tabBgm._on.click || [])[0]();
+    petFns.setLayer("tray");     // 打开托盘就会强制拉一次歌单（绕过 60s 节流）
     await flush();
-    check("「放歌」是第四个页签：显示页体、收起动作行、把歌单拉出来", () => {
-      assert.strictEqual(petFns.getActiveTab(), "bgm");
-      assert.ok(els.bgmPane.classList.contains("on"), "放歌页的页体没显示");
-      assert.ok(!els.speakPane.classList.contains("on"), "说话页没有让位");
-      assert.strictEqual(els.actRow.style.display, "none",
-        "「放歌」页里还留着「合成并发送/试听」—— 它们作用的是说话页的输入框");
+    check("打开托盘就把歌单拉出来（不进托盘不拉 —— 失败会写进共用状态行）", () => {
       assert.match(String(els.bgmSel.innerHTML), /bgm_1792678124662/,
         "歌单没填进下拉：" + JSON.stringify(els.bgmSel.innerHTML));
-      assert.strictEqual(localStorageStore.get("pet_panel_tab"), "bgm",
-        "页签没记住 —— 固定用这一页的人每次悬停都要重新点");
-      // 整页归 sound.fx-board（bgm 那组端点都挂在那支 router 上）
-      assert.ok(/hide\("tabBgm"/.test(codeStripped) && /hide\("bgmPane"/.test(codeStripped),
-        "refreshCapVisibility 没有收起「放歌」的页签/页体：关掉声板后它就是个全 404 的死页");
     });
 
     const bgmPosts = () => fetchCalls.filter((c) => c.url.includes("/api/soundboard/bgm/") && c.method === "POST");
@@ -1032,7 +1115,7 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       assert.strictEqual(body.loop, true,
         "loop=false 播完时 worker 不发消息 —— 面板会永远停在「放歌中」");
       assert.ok(body.gain > 0 && body.gain <= 1.5, "增益没带/超范围：" + body.gain);
-      assert.strictEqual(els.bgmLabel.textContent, "停", "按钮没切成「停」");
+      assert.strictEqual(els.bgmIc.textContent, "■", "播放键没切成「停」");
       assert.strictEqual(els.bgmSel.disabled, true,
         "放着歌时还允许换歌 → 「停」到底停的是哪首就成了猜谜");
       assert.ok(els.bgmBadge.classList.contains("on"),
@@ -1051,28 +1134,29 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
 
     (els.bgmBtn._on.click || [])[0]();
     await flush();
-    check("再点一下 = /bgm/stop：按钮回「放歌」、选歌框解锁、角标熄灭", () => {
+    check("再点一下 = /bgm/stop：按钮回「放」、选歌框解锁、角标熄灭", () => {
       const post = lastBgmPost();
       assert.ok(post && /\/bgm\/stop$/.test(post.url), "没打 /bgm/stop：" + JSON.stringify(post));
-      assert.strictEqual(els.bgmLabel.textContent, "放歌");
+      assert.strictEqual(els.bgmIc.textContent, "▶");
       assert.strictEqual(els.bgmSel.disabled, false);
       assert.ok(!els.bgmBadge.classList.contains("on"), "停了歌角标还亮着");
     });
 
     const statusBeforeBgm = els.statusText.textContent;
     bgmStatus = 404;
-    (els.tabBgm._on.click || [])[0]();   // 再进一次页 = 强制重拉（绕过节流）
+    petFns.setLayer("");         // 先收起再打开 = 强制重拉（setLayer 的 force 分支）
+    petFns.setLayer("tray");
     await flush();
-    check("歌单拉不到时写在页内提示行，不抢共用状态行（那会顶掉发送结果 + 多吃 39px）", () => {
-      assert.match(String(els.bgmHint.textContent), /新版后端|拉不到|没连上/,
-        "页内没给说法，实际：" + JSON.stringify(els.bgmHint.textContent));
+    check("歌单拉不到时写在放歌行里（select 文案），不抢共用状态行", () => {
+      assert.match(String(els.bgmSel.innerHTML), /新版后端|拉不到|没连上/,
+        "行内没给说法，实际：" + JSON.stringify(els.bgmSel.innerHTML));
       assert.strictEqual(els.statusText.textContent, statusBeforeBgm,
         "拉歌单失败把共用状态行写掉了 —— 会顶掉刚发完微信的结果");
     });
     bgmStatus = 200;
     bgmItems = [];
 
-    (els.tabSpeak._on.click || [])[0]();   // 收尾：把页签还给说话页，别影响后面的用例
+    petFns.setLayer("");   // 收尾：别把托盘留给后面的用例
   }
 
   if (OFFLINE) {

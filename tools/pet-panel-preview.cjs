@@ -39,9 +39,9 @@ const { spawnSync } = require("node:child_process");
 const ROOT = path.join(__dirname, "..");
 const PET_DIR = path.join(ROOT, "web", "electron", "pet");
 const OUT_DIR = path.join(ROOT, "outputs", "pet-preview");
-const SCENES = ["ok-dark", "ok-light", "offline-dark", "live-dark", "qwen-dark", "qwenidle-dark",
-                "think-dark", "guide-dark", "busy-dark", "fx-dark", "fxpick-dark",
-                "hold-dark", "holdrec-dark", "holdwarn-dark"];
+const SCENES = ["idle-dark", "idle-light", "typed-dark", "picked-dark", "rec-dark",
+                "tray-dark", "drawer-dark", "busy-dark", "offline-dark",
+                "live-dark", "qwen-dark", "think-dark", "guide-dark", "holdwarn-dark"];
 
 /** 找 Playwright 缓存里的 chromium-headless-shell。找不到返回 null（调用方负责报错/跳过）。 */
 function findChrome() {
@@ -84,6 +84,39 @@ function preScript(state) {
     onMicState: function (cb) { window.__petMicCb = cb; }
   };
   const SCEN = ${JSON.stringify(state)};
+  // —— 冻结时间 ——
+  // 为什么需要：气泡是**打字机**（playGuide → typeText 逐字上屏），而「气泡折几行」
+  // 直接决定它把面板压扁多少。虚拟时间下那些逐字定时器跑得飞快，同一份代码会量出
+  // 82px 与 97px 两种气泡 —— 预算就永远对不齐（实测就是这么漂的）。
+  // 所以把页面里所有 setTimeout/setInterval 记一份账，量之前一次清掉（tick / 闲聊 /
+  // 打字机 / 面板自动收起全在里面），气泡文案则由调用方钉成最终那句。
+  const _st = window.setTimeout, _si = window.setInterval;
+  window.__petTimers = [];
+  /** 开始记账（可重复调用：清账后再装一次）。 */
+  window.__petRecord = function () {
+    window.__petTimers = [];
+    window.setTimeout = function (fn, ms) {
+      const id = _st(function () { try { fn(); } catch (e) {} }, ms);
+      window.__petTimers.push(["t", id]);
+      return id;
+    };
+    window.setInterval = function (fn, ms) {
+      const id = _si(fn, ms);
+      window.__petTimers.push(["i", id]);
+      return id;
+    };
+  };
+  /** 停表：清掉记账期间挂上的全部定时器，并把原生定时器还回去。 */
+  window.__petFreeze = function () {
+    window.__petTimers.forEach(function (p) {
+      if (p[0] === "t") clearTimeout(p[1]); else clearInterval(p[1]);
+    });
+    window.__petTimers.length = 0;
+    // 冻结后换回原生定时器：调用方自己的「稍后再量」不该被下一次冻结清掉。
+    window.setTimeout = _st;
+    window.setInterval = _si;
+  };
+  window.__petRecord();
   const FAKE = {
     // selected 是 2026-09-29 加的：桌宠状态条要拿它反查「主界面选中」的真名字
     // （下拉默认项的 value 是空串，光看下拉不知道那是谁）。
@@ -98,8 +131,8 @@ function preScript(state) {
       { wav: "w3.wav", ts: Math.floor(Date.now() / 1000) - 90000, duration_s: 2.4 }
     ] },
     "/api/health": { ok: true },
-    // 音效声板（fx/fxpick 场景用）：9 个样本正好铺满 3 列 × 3 行网格，
-    // 让 max-height 的内滚边界也被量到。
+    // 音效声板（tray 场景用）：9 个样本在 2 列 × 36px 的网格里 = 5 行，
+    // 超出 #fxGrid 的 max-height（两行）→ 内滚边界也被量到。
     "/api/soundboard/catalog": { items: [
       { id: "s1", name: "鼓掌",     icon: "👏", duration_s: 1.8, count: 3 },
       { id: "s2", name: "欢呼",     icon: "🎉", duration_s: 2.4, count: 2 },
@@ -110,6 +143,12 @@ function preScript(state) {
       { id: "s7", name: "警报",     icon: "🚨", duration_s: 4.5, count: 1 },
       { id: "s8", name: "完结撒花", icon: "🌸", duration_s: 3.8, count: 6 },
       { id: "s9", name: "木鱼",     icon: "🪵", duration_s: 0.6, count: 9 }
+    ] },
+    // 放歌行（托盘里）：不给它数据的话 #bgmSel 会停在「加载中…」、#bgmHint 变成
+    // 「歌单拉不到（HTTP 503）」—— 截出来的托盘不是真实形态，量的高度也不对。
+    "/api/soundboard/bgm/recent": { last: "夜航星-翻唱.wav", items: [
+      { name: "夜航星-翻唱.wav", duration_s: 214.0 },
+      { name: "孤勇者-清唱.wav", duration_s: 78.0 }
     ] }
   };
   window.fetch = async (url, opts) => {
@@ -166,47 +205,119 @@ function preScript(state) {
 </script>`;
 }
 
-/** 主脚本之后注入：展开面板 + 按场景写状态行/药丸。 */
+/**
+ * 场景 → 形态（`window.__petLayoutStates` 的键，见 pet.html 的「布局形态表」）。
+ *
+ * **只有这一份**。旧版在 postScript 与 measureScript 里各抄了一份 `setTab(...)` 条件，
+ * 加场景时漏改一处，就是「量到的数字对、截出来的图是另一态，而没有任何信号」
+ * （2026-09-29 加 holdwarn 时真踩过）。现在两个入口共用 sceneSetupJs()。
+ */
+const SCENE_STATE = {
+  idle: "idle", typed: "typed", picked: "picked", rec: "rec",
+  tray: "tray", drawer: "drawer", busy: "busy",
+  // 以下都是「空草稿 + 一段状态」：形态本身不变，变的是状态行/气泡。
+  offline: "idle", live: "idle", qwen: "idle", think: "idle", guide: "idle",
+  // 预检告警要配一段草稿：这条告警只有「真的要发」时才有意义。
+  holdwarn: "typed",
+};
+
+/**
+ * 进形态的那段（截图与量测共用，`SCEN` 由调用方定义）。
+ *
+ * 顺序是「重置 → 形态 → 这一场景额外的状态」，重置不能省：形态表里 `rec` 那种会把
+ * micPhase 改掉，下一条不重置就会带着「录制中」进场（顺序扫描时互相污染）。
+ *
+ * ⚠️ `holdwarn` 显式 force 一次预检，不赌 tick 恰好轮到它 —— 那会量到「还没刷」的一帧，
+ * 而这一态的全部意义就是「提示行最长的那句话会不会把面板顶高」。
+ */
+function sceneSetupJs() {
+  return `var STATE_OF = ${JSON.stringify(SCENE_STATE)};
+  var stName = STATE_OF[SCEN] || "idle";
+  window.__petState = stName;   // 让量测报告能对上「这是哪一态」（快照里的 state 字段）
+  if (window.__petResetLayoutState) window.__petResetLayoutState();
+  var st = window.__petLayoutStates && window.__petLayoutStates[stName];
+  if (typeof st === "function") st();
+  if (SCEN === "offline") {
+    // 离线是 tick() 的判据（状态接口全挂），它在第一帧就已经切过去了 ——
+    // 而上面那次重置会把提示行清回默认。这里只是把**同一句**产品文案补回来，
+    // 不是另造一套判定。完整原因见 pet.html 的 tick() 离线分支。
+    setStatus("后端没起来，先开主程序", "err");
+    setHoldPre("后端没起来 · 预检不可用", "bad");
+  }
+  if (SCEN === "live") setStatus("RVC 实时 已开启，微信把 CABLE Output 当麦克风", "ok");
+  if (SCEN === "qwen") setStatus("千问变声 已开启，识别→合成→换嗓", "ok");
+  if (SCEN === "think") { setState("think", "「你好呀」"); setStatus("听懂啦，正在合成…", ""); }
+  if (SCEN === "guide") { ${pinGuideJs()} }
+  if (SCEN === "holdwarn") void refreshWechatPrecheck(true);`;
+}
+
+/**
+ * 大头气泡的固定内容（导览气泡：标题 + 三行步骤）。
+ *
+ * 为什么固定：气泡高度是预算里的一半变量 —— 文案多一个字就多折一行、气泡高 15px，
+ * 面板余量凭空多出来。而 playGuide 是**按行替换**的（typeText 每行盖掉上一行），
+ * 所以「量到第几行」会让同一份代码量出 82px 与 97px 两种气泡（实测就是这么漂的）。
+ * 用法见 pinGuideJs()。
+ */
+const GUIDE_TITLE = "音色工坊";
+const GUIDE_LINES = ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"];
+const GUIDE_LAST = GUIDE_LINES[GUIDE_LINES.length - 1];
+
+/**
+ * 把导览气泡摆到「已经讲完」的样子，并冻结时间。
+ *
+ * 做法是走产品自己的路径（playGuide → typeText），只是**在正确的时刻停手**：
+ * 先让 playGuide 建好标题/步骤点/让位（.compact），再清掉所有定时器（打字机、tick、
+ * 闲聊、面板自动收起），最后用产品的 typeText 把最长那句钉上。
+ * 不新造一套气泡渲染 —— 那样量到的就不是产品的气泡了。
+ */
+function pinGuideJs() {
+  return `window.__petRecord();   // 重新记账：playGuide 排的打字机定时器要能被下面那次冻结清掉
+  playGuide({ title: ${JSON.stringify(GUIDE_TITLE)}, lines: ${JSON.stringify(GUIDE_LINES)},
+    action: "build", motion: "pop", duration: 60000 });
+  window.__petFreeze();
+  typeText(${JSON.stringify(GUIDE_LAST)});          // 打字机的终点：最长那句
+  if (titleEl) titleEl.textContent = ${JSON.stringify(GUIDE_TITLE)};
+  if (typeof stepsEl !== "undefined" && stepsEl) {   // 步骤点也停在最后一步
+    Array.prototype.forEach.call(stepsEl.children, function (el, k) {
+      el.classList.toggle("on", k === stepsEl.children.length - 1);
+    });
+  }
+  setBubbleVisible(true);`;
+}
+
+/**
+ * 进形态前的清单预热（门禁与截图都要）。
+ *
+ * 托盘那一态由「放歌行 + 音效网格」组成，而这两批清单是**异步**拉的 ——
+ * 不预热就进形态，网格是空的、放歌行写「加载中…」，
+ * 量到的高度根本不是那一态的高度（那正是「这一态会不会溢出」要看的东西）。
+ */
+function preloadJs() {
+  return `return Promise.resolve()
+      .then(function () { return typeof loadSfx === "function" ? loadSfx(true) : null; })
+      .then(function () { return typeof loadBgm === "function" ? loadBgm(true) : null; })
+      .catch(function () {});`;
+}
+
+/** 主脚本之后注入：展开面板 + 进形态 + 按场景补状态行。 */
 function postScript(state) {
   return `<script>
 window.addEventListener("load", function () {
   var SCEN = ${JSON.stringify(state)};
   showPanel();
-  if (SCEN === "ok")   setStatus("已合成 3.2s，试听中…满意就点「发送试听」", "ok");
-  if (SCEN === "offline") setStatus("后端没起来，先开主程序", "err");
-  if (SCEN === "live") setStatus("RVC 实时 已开启，微信把 CABLE Output 当麦克风", "ok");
-  if (SCEN === "qwen") setStatus("千问变声 已开启，识别→合成→换嗓", "ok");
-  // 只切选中、不启动：验证「选中 ≠ 已开启」（分段高亮但没有呼吸点）
-  if (SCEN === "qwenidle") {
-    setEngine("qwen");
-    setStatus("引擎已切到「千问变声」，再点一下它启动", "");
-  }
-  if (SCEN === "busy") { setStatus("合成中… 完成后自动发到微信，全程别动键鼠", "ok");
-                         setBusy(sendBtn, true); }
-  if (SCEN === "think") { setState("think", "「你好呀」");
-                          setStatus("听懂啦，正在合成…", ""); }
-  // 音效页：实时播放模式（点格子立即出声）
-  if (SCEN === "fx") { setTab("fx"); setStatus("点一个音效立即播放（再点一下停）", ""); }
-  // 音效页 + 预混勾选态：这是「音效页最挤」的形态 —— 网格满 + 队列 2 颗 chip，
-  // 布局门禁的 fxpick-dark 钉的就是它（网格/队列 max-height 的边界都在场）。
-  if (SCEN === "fxpick") {
-    setTab("fx");
-    sfxMode = "premix"; refreshFxModeSeg();
-    sfxPicks.push({ id: "s1", name: "鼓掌", icon: "👏", mode: "layer", at_s: 0 },
-                  { id: "s2", name: "欢呼", icon: "🎉", mode: "append", at_s: 0 });
-    renderFxGrid(); renderFxPicks(); refreshFxActions();
-    setStatus("已勾 2 个音效，点「发送」混进最近一条语音", "ok");
-  }
-  if (SCEN === "guide") playGuide({ title: "音色工坊",
-    lines: ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"],
-    action: "build", motion: "pop", duration: 60000 });
-  // ⚠ 这里和 measureScript 里各有一份同样的切页条件（截图模式不等 setTimeout，
-  //   量测模式要等布局稳定）—— 加新场景时**两处都要改**，只改一处的话：
-  //   量测数字对、截出来的图是另一页（2026-09-29 加 holdwarn 时真踩过）。
-  if (SCEN === "hold" || SCEN === "holdrec" || SCEN === "holdwarn") setTab("hold");
-  if (SCEN === "holdrec" && window.__petMicCb) {
-    window.__petMicCb({ phase: "recording", startedAt: Date.now() - 2300, maxSeconds: 59 });
-  }
+  // 延迟到 bootstrap 之后：页面自己在 await 能力清单，结尾还会 refreshFire() 一次 ——
+  // 在它之前摆形态会被覆盖掉。这段延迟在 --virtual-time-budget 里照走，不影响出图时机。
+  setTimeout(function () {
+    Promise.resolve()
+      .then(function () { ${preloadJs()} })
+      .then(function () {
+        ${sceneSetupJs()}
+        // 冻结时间：之后 tick / 打字机 / 闲聊都不许再改这一帧 ——
+        // 截出来的图和量到的数是同一刻，否则「数字对、图是下一帧」会一直存在。
+        window.__petFreeze();
+      });
+  }, 300);
 });
 </script>`;
 }
@@ -220,297 +331,254 @@ function measureScript(state) {
   return `<script>
 window.addEventListener("load", function () {
   var SCEN = ${JSON.stringify(state)};
-  var SWEEP = !!(SCEN && SCEN.sweep === true);   // 预算扫描模式：把所有页 × 两种气泡量一遍
+  var SWEEP = !!(SCEN && SCEN.sweep === true);   // 预算扫描模式：把每个形态 × 两种气泡量一遍
   showPanel();
-  if (SCEN === "busy") setBusy(sendBtn, true);
-  if (SCEN === "offline") setStatus("后端没起来，先开主程序", "err");
-  if (SCEN === "ok")   setStatus("已合成 3.2s，试听中…满意就点「发送试听」", "ok");
-  if (SCEN === "live") setStatus("RVC 实时 已开启，微信把 CABLE Output 当麦克风", "ok");
-  if (SCEN === "qwen") setStatus("千问变声 已开启，识别→合成→换嗓", "ok");
-  if (SCEN === "qwenidle") { setEngine("qwen"); setStatus("引擎已切到「千问变声」，再点一下它启动", ""); }
-  if (SCEN === "think") { setState("think", "「你好呀」"); setStatus("听懂啦，正在合成…", ""); }
-  if (SCEN === "fx") { setTab("fx"); setStatus("点一个音效立即播放（再点一下停）", ""); }
-  if (SCEN === "fxpick") {
-    setTab("fx");
-    sfxMode = "premix"; refreshFxModeSeg();
-    sfxPicks.push({ id: "s1", name: "鼓掌", icon: "👏", mode: "layer", at_s: 0 },
-                  { id: "s2", name: "欢呼", icon: "🎉", mode: "append", at_s: 0 });
-    renderFxGrid(); renderFxPicks(); refreshFxActions();
-    setStatus("已勾 2 个音效，点「发送」混进最近一条语音", "ok");
-  }
-  if (SCEN === "guide") playGuide({ title: "音色工坊",
-    lines: ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"],
-    action: "build", motion: "pop", duration: 60000 });
-  // 预算扫描的代表状态：与 ok 场景同一段文案 —— 余量是**跟基线比**的，
-  // 所以每次扫描里的文案必须固定，否则量到的是文案长度差而不是布局差。
-  if (SWEEP) setStatus("已合成 3.2s，试听中…满意就点「发送试听」", "ok");
   setTimeout(function () {
-    // 切页必须放在这个 timeout 里：页面的 bootstrap 是 async（await 能力清单），
-    // 它结尾还会调一次 setTab(activeTab, false)；在这里切才能保证量到的是目标页。
-    if (SCEN === "hold" || SCEN === "holdrec" || SCEN === "holdwarn") setTab("hold");
-    if (SCEN === "holdrec" && window.__petMicCb) {
-      window.__petMicCb({ phase: "recording", startedAt: Date.now() - 2300, maxSeconds: 59 });
-    }
-    var R = function (el) { var r = el.getBoundingClientRect();
-      return { w: +r.width.toFixed(1), h: +r.height.toFixed(1), top: +r.top.toFixed(1) }; };
-    /**
-     * 「文字有没有被裁」的共用量法（按钮与状态条 chip 都用它）。
-     * 判据不能用 scrollWidth > clientWidth —— 对带 overflow:hidden 的元素，
-     * scrollWidth 被钳到 clientWidth，溢出再多也报「正好」；而 overflow:hidden
-     * 恰恰是 ellipsis 生效的前提，所以那个判据对**所有会省略号的元素**都是瞎的。
-     * 改用 Range.getClientRects() 取文字的自然宽度：Range 给的是**布局矩形**，
-     * 裁剪只发生在绘制阶段，不影响它；再跟内容盒宽度（clientWidth 去掉左右 padding）比。
-     */
-    var clip = function (name, b) {
-      // display:none 的不测：clientWidth=0 而 Range 仍量得出自然宽，必假红
-      // （说话页场景里 fxMode 两颗按钮、fx 场景里 preview / 整个 holdPane 都是不在场的）。
-      if (!b || b.offsetParent === null) return null;
-      var cs2 = getComputedStyle(b);
-      var padL = parseFloat(cs2.paddingLeft) || 0;
-      var padR = parseFloat(cs2.paddingRight) || 0;
-      var avail = b.clientWidth - padL - padR;
-      var natural = 0;
-      try {
-        var rng = document.createRange();
-        rng.selectNodeContents(b);
-        var rects = rng.getClientRects();
-        for (var ri = 0; ri < rects.length; ri++) {
-          if (rects[ri].width > natural) natural = rects[ri].width;
-        }
-      } catch (e) { natural = -1; }
-      return { id: name, w: R(b).w, scrollW: b.scrollWidth, clientW: b.clientWidth,
-               textW: Math.round(natural * 100) / 100, availW: Math.round(avail * 100) / 100,
-               clipped: natural > avail + 1, txt: b.textContent.trim() };
-    };
-    // ---------- 纵向预算：快照工具（2026-09-29）----------
-    // 为什么要 budget：面板纵向预算是**死的**（max-height 300px），而只看
-    // 「装不装得下」（scrollH > clientH）时，新增一个控件可以把余量吃到 0
-    // 却依然「不溢出」—— 下一个控件才炸，而那时没人知道是谁吃掉的。
-    // 所以把**余量本身**当不变量（基线见 tools/pet-panel-layout-budget.json）。
-    /** 控件的稳定名字（报告要能指名道姓）：优先 id，其次 tag.class。 */
-    var ctlName = function (el) {
-      if (el.id) return el.id;
-      var cls = (el.className || "").toString().trim().split(/\\s+/)[0] || "";
-      return el.tagName.toLowerCase() + (cls ? "." + cls : "");
-    };
-    /**
-     * 自动枚举面板里所有**会显示**的可交互控件，逐个量文字有没有被裁。
-     * 为什么要自动枚举而不是维护一张清单：手写清单必然漏 —— 2026-09-29 之前
-     * 「按住说话」那颗按钮与状态条三个 chip 都是靠人记得才进来的；漏掉的那个被挤窄时
-     * 只会安静地变成「…」，没有任何信号。
-     * 只收 button/input：select 元素的 Range 量不出有意义的自然宽（option 不参与布局），
-     * 量它只会得到 0 而假装「没被裁」。
-     */
-    var controlsOf = function () {
-      var out = [];
-      Array.prototype.forEach.call(panel.querySelectorAll("button, input"), function (el) {
-        if (!el || el.offsetParent === null) return;  // display:none / 隐藏页里的不量（会假红）
-        var r = clip(ctlName(el), el);
-        if (r) out.push(r);
+    Promise.resolve()
+      .then(function () { ${preloadJs()} })
+      .then(function () {
+        if (SWEEP) { sweepAll(); return; }
+        ${sceneSetupJs()}
+        // 冻结后再量：tick 每 1s 会改药丸/气泡/状态行，量到的可能是「下一帧」。
+        window.__petFreeze();
+        setTimeout(function () { emit(SCEN); }, 60);
       });
-      // 状态条那三个 chip 是 <span>，控件名单盖不到 —— 显式补上（它们是最挤的一行）
-      [["pill", pillEl], ["rmVoice", rmVoiceEl], ["rmLat", rmLatEl]].forEach(function (p) {
-        var r = clip(p[0], p[1]);
-        if (r) out.push(r);
-      });
-      return out;
-    };
-    /** 功能页页签（从 DOM 枚举 —— 加第四页时不需要有人回来改这里）。 */
-    var tabsInDom = function () {
-      var row = document.getElementById("tabRow");
-      if (!row) return [];
-      return Array.prototype.map.call(row.querySelectorAll("button[data-tab]"), function (b) {
-        return b.dataset.tab;
-      });
-    };
-    var activeTabName = function () {
-      var row = document.getElementById("tabRow");
-      if (!row) return null;
-      var on = Array.prototype.filter.call(row.querySelectorAll("button[data-tab]"), function (b) {
-        return b.classList.contains("on") || b.getAttribute("aria-selected") === "true";
-      });
-      return on.length ? on[0].dataset.tab : null;
-    };
-    /**
-     * 面板**最多能拿到多高**：临时把它顶到 1000px，看布局与 max-height 把它钳到哪里，
-     * 马上恢复。为什么要这么量（而不是用公式算）：
-     *   · 面板是 height:auto + max-height:300px，内容不超时 clientHeight 就等于内容高，
-     *     所以「可用高」根本无法从正常状态读出来（这也正是以前把“余量”误当成
-     *     clientHeight - scrollHeight 的原因：它恒为 0，只在被切时才是负数）；
-     *   · 公式算（480 - 宠物 - 气泡 - 间距）看着简单，但它把 flex 的实际行为复制了一份，
-     *     改一处 CSS 就会静默漂。实测不会有这个问题。
-     * ⚠️ 它**会临时改变布局**，所以调用方必须在读完 scrollHeight 之后再调它，
-     * 而且之后不能拿这次快照里的其它几何值当准。
-     */
-    var capacityOf = function () {
-      var prevH = panel.style.height;
-      panel.style.height = "1000px";
-      var cap = panel.clientHeight;
-      panel.style.height = prevH;
-      return cap;
-    };
-    /**
-     * 当前**可见功能页**的直接子块（带 pane/ 前缀）。
-     * 为什么不能只看面板的直接子块：面板的子块是「页签/动作行/状态行」这些容器，
-     * 新加一个控件时它们只会“整块长高” —— 报告只会说「speakPane 114→122px」，
-     * 而这并不能告诉你是**哪个控件**吃掉的。往下多量一层，报告才能指名。
-     * 只取一层（:scope > *）：再深就是布局细节，基线会碎得没法维护。
-     */
-    var paneChildren = function () {
-      var pane = document.querySelector("#panel .pane.on");
-      return pane ? pane.querySelectorAll(":scope > *") : [];
-    };
-    /**
-     * 把一批元素量成 [{id,h,disp,mb}]。没有 id 的用 class 链/tag 命名，**重名自动加 #n**。
-     * 重名那一条不能省：说话页里三个无 id 的 label 都叫 class="field"，
-     * 若都以 “pane/field” 为键，后一个会把前一个盖掉 —— 基线里就只剩最后一个，
-     * 前两个改矮/改高都看不见（那种“基线自己丢了证据”是最难查的）。
-     */
-    var blockList = function (els, prefix) {
-      var seen = {};
-      return Array.prototype.map.call(els, function (el) {
-        var cls = (el.className || "").toString().trim().split(/\\s+/).filter(Boolean).join(".");
-        var base = prefix + (el.id || cls || el.tagName.toLowerCase());
-        seen[base] = (seen[base] || 0) + 1;
-        var cs = getComputedStyle(el);
-        return { id: seen[base] > 1 ? base + "#" + seen[base] : base,
-                 h: el.offsetHeight, disp: cs.display, mb: cs.marginBottom };
-      });
-    };
-    /** 面板里所有带 id 的元素（含隐藏页里的）—— 用于「基线里的 id 还在不在」盘点。 */
-    var paneIds = function () {
-      return Array.prototype.map.call(panel.querySelectorAll("[id]"), function (e) { return e.id; });
-    };
-    var steps = document.getElementById("steps");
-    /**
-     * 一次布局快照。**所有**断言都读它 —— 场景模式与预算扫描模式共用同一个函数，
-     * 否则两边各有一份「什么算量到了」，迟早漂成两套口径。
-     */
-    var snap = function (scen) {
+  }, 300);
+
+  var R = function (el) { var r = el.getBoundingClientRect();
+    return { w: +r.width.toFixed(1), h: +r.height.toFixed(1), top: +r.top.toFixed(1) }; };
+  /**
+   * 「文字有没有被裁」的共用量法（按钮与状态条 chip 都用它）。
+   * 判据不能用 scrollWidth > clientWidth —— 对带 overflow:hidden 的元素，
+   * scrollWidth 被钳到 clientWidth，溢出再多也报「正好」；而 overflow:hidden
+   * 恰恰是 ellipsis 生效的前提，所以那个判据对**所有会省略号的元素**都是瞎的。
+   * 改用 Range.getClientRects() 取文字的自然宽度：Range 给的是**布局矩形**，
+   * 裁剪只发生在绘制阶段，不影响它；再跟内容盒宽度（clientWidth 去掉左右 padding）比。
+   */
+  var clip = function (name, b) {
+    // display:none 的不测：clientWidth=0 而 Range 仍量得出自然宽，必假红
+    // （收起的分层、录音时让位的输入框、隐藏的 #rmLat 都属于这种）。
+    if (!b || b.offsetParent === null) return null;
+    var cs2 = getComputedStyle(b);
+    var padL = parseFloat(cs2.paddingLeft) || 0;
+    var padR = parseFloat(cs2.paddingRight) || 0;
+    var avail = b.clientWidth - padL - padR;
+    var natural = 0;
+    try {
+      var rng = document.createRange();
+      rng.selectNodeContents(b);
+      var rects = rng.getClientRects();
+      for (var ri = 0; ri < rects.length; ri++) {
+        if (rects[ri].width > natural) natural = rects[ri].width;
+      }
+    } catch (e) { natural = -1; }
+    return { id: name, w: R(b).w, scrollW: b.scrollWidth, clientW: b.clientWidth,
+             textW: Math.round(natural * 100) / 100, availW: Math.round(avail * 100) / 100,
+             clipped: natural > avail + 1, txt: b.textContent.trim() };
+  };
+  // ---------- 纵向预算：快照工具（2026-09-29）----------
+  // 为什么要 budget：面板纵向预算是**死的**（max-height 300px），而只看
+  // 「装不装得下」（scrollH > clientH）时，新增一个控件可以把余量吃到 0
+  // 却依然「不溢出」—— 下一个控件才炸，而那时没人知道是谁吃掉的。
+  // 所以把**余量本身**当不变量（基线见 tools/pet-panel-layout-budget.json）。
+  /** 控件的稳定名字（报告要能指名道姓）：优先 id，其次 tag.class。 */
+  var ctlName = function (el) {
+    if (el.id) return el.id;
+    var cls = (el.className || "").toString().trim().split(/\\s+/)[0] || "";
+    return el.tagName.toLowerCase() + (cls ? "." + cls : "");
+  };
+  /**
+   * 自动枚举面板里所有**会显示**的可交互控件，逐个量文字有没有被裁。
+   * 为什么要自动枚举而不是维护一张清单：手写清单必然漏 —— 2026-09-29 之前
+   * 「按住说话」那颗按钮与状态条三个 chip 都是靠人记得才进来的；漏掉的那个被挤窄时
+   * 只会安静地变成「…」，没有任何信号。
+   * 只收 button/input：select 元素的 Range 量不出有意义的自然宽（option 不参与布局），
+   * 量它只会得到 0 而假装「没被裁」。
+   */
+  var controlsOf = function () {
+    var out = [];
+    Array.prototype.forEach.call(panel.querySelectorAll("button, input"), function (el) {
+      if (!el || el.offsetParent === null) return;  // display:none / 收起分层里的不量（会假红）
+      var r = clip(ctlName(el), el);
+      if (r) out.push(r);
+    });
+    // 药丸与音色 chip 是 <span>，控件名单盖不到 —— 显式补上（它们是最挤的一行）。
+    [["pill", pillEl], ["rmVoice", rmVoiceEl], ["rmLat", rmLatEl]].forEach(function (p) {
+      var r = clip(p[0], p[1]);
+      if (r) out.push(r);
+    });
+    return out;
+  };
+  /**
+   * 面板**最多能拿到多高**：临时把它顶到 1000px，看布局与 max-height 把它钳到哪里，
+   * 马上恢复。为什么要这么量（而不是用公式算）：
+   *   · 面板是 height:auto + max-height:300px，内容不超时 clientHeight 就等于内容高，
+   *     所以「可用高」根本无法从正常状态读出来（这也正是以前把“余量”误当成
+   *     clientHeight - scrollHeight 的原因：它恒为 0，只在被切时才是负数）；
+   *   · 公式算（480 - 宠物 - 气泡 - 间距）看着简单，但它把 flex 的实际行为复制了一份，
+   *     改一处 CSS 就会静默漂。实测不会有这个问题。
+   * ⚠️ 它**会临时改变布局**，所以调用方必须在读完 scrollHeight 之后再调它，
+   * 而且之后不能拿这次快照里的其它几何值当准。
+   */
+  var capacityOf = function () {
+    var prevH = panel.style.height;
+    panel.style.height = "1000px";
+    var cap = panel.clientHeight;
+    panel.style.height = prevH;
+    return cap;
+  };
+  /**
+   * 装填区（#draft）的直接子块（带 draft/ 前缀）。
+   * 为什么不能只看面板的直接子块：面板的子块是 #phead / #draft / #fireRow / #hint …
+   * 这些**容器**，加一个控件时它们只会整块长高 —— 报告只会说「draft 66→74px」，
+   * 而那并不能告诉你是**哪个控件**吃掉的（音效片？录音波形？输入框？）。
+   * 往下多量一层就够：再深就是布局细节，基线会碎得没法维护。
+   */
+  var draftChildren = function () {
+    var d = document.getElementById("draft");
+    return d ? d.querySelectorAll(":scope > *") : [];
+  };
+  /**
+   * 把一批元素量成 [{id,h,disp,mb}]。没有 id 的用 class 链/tag 命名，**重名自动加 #n**。
+   * 重名那一条不能省：装填区里无 id 的 .field 若与别的同名块撞键，
+   * 后一个会把前一个盖掉 —— 基线里就只剩最后一个（那种「基线自己丢了证据」最难查）。
+   */
+  var blockList = function (els, prefix) {
+    var seen = {};
+    return Array.prototype.map.call(els, function (el) {
+      var cls = (el.className || "").toString().trim().split(/\\s+/).filter(Boolean).join(".");
+      var base = prefix + (el.id || cls || el.tagName.toLowerCase());
+      seen[base] = (seen[base] || 0) + 1;
+      var cs = getComputedStyle(el);
+      return { id: seen[base] > 1 ? base + "#" + seen[base] : base,
+               h: el.offsetHeight, disp: cs.display, mb: cs.marginBottom };
+    });
+  };
+  /** 面板里所有带 id 的元素（含收起分层里的）—— 用于「基线里的 id 还在不在」盘点。 */
+  var paneIds = function () {
+    return Array.prototype.map.call(panel.querySelectorAll("[id]"), function (e) { return e.id; });
+  };
+  var steps = document.getElementById("steps");
+  /**
+   * 一次布局快照。**所有**断言都读它 —— 场景模式与预算扫描模式共用同一个函数，
+   * 否则两边各有一份「什么算量到了」，迟早漂成两套口径。
+   */
+  var snap = function (scen) {
+    return {
+    scen: scen,
+    theme: getComputedStyle(document.documentElement).getPropertyValue("--c-surface").trim(),
+    panelBg: getComputedStyle(panel).backgroundColor,
+    panelOpacity: getComputedStyle(panel).opacity,
+    win: { w: innerWidth, h: innerHeight },
+    rootScrollH: document.getElementById("root").scrollHeight,
+    panel: R(panel),
+    panelOverflow: panel.scrollHeight > panel.clientHeight,
+    // 面板被 flex 压扁时，光看 panelOverflow 只知道「在滚」，不知道「差多少、谁占的」。
+    // 把 scrollHeight / clientHeight 与每个直接子块的高度都打出来，才能定出该精简谁。
+    panelScrollH: panel.scrollHeight,
+    panelClientH: panel.clientHeight,
+    blocks: blockList(panel.children, "")
+      .concat(blockList(draftChildren(), "draft/")),   // 装填区的直接子块，带 draft/ 前缀（见上面注释）
+    // 哪个分层开着（"" | "tray" | "drawer"）与哪个形态 —— 报告里要能对上号，
+    // 否则一堆 sweep:xxx 的数字看不出是「托盘」还是「抽屉」。
+    layer: panelLayer,
+    state: (window.__petState || null),
+    // 让位规则（#root.compact）：气泡在屏时收起提示行、压扁音效网格。
+    // 它是「有气泡也不许被切」的前提，所以要被断言的正是这个类有没有挂上。
+    compact: rootEl.classList.contains("compact"),
+    hint: hintEl ? { txt: hintEl.textContent, disp: getComputedStyle(hintEl).display } : null,
+    fire: fireEl ? { label: fireLabel ? fireLabel.textContent : "",
+                     cls: fireEl.className, disabled: fireEl.disabled } : null,
+    pill: { txt: pillText.textContent, w: R(pillEl).w, cls: pillEl.className },
+    // 引擎分段的状态：选中（.on）与运行中（.running）必须分开 ——
+    // 把「选中」当「已开启」是这次要防的核心错误。
+    engine: {
+      sel: engine,
+      running: runningEngine,
+      on: [engRvcBtn, engQwenBtn].filter(function (b) { return b && b.classList.contains("on"); })
+            .map(function (b) { return b.dataset.eng; }),
+      runningMark: [engRvcBtn, engQwenBtn].filter(function (b) { return b && b.classList.contains("running"); })
+            .map(function (b) { return b.dataset.eng; }),
+    },
+    bubbleVisible: getComputedStyle(bubble).display !== "none",
+    bubble: bubble.offsetHeight,
+    petTop: Math.round(petBox.getBoundingClientRect().top),
+    petH: petBox.offsetHeight,
+    spriteBg: (sprite.style.backgroundImage || "").replace(/^url\\("?|"?\\)$/g, "").split("/").pop(),
+    voiceSel: voiceSel.options[voiceSel.selectedIndex] ? voiceSel.options[voiceSel.selectedIndex].text : null,
+    recentChips: recentEl.querySelectorAll(".hitem").length,
+    statusCls: statusEl.className,
+    statusText: statusText.textContent.slice(0, 24),
+    stepsDots: steps ? steps.children.length : 0,
+    stepsOnIdx: steps ? Array.prototype.findIndex.call(steps.children, function (el) {
+      return el.className.indexOf("on") >= 0; }) : -1,
+    // 自动枚举的控件（不手写清单 —— 理由见 controlsOf 的注释）
+    controls: controlsOf(),
+    // —— 纵向预算台账（2026-09-29）——
+    // need = 内容需要多高；capacity = 布局最多给多高；reserve = 两者之差。
+    // ★ 不变量是 reserve：**只能变多，不能变少** —— 这才是「新增控件吃掉了余量」
+    //   的直接信号（只看溢出的话，余量被吃到 0 也算“没问题”，下一个人再动手就爆）。
+    budget: (function () {
+      var need = panel.scrollHeight;    // 必须在 capacityOf() 前读（它会临时改布局）
+      var clientH = panel.clientHeight;
+      var cap = capacityOf();
       return {
-      scen: scen,
-      theme: getComputedStyle(document.documentElement).getPropertyValue("--c-surface").trim(),
-      panelBg: getComputedStyle(panel).backgroundColor,
-      panelOpacity: getComputedStyle(panel).opacity,
-      win: { w: innerWidth, h: innerHeight },
-      rootScrollH: document.getElementById("root").scrollHeight,
-      panel: R(panel),
-      panelOverflow: panel.scrollHeight > panel.clientHeight,
-      // 面板被 flex 压扁时，光看 panelOverflow 只知道「在滚」，不知道「差多少、谁占的」。
-      // 把 scrollHeight / clientHeight 与每个直接子块的高度都打出来，才能定出该精简谁。
-      panelScrollH: panel.scrollHeight,
-      panelClientH: panel.clientHeight,
-      blocks: blockList(panel.children, "")
-        .concat(blockList(paneChildren(), "pane/")),   // 可见页的直接子块，带 pane/ 前缀（见上面注释）
-      pill: { txt: pillText.textContent, w: R(pillEl).w, cls: pillEl.className },
-      // 引擎分段的状态：选中（.on）与运行中（.running）必须分开 ——
-      // 把「选中」当「已开启」是这次要防的核心错误。
-      engine: {
-        sel: engine,
-        running: runningEngine,
-        on: [engRvcBtn, engQwenBtn].filter(function (b) { return b && b.classList.contains("on"); })
-              .map(function (b) { return b.dataset.eng; }),
-        runningMark: [engRvcBtn, engQwenBtn].filter(function (b) { return b && b.classList.contains("running"); })
-              .map(function (b) { return b.dataset.eng; }),
-        // 2026-09-26「开 RVC」按钮已并入引擎分段（点已选中项 = 启停），liveLabel 不复存在。
-      },
-      bubbleVisible: getComputedStyle(bubble).display !== "none",
-      bubble: bubble.offsetHeight,
-      petTop: Math.round(petBox.getBoundingClientRect().top),
-      petH: petBox.offsetHeight,
-      spriteBg: (sprite.style.backgroundImage || "").replace(/^url\\("?|"?\\)$/g, "").split("/").pop(),
-      voiceSel: voiceSel.options[voiceSel.selectedIndex] ? voiceSel.options[voiceSel.selectedIndex].text : null,
-      recentChips: recentEl.querySelectorAll(".hitem").length,
-      statusCls: statusEl.className,
-      statusText: statusText.textContent.slice(0, 24),
-      stepsDots: steps ? steps.children.length : 0,
-      stepsOnIdx: steps ? Array.prototype.findIndex.call(steps.children, function (el) {
-        return el.className.indexOf("on") >= 0; }) : -1,
-      // 引擎分段的两个按钮也要进这个列表：它们有 text-overflow: ellipsis，
-      // 被挤窄时会静默变成「RVC 实…」。
-      //
-      // 判据不能用 scrollWidth > clientWidth —— 对带 overflow:hidden 的元素，
-      // scrollWidth 被钳到 clientWidth，溢出再多也报「正好」。而 overflow:hidden
-      // 恰恰是 ellipsis 生效的前提，所以这个判据对**所有会省略号的按钮**都是瞎的。
-      // 改用 Range.getClientRects() 取文字的自然宽度：Range 给的是**布局矩形**，
-      // 裁剪只发生在绘制阶段，不影响它；再跟内容盒宽度（clientWidth 去掉左右 padding）比。
-      buttons: [["send", sendBtn], ["preview", previewBtn],
-                ["engRvc", engRvcBtn], ["engQwen", engQwenBtn],
-                ["tabSpeak", tabSpeakBtn], ["tabHold", tabHoldBtn], ["tabFx", tabFxBtn],
-                ["holdMic", holdMicEl],
-                ["fxModeLive", fxModeLiveBtn], ["fxModePremix", fxModePremixBtn]].map(function (p) {
-        return clip(p[0], p[1]);
-      }).filter(Boolean),
-      // 状态条（2026-09-29）的三个 chip 走同一套判据。
-      // 必须量它们：头部那一行现在是「药丸(引擎名) + 音色 + 耗时」三块挤 184px，
-      // 是全面板最挤的地方之一，而 chip 是 <span> —— 上面那套“按钮”清单永远盖不到，
-      // 一旦超宽只会安静地变成省略号（或把右边的 chip 顶出窗口）。
-      strip: [["pill", pillEl], ["rmVoice", rmVoiceEl], ["rmLat", rmLatEl]].map(function (p) {
-        return clip(p[0], p[1]);
-      }).filter(Boolean),
-      // 自动枚举的控件（替代手写 buttons 清单，见 controlsOf 的注释）
-      controls: controlsOf(),
-      // —— 纵向预算台账（2026-09-29）——
-      // need = 内容需要多高；capacity = 布局最多给多高；reserve = 两者之差。
-      // ★ 不变量是 reserve：**只能变多，不能变少** —— 这才是「新增控件吃掉了余量」
-      //   的直接信号（只看溢出的话，余量被吃到 0 也算“没问题”，下一个人再动手就爆）。
-      budget: (function () {
-        var need = panel.scrollHeight;    // 必须在 capacityOf() 前读（它会临时改布局）
-        var clientH = panel.clientHeight;
-        var cap = capacityOf();
-        return {
-          maxH: getComputedStyle(panel).maxHeight,   // CSS 上的上限（300px）
-          clientH: clientH,
-          scrollH: need,
-          capacity: cap,
-          reserve: cap - need,                       // ★ 余量（负数 = 底部被切）
-          slack: clientH - need,                     // 兼容旧字段：被切多少（健康时恒为 0）
-        };
-      })(),
-      tab: activeTabName(),
-      tabs: tabsInDom(),
-      paneIds: paneIds(),
+        maxH: getComputedStyle(panel).maxHeight,   // CSS 上的上限（300px）
+        clientH: clientH,
+        scrollH: need,
+        capacity: cap,
+        reserve: cap - need,                       // ★ 余量（负数 = 底部被切）
+        slack: clientH - need,                     // 兼容旧字段：被切多少（健康时恒为 0）
       };
+    })(),
+    // 形态名与全部形态（布尔扫描与静态检查都靠它，替代旧版从 tabRow 里抠 data-tab）
+    states: Object.keys(window.__petLayoutStates || {}),
+    paneIds: paneIds(),
     };
-    var emit = function (scen) { console.log("MEASURE " + JSON.stringify(snap(scen))); };
-    // ---------- 预算扫描（sweep）：一次页面加载，把所有页 × 两种气泡都量一遍 ----------
-    // 为什么要扫「所有页」而不是继续手写场景：手写的场景清单漏了某一页时，
-    // 那一页可以无限长而门禁看不见。页签从 DOM 枚举（tabsInDom），所以加第四页
-    // 会自动被扫到 —— 若它的余量变少/溢出，门禁当场红。
-    // 两种气泡：气泡在屏时面板被压扁（#root.compact 让位），这是另一个约束，
-    // 而且每页的最挤形态不同（按住页那颗 46px 按钮就在按住页里）。
-    if (SWEEP) {
-      // 阶段 0 强制「无气泡」：不赌 setStatus 恰好没弹气泡（那会让两个阶段量到同一件事）
-      setBubbleVisible(false);
-      var tabs = tabsInDom();
-      var phase = 0;   // 0 = 无气泡，1 = 大头气泡（guide 82px，最挤）
-      var ti = 0;
-      var next = function () {
-        if (phase === 0 && ti >= tabs.length) {
-          phase = 1;
-          ti = 0;
-          // 用与 guide 场景同一段文案：气泡高固定，两次测量才可比
-          playGuide({ title: "音色工坊", lines: ["一切从这里开始。", "丢进视频，我自动切片质检。", "挑够半分钟干净人声。"],
-            action: "build", motion: "pop", duration: 60000 });
-          setTimeout(next, 260);
-          return;
-        }
-        if (ti >= tabs.length) {
-          console.log("SWEEP-DONE " + tabs.length + " 页 × 2 种气泡");
-          return;
-        }
-        setTab(tabs[ti], false);
-        setTimeout(function () {
-          emit("sweep:" + tabs[ti] + ":bubble" + phase);
-          ti += 1;
-          next();
-        }, 80);
-      };
-      next();
-      return;
-    }
-    emit(SCEN);
-  }, 400);
+  };
+  var emit = function (scen) { console.log("MEASURE " + JSON.stringify(snap(scen))); };
+
+  // ---------- 预算扫描（sweep）：一次页面加载，把每个形态 × 两种气泡都量一遍 ----------
+  // 为什么要扫**所有形态**而不是继续手写场景：手写的场景清单漏了某一态时，
+  // 那一态可以无限长而门禁看不见。形态从 window.__petLayoutStates 枚举，
+  // 所以加一态会自动被扫到 —— 若它的余量变少/溢出，门禁当场红。
+  // 两种气泡：气泡在屏时面板要让它位（#root.compact），这是另一个约束。
+  function sweepAll() {
+    // 阶段 0 强制「无气泡」：不赌 setStatus 恰好没弹气泡（那会让两个阶段量到同一件事）
+    setBubbleVisible(false);
+    // 停表：tick 每 1s 会改药丸/气泡/状态行，扫描一轮要跨好几秒 —— 不停表就量不到同一帧。
+    window.__petFreeze();
+    var states = Object.keys(window.__petLayoutStates || {});
+    var phase = 0;   // 0 = 无气泡，1 = 大头气泡（最挤：气泡吃掉 82px，还要加让位）
+    var si = 0;
+    var next = function () {
+      if (phase === 0 && si >= states.length) {
+        phase = 1;
+        si = 0;
+        // 与 guide 场景同一套文案、同一套「停在哪一句」—— 两边数字才对得上
+        ${pinGuideJs()}
+        setTimeout(next, 260);
+        return;
+      }
+      if (si >= states.length) {
+        console.log("SWEEP-DONE " + states.length + " 形态 × 2 种气泡");
+        return;
+      }
+      var name = states[si];
+      // 与场景模式走同一段重置，判据才同源（否则扫描量到的形态与截图看到的不是一个）
+      if (window.__petResetLayoutState) window.__petResetLayoutState();
+      var fn = window.__petLayoutStates[name];
+      if (typeof fn === "function") fn();
+      setTimeout(function () {
+        window.__petState = name;
+        emit("sweep:" + name + ":bubble" + phase);
+        window.__petState = null;
+        si += 1;
+        next();
+      }, 80);
+    };
+    next();
+  }
 });
 </script>`;
 }

@@ -135,21 +135,22 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
     expect(html).toContain('refreshCapVisibility()')
   })
 
-  it('收起来的控件正好是那六处', () => {
-    // 窗口给足以至于加了注释也不会假红：以前是死写 600，而门控函数里现在有一段
-    // 解释"为什么试听/发送也要收"的注释，离得稍远就把断言挤出去。
-    // （2026-09-26 面板去重：live 按钮并入引擎分段，「hide("live")」随之删除，5→4 处。
-    //   2026-09-26 音效页：「音效」整体归 sound.fx-board，tabRow + fxPane 两处 hide，4→6 处。）
-    const fn = html.slice(html.indexOf('function refreshCapVisibility()'), html.indexOf('function refreshCapVisibility()') + 1600)
+  it('收起来的控件正好是那三处（其余归 refreshFire）', () => {
+    // 2026-10-23 面板重构：页签（tabRow）与四个页体全删了，入口收成「状态条两个图标
+    // + 主按钮」；「试听/发送」也不再由 refreshCapVisibility 用 style.display 硬盖 ——
+    // 它们的文案与可用性要跟着「草稿有没有内容、是不是在录」变，两套机制会互相覆盖，
+    // 统一由 refreshFire 决定（下面那条单独钉它）。
+    const i = html.indexOf('function refreshCapVisibility()')
+    const fn = html.slice(i, i + 1600)
     for (const call of [
       'hide("engRow", !CAP.live)',
       'hide("recent", !CAP.wechat)',
-      'hide("preview", !CAP.wechat)',
-      'hide("send", !CAP.wechat)',
-      'hide("tabRow", !CAP.fx)',
-      'hide("fxPane", !CAP.fx)',
+      'hide("trayBtn", !CAP.fx)',
     ]) {
       expect(fn, `refreshCapVisibility 漏了 ${call}`).toContain(call)
+    }
+    for (const gone of ['hide("preview"', 'hide("send"', 'hide("tabRow"']) {
+      expect(fn, `refreshCapVisibility 不该再硬盖 ${gone} —— 它会和 refreshFire 打架`).not.toContain(gone)
     }
   })
 
@@ -158,7 +159,10 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
     // 试听按钮正是因为这个才曾经对市场音色变成死钮 —— 现在补了不发送的端点，
     // 但端点仍归 hook.wechat，所以可见性必须跟着 CAP.wechat 走。
     expect(html).toContain('id="preview"')
-    expect(html).toContain('hide("preview", !CAP.wechat)')
+    // 显隐由 refreshFire 统一决定（它同时要看草稿内容与录音相位）
+    const fire = html.slice(html.indexOf('function refreshFire()'), html.indexOf('function refreshHint()'))
+    expect(fire).toContain('previewBtn.hidden')
+    expect(fire).toContain('CAP.wechat')
     // 点了也要能自辩（按钮可能因 CSS/缓存没被藏住）
     const body = html.slice(html.indexOf('function doPreview()'), html.indexOf('function doSendText()'))
     expect(body).toContain('if (!CAP.wechat)')
@@ -166,13 +170,13 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
 
   it('★ 音效页整体归 sound.fx-board（关了能力就是一页 404）', () => {
     // loadSfx 打的是 /api/soundboard/*（sound.fx-board 插件的路由）：
-    // 关掉后 catalog/play/premix 全部 404，所以入口和页体必须一起收，
-    // 且残留的 tab=fx 要被归位回「说话」页。
-    expect(html).toContain('id="tabRow"')
-    expect(html).toContain('id="fxPane"')
+    // 关掉后 catalog/play/premix 全部 404，所以入口和盘体必须一起收，
+    // 且已经开着托盘的要被归位收起（否则用户面对一个全 404 的空盘）。
+    expect(html).toContain('id="trayBtn"')
+    expect(html).toContain('id="tray"')
     const loadSfxBody = html.slice(html.indexOf('async function loadSfx('), html.indexOf('function renderFxGrid'))
     expect(loadSfxBody).toContain('if (!CAP.fx) return;')
-    expect(html).toContain('if (!CAP.fx && activeTab === "fx") setTab("speak", false);')
+    expect(html).toContain('if (!CAP.fx && panelLayer === "tray") setLayer("");')
   })
 
   it('★ 音效页的发送走 premix → sendWav 既有链路（不新造发送路径）', () => {

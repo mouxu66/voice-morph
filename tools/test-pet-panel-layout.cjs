@@ -6,7 +6,7 @@
  *   node tools/test-pet-panel-layout.cjs             # 静态 + 预算扫描 + 默认 5 个场景
  *   node tools/test-pet-panel-layout.cjs --fast      # 静态 + 预算扫描（pre-commit 走这条）
  *   node tools/test-pet-panel-layout.cjs --static    # 只要静态（没有浏览器也能跑，CI 用）
- *   VM_PET_LAYOUT_ALL=1 node tools/test-pet-panel-layout.cjs        # 全部 13 个场景
+ *   VM_PET_LAYOUT_ALL=1 node tools/test-pet-panel-layout.cjs        # 全部 14 个场景
  *   VM_PET_BUDGET_UPDATE=1 node tools/test-pet-panel-layout.cjs     # ★ 重算基线（会打成本表）
  * 退出码 0 = 通过，非 0 = 失败。（tools/check.py 的 petlayout 步跑的是 --fast 那条。）
  *
@@ -32,9 +32,10 @@
  * 减去「内容需要的高」。
  *
  * 为什么覆盖不靠手写场景清单：预算扫描（measureSweep）在**一次页面加载**里把所有
- * 功能页页签（从 DOM 枚举：tabRow 里的 button[data-tab]）× {无气泡, 大头气泡} 量一遍
- * （约 0.9s）。所以加第四页、加一个新控件，都会自动被扫到 —— 不存在「新页没人给它写场景，
- * 于是它多长都看不见」这种漏。
+ * 面板形态（从 `window.__petLayoutStates` 枚举）× {无气泡, 大头气泡} 量一遍
+ * （约 0.9s）。所以加一态（录音中 / 音效已选 / 分层打开）、加一个新控件，都会自动被扫到 ——
+ * 不存在「新形态没人给它写场景，于是它多长都看不见」这种漏。
+ * 形态表就是 pet.html 里那张 `const LAYOUT_STATES` —— 它同时是「门禁认不认这一态」的真相源。
  *
  * ⚠️ 需要 Playwright 缓存里的 chromium-headless-shell（或 VM_CHROME 指定）。
  * 找不到时**大声跳过**浏览器部分（静态部分照跑）—— CI 机器不一定装浏览器，
@@ -51,9 +52,11 @@ const PET_HTML = process.env.VM_PET_HTML || path.join(ROOT, "web", "electron", "
 const BUDGET_FILE = process.env.VM_PET_BUDGET || path.join(ROOT, "tools", "pet-panel-layout-budget.json");
 
 /** 默认只量几个「把不变量钉住」的场景（每个场景要起一次 headless Chromium，约 0.7s）。
- *  预算扫描（sweep）不在这份名单里 —— 它是自动全页覆盖，见文件头。 */
-const DEFAULT_SCENES = ["ok-dark", "guide-dark", "offline-dark", "fxpick-dark", "holdrec-dark",
-                        "holdwarn-dark"];   // 预检说「注定失败」的那一态：文案最长，专门量它
+ *  预算扫描（sweep）不在这份名单里 —— 它是自动全形态覆盖，见文件头。
+ *  这几个是人工挑的「最挤/最怪」的：抽屉（134px 一列配置）、录音（输入框让位）、
+ *  音效已选（装填区两行）、导览（气泡占 82px）、预检失败（提示文案最长）。 */
+const DEFAULT_SCENES = ["idle-dark", "picked-dark", "rec-dark", "drawer-dark",
+                        "guide-dark", "holdwarn-dark"];
 const ALL_SCENES = preview.SCENES;
 
 const argv = process.argv.slice(2);
@@ -121,13 +124,19 @@ function describeDiff(key, diff, base, meas) {
 // 静态层（不需要浏览器）——「新页/新控件必须登记」的兜底
 // ---------------------------------------------------------------------------
 
-/** 从 pet.html 的 tabRow 里读页签名（唯一真相源是页面本身，不另抄一份清单）。 */
-function tabsInHtml() {
+/**
+ * 从 pet.html 的 `const LAYOUT_STATES = {...}` 里读形态名（唯一真相源是页面本身，
+ * 不另抄一份清单 —— 抄一份就必然有一天两份不一致，而门禁看不见多出来的那一份）。
+ * 只认两格缩进的 `名字: () =>`，所以嵌套在里面的回调不会被误认成形态。
+ */
+function statesInHtml() {
   const html = fs.readFileSync(PET_HTML, "utf-8");
-  const row = html.slice(html.indexOf('id="tabRow"'));
-  const end = row.indexOf("</div>");
-  const body = end > 0 ? row.slice(0, end) : row.slice(0, 2000);
-  return [...body.matchAll(/data-tab="([^"]+)"/g)].map((m) => m[1]);
+  const i = html.indexOf("const LAYOUT_STATES = {");
+  if (i < 0) return [];
+  const body = html.slice(i);
+  const end = body.indexOf("\n};");
+  const block = end > 0 ? body.slice(0, end) : body.slice(0, 4000);
+  return [...block.matchAll(/^ {2}([A-Za-z_$][\w$]*)\s*:\s*\(\)/gm)].map((m) => m[1]);
 }
 
 function readBudget() {
@@ -168,20 +177,20 @@ check("预算基线文件存在且可解析", () => {
 
 const baseKeys = (budget && budget.keys) || {};
 
-// ---- 静态 2：每个功能页都必须有预算基线（新加的页不能没有余量台账）----
-check("每个功能页（tabRow 里的 data-tab）都有预算基线", () => {
-  const tabs = tabsInHtml();
-  assert.ok(tabs.length >= 3, "tabRow 里只读到 " + tabs.length + " 个页签 —— 抽取正则失效了？");
+// ---- 静态 2：每个面板形态都必须有预算基线（新加的形态不能没有余量台账）----
+check("每个面板形态（LAYOUT_STATES 里的 key）都有预算基线", () => {
+  const states = statesInHtml();
+  assert.ok(states.length >= 3, "LAYOUT_STATES 里只读到 " + states.length + " 个形态 —— 抽取正则失效了？");
   const missing = [];
-  for (const t of tabs) {
+  for (const t of states) {
     for (const ph of ["bubble0", "bubble1"]) {
       const k = "sweep:" + t + ":" + ph;
       if (!(k in baseKeys)) missing.push(k);
     }
   }
   assert.deepStrictEqual(missing, [],
-    "这些页/状态没有预算基线： " + missing.join("、") +
-    "\n       新增了一个功能页（或改了页签名）就必须重算基线：" +
+    "这些形态/状态没有预算基线： " + missing.join("、") +
+    "\n       新增了一个形态（或改了形态名）就必须重算基线：" +
     " VM_PET_BUDGET_UPDATE=1 node tools/test-pet-panel-layout.cjs（它会打印成本表，确认在预算内再提交）");
 });
 
@@ -258,13 +267,14 @@ function record(entry) {
     capacity: entry.budget.capacity,
     reserve: entry.budget.reserve,
     blocks: Object.fromEntries((entry.blocks || []).map((b) => [b.id, b.h])),
-    tab: entry.tab,
+    state: entry.state,
+    layer: entry.layer,
     controls: entry.controls || [],
   };
 }
 
-// ---- 预算扫描：所有功能页 × 两种气泡（一次页面加载）----
-console.log("--- 预算扫描（所有功能页 × 无气泡/大头气泡）");
+// ---- 预算扫描：所有面板形态 × 两种气泡（一次页面加载）----
+console.log("--- 预算扫描（所有形态 × 无气泡/大头气泡）");
 const sweep = STATIC_ONLY ? { all: [] } : preview.measureSweep({});
 if (!STATIC_ONLY) {
   check("预算扫描能渲染并回传量测数据", () => {
@@ -274,13 +284,17 @@ if (!STATIC_ONLY) {
 for (const entry of sweep.all) record(entry);
 
 if (sweep.all.length) {
-  const tabs = sweep.all[0].tabs || [];
-  check("预算扫描覆盖了所有功能页（每页 × 2 种气泡）", () => {
+  const states = sweep.all[0].states || [];
+  check("预算扫描覆盖了所有面板形态（每态 × 2 种气泡）", () => {
     const want = [];
-    for (const t of tabs) want.push("sweep:" + t + ":bubble0", "sweep:" + t + ":bubble1");
+    for (const t of states) want.push("sweep:" + t + ":bubble0", "sweep:" + t + ":bubble1");
     const got = sweep.all.map((m) => m.scen);
     const missing = want.filter((k) => !got.includes(k));
-    assert.deepStrictEqual(missing, [], "扫描漏了：" + missing.join("、") + "（tabs=" + JSON.stringify(tabs) + "）");
+    assert.deepStrictEqual(missing, [], "扫描漏了：" + missing.join("、") + "（states=" + JSON.stringify(states) + "）");
+  });
+  // 扫描只认页面里那张表；表读不到就等于「一个形态都没验」——那必须红，不能沉默通过
+  check("页面里能枚举出面板形态（没有形态表 = 扫描形同虚设）", () => {
+    assert.ok(states.length >= 3, "window.__petLayoutStates 只给出 " + states.length + " 个形态");
   });
 }
 
@@ -345,7 +359,7 @@ if (scenes.length) {
       assert.strictEqual(m.panelOverflow, false,
         "面板内容 " + m.panelScrollH + "px 装进 " + m.panelClientH + "px —— " +
         "底部会被切掉 " + (m.panelScrollH - m.panelClientH) + "px 并冒出内部滚动条。" +
-        "气泡在屏时应由 #root.compact 让位（收起 #recent），检查 setBubbleVisible 是否同步了 .compact");
+        "气泡在屏时应由 #root.compact 让位（收起手势行、压扁音效网格），检查 applyBubble 是否同步了 .compact");
     });
 
     // 2) 不变量：没有任何东西被挤出窗口
@@ -370,19 +384,20 @@ if (scenes.length) {
       assert.strictEqual(m.panelOpacity, "1", "opacity=" + m.panelOpacity);
     });
 
-    // 5) 让位规则真的生效：有气泡时 #recent 收起，没气泡时它在
-    const recent = (m.blocks || []).find((b) => b.id === "recent");
-    if (recent) {
-      check(s + "：让位规则与气泡显隐一致（有气泡→#recent 收起；无气泡→可见）", () => {
-        if (m.bubble > 0) {
-          assert.strictEqual(recent.disp, "none",
-            "气泡在屏（" + m.bubble + "px）但 #recent 仍占 " + recent.h + "px —— 面板没让位");
-        } else {
-          assert.notStrictEqual(recent.disp, "none",
-            "没有气泡，面板是完整态，#recent 不该被藏起来");
-        }
-      });
-    }
+    // 5) 让位规则真的生效：气泡在屏 ⇔ #root.compact 挂着；且分层开着时气泡必须让位
+    //    （气泡 82px + 托盘 115px 在 298px 里不可能共存，实测 -26/-56px）。
+    //    判据用「气泡实际高度」而不是 setBubbleVisible 的入参 —— 只看入参会把
+    //    「想显示但被分层挡住」误判成「气泡在屏却没让位」。
+    check(s + "：让位标记与气泡显隐一致（有气泡 ⇔ .compact）", () => {
+      const shown = m.bubble > 0;
+      assert.strictEqual(m.compact, shown,
+        "气泡高 " + m.bubble + "px，但 .compact = " + m.compact +
+        "（两者必须同步：.compact 是「面板要为气泡让位」的唯一信号）");
+      if (m.layer) {
+        assert.strictEqual(shown, false,
+          "分层 " + m.layer + " 开着时气泡必须让位（它占 82px，托盘/抽屉放不下）");
+      }
+    });
   }
 
   // 6) 各场景的角色位置必须一致 —— 面板让位不该把角色顶走
