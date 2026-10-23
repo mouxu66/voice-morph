@@ -1116,6 +1116,10 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
         "loop=false 播完时 worker 不发消息 —— 面板会永远停在「放歌中」");
       assert.ok(body.gain > 0 && body.gain <= 1.5, "增益没带/超范围：" + body.gain);
       assert.strictEqual(els.bgmIc.textContent, "■", "播放键没切成「停」");
+      // 这颗键必须带字。2026-10-23 上一版把它压成一个光秃秃的 ▶，用户直接问
+      // 「放歌的面板是不是没了」—— 图标在 204px 里读不出「此刻出声」这件事。
+      assert.strictEqual(els.bgmLabel.textContent, "停止",
+        "放歌键上的字没跟着变（应为「停止」，实际 " + JSON.stringify(els.bgmLabel.textContent) + "）");
       assert.strictEqual(els.bgmSel.disabled, true,
         "放着歌时还允许换歌 → 「停」到底停的是哪首就成了猜谜");
       assert.ok(els.bgmBadge.classList.contains("on"),
@@ -1138,6 +1142,7 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       const post = lastBgmPost();
       assert.ok(post && /\/bgm\/stop$/.test(post.url), "没打 /bgm/stop：" + JSON.stringify(post));
       assert.strictEqual(els.bgmIc.textContent, "▶");
+      assert.strictEqual(els.bgmLabel.textContent, "放歌");
       assert.strictEqual(els.bgmSel.disabled, false);
       assert.ok(!els.bgmBadge.classList.contains("on"), "停了歌角标还亮着");
     });

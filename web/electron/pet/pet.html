@@ -564,22 +564,49 @@
      托盘高度：放歌区 76 + 音效网格 2 行 78 ≈ 154，加进空闲态 153 → 约 307，
      所以 #fxGrid 钉死 max-height（超出内滚），面板整体仍受 300 上限保护。 */
   #tray {
-    margin-top: 6px; padding-top: 7px;
+    margin-top: 3px; padding-top: 4px;
     border-top: 1px solid rgb(var(--c-border) / 0.85);
   }
   #tray[hidden] { display: none; }
   /* 托盘打开时收起手势提示行：托盘是「此刻出声」，发送手势那句在它打开时不是重点，
      而 15px 正好把它从 300px 上限外面拉回来（#panel.has-tray，见抽屉那段同一条规则）。 */
   #panel.has-tray #gesture { display: none; }
-  #bgmRow { display: flex; align-items: center; gap: 4px; }
-  #bgmRow .field2 { position: relative; flex: 1 1 auto; min-width: 0; }
-  /* 歌名单行：托盘里没有空间再放图标，所以 select 不收左内边距、不配 .lead */
-  #panel #bgmSel {
-    padding: 5px 20px 5px 8px; font-size: 10.5px;
-    height: 26px;
+  /* 托盘打开时也收起音效片（#fxPicks）。不是嫌它乱，是放歌卡从一行变两行要 42px，
+     而这 42px 只能从这里借：托盘本身是「此刻出声」，装配草稿是另一件事 ——
+     点格子上的 ＋ 仍有反馈（格子变 ✓、主按钮上的「·N」加一）。 */
+  #panel.has-tray #fxPicks { display: none; }
+  /* 放歌卡：两行（曲目 / 放歌键 + 音量），左侧一条品牌紫竖线做分组。
+     2026-10-23 从「一行三个控件」恢复成两行 —— 用户原话「那个放歌的面板也没了呀」：
+     功能一个没少，但压成一行之后它变成了音效网格的附属品。 */
+  #bgmCard {
+    position: relative;
+    display: block; padding: 3px 3px 3px 7px; border-radius: 2px 10px 10px 2px;
+    /* 一条紫色竖线而不是整块底框：204px 里 2px 的内边距沿根本露不出「卡面」，
+       画个框只会多占高度还看不出来。竖线是分组标记里最便宜的一种 —— 0px 高度。 */
+    border-left: 2px solid rgb(var(--c-accent) / 0.45);
   }
+  /* 曲目行左侧的 ♪：204px 里放不下「放歌」两个字做标题，一个音符就是这块卡的名字。
+     （tab 键焦点仍落在 select 上，装饰不参与命中。） */
+  #bgmCard .field2::before {
+    content: "♪"; position: absolute; left: 7px; top: 50%; z-index: 1;
+    transform: translateY(-50%);
+    font-size: 11px; line-height: 1; color: rgb(var(--c-t-400));
+    pointer-events: none;
+  }
+  #bgmCard.on { border-left-color: rgb(var(--c-accent)); }
+  #bgmCard .field2 { position: relative; min-width: 0; }
+  /* 歌名单行。左内边距 19px 是给 ::before 那个 ♪ 让位（不是给 .lead 图标）。 */
+  #panel #bgmSel {
+    width: 100%;
+    padding: 4px 18px 4px 19px; font-size: 11px;
+    height: 24px;
+  }
+  #bgmCtlRow { display: flex; align-items: center; gap: 5px; margin-top: 2px; }
+  /* 放歌键带字：「▶」单个三角在 204px 里太像「展开这一行」，
+     而它其实是**此刻出声**（送进虚拟声卡，对面听得到）。字比图标更适合解释这件事。 */
   #panel #bgmBtn {
-    flex: 0 0 auto; width: 40px; height: 26px; padding: 0;
+    flex: 1 1 auto; min-width: 0; height: 24px; padding: 0 6px;
+    display: flex; align-items: center; justify-content: center; gap: 4px;
     font-size: 11px; font-weight: 600;
   }
   #panel #bgmBtn.on {
@@ -587,9 +614,9 @@
     background: rgb(var(--c-accent) / 0.20);
     color: rgb(var(--c-accent-h));
   }
-  /* 音量：与歌同一行（旧版是一行独立滑块，占了 18px 且与歌名脱节） */
+  /* 音量与放歌键同一行：旧版是一行独立滑块（18px），与歌名脱节又占高度 */
   #panel #bgmGain {
-    flex: 0 0 44px; min-width: 0; height: 16px;
+    flex: 0 0 56px; min-width: 0; height: 16px;
     padding: 0; border: 0; border-radius: 0; background: transparent;
     accent-color: rgb(var(--c-accent-h)); cursor: pointer;
   }
@@ -608,7 +635,7 @@
   #fxGrid {
     display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px;
     max-height: 76px; overflow-y: auto; overscroll-behavior: contain;
-    margin-top: 5px;
+    margin-top: 4px;
     scrollbar-width: thin;
     scrollbar-color: rgb(var(--c-border-2) / 0.7) transparent;
   }
@@ -1008,26 +1035,30 @@
          放歌页又有一套「选歌 + 放歌 + 音量 + 提示」—— 41px 的页签把它们隔开，
          用户要先想「这个声音属于哪一类」才能找到入口。 -->
     <div id="tray" hidden>
-      <div id="bgmRow">
+      <!-- 放歌是一块**独立的卡**，不是一行控件。
+           2026-10-23 上一版把它压成「下拉 + ▶ + 滑块」一行（26px），用户的一句
+           「那个放歌的面板也没了呀」说明压过头了：功能一个没少，但视觉上它变成了
+           音效网格的附属品，找放歌的人会以为整页被删了。现在恢复「曲目 + 放歌键 +
+           音量」两行，并给它自己的底框 —— 一眼能看出这是一台放歌机。
+           同一版里删掉的 #bgmHint（「进微信，本机不出声」）不再回来：那句话改由
+           放歌键的 title 与第一次点音效时的状态行承担，常驻说明书才是「乱」的来源。
+           高度靠「托盘打开时收起音效片（#fxPicks）」换 —— 见 #panel.has-tray 那段。 -->
+      <div id="bgmCard">
         <div class="field2">
           <select id="bgmSel" title="选一首歌：本次导入/翻唱的（退出应用会清空），或 media/songs 里常驻的">
             <option value="">加载中…</option>
           </select>
         </div>
-        <button type="button" id="bgmBtn"
-                title="放歌：把歌实时垫进虚拟声卡，微信那边听得到；本机扬声器不出声。歌比说话短时循环补满">
-          <span id="bgmIc">▶</span>
-        </button>
-        <input id="bgmGain" type="range" min="0" max="1" step="0.05" value="0.3"
-               aria-label="歌的音量"
-               title="歌的音量（默认 0.3 ≈ -10dB：垫在人声下面，说话才听得清）" />
+        <div id="bgmCtlRow">
+          <button type="button" id="bgmBtn"
+                  title="放歌：把歌实时垫进虚拟声卡，微信那边听得到；本机扬声器不出声。歌比说话短时循环补满">
+            <span id="bgmIc">▶</span><span id="bgmLabel">放歌</span>
+          </button>
+          <input id="bgmGain" type="range" min="0" max="1" step="0.05" value="0.3"
+                 aria-label="歌的音量"
+                 title="歌的音量（默认 0.3 ≈ -10dB：垫在人声下面，说话才听得清）" />
+        </div>
       </div>
-      <!-- ⚠️ 这里原来还有一行 #bgmHint（「进微信，本机不出声 · 歌短会循环」+ 拉不到歌单的错因），
-           2026-10-23 删掉：托盘里「放歌行 26 + 灰色说明 17 + 网格 81」已经 317px，
-           而面板上限是 300 —— 它正是让托盘态溢出的那 17px。
-           那句话不是每次都要看的：歌名/空态/错因都已经写在 select 的 option 与 title 里
-           （见 renderBgmOptions / renderBgm），而「本机不出声」在第一次点音效时
-           由状态行说一次就够（sfxLiveHintShown）。常驻的说明书才是「面板太乱」的来源。 -->
       <!-- 音效空态说明（声板没开 / 还是空的 / 后端没连上），有素材时为空。 -->
       <div id="fxEmpty"></div>
       <!-- 音效网格：点格子 = 现场播，点格子右上角的 ＋ = 加进这条语音。
@@ -1705,6 +1736,11 @@ const fxEmptyEl = document.getElementById("fxEmpty");
 const bgmSelEl = document.getElementById("bgmSel");
 const bgmBtnEl = document.getElementById("bgmBtn");
 const bgmIcEl = document.getElementById("bgmIc");
+// 放歌键上的文字：「放歌」/「停止」。2026-10-23 加回 —— 上一版把它连带整块放歌区
+// 压成了一个三角图标，看不清这颗键是干什么的（上一次删掉它时 renderBgm 还留着
+// 一句 bgmLabelEl.textContent，托盘一开就 ReferenceError，也是个教训）。
+const bgmLabelEl = document.getElementById("bgmLabel");
+const bgmCardEl = document.getElementById("bgmCard");
 const bgmGainEl = document.getElementById("bgmGain");
 const bgmBadgeEl = document.getElementById("bgmBadge");
 // （原 #bgmHint 的引用一并删掉：那一行已从 DOM 移除，缺什么/错在哪改写在 #bgmSel 的 option 与 title 里）
@@ -2323,7 +2359,9 @@ function pickBgmName(items, last) {
 function renderBgmOptions() {
   if (!bgmSelEl) return;
   if (!bgmSongs.length) {
-    bgmSelEl.innerHTML = '<option value="">' + esc(bgmNote || "还没有歌") + "</option>";
+    // 空态必须自己说清「怎么办」：那行常驻说明（#bgmHint）已经删了，
+    // option 是这里唯一还能写字的地方。完整的路径在 title 里（见 renderBgm 末尾）。
+    bgmSelEl.innerHTML = '<option value="">' + esc(bgmNote || "还没有歌 · 悬停看路径") + "</option>";
     return;
   }
   bgmSelEl.innerHTML = bgmSongs.map((it) => {
@@ -2346,6 +2384,8 @@ function renderBgm() {
       : "放歌：把歌实时垫进虚拟声卡，微信那边听得到；本机扬声器不出声（想自己听请开「自我监听」）。歌比说话短时循环补满";
   }
   if (bgmIcEl) bgmIcEl.textContent = playing ? "■" : "▶";
+  if (bgmLabelEl) bgmLabelEl.textContent = playing ? "停止" : "放歌";
+  if (bgmCardEl) bgmCardEl.classList.toggle("on", playing);
   // ♪ 上的「正在放」小点（.icb.playing::after）。托盘收起后由角色身上的 #bgmBadge
   // 接手同一件事，但面板**还开着**时它是唯一提示 —— 这条 CSS 钩子之前没人接线，
   // 放歌中 ♪ 长得和没放歌一模一样。
