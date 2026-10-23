@@ -176,7 +176,9 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
     expect(html).toContain('id="tray"')
     const loadSfxBody = html.slice(html.indexOf('async function loadSfx('), html.indexOf('function renderFxGrid'))
     expect(loadSfxBody).toContain('if (!CAP.fx) return;')
-    expect(html).toContain('if (!CAP.fx && panelLayer === "tray") setLayer("");')
+    // 2026-10-23：搜歌层 `songs` 也归 sound.fx-board（它的入口长在放歌卡上），
+    // 所以归位条件必须同时认「已经开着的托盘」和「已经开着的搜歌层」。
+    expect(html).toContain('if (!CAP.fx && (panelLayer === "tray" || panelLayer === "songs")) setLayer("");')
   })
 
   it('★ 音效页的发送走 premix → sendWav 既有链路（不新造发送路径）', () => {

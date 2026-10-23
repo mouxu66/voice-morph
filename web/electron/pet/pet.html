@@ -595,11 +595,25 @@
   }
   #bgmCard.on { border-left-color: rgb(var(--c-accent)); }
   #bgmCard .field2 { position: relative; min-width: 0; }
-  /* 歌名单行。左内边距 19px 是给 ::before 那个 ♪ 让位（不是给 .lead 图标）。 */
+  /* 歌名单行。左内边距 19px 是给 ::before 那个 ♪ 让位（不是给 .lead 图标）；
+     右 26px 给放大镜（搜歌入口）让位 —— 库里的歌找不到时，这里是唯一出口。 */
   #panel #bgmSel {
     width: 100%;
-    padding: 4px 18px 4px 19px; font-size: 11px;
+    padding: 4px 26px 4px 19px; font-size: 11px;
     height: 24px;
+  }
+  /* 搜歌入口：长在放歌卡里而不是 #phead 上 —— 顶栏 204px 已经塞不下第四个 26px
+     图标（再挤就会把音色名压到 13px）。放大镜跟着「放歌」这张卡走，语义也最顺。 */
+  #panel #songBtn {
+    position: absolute; right: 1px; top: 1px;
+    width: 22px; height: 22px; padding: 0;
+    border: 0; background: transparent; color: rgb(var(--c-t-500));
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+  }
+  #panel #songBtn:hover { color: rgb(var(--c-accent-h)); }
+  #panel #songBtn svg {
+    width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 1.7;
   }
   #bgmCtlRow { display: flex; align-items: center; gap: 5px; margin-top: 2px; }
   /* 放歌键带字：「▶」单个三角在 204px 里太像「展开这一行」，
@@ -682,6 +696,78 @@
   #panel .fxc.pick .fadd { color: rgb(var(--c-accent-h)); }
   #fxEmpty { margin-top: 5px; font-size: 9.5px; line-height: 1.5; color: rgb(var(--c-t-500)); }
   #fxEmpty:empty { display: none; }
+
+  /* —— 搜歌层 #songLayer：抖音榜 / B站榜 / B站搜索 ——
+     为什么是「一整层」而不是放歌卡里再加一行：204px 宽里，榜单/搜索框/结果至少
+     需要 180px 高，和放歌卡、音效网格叠在一起必然撑破 300px 上限。
+     打开时把草稿区与主按钮一起收起 —— 找歌是独立任务，点一首歌后自动回到托盘继续放，
+     不需要一边找歌一边看着「按住说话」。 */
+  #panel.has-songs #draft,
+  #panel.has-songs #fireRow,
+  #panel.has-songs #gesture,
+  #panel.has-songs #fxPicks { display: none; }
+  /* ★ 必须有这条：下面给 #songLayer 写了 display，作者样式会盖掉 UA 的 [hidden]。
+     这是本项目第 N 次踩同一个坑（见 .field[hidden] 与 #fxPicks:empty）。 */
+  #songLayer[hidden] { display: none; }
+  #songLayer { margin-top: 3px; }
+  #songHead { display: flex; align-items: center; gap: 4px; }
+  #songHead .st { font-size: 11px; font-weight: 650; color: rgb(var(--c-t-300)); }
+  #panel #songBack {
+    flex: 0 0 auto; width: 22px; height: 20px; padding: 0;
+    border-radius: 7px; font-size: 13px; line-height: 1;
+  }
+  #songSrc { display: flex; gap: 3px; margin-left: auto; }
+  #panel #songSrc button {
+    height: 20px; padding: 0 7px; border-radius: 999px;
+    border-color: transparent; background: transparent;
+    font-size: 9.5px; color: rgb(var(--c-t-400));
+  }
+  #panel #songSrc button.on {
+    color: rgb(var(--c-accent-h));
+    border-color: rgb(var(--c-accent) / 0.45);
+    background: rgb(var(--c-accent) / 0.14);
+  }
+  /* 搜索框复用主输入框的样式，但矮 4px（28 vs 32）：它只是这个分层里的工具行。 */
+  #songQWrap { margin: 5px 0 4px; }
+  #panel #songQ { height: 28px; padding: 4px 8px 4px 27px; font-size: 11px; }
+  /* 结果列表钉死 3 行半：再多就在层内滚，不把面板顶高。 */
+  #songList {
+    max-height: 112px; overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--c-border-2) / 0.7) transparent;
+  }
+  #songList:empty { display: none; }
+  /* 一行 = 排名/来源 + 歌名 + 歌手/时长 + 动作。整行是 button（点哪都触发），
+     行内不再放子按钮 —— 204px 宽度里两颗热区只会互相抢点击。 */
+  #panel .srow {
+    display: flex; align-items: center; gap: 5px;
+    width: 100%; height: 34px; padding: 0 6px;
+    border: 0; border-radius: 8px; background: transparent;
+    text-align: left; cursor: pointer;
+  }
+  #panel .srow:hover { background: rgb(var(--c-surface-3) / 0.85); }
+  #panel .srow.busy { opacity: .62; pointer-events: none; }
+  #panel .srow .sr {
+    flex: 0 0 13px; text-align: right;
+    font-size: 9px; color: rgb(var(--c-t-500));
+  }
+  #panel .srow .si { display: block; flex: 1 1 auto; min-width: 0; }
+  #panel .srow .st {
+    display: block;
+    font-size: 10.5px; line-height: 1.25; color: rgb(var(--c-t-200));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #panel .srow .sm {
+    display: block;
+    font-size: 9px; line-height: 1.25; color: rgb(var(--c-t-500));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #panel .srow .sg { flex: 0 0 auto; font-size: 11px; color: rgb(var(--c-accent-h)); }
+  #panel .srow.busy .sg { animation: pulse 1s infinite; }
+  /* 取回进度/错误只写这一行；空的时候不占高度。 */
+  #songNote { margin-top: 3px; font-size: 9.5px; line-height: 1.4; color: rgb(var(--c-t-500)); }
+  #songNote:empty { display: none; }
+  #songNote.err { color: rgb(var(--c-err)); }
 
   /* —— 更多抽屉 #drawer：音色 / 引擎 / 最近发送 ——
      这些是「设置」，进来的频率远低于发送；放进抽屉后它们不再跟主按钮抢注意力。
@@ -1048,6 +1134,14 @@
           <select id="bgmSel" title="选一首歌：本次导入/翻唱的（退出应用会清空），或 media/songs 里常驻的">
             <option value="">加载中…</option>
           </select>
+          <!-- 搜歌：抖音热歌榜只做「发现」（歌名/歌手），点一首后再用 B站 匹配取音。
+               取回的音频只在本次会话里（后端 session 目录，退出即删），不进媒体库。 -->
+          <button type="button" id="songBtn" title="搜歌：抖音热榜 / B站榜 / B站搜索，点一首直接实时放">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="7" cy="7" r="5"></circle>
+              <path d="M11 11l4 4"></path>
+            </svg>
+          </button>
         </div>
         <div id="bgmCtlRow">
           <button type="button" id="bgmBtn"
@@ -1064,6 +1158,32 @@
       <!-- 音效网格：点格子 = 现场播，点格子右上角的 ＋ = 加进这条语音。
            两种用法同时存在，不用先选模式（旧版必须先切「实时播放 / 混进语音」）。 -->
       <div id="fxGrid"></div>
+    </div>
+
+    <!-- ── 搜歌层：抖音热榜 / B站音乐榜 / B站搜索 ───────────────────────────
+         从放歌卡右上角的放大镜进来。抖音榜返回的是「歌名 + 歌手 + 热度」，没有音频
+         （版权接口 play_url 为空），点一行会用「歌名 + 歌手」去 B站 搜，B站结果再点
+         才取音 —— 两步是为了让用户看见「这是从 B站 找的哪一条」，不静默替人选。
+         B站榜的每一行本身就是视频地址，点一下直接取音 + 实时放。 -->
+    <div id="songLayer" hidden>
+      <div id="songHead">
+        <button type="button" id="songBack" title="返回放歌">‹</button>
+        <span class="st">找歌</span>
+        <div id="songSrc" role="group" aria-label="榜单来源">
+          <button type="button" data-src="douyin" class="on">抖音榜</button>
+          <button type="button" data-src="bilibili">B站榜</button>
+        </div>
+      </div>
+      <label class="field" id="songQWrap" for="songQ">
+        <svg class="lead" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+          <path d="M11 11l4 4" fill="none" stroke="currentColor" stroke-width="1.6"></path>
+        </svg>
+        <input id="songQ" type="search" placeholder="搜歌名或歌手，回车" maxlength="60"
+               autocomplete="off" spellcheck="false" />
+      </label>
+      <div id="songList" role="list"></div>
+      <div id="songNote" aria-live="polite"></div>
     </div>
 
     <!-- ── 更多抽屉：音色 / 引擎 / 最近发送 ─────────────────────────────────
@@ -1743,6 +1863,14 @@ const bgmLabelEl = document.getElementById("bgmLabel");
 const bgmCardEl = document.getElementById("bgmCard");
 const bgmGainEl = document.getElementById("bgmGain");
 const bgmBadgeEl = document.getElementById("bgmBadge");
+// 搜歌层（放歌卡右上角放大镜进来）：榜单 / 搜索框 / 结果 / 进度行
+const songLayerEl = document.getElementById("songLayer");
+const songBtnEl = document.getElementById("songBtn");
+const songBackEl = document.getElementById("songBack");
+const songSrcEl = document.getElementById("songSrc");
+const songQEl = document.getElementById("songQ");
+const songListEl = document.getElementById("songList");
+const songNoteEl = document.getElementById("songNote");
 // （原 #bgmHint 的引用一并删掉：那一行已从 DOM 移除，缺什么/错在哪改写在 #bgmSel 的 option 与 title 里）
 const VOICE_KEY = "pet_voice_id";
 let panelTimer = null;
@@ -2106,6 +2234,8 @@ recentEl.addEventListener("click", (e) => {
  * 状态行引导用户先去「说话」页合成一条。产物 sfxmix_*.wav 直接 sendWav 发送。
  */
 const SFX_BASE = "http://127.0.0.1:8000/api/soundboard";
+// 曲库发现（sound.fx-board 的 music_api）：榜单只取元数据，音频仍走 yt-dlp 外部桥。
+const MUSIC_BASE = "http://127.0.0.1:8000/api/music";
 // chip 上的混入位置标记（一个汉字）：点击 chip 主体按 叠→头→尾 循环
 const PICK_LABEL = { layer: "叠", prepend: "头", append: "尾" };
 
@@ -2139,13 +2269,14 @@ function esc(s) {
 //   drawer —— 设置：音色 / 引擎 / 最近发送。进来的频率远低于发送，不该常驻。
 // 为什么不分得更细（比如音效一个入口、放歌又一个）：那又会退化成页签 ——
 // 用户得先想「这个声音属于哪一类」，而他要的只是「放个声」。
-let panelLayer = "";           // "" | "tray" | "drawer"
+let panelLayer = "";           // "" | "tray" | "drawer" | "songs"
 
 /** 切换分层。next 为 "" 时全部收起。 */
 function setLayer(next) {
-  panelLayer = (next === "tray" || next === "drawer") ? next : "";
+  panelLayer = (next === "tray" || next === "drawer" || next === "songs") ? next : "";
   if (trayEl) trayEl.hidden = panelLayer !== "tray";
   if (drawerEl) drawerEl.hidden = panelLayer !== "drawer";
+  if (songLayerEl) songLayerEl.hidden = panelLayer !== "songs";
   if (trayBtn) {
     trayBtn.classList.toggle("on", panelLayer === "tray");
     trayBtn.setAttribute("aria-expanded", panelLayer === "tray" ? "true" : "false");
@@ -2158,12 +2289,19 @@ function setLayer(next) {
   // 抽屉收起手势行与音效片，托盘收起手势行 —— 都是为了让当前分层在 300px 里站得下。
   if (panel) panel.classList.toggle("has-drawer", panelLayer === "drawer");
   if (panel) panel.classList.toggle("has-tray", panelLayer === "tray");
+  if (panel) panel.classList.toggle("has-songs", panelLayer === "songs");
   // 分层打开时气泡让位（理由见 applyBubble）：82px 的气泡与 115px 的托盘不可能同时站下。
   if (rootEl) rootEl.classList.toggle("layer-open", !!panelLayer);
   applyBubble();
   // 打开托盘就强制刷新两批清单：音效是用户刚在声板里加的，歌是刚导入/翻唱的。
   // （不进托盘就不拉 —— 失败会把提示写进共用状态行，还可能把刚发完微信的结果顶掉。）
   if (panelLayer === "tray") { void loadSfx(true); void loadBgm(true); }
+  if (panelLayer === "songs") {
+    // 榜单有缓存就不重复打（后端另有 5 分钟缓存）；没有才拉。
+    if (!songItems.length) void loadSongChart(false);
+    // 打开即可输入 —— 这一层最常见的动作是「我脑子里有一首歌名」。
+    queueMicrotask(() => { if (songQEl) songQEl.focus(); });
+  }
   refreshFire();
 }
 
@@ -2337,6 +2475,9 @@ let bgmLoadedAt = 0;
 let bgmBusy = false;
 let bgmGainTimer = null;
 let bgmNote = "";         // 拉歌单失败的说明 —— 写在**页内**提示行，不抢共用状态行
+// 本次会话从搜歌层取回的歌。后端产物在 session 目录（退出即删），所以
+// /bgm/recent 永远不会列出它 —— 由这里把它**补进**下拉，才能在放歌卡里继续选/停。
+let bgmFetched = null;
 let trayTipDefault = "";  // ♪ 的原始 title（HTML 属性是唯一真相源，放歌时被临时换掉）
 
 /** 秒 → `m:ss`（204px 里多一个字符都可能在 select 尾部变成省略号）。 */
@@ -2365,7 +2506,9 @@ function renderBgmOptions() {
     return;
   }
   bgmSelEl.innerHTML = bgmSongs.map((it) => {
-    const label = it.name.replace(/\.[^.]+$/, "") + (it.duration_s ? " · " + fmtDur(it.duration_s) : "");
+    // 搜歌层取回的歌有显示名（歌名），媒体库里的只有文件名 —— 前者优先。
+    const label = (it.title || it.name.replace(/\.[^.]+$/, ""))
+      + (it.duration_s ? " · " + fmtDur(it.duration_s) : "");
     return '<option value="' + esc(it.name) + '"' + (it.name === bgmSelName ? " selected" : "") + ">"
       + esc(label) + "</option>";
   }).join("");
@@ -2393,7 +2536,7 @@ function renderBgm() {
     if (!trayTipDefault) trayTipDefault = trayBtn.title || "";
     trayBtn.classList.toggle("playing", playing);
     trayBtn.title = playing && song
-      ? "正在放：" + song.name.replace(/\.[^.]+$/, "") + "（点开 ♪ 可以停）"
+      ? "正在放：" + (song.title || song.name.replace(/\.[^.]+$/, "")) + "（点开 ♪ 可以停）"
       : trayTipDefault;
   }
   if (bgmSelEl) bgmSelEl.disabled = playing;   // 不变量 3：选中项必须就是正在放的那首
@@ -2404,8 +2547,8 @@ function renderBgm() {
   // 空态与错因本来就由 renderBgmOptions 写成 option 文案，这里只补 title（悬停能看全）。
   if (bgmSelEl) {
     bgmSelEl.title = bgmNote || (bgmSongs.length
-      ? "选一首歌：点右边的放歌键，实时垫进虚拟声卡（微信那边听得到，本机扬声器不出声）"
-      : "还没有歌：主界面 → 实时变声 → 实时垫歌；或把 mp3 放进后端 media/songs");
+      ? "选一首歌：点右边的放歌键，实时垫进虚拟声卡（微信那边听得到，本机扬声器不出声）；放大镜可搜抖音/B站热歌"
+      : "还没有歌：点右上角放大镜搜抖音/B站热歌；或主界面 → 实时变声 → 实时垫歌；或把 mp3 放进后端 media/songs");
   }
 }
 
@@ -2418,7 +2561,7 @@ async function loadBgm(force) {
   try {
     const r = await fetch(SFX_BASE + "/bgm/recent", { cache: "no-store" });
     if (!r.ok) {
-      bgmSongs = [];
+      bgmSongs = mergeFetchedSong([]);
       // 404 与「后端在但出错」是两件事：前者多半是后端比面板旧（/bgm/recent 还没有），
       // 后者该看日志 —— 猜错会把用户指去查错的环节。
       bgmNote = r.status === 404
@@ -2429,17 +2572,24 @@ async function loadBgm(force) {
       return;
     }
     const j = await r.json();
-    bgmSongs = (j.items || []).filter((it) => it && it.name);
+    bgmSongs = mergeFetchedSong((j.items || []).filter((it) => it && it.name));
     bgmNote = "";
     bgmSelName = pickBgmName(bgmSongs, j.last || "");
     renderBgmOptions();
     renderBgm();
   } catch {
-    bgmSongs = [];
+    bgmSongs = mergeFetchedSong([]);
     bgmNote = "后端没连上，放歌不可用";
     renderBgmOptions();
     renderBgm();
   }
+}
+
+/** 会话内取回的歌不在 /bgm/recent 里，合并进下拉时补在第一位（按文件名去重）。 */
+function mergeFetchedSong(items) {
+  const list = items.slice();
+  if (bgmFetched && !list.some((it) => it.name === bgmFetched.name)) list.unshift(bgmFetched);
+  return list;
 }
 
 /** 从错误响应里挖一句人话（FastAPI 的 detail；没有就报状态码）。 */
@@ -2504,6 +2654,216 @@ function onBgmGainInput() {
   }, 250);
 }
 
+// ---------------- 搜歌层（music_api：抖音榜发现 + B站取音）----------------
+/**
+ * 三条不变量（改之前先读完）：
+ *
+ *   1. **抖音榜只做发现**：接口能拿到歌名/歌手/热度，但 `play_url` 是空的（版权）。
+ *      点一行 = 用「歌名 + 歌手」去 B站 搜，让用户看见取的是哪一条，不静默替人选。
+ *   2. **取回的是会话产物**：后端落在 session 目录，退出即删；这里只把它塞进
+ *      本次的 `bgmSongs`（`bgmFetched`），不写媒体库、不改 `/bgm/recent`。
+ *   3. **点 B站行 = 取回 + 立即 `/bgm/start`**：与放歌键同一条链路（loop=true）。
+ *      这一层的动作语义就是「放这首」，不再弹二次确认。
+ */
+let songSrc = "douyin";       // douyin | bilibili
+let songItems = [];           // 当前列表（榜单或搜索结果）
+let songChartKey = "";        // 已成功加载的榜单 key，避免每次开层都打网络
+let songLoading = false;
+let songBusy = false;         // 取回中：同时只允许一条
+let songInputTimer = null;
+
+/** 进度/错误只写这一行；空的时候 CSS 让它不占高度。 */
+function songSetNote(text, isErr) {
+  if (!songNoteEl) return;
+  songNoteEl.textContent = text || "";
+  songNoteEl.classList.toggle("err", !!isErr);
+}
+
+/** 热度/播放量 → `1.2亿` / `34w`。榜单返回的是整数，204px 里原样太长。 */
+function fmtHot(n) {
+  const v = Number(n) || 0;
+  if (v >= 100000000) return (v / 100000000).toFixed(1) + "亿";
+  if (v >= 10000) return Math.round(v / 10000) + "w";
+  return v ? String(v) : "";
+}
+
+function renderSongList() {
+  if (!songListEl) return;
+  songListEl.innerHTML = songItems.map((it, i) => {
+    const meta = [
+      it.artist || "",
+      it.duration_s ? fmtDur(it.duration_s) : "",
+      it.hot ? fmtHot(it.hot) : "",
+    ].filter(Boolean).join(" · ");
+    const go = it.source === "douyin" ? "›" : "▶";
+    return '<button type="button" class="srow" role="listitem" data-i="' + i + '">'
+      + '<span class="sr">' + (it.rank || i + 1) + '</span>'
+      + '<span class="si"><span class="st">' + esc(it.title || "") + '</span>'
+      + '<span class="sm">' + esc(meta) + '</span></span>'
+      + '<span class="sg">' + go + '</span></button>';
+  }).join("");
+}
+
+/** 拉当前来源的榜单。`force=true` 用于「再点一次来源」刷新。 */
+async function loadSongChart(force) {
+  if (!CAP.fx || !songListEl) return;
+  const src = songSrc;
+  if (!force && songChartKey === src) return;
+  songLoading = true;
+  songSetNote("榜单加载中…");
+  try {
+    const r = await fetch(MUSIC_BASE + "/charts?source=" + encodeURIComponent(src), { cache: "no-store" });
+    if (songSrc !== src) return;   // 用户已经切走了，别把旧结果盖回来
+    if (!r.ok) {
+      songItems = [];
+      songChartKey = "";
+      renderSongList();
+      songSetNote(src === "douyin"
+        ? "抖音榜没拉倒，点「B站榜」试试"
+        : "B站榜没拉倒，检查网络/后端", true);
+      return;
+    }
+    const j = await r.json();
+    if (songSrc !== src) return;
+    songItems = (j.items || []).filter((it) => it && it.title);
+    songChartKey = src;
+    renderSongList();
+    songSetNote(songItems.length
+      ? (src === "douyin" ? "点一行去 B站 找音频" : "点一行取回并实时放")
+      : "榜单是空的");
+  } catch {
+    songItems = [];
+    songChartKey = "";
+    renderSongList();
+    songSetNote("后端没连上，搜歌不可用", true);
+  } finally {
+    songLoading = false;
+  }
+}
+
+/** 按歌名/歌手搜 B站。结果仍是「视频」，取音要点下一步。 */
+async function runSongSearch(q) {
+  const query = String(q || "").trim();
+  if (!query || songLoading || songBusy) return;
+  songLoading = true;
+  songSetNote("搜索中…");
+  try {
+    const r = await fetch(MUSIC_BASE + "/search?q=" + encodeURIComponent(query) + "&limit=8", {
+      cache: "no-store",
+    });
+    if (!r.ok) {
+      songSetNote("B站搜索失败（HTTP " + r.status + "）", true);
+      return;
+    }
+    const j = await r.json();
+    if (songQEl && songQEl.value.trim() !== query) return;   // 输入已经变了
+    songItems = (j.items || []).filter((it) => it && it.title);
+    songChartKey = "";                                       // 清空输入时要能回到榜单
+    renderSongList();
+    songSetNote(songItems.length ? "以下是从 B站 匹配的音频，点一行取回" : "没搜到，换个歌名或歌手");
+  } catch {
+    songSetNote("后端没连上，搜歌不可用", true);
+  } finally {
+    songLoading = false;
+  }
+}
+
+/** 取回一首并立即放。`idx` 只用于把对应行置忙态。 */
+async function fetchAndPlaySong(it, idx) {
+  if (songBusy) return;
+  songBusy = true;
+  const row = songListEl && songListEl.querySelector('.srow[data-i="' + idx + '"]');
+  if (row) row.classList.add("busy");
+  const jobId = "pet-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+  songSetNote("准备取回…");
+  // POST 是同步阻塞的（yt-dlp 跑多久它就有多久），进度靠并行的 GET 轮询。
+  // `posting` 而不是 `found` 作为循环条件：作业要等 POST 到达后端才登记，
+  // 最初几次 GET 一定 found=false —— 拿它当结束信号会永远停在「准备取回…」。
+  let posting = true;
+  const polling = (async () => {
+    while (posting) {
+      await new Promise((res) => setTimeout(res, 700));
+      if (!posting) break;
+      try {
+        const pr = await fetch(MUSIC_BASE + "/fetch/" + jobId, { cache: "no-store" });
+        if (!pr.ok) continue;
+        const pj = await pr.json();
+        if (!pj.found) continue;
+        const pct = pj.percent == null ? "" : " " + Math.round(pj.percent) + "%";
+        songSetNote((pj.stage || "取回中") + pct + " · 已 " + Math.round(pj.elapsed_s || 0) + "s");
+      } catch {}
+    }
+  })();
+  try {
+    const r = await fetch(MUSIC_BASE + "/fetch", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: it.url, job_id: jobId, title: it.title, artist: it.artist || "" }),
+    });
+    if (!r.ok) {
+      songSetNote("取回失败：" + await bgmErr(r), true);
+      return;
+    }
+    const j = await r.json();
+    const song = {
+      id: String(j.name || "").replace(/\.[^.]+$/, ""),
+      name: j.name,
+      title: j.title || it.title,
+      artist: j.artist || it.artist || "",
+      duration_s: j.duration_s || it.duration_s || 0,
+    };
+    // 先选进下拉、再 /bgm/start —— 顺序反了会让「正在放」找不到对应项。
+    bgmFetched = song;
+    bgmSongs = [song, ...bgmSongs.filter((x) => x.name !== song.name)];
+    bgmSelName = song.name;
+    songSetNote("取回完成，正在放…");
+    if (!await startFetchedBgm(song)) {
+      songSetNote("取回了，但放歌失败：点 ‹ 回托盘再按「放歌」", true);
+      return;
+    }
+    setLayer("tray");
+    setStatus("正在放：" + (song.title || song.name) + " · 微信那边听得到", "ok");
+  } catch {
+    songSetNote("后端没连上，取回失败", true);
+  } finally {
+    posting = false;
+    await polling;
+    songBusy = false;
+    if (row && row.isConnected) row.classList.remove("busy");
+  }
+}
+
+/** 与放歌键同一条 /bgm/start；成功返回 true。 */
+async function startFetchedBgm(song) {
+  try {
+    const r = await fetch(SFX_BASE + "/bgm/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bgm: song.name, gain: bgmGainV, loop: true }),
+    });
+    if (!r.ok) return false;
+    const j = await r.json().catch(() => ({}));
+    bgmPlayingId = j.id || song.id;
+    try { localStorage.setItem(BGM_KEY, song.name); } catch {}
+    renderBgmOptions();
+    renderBgm();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 点一行：抖音 → 去 B站搜；B站 → 取回并放。 */
+function onSongRow(i) {
+  const it = songItems[i];
+  if (!it || songBusy) return;
+  if (it.source === "douyin") {
+    const q = (it.title + " " + (it.artist || "")).trim();
+    if (songQEl) songQEl.value = q;
+    void runSongSearch(q);
+    return;
+  }
+  void fetchAndPlaySong(it, i);
+}
+
 if (bgmSelEl) bgmSelEl.addEventListener("change", () => {
   bgmSelName = bgmSelEl.value || "";
   try { localStorage.setItem(BGM_KEY, bgmSelName); } catch {}
@@ -2511,6 +2871,50 @@ if (bgmSelEl) bgmSelEl.addEventListener("change", () => {
 });
 if (bgmBtnEl) bgmBtnEl.addEventListener("click", () => void toggleBgm());
 if (bgmGainEl) bgmGainEl.addEventListener("input", onBgmGainInput);
+if (songBtnEl) songBtnEl.addEventListener("click", () => setLayer("songs"));
+if (songBackEl) songBackEl.addEventListener("click", () => setLayer("tray"));
+if (songSrcEl) songSrcEl.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-src]");
+  if (!btn) return;
+  const src = btn.dataset.src === "bilibili" ? "bilibili" : "douyin";
+  const same = src === songSrc;
+  songSrc = src;
+  for (const b of songSrcEl.querySelectorAll("button")) b.classList.toggle("on", b === btn);
+  if (songQEl) songQEl.value = "";
+  if (same && songItems.length) { void loadSongChart(true); return; }   // 再点一次 = 刷新
+  songChartKey = "";
+  void loadSongChart(true);
+});
+if (songQEl) {
+  songQEl.addEventListener("input", () => {
+    if (songInputTimer) clearTimeout(songInputTimer);
+    const q = songQEl.value.trim();
+    if (!q) {
+      // 清空就回到榜单；250ms 防抖避免用户连续退格时打一串请求。
+      songInputTimer = setTimeout(() => {
+        songInputTimer = null;
+        songChartKey = "";
+        void loadSongChart(true);
+      }, 250);
+      return;
+    }
+    if (q.length < 2) return;
+    songInputTimer = setTimeout(() => {
+      songInputTimer = null;
+      void runSongSearch(q);
+    }, 550);
+  });
+  songQEl.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (songInputTimer) { clearTimeout(songInputTimer); songInputTimer = null; }
+    void runSongSearch(songQEl.value);
+  });
+}
+if (songListEl) songListEl.addEventListener("click", (e) => {
+  const row = e.target.closest(".srow");
+  if (row) onSongRow(Number(row.dataset.i));
+});
 /**
  * 按能力清单收起桌宠上用不到的控件 —— 关掉的能力意味着后端**根本没有那些接口**，
  * 留着就是一按 404 的按钮。
@@ -2533,7 +2937,7 @@ function refreshCapVisibility() {
   // 声音托盘（音效 + 放歌）整体归 sound.fx-board：入口和盘体一起收，
   // 只收一个的话，已经开着托盘的用户会看到一个全 404 的空盘。
   hide("trayBtn", !CAP.fx);
-  if (!CAP.fx && panelLayer === "tray") setLayer("");
+  if (!CAP.fx && (panelLayer === "tray" || panelLayer === "songs")) setLayer("");
   // ⚠️ 主按钮与试听的显隐**不在这里**用 style.display 硬盖：它们的文案/可用性
   // 还要跟着「草稿有没有内容、是不是在录」变，两套机制会互相覆盖
   // （CAP 收起来 → refreshFire 又亮回去）。统一由 refreshFire 决定。
@@ -3308,6 +3712,22 @@ function resetLayoutState() {
   // 放歌是跨形态的状态（收着托盘也在放），扫描时不归零会污染后面每一个形态。
   bgmPlayingId = null;
   renderBgm();
+  // 搜歌层同理：取回的歌、榜单、输入值与 busy 都不该漏到下一个形态。
+  bgmFetched = null;
+  songItems = [];
+  songChartKey = "";
+  songLoading = false;
+  songBusy = false;
+  songSrc = "douyin";
+  if (songInputTimer) { clearTimeout(songInputTimer); songInputTimer = null; }
+  if (songQEl) songQEl.value = "";
+  if (songSrcEl) {
+    for (const b of songSrcEl.querySelectorAll("button")) {
+      b.classList.toggle("on", b.dataset.src === "douyin");
+    }
+  }
+  renderSongList();
+  songSetNote("");
   setLayer("");
   setStatus("", "");
   renderFxPicks();
@@ -3369,6 +3789,20 @@ const LAYOUT_STATES = {
     const song = bgmSongs[0] || { id: "demo-song", name: "demo-song.mp3" };
     bgmPlayingId = song.id || String(song.name).replace(/\.[^.]+$/, "");
     renderBgm();
+  },
+  // 搜歌层：来源行 + 搜索框 + 3 行结果 + 说明行（这层最挤的形态）。
+  // songChartKey 先占位：setLayer("songs") 会触发一次「没榜单就拉」，
+  // 不占位就会真去打网络，量到的骨架和截图都不稳定。
+  songs: () => {
+    songChartKey = "douyin";
+    setLayer("songs");
+    songItems = [
+      { source: "douyin", rank: 1, title: "晴天", artist: "周杰伦", hot: 123450 },
+      { source: "douyin", rank: 2, title: "起风了", artist: "买辣椒也用券", hot: 98760 },
+      { source: "douyin", rank: 3, title: "孤勇者", artist: "陈奕迅", hot: 56780 },
+    ];
+    renderSongList();
+    songSetNote("点一行去 B站 找音频");
   },
   // 更多抽屉：音色 + 引擎 + 直出 + 历史（抽屉打开时提示行与音效片收起，见 CSS）。
   drawer: () => setLayer("drawer"),
