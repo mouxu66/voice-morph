@@ -27,12 +27,44 @@ class _Resp:
         return self._payload
 
 
+class _StatusResp:
+    """带状态码与 Set-Cookie 的桩：B站 412 重试那组用例专用。"""
+
+    def __init__(self, payload=None, status_code=200, cookies=None):
+        self._payload = payload or {}
+        self.status_code = status_code
+        self.cookies = _Jar(cookies or {})
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise music_api.requests.HTTPError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+class _Jar:
+    def __init__(self, pairs):
+        self._pairs = pairs
+
+    def get_dict(self):
+        return dict(self._pairs)
+
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
-    """榜单缓存是模块级的，用例之间必须清，否则后一个用例看不到自己的桩。"""
+    """榜单缓存是模块级的，用例之间必须清，否则后一个用例看不到自己的桩。
+
+    cookie 缓存同样是模块级 —— 不清会让「412 重试」的用例拿到上一个用例的 cookie，
+    看起来通过了，实际根本没走领 cookie 那条路。
+    """
     music_api._CACHE.clear()
+    music_api._COOKIE["value"] = ""
+    music_api._COOKIE["at"] = 0.0
     yield
     music_api._CACHE.clear()
+    music_api._COOKIE["value"] = ""
+    music_api._COOKIE["at"] = 0.0
 
 
 def _stub_get(monkeypatch, payload):
@@ -128,6 +160,52 @@ def test_search_rejects_blank_query():
     with pytest.raises(HTTPException) as exc:
         music_api.search(q="   ")
     assert exc.value.status_code == 400
+
+
+def test_bili_412_refreshes_cookie_from_home_and_retries(monkeypatch):
+    """B站缺 `buvid3` 时搜索恒定 412：必须去首页领一次 cookie 再重试。
+
+    2026-10-23 真机验证：同一时刻裸打 412、带首页下发的 cookie 200。
+    没有这条重试，整个搜歌层在多打几次之后会突然全红，且报错看起来像"被封 IP"。
+    """
+    seen = []
+
+    def fake_get(url, headers=None, timeout=None):
+        cookie = (headers or {}).get("Cookie", "")
+        seen.append((url, cookie))
+        if url == music_api._BILI_HOME:
+            return _StatusResp({}, cookies={"buvid3": "abc123", "b_nut": "42"})
+        if not cookie:
+            return _StatusResp({}, status_code=412)
+        return _StatusResp({"data": {"result": [{
+            "type": "video", "bvid": "BV1yy411c7mE", "title": "晴天",
+            "duration": "4:12", "author": "某UP", "play": 1,
+        }]}})
+
+    monkeypatch.setattr(music_api.requests, "get", fake_get)
+    out = music_api.search(q="晴天", limit=3)
+    assert out["items"][0]["bvid"] == "BV1yy411c7mE"
+    search_calls = [c for u, c in seen if u != music_api._BILI_HOME]
+    assert search_calls == ["", "buvid3=abc123; b_nut=42"]
+    # cookie 进缓存：换一个关键词（避开结果缓存）也不会再去首页领一次
+    music_api.search(q="稻香", limit=3)
+    assert [u for u, _ in seen].count(music_api._BILI_HOME) == 1
+    assert [c for u, c in seen if u != music_api._BILI_HOME][-1] == "buvid3=abc123; b_nut=42"
+
+
+def test_bili_412_without_cookie_still_reports_502(monkeypatch):
+    """连首页都领不到 cookie 时，把原始 412 变成 502 人话，而不是无限重试。"""
+
+    def fake_get(url, headers=None, timeout=None):
+        if url == music_api._BILI_HOME:
+            raise music_api.requests.ConnectionError("homepage down")
+        return _StatusResp({}, status_code=412)
+
+    monkeypatch.setattr(music_api.requests, "get", fake_get)
+    with pytest.raises(HTTPException) as exc:
+        music_api.search(q="晴天")
+    assert exc.value.status_code == 502
+    assert "B站搜索拉不到" in exc.value.detail
 
 
 def test_chart_failure_is_502_with_human_text(monkeypatch):

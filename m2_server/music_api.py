@@ -67,6 +67,42 @@ _JOB_ID_RE = re.compile(r"^[0-9A-Za-z_-]{8,64}$")
 _CACHE: dict[str, tuple[float, list[dict]]] = {}
 _CACHE_LOCK = threading.Lock()
 
+#: B站搜索/榜单的匿名 cookie（`buvid3` 等，访问首页时由服务端下发）。
+#:
+#: 为什么必须带（2026-10-23 真机验证）：光秃秃地打 `search/type` 一开始能用，
+#: 但同一 IP 多打几次后就开始恒定 412 —— 实测**同一时刻**不带 cookie 412、
+#: 带首页下发的 `buvid3` 200。它是匿名设备标识，不是登录态，也不需要账号。
+#: 所以：先裸打；只有撞 412 才去首页领一次 cookie，缓存 6 小时后失效重领。
+#: 别把这一步挪到每次请求之前 —— 那会让每次搜歌都多一次首页往返。
+_COOKIE = {"value": "", "at": 0.0}
+_COOKIE_LOCK = threading.Lock()
+_COOKIE_TTL_S = 6 * 3600.0
+_BILI_HOME = "https://www.bilibili.com/"
+
+
+def _refresh_bili_cookie() -> str:
+    """访问 B站首页领取匿名 cookie，返回可直接放进 `Cookie:` 头的字符串。"""
+    try:
+        resp = requests.get(_BILI_HOME, headers={"User-Agent": _UA}, timeout=_TIMEOUT_S)
+        resp.raise_for_status()
+        jar = getattr(resp, "cookies", None)
+        pairs = jar.get_dict() if jar is not None else {}
+        value = "; ".join(f"{k}={v}" for k, v in pairs.items() if k in ("buvid3", "b_nut"))
+    except Exception:  # noqa: BLE001 —— 领不到就按没有重试，原错误更有诊断价值
+        return ""
+    if value:
+        with _COOKIE_LOCK:
+            _COOKIE["value"] = value
+            _COOKIE["at"] = time.time()
+    return value
+
+
+def _bili_cookie() -> str:
+    with _COOKIE_LOCK:
+        if _COOKIE["value"] and time.time() - _COOKIE["at"] < _COOKIE_TTL_S:
+            return _COOKIE["value"]
+    return _refresh_bili_cookie()
+
 
 def _cached(key: str, build) -> list[dict]:
     now = time.time()
@@ -91,6 +127,13 @@ def _get_json(url: str, referer: str = "") -> dict:
     if referer:
         headers["Referer"] = referer
     resp = requests.get(url, headers=headers, timeout=_TIMEOUT_S)
+    # B站风控：缺 `buvid3` 时搜索接口回 412（榜单接口同样可能）。领一次 cookie 重试，
+    # 只重试一次 —— 再 412 就是真被限了，把原错误交给上层说人话。
+    if getattr(resp, "status_code", 200) == 412:
+        cookie = _bili_cookie()
+        if cookie:
+            headers["Cookie"] = cookie
+            resp = requests.get(url, headers=headers, timeout=_TIMEOUT_S)
     resp.raise_for_status()
     data = resp.json()
     if not isinstance(data, dict):
