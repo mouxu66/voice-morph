@@ -1640,8 +1640,8 @@ def _tts_ref_for(want: str, rvc_voice: str) -> tuple[str, str]:
 
     返回 `(拿去合成的 voice_id, 借自谁的音色名或空串)`。
 
-    **只给 send_text / preview_text 这两条「末尾必过 RVC」的链路用，
-    别挪去做 /api/tts 的通用回退。** 两条链路里 RVC 的地位相反：
+    **只给「末尾必过 RVC」的链路用**（send_text / preview_text / 会话助理的
+    绝对时间音效路径），别挪去做 /api/tts 的通用回退。两条链路里 RVC 的地位相反：
       · send_text：末尾必过 RVC，音色由 RVC 决定 → 语气借谁的都不影响"像不像"；
       · /api/tts：没有 RVC，参考音**就是**音色本身 → 借一段别的声音来合成，
         结果是"看起来能用、其实完全不是那个音色"，比直接报错更糟。

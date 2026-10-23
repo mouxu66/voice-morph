@@ -3624,6 +3624,8 @@ function actIcon(id) {
 
 /** 后端 /observe 的最近一次结果。`q` 与输入框内容对齐时才被采用（防竞态）。 */
 let obsState = { q: "", busy: false, hits: [], note: "", seq: 0 };
+/** 上一次因为"听不懂/缺参数"而打到状态行的那句提示，用来在用户改字后撤掉。 */
+let obsWarn = "";
 let obsTimer = null;
 
 /** 输入变化：立刻重排本地候选，再 debounce 打一次后端意图解析。 */
@@ -3664,6 +3666,16 @@ async function runObserve(q) {
     const j = await r.json();
     // 同一句话可能被解析成多条（"发首晴天再说句话"）—— 全留，渲染时再截断。
     obsState = { q, busy: false, hits: Array.isArray(j.proposals) ? j.proposals : [], note: j.note || "", seq };
+    // 后端认出了句式但执行不了（音效名不认识 / 只有音效没要说的话）：原因必须让人看见，
+    // 否则推荐区空白，用户会以为面板没反应。改字后由下一次 observe 自动撤掉。
+    const warns = Array.isArray(j.warnings) ? j.warnings.filter(Boolean) : [];
+    if (warns.length) {
+      obsWarn = warns.join("；");
+      setStatus(obsWarn, "warn");
+    } else if (obsWarn && statusText.textContent === obsWarn) {
+      obsWarn = "";
+      setStatus("");
+    }
   } catch {
     if (seq === obsState.seq) obsState = { q, busy: false, hits: [], note: "", seq };
   } finally {
@@ -3712,7 +3724,9 @@ function refreshRecs() {
         rows.push({
           id: "proposal.create", pid: "", idx: i, hot: true,
           label: shortTitle(p),
-          hint: p.kind === "song.send" ? "点歌" : p.kind === "voice.say" ? "语音" : "草稿",
+          hint: p.kind === "song.send" ? "点歌"
+            : p.kind === "voice.say" ? ((p.params && p.params.sfx && p.params.sfx.length) ? "语音·音效" : "语音")
+            : "草稿",
           title: (p.label || "") + "：" + (p.detail || ""),
           icon: p.kind === "song.send" ? "song.find" : "draft.send",
         });

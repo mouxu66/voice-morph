@@ -166,14 +166,230 @@ def parse_voice(text: str) -> Hit | None:
     return None
 
 
+# ---------------------------------------------------------------- 绝对时间音效
+# 用户原话（2026-10-23）："我说给我生成一个什么什么的话，然后在第几秒插入音效"。
+# 内联 `[爆炸]` 只表达"这句之后"，做不到"第 3.5 秒"；这里解析绝对秒数，
+# 由执行器在合成完之后按时间叠加（`sfx_lib.mix_into` 的 layer 模式）。
+
+_CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+#: "第 3 秒 / 在3秒的时候 / 三秒处"。数字支持阿拉伯与中文（"第三秒"很常见）。
+_TIME = (
+    r"(?:在\s*)?(?:第\s*)?"
+    r"(\d+(?:\.\d+)?|[零一二两三四五六七八九十]+)"
+    r"\s*秒(?:钟)?(?:\s*(?:的时候|时候|时|处|那里|的位置))?"
+)
+_SFX_VERBS = "插|加入|加|放|来|响|播|配"
+#: 时间在前、名字在后："第3秒插入爆炸声"
+_SFX_FORWARD = re.compile(
+    _TIME + rf"\s*[，,]?\s*(?:{_SFX_VERBS})(?:一声|一个|一段|个|下)?\s*([^，,。；;！？!?\n]{{1,20}})"
+)
+#: 名字在前、时间在后："爆炸声放在第3秒"
+_SFX_BACKWARD = re.compile(
+    r"([^，,。；;！？!?\n]{1,20}?)\s*(?:放|插|加|来|响|播)(?:在|到)?\s*" + _TIME
+)
+_SFX_LEAD = re.compile(r"^(?:个|一个|一声|一段|下|个音效|一个音效)+")
+_SFX_TAIL = re.compile(r"(?:音效|一下|一声|的声音)$")
+#: 用户描述需求时的"外壳"：「给我生成一句话，内容是…」「帮我生成一段话：…」
+#: 这些不是要念的字。只在**没解析出「说一句 X」**时剥，避免把"说实话"误伤成"实话"。
+_FRAME = re.compile(
+    r"^(?:(?:请|帮我|麻烦|给我|你|先|再)\s*)?"
+    r"(?:"
+    r"(?:生成|合成|写|来|整|弄)\s*(?:一|1)?\s*(?:句|段|条)?\s*(?:话|语音|语音条|台词)?"
+    r"|(?:跟|和|对)\s*(?:我|大家|群里|大家伙)\s*说"
+    r")"
+    r"\s*[，,：:、]?\s*"
+)
+#: 「内容是…」「台词：…」—— 换行说法的引子
+_CONTENT = re.compile(r"^(?:内容|正文|台词)\s*(?:是|：|:)\s*")
+#: 删掉音效片段后常留下「…，然后」
+_TAIL_CONN = re.compile(r"(?:[，,]\s*)?(?:然后|接着|之后|最后)\s*$")
+
+
+def _seconds(raw: str) -> float | None:
+    """把 '3' / '3.5' / '三' / '十五' 变成秒。解析不了返回 None（宁可漏，不猜）。"""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        return max(0.0, float(s))
+    except ValueError:
+        pass
+    if "十" in s:
+        left, _, right = s.partition("十")
+        if (left and left not in _CN_DIGITS) or (right and right not in _CN_DIGITS):
+            return None
+        tens = _CN_DIGITS.get(left, 1) if left else 1
+        ones = _CN_DIGITS.get(right, 0) if right else 0
+        return float(tens * 10 + ones)
+    if len(s) == 1 and s in _CN_DIGITS:
+        return float(_CN_DIGITS[s])
+    return None
+
+
+def _sfx_names() -> list[str]:
+    """素材库的显示名。素材目录不可读时返回空表（此时任何名字都解析不了）。"""
+    import sfx_mark
+
+    return sfx_mark.available()
+
+
+def _canon_sfx_name(raw: str, names: list[str]) -> str | None:
+    """把口语里的音效名归一到素材库的显示名（或 id）。
+
+    4B 与用户口语都不会严格照抄素材名：实测 4B 把"爆炸"写成"爆炸声"。
+    所以按"去量词 → 去尾巴 → 去'声' → 包含匹配"逐级放宽，**命中即返回**；
+    全不命中返回 None —— 由调用方明确告诉用户"没这个音效"，绝不静默当文字念。
+    """
+    import sfx_mark
+
+    s = (raw or "").strip().strip("《》<>「」\"“”'，,。.!！?？;；:：")
+    if not s:
+        return None
+    cands = [s]
+    stripped = _SFX_LEAD.sub("", s).strip()
+    if stripped and stripped != s:
+        cands.append(stripped)
+    for c in list(cands):
+        t = _SFX_TAIL.sub("", c).strip()
+        if t and t != c:
+            cands.append(t)
+    for c in list(cands):
+        if c.endswith("声") and len(c) > 2:
+            cands.append(c[:-1])
+    for c in cands:
+        if c in names:
+            return c
+        _segs, unknown, _p = sfx_mark.parse(f"[{c}]")
+        if c and not unknown:
+            return c  # 写的是素材 id（如 boom）也认
+    hits = [n for n in names if n and n in s]
+    return max(hits, key=len) if hits else None
+
+
+def _strip_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """删掉已识别的音效指令片段（合并重叠区间），其余原样保留。"""
+    if not spans:
+        return text
+    merged: list[tuple[int, int]] = []
+    for a, b in sorted(spans):
+        if merged and a <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    out: list[str] = []
+    pos = 0
+    for a, b in merged:
+        out.append(text[pos:a])
+        pos = b
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _tidy(text: str) -> str:
+    """收拾删片段留下的空标点：`说一句，` → `说一句`；`，，` → `，`。"""
+    s = re.sub(r"[，,；;]{2,}", "，", text or "")
+    return s.strip().strip("，,。；;：:、 \t\n")
+
+
+def _clean_spoken(text: str) -> str:
+    """剥掉"描述需求"的外壳，只留要念的字。
+
+    `给我生成一句话，内容是我今晚不去了，然后` + 音效片段删掉之后，
+    剩下的是**指令的外壳**而不是台词 —— 原样念出来就是"给我生成一句话…"，
+    这是用户最不能接受的结果（他描述需求，AI 却把需求念给群里听）。
+    """
+    s = _tidy(text)
+    prev = None
+    while prev != s:
+        prev = s
+        s = _FRAME.sub("", s, count=1)
+        s = _CONTENT.sub("", s, count=1)
+        s = _TAIL_CONN.sub("", s, count=1)
+        s = _tidy(s)
+    return s
+
+
+def parse_sfx_instruction(text: str) -> Hit | None:
+    """解析"在第 N 秒插音效"的指令，返回带 `sfx` 参数的 voice.say 候选。
+
+    `sfx` 是 `[{"name": 显示名, "at_s": 秒}, …]`，交给执行器在合成后按绝对时间叠加。
+    音效名认不出来时**不生成可执行提案**（`text` 留空 → 校验判 missing），
+    并用 `notes` 说明"没这个音效 + 可用列表" —— 静默把它当文字念出来是最坏结果。
+    """
+    raw = text or ""
+    names = _sfx_names()
+    items: list[dict] = []
+    spans: list[tuple[int, int]] = []
+    matched: list[str] = []
+    unknown: list[str] = []
+
+    for pat in (_SFX_FORWARD, _SFX_BACKWARD):
+        for m in pat.finditer(raw):
+            if any(m.start() < b and a < m.end() for a, b in spans):
+                continue  # 前后两种句式命中了同一段，别算两次
+            if pat is _SFX_FORWARD:
+                raw_time, raw_name = m.group(1), m.group(2)
+            else:
+                raw_time, raw_name = m.group(2), m.group(1)
+            at_s = _seconds(raw_time)
+            if at_s is None:
+                continue
+            canon = _canon_sfx_name(raw_name, names)
+            spans.append((m.start(), m.end()))
+            if canon is None:
+                unknown.append(_SFX_LEAD.sub("", raw_name).strip())
+                continue
+            items.append({"name": canon, "at_s": at_s})
+            matched.append(m.group(0).strip())
+
+    if not items and not unknown:
+        return None
+
+    cleaned = _tidy(_strip_spans(raw, spans))
+    notes: list[str] = []
+    if unknown:
+        avail = "、".join(names[:12])
+        notes.append(f"没有这个音效：{'、'.join(unknown)}" + (f"（可用：{avail}）" if avail else ""))
+    if not items:
+        # 形如"第3秒放个爆炸声"：句式对，但名字不认识 —— 不生成提案，只回提示。
+        return Hit(kind="voice.say", params={"text": ""}, matched="；".join(matched) or raw.strip(), notes=notes)
+
+    voice = parse_voice(cleaned)
+    params = dict(voice.params) if voice else {}
+    params["text"] = _clean_spoken(str(params.get("text") or cleaned))
+    if not params["text"]:
+        return Hit(
+            kind="voice.say",
+            params={"text": ""},
+            matched="；".join(matched),
+            notes=notes + ["只有音效、没有要念的话：先说清这句要念什么"],
+        )
+    params["sfx"] = items
+    return Hit(
+        kind="voice.say",
+        params=params,
+        matched="；".join(matched),
+        confidence=0.85,
+        notes=notes,
+    )
+
+
 def parse(text: str) -> list[Hit]:
     """一句话可能同时有"点歌"和"指定音色"两个诉求，所以返回列表。
 
     顺序固定：先 song 后 voice —— 前端按顺序渲染，用户从上往下看就是
     "要发什么" → "怎么发"。
+
+    ★ 带绝对秒数音效的指令**独占**这句话：`说一句明天开会，第3秒插入爆炸声`
+    里的"第3秒..."不是要念的内容，继续走通用 `parse_voice` 会把它一起念出来。
+    所以这里先试指令解析，命中就只返回那一条。
     """
     if not isinstance(text, str) or not text.strip():
         return []
+    ins = parse_sfx_instruction(text)
+    if ins is not None:
+        return [ins]
     hits: list[Hit] = []
     song = parse_song(text)
     if song:

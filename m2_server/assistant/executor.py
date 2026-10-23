@@ -122,7 +122,12 @@ def _run_song(prop: Proposal) -> dict:
 
 
 def _run_voice(prop: Proposal) -> dict:
-    """文字 → TTS（可选 RVC）→ 发语音条。整条链路交给 `wechat_voice.send_text`。"""
+    """文字 → TTS（可选 RVC）→ 发语音条。整条链路交给 `wechat_voice.send_text`。
+
+    带绝对时间音效（`sfx: [{name, at_s}]`）时走 `_run_voice_sfx`：那条路必须先
+    拿到成品时长才能按秒叠加，而 `send_text` 是"逐句合成 → 装箱 → 边合边发"，
+    没有可叠加的完整时间轴。两条路都不重写护栏：发送仍然只经 `send_voice`。
+    """
     p = prop.params
     steps: list[str] = []
     dialect = (p.get("dialect") or "").strip()
@@ -133,6 +138,8 @@ def _run_voice(prop: Proposal) -> dict:
             "可行的替代：①把词写成方言字（如粤语「我唔知」）再发，TTS 念出来会带味道；"
             "②先用 TTS 生成，再用一个方言音色做 RVC 换声。"
         )
+    if p.get("sfx"):
+        return _run_voice_sfx(prop, steps)
 
     voice = (p.get("voice") or "").strip()
     rvc_voice = (p.get("rvc_voice") or "").strip()
@@ -148,6 +155,99 @@ def _run_voice(prop: Proposal) -> dict:
         raise ExecError(f"没发出去：{body.get('error') or body.get('outcome') or '未知原因'}")
     steps.append("已发送")
     return {"steps": steps, "send": body}
+
+
+def _run_voice_sfx(prop: Proposal, steps: list[str]) -> dict:
+    """整段合成 → 按绝对秒数叠加音效 →（可选 RVC）→ 发语音条。
+
+    为什么不用 `send_text` 的内联标记：`[爆炸]` 的语义是"这句之后"，时间是句末；
+    用户要的是"第 3.5 秒"，必须拿到**成品时间轴**才能落点。所以这里先合成一整段、
+    再 `sfx_lib.mix_into(mode="layer")` 按秒叠加，之后照常走发送护栏。
+
+    单条预算：微信 54s 是硬预算（`wechat_voice.MAX_CHUNK_S`），整段路径不做装箱，
+    所以超了**当场拒绝**并说清多长 —— 不发给微信让它静默截断。
+    """
+    p = prop.params
+    text = str(p.get("text") or "")
+    want_voice = (p.get("voice") or "").strip()
+    rvc_voice = (p.get("rvc_voice") or "").strip()
+
+    import numpy as np
+    import session_out
+    import sfx_lib
+    import sfx_mark
+    import soundfile as sf
+    import tts_api
+    from common import selected_voice
+
+    want = want_voice or selected_voice()
+    if not want:
+        raise ExecError("还没有选中音色：先在主界面选一个，或在指令里说「用 X 的声音」")
+
+    import rvc_convert
+
+    if not rvc_voice:
+        rvc_voice = rvc_convert.resolve_rvc_voice(want) or ""
+    else:
+        rvc_voice = rvc_convert.resolve_rvc_voice(rvc_voice) or rvc_voice
+
+    import wechat_voice
+
+    tts_voice, borrowed = wechat_voice._tts_ref_for(want, rvc_voice)
+    if borrowed:
+        _step(prop, steps, f"「{want}」没有参考音，语气借自 {borrowed}")
+
+    inserts: list[dict] = []
+    for item in p["sfx"]:
+        name = str(item.get("name") or "")
+        at_s = float(item.get("at_s") or 0)
+        segs, unknown, _problems = sfx_mark.parse(f"[{name}]")
+        sid = next((sid for _t, sid in segs if sid), "")
+        if unknown or not sid:
+            avail = "、".join(sfx_mark.available()[:12])
+            raise ExecError(f"没有这个音效：{name}。可用：{avail}")
+        inserts.append({"sample": sid, "mode": "layer", "at_s": at_s, "gain": 0.9})
+
+    _step(prop, steps, f"合成 {len(text)} 字")
+    wav, dur, _vid = tts_api.synth_wav(text, voice_id=tts_voice or want)
+    _step(prop, steps, f"语音 {dur:.1f}s，按秒叠加 {len(inserts)} 处音效")
+
+    pcm, sr = sf.read(str(wav), dtype="float32", always_2d=False)
+    if getattr(pcm, "ndim", 1) > 1:
+        pcm = pcm.mean(axis=1)
+    mixed, notes = sfx_lib.mix_into(np.ascontiguousarray(pcm, dtype=np.float32), int(sr), inserts)
+    for note in notes:
+        # 越过语音末尾被夹到末尾是**事实**，必须让用户看见（不静默改语义）
+        _step(prop, steps, note)
+
+    out = session_out.new_path("tts_sfx")
+    sf.write(str(out), mixed, int(sr), subtype="PCM_16")
+    total = mixed.size / int(sr)
+    if total > wechat_voice.MAX_CHUNK_S:
+        raise ExecError(
+            f"这条 {total:.1f}s，超过微信单条预算 {wechat_voice.MAX_CHUNK_S:.0f}s；"
+            "把话缩短或把音效挪到更早的位置再试"
+        )
+
+    if rvc_voice:
+        _step(prop, steps, f"换声：{rvc_voice}")
+        out = rvc_convert.rvc_convert(out, rvc_voice)
+        total = float(sf.info(str(out)).duration)
+        if total > wechat_voice.MAX_CHUNK_S:
+            raise ExecError(
+                f"换声后 {total:.1f}s，超过微信单条预算 {wechat_voice.MAX_CHUNK_S:.0f}s"
+            )
+        _step(prop, steps, f"换声完成：{out.name}（{total:.1f}s）")
+    else:
+        _step(prop, steps, f"成品 {out.name}（{total:.1f}s）")
+
+    _step(prop, steps, "发送到微信")
+    resp = wechat_voice.send_voice(wechat_voice.SendVoiceReq(wav=str(out.resolve())))
+    body = _json_of(resp)
+    if not body.get("ok"):
+        raise ExecError(f"微信没发出去：{body.get('error') or body.get('outcome') or '未知原因'}")
+    steps.append("已发送")
+    return {"steps": steps, "wav": out.name, "sfx": p["sfx"], "send": body}
 
 
 def _run_reply(prop: Proposal) -> dict:

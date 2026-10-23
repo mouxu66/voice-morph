@@ -60,9 +60,9 @@ KINDS: dict[str, KindSpec] = {
     ),
     "voice.say": KindSpec(
         label="发一句语音",
-        summary="文字 → TTS（可选 RVC 换声）→ 发送语音条",
+        summary="文字 → TTS（可选 RVC 换声）→ 发送语音条；可按绝对秒数插入音效",
         required=("text",),
-        optional=("voice", "rvc_voice", "dialect"),
+        optional=("voice", "rvc_voice", "dialect", "sfx"),
         sends=True,
     ),
     "reply.draft": KindSpec(
@@ -81,6 +81,40 @@ def kind_spec(kind: str) -> KindSpec:
         return KINDS[kind]
     except KeyError as exc:
         raise KeyError(f"没有这个动作：{kind}") from exc
+
+
+#: 绝对时间音效的上限（条数 / 秒数）。超过就不是"一句话里插一声"了，
+#: 而且条数越多，混完越可能超微信 54s 预算。
+MAX_SFX_ITEMS = 10
+MAX_SFX_AT_S = 600.0
+
+
+def clean_sfx(raw) -> list[dict]:
+    """把 `sfx` 归一化成 `[{"name": str, "at_s": float}, …]`。
+
+    为什么在 schema 层做而不是让执行器自己防：`/proposal` 是手动入口，参数直接
+    来自 JSON；`/observe` 的规则解析又是另一条来源。两处都往同一个执行器灌数据，
+    归一化就必须在**共同的入口**做一次，否则执行器要为每个来源各猜一遍。
+    脏项**静默丢弃**（不是报错）：多打一个空项不该让整条语音发不出去。
+    """
+    raw = raw if isinstance(raw, list) else []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            at_s = float(item.get("at_s"))
+        except (TypeError, ValueError):
+            continue
+        if not (0.0 <= at_s <= MAX_SFX_AT_S):
+            continue
+        out.append({"name": name[:24], "at_s": round(at_s, 2)})
+        if len(out) >= MAX_SFX_ITEMS:
+            break
+    return out
 
 
 def validate_params(kind: str, params: dict) -> tuple[dict, list[str]]:
@@ -103,6 +137,13 @@ def validate_params(kind: str, params: dict) -> tuple[dict, list[str]]:
     for f in spec.optional:
         if f in params and params[f] not in (None, ""):
             clean[f] = params[f]
+    if kind == "voice.say" and "sfx" in clean:
+        sfx = clean_sfx(clean["sfx"])
+        if sfx:
+            clean["sfx"] = sfx
+        else:
+            # 全是脏项：当作"没提音效"，别留一个空列表让执行器走错分支
+            clean.pop("sfx", None)
     return clean, missing
 
 

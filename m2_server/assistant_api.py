@@ -83,11 +83,16 @@ def _proposal_from_hit(hit, source: str) -> Proposal | None:
         detail = f"看到「{hit.matched}」，要不要搜一首发过去？"
     elif hit.kind == "voice.say":
         who = clean.get("voice") or clean.get("dialect") or "当前音色"
-        title = f"用{who}说一句"
+        sfx = clean.get("sfx") or []
+        title = f"用{who}说一句" + (f"（{len(sfx)} 处音效）" if sfx else "")
         detail = f"看到「{hit.matched}」"
+        if sfx:
+            detail += "；" + "、".join(f"第 {x['at_s']:g}s 插 {x['name']}" for x in sfx)
     else:
         title = spec.label
         detail = f"看到「{hit.matched}」"
+    if hit.notes:
+        detail += "；" + "；".join(hit.notes)
     return Proposal(
         kind=hit.kind,
         title=title,
@@ -106,9 +111,13 @@ def observe(req: ObserveReq):
         return {"ok": True, "proposals": [], "note": "没有内容"}
     hits = extract.parse(text)
     made: list[dict] = []
+    warnings: list[str] = []
     for hit in hits:
         prop = _proposal_from_hit(hit, req.source)
         if prop is None:
+            # 句式认出来了但缺参数 / 音效名不认识：原因必须回给用户，
+            # 否则他打了半天字，推荐区一片空白，看起来像坏了。
+            warnings.extend(hit.notes)
             continue
         if not req.dry_run:
             prop = _dedupe(prop.kind, prop.params, prop.source) or store.add(prop)
@@ -120,7 +129,13 @@ def observe(req: ObserveReq):
             if extract.looks_like_request(text)
             else "没看出要做什么"
         )
-    return {"ok": True, "proposals": made, "note": note, "kinds": sorted(KINDS)}
+    return {
+        "ok": True,
+        "proposals": made,
+        "note": note,
+        "warnings": warnings,
+        "kinds": sorted(KINDS),
+    }
 
 
 @router.post("/proposal")

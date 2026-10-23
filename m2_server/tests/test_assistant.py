@@ -290,3 +290,212 @@ def test_api_confirm_rejects_unknown_id(tmp_outputs):
     client = TestClient(app, client=("127.0.0.1", 51234))
     r = client.post("/api/assistant/proposals/nonexistent/confirm")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------- 绝对时间音效
+# 用户原话：「我说给我生成一个什么什么的话，然后在第几秒插入音效」。
+# 这里钉住三件事：秒数解析、音效名归一、**指令片段绝不能混进要念的字里**。
+
+
+@pytest.mark.parametrize(
+    "raw,expect",
+    [("3", 3.0), ("3.5", 3.5), ("三", 3.0), ("十五", 15.0), ("二十", 20.0), ("两", 2.0), ("零", 0.0)],
+)
+def test_seconds_parses_arabic_and_chinese(raw, expect):
+    assert extract._seconds(raw) == expect
+
+
+@pytest.mark.parametrize("raw", ["", "abc", "秒", "十百", "1.2.3"])
+def test_seconds_rejects_garbage(raw):
+    assert extract._seconds(raw) is None
+
+
+def test_parse_sfx_instruction_forward():
+    hit = extract.parse_sfx_instruction("说一句明天上午十点开会，第3秒插入爆炸声")
+    assert hit is not None and hit.kind == "voice.say"
+    assert hit.params["text"] == "明天上午十点开会", "音效指令不能被一起念出来"
+    assert hit.params["sfx"] == [{"name": "爆炸", "at_s": 3.0}], "口语「爆炸声」要归一到素材名「爆炸」"
+    assert "第3秒插入爆炸声" in hit.matched
+
+
+def test_parse_sfx_instruction_backward_and_voice():
+    hit = extract.parse_sfx_instruction("用袋鼠的声音说明天见，爆炸声放在第2.5秒")
+    assert hit is not None
+    assert hit.params["voice"] == "袋鼠"
+    assert hit.params["text"] == "明天见"
+    assert hit.params["sfx"][0]["at_s"] == 2.5
+
+
+def test_parse_sfx_instruction_chinese_second():
+    hit = extract.parse_sfx_instruction("念一句晚安，在第三秒的时候来一声掌声")
+    assert hit is not None
+    assert hit.params["text"] == "晚安"
+    assert hit.params["sfx"] == [{"name": "掌声", "at_s": 3.0}]
+
+
+def test_parse_sfx_instruction_multiple():
+    hit = extract.parse_sfx_instruction("说明天开会，第2秒放个掌声，第5秒插入爆炸")
+    assert hit is not None
+    assert [(x["name"], x["at_s"]) for x in hit.params["sfx"]] == [("掌声", 2.0), ("爆炸", 5.0)]
+    assert "第2秒" not in hit.params["text"] and "第5秒" not in hit.params["text"]
+
+
+@pytest.mark.parametrize(
+    "text,expect",
+    [
+        ("给我生成一句话，内容是我今晚不去了，然后在第5秒插入爆炸声", "我今晚不去了"),
+        ("帮我生成一段话：明天上午十点开会，第3秒插入爆炸声", "明天上午十点开会"),
+        ("跟我说：晚安，第1秒来一声叮", "晚安"),
+    ],
+)
+def test_parse_sfx_strips_instruction_shell(text, expect):
+    """"给我生成一句话"这类**需求外壳**不是台词 —— 绝不能念给群里听。"""
+    hit = extract.parse_sfx_instruction(text)
+    assert hit is not None
+    assert hit.params["text"] == expect
+    assert hit.params["sfx"]
+
+
+def test_parse_sfx_unknown_name_returns_warning_not_proposal():
+    hit = extract.parse_sfx_instruction("说明天开会，第3秒插入打雷声")
+    assert hit is not None
+    assert hit.params["text"] == "", "名字不认识时不许带着空参数生成可执行提案"
+    assert any("没有这个音效" in n for n in hit.notes)
+    assert any("爆炸" in n for n in hit.notes), "提示里要列出可用素材，否则用户无从改起"
+
+
+def test_parse_sfx_only_says_whats_missing():
+    hit = extract.parse_sfx_instruction("第3秒插入爆炸声")
+    assert hit is not None
+    assert hit.params["text"] == ""
+    assert any("只有音效" in n for n in hit.notes)
+
+
+def test_parse_without_sfx_still_normal():
+    """没有秒数指令时，普通"说一句"必须原样工作（不能因为新分支把旧路径吃掉）。"""
+    hits = extract.parse("说一句晚安")
+    assert len(hits) == 1
+    assert hits[0].params["text"] == "晚安"
+    assert "sfx" not in hits[0].params
+
+
+def test_clean_sfx_drops_dirty_and_caps():
+    from assistant.schema import MAX_SFX_ITEMS, clean_sfx
+
+    rows = clean_sfx(
+        [
+            {"name": "爆炸", "at_s": "3"},        # 字符串秒数可接受
+            {"name": "", "at_s": 1},             # 没名字
+            {"name": "掌声", "at_s": -1},         # 负数
+            {"name": "叮", "at_s": "abc"},        # 非数字
+            "爆炸",                              # 不是 dict
+        ]
+    )
+    assert rows == [{"name": "爆炸", "at_s": 3.0}]
+    many = clean_sfx([{"name": "叮", "at_s": i} for i in range(MAX_SFX_ITEMS + 5)])
+    assert len(many) == MAX_SFX_ITEMS
+
+
+def test_validate_params_normalizes_sfx():
+    clean, missing = validate_params("voice.say", {"text": "晚安", "sfx": [{"name": "叮", "at_s": 0}]})
+    assert not missing
+    assert clean["sfx"] == [{"name": "叮", "at_s": 0.0}]
+    # 全是脏项 → 当作没提音效，执行器不能走带音效的分支
+    clean, _ = validate_params("voice.say", {"text": "晚安", "sfx": [{"name": "", "at_s": 1}]})
+    assert "sfx" not in clean
+
+
+def test_api_observe_returns_sfx_proposal(tmp_outputs):
+    import assistant_api
+    from fastapi.testclient import TestClient
+
+    app = __import__("fastapi").FastAPI()
+    app.include_router(assistant_api.router)
+    client = TestClient(app, client=("127.0.0.1", 51234))
+    r = client.post(
+        "/api/assistant/observe",
+        json={"text": "说明天开会，第3秒插入爆炸声", "dry_run": True},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["proposals"]) == 1
+    p = body["proposals"][0]
+    assert p["kind"] == "voice.say"
+    assert p["params"]["sfx"] == [{"name": "爆炸", "at_s": 3.0}]
+    assert "第 3s 插 爆炸" in p["detail"], "确认前要让人看见落点，不能只写句意"
+
+
+def test_api_observe_reports_unknown_sfx_as_warning(tmp_outputs):
+    import assistant_api
+    from fastapi.testclient import TestClient
+
+    app = __import__("fastapi").FastAPI()
+    app.include_router(assistant_api.router)
+    client = TestClient(app, client=("127.0.0.1", 51234))
+    r = client.post(
+        "/api/assistant/observe",
+        json={"text": "说明天开会，第3秒插入打雷声", "dry_run": True},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["proposals"] == []
+    assert body["warnings"] and "没有这个音效" in body["warnings"][0]
+
+
+def test_executor_sfx_path_mixes_at_seconds_then_sends(tmp_outputs, monkeypatch):
+    """带 sfx 的 voice.say 必须走"整段合成 → 按秒叠加 → send_voice"这条线。
+
+    这里只验**接线**（落点秒数、发送的是混完的成品），混音算法本身由
+    `test_premix.py` 压着 —— 两边分工，避免在这条测试里再造一个假混音器。
+    """
+    import numpy as np
+    import soundfile as sf
+    import tts_api
+    import wechat_voice
+    from assistant import executor
+    from assistant.schema import STATUS_DONE
+
+    src = tmp_outputs / "tts.wav"
+    sf.write(str(src), np.zeros(22050 * 2, dtype=np.float32), 22050)
+
+    seen: dict = {}
+
+    monkeypatch.setattr(tts_api, "synth_wav", lambda text, voice_id=None: (src, 2.0, voice_id))
+    import common
+
+    monkeypatch.setattr(common, "selected_voice", lambda: "袋鼠")
+    monkeypatch.setattr(wechat_voice, "_tts_ref_for", lambda want, rvc: ("tts_id", ""))
+    monkeypatch.setattr(wechat_voice, "send_voice", lambda req: {"ok": True, "wav": req.wav})
+    import rvc_convert
+
+    monkeypatch.setattr(rvc_convert, "resolve_rvc_voice", lambda name: "")
+    import sfx_mark
+    import sfx_lib
+
+    monkeypatch.setattr(sfx_mark, "parse", lambda t: ([("", "boom_norm")], [], []))
+    monkeypatch.setattr(sfx_mark, "available", lambda: ["爆炸"])
+
+    def _mix(pcm, sr, inserts):
+        seen["inserts"] = inserts
+        seen["sr"] = sr
+        return pcm, ["按秒叠加：boom @3.0s"]
+
+    monkeypatch.setattr(sfx_lib, "mix_into", _mix)
+    import session_out
+
+    out = tmp_outputs / "mixed.wav"
+    monkeypatch.setattr(session_out, "new_path", lambda prefix, suffix=".wav": out)
+
+    prop = Proposal(
+        kind="voice.say",
+        title="说一句",
+        params={"text": "明天开会", "sfx": [{"name": "爆炸", "at_s": 3.0}]},
+    )
+    executor.run(prop)
+    assert prop.status == STATUS_DONE, prop.error
+    assert seen["inserts"][0]["at_s"] == 3.0
+    assert seen["inserts"][0]["mode"] == "layer", "绝对时间音效是叠加，不能把语音推后"
+    assert seen["inserts"][0]["sample"] == "boom_norm"
+    assert out.exists(), "混完的成品必须落盘再发"
+    assert any("boom" in s for s in prop.result["steps"]), "夹紧/落点备注要进 UI"
+    assert prop.result["send"]["ok"]
