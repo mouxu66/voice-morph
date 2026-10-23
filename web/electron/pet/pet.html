@@ -2301,6 +2301,7 @@ let bgmLoadedAt = 0;
 let bgmBusy = false;
 let bgmGainTimer = null;
 let bgmNote = "";         // 拉歌单失败的说明 —— 写在**页内**提示行，不抢共用状态行
+let trayTipDefault = "";  // ♪ 的原始 title（HTML 属性是唯一真相源，放歌时被临时换掉）
 
 /** 秒 → `m:ss`（204px 里多一个字符都可能在 select 尾部变成省略号）。 */
 function fmtDur(s) {
@@ -2345,6 +2346,16 @@ function renderBgm() {
       : "放歌：把歌实时垫进虚拟声卡，微信那边听得到；本机扬声器不出声（想自己听请开「自我监听」）。歌比说话短时循环补满";
   }
   if (bgmIcEl) bgmIcEl.textContent = playing ? "■" : "▶";
+  // ♪ 上的「正在放」小点（.icb.playing::after）。托盘收起后由角色身上的 #bgmBadge
+  // 接手同一件事，但面板**还开着**时它是唯一提示 —— 这条 CSS 钩子之前没人接线，
+  // 放歌中 ♪ 长得和没放歌一模一样。
+  if (trayBtn) {
+    if (!trayTipDefault) trayTipDefault = trayBtn.title || "";
+    trayBtn.classList.toggle("playing", playing);
+    trayBtn.title = playing && song
+      ? "正在放：" + song.name.replace(/\.[^.]+$/, "") + "（点开 ♪ 可以停）"
+      : trayTipDefault;
+  }
   if (bgmSelEl) bgmSelEl.disabled = playing;   // 不变量 3：选中项必须就是正在放的那首
   if (bgmGainEl && document.activeElement !== bgmGainEl) bgmGainEl.value = String(bgmGainV);
   if (bgmBadgeEl) bgmBadgeEl.classList.toggle("on", playing);
@@ -3254,6 +3265,9 @@ function resetLayoutState() {
   if (field) field.hidden = false;
   setBusy(sendBtn, false);
   setBusy(previewBtn, false);
+  // 放歌是跨形态的状态（收着托盘也在放），扫描时不归零会污染后面每一个形态。
+  bgmPlayingId = null;
+  renderBgm();
   setLayer("");
   setStatus("", "");
   renderFxPicks();
@@ -3307,6 +3321,14 @@ const LAYOUT_STATES = {
     renderFxGrid();
     refreshFire();
     setLayer("tray");
+  },
+  // 放歌中：♪ 亮小点、选歌框锁住、按钮变 ■、角色身上的角标接手提示。
+  // 托盘里唯一「有东西正在发生」的一态 —— 它和静止的托盘长得不一样才是对的。
+  trayplay: () => {
+    LAYOUT_STATES.tray();
+    const song = bgmSongs[0] || { id: "demo-song", name: "demo-song.mp3" };
+    bgmPlayingId = song.id || String(song.name).replace(/\.[^.]+$/, "");
+    renderBgm();
   },
   // 更多抽屉：音色 + 引擎 + 直出 + 历史（抽屉打开时提示行与音效片收起，见 CSS）。
   drawer: () => setLayer("drawer"),

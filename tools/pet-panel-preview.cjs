@@ -40,7 +40,7 @@ const ROOT = path.join(__dirname, "..");
 const PET_DIR = path.join(ROOT, "web", "electron", "pet");
 const OUT_DIR = path.join(ROOT, "outputs", "pet-preview");
 const SCENES = ["idle-dark", "idle-light", "typed-dark", "picked-dark", "rec-dark",
-                "tray-dark", "drawer-dark", "busy-dark", "offline-dark",
+                "tray-dark", "trayplay-dark", "drawer-dark", "busy-dark", "offline-dark",
                 "live-dark", "qwen-dark", "think-dark", "guide-dark", "holdwarn-dark"];
 
 /** 找 Playwright 缓存里的 chromium-headless-shell。找不到返回 null（调用方负责报错/跳过）。 */
@@ -214,7 +214,7 @@ function preScript(state) {
  */
 const SCENE_STATE = {
   idle: "idle", typed: "typed", picked: "picked", rec: "rec",
-  tray: "tray", drawer: "drawer", busy: "busy",
+  tray: "tray", trayplay: "trayplay", drawer: "drawer", busy: "busy",
   // 以下都是「空草稿 + 一段状态」：形态本身不变，变的是状态行/气泡。
   offline: "idle", live: "idle", qwen: "idle", think: "idle", guide: "idle",
   // 预检告警要配一段草稿：这条告警只有「真的要发」时才有意义。
@@ -242,7 +242,7 @@ function sceneSetupJs() {
     // 而上面那次重置会把提示行清回默认。这里只是把**同一句**产品文案补回来，
     // 不是另造一套判定。完整原因见 pet.html 的 tick() 离线分支。
     setStatus("后端没起来，先开主程序", "err");
-    setHoldPre("后端没起来 · 预检不可用", "bad");
+    setWechatNote("后端没起来 · 预检不可用", "bad");
   }
   if (SCEN === "live") setStatus("RVC 实时 已开启，微信把 CABLE Output 当麦克风", "ok");
   if (SCEN === "qwen") setStatus("千问变声 已开启，识别→合成→换嗓", "ok");

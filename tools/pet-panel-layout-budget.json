@@ -87,6 +87,23 @@
         "draft/recBox": 0
       }
     },
+    "sweep:trayplay:bubble0": {
+      "need": 280,
+      "capacity": 298,
+      "reserve": 18,
+      "blocks": {
+        "phead": 26,
+        "draft": 57,
+        "fireRow": 44,
+        "gesture": 0,
+        "tray": 115,
+        "drawer": 0,
+        "status": 0,
+        "draft/field": 33,
+        "draft/fxPicks": 20,
+        "draft/recBox": 0
+      }
+    },
     "sweep:drawer:bubble0": {
       "need": 252,
       "capacity": 298,
@@ -190,6 +207,23 @@
       }
     },
     "sweep:tray:bubble1": {
+      "need": 280,
+      "capacity": 298,
+      "reserve": 18,
+      "blocks": {
+        "phead": 26,
+        "draft": 57,
+        "fireRow": 44,
+        "gesture": 0,
+        "tray": 115,
+        "drawer": 0,
+        "status": 0,
+        "draft/field": 33,
+        "draft/fxPicks": 20,
+        "draft/recBox": 0
+      }
+    },
+    "sweep:trayplay:bubble1": {
       "need": 280,
       "capacity": 298,
       "reserve": 18,
@@ -325,6 +359,23 @@
         "draft/recBox": 0
       }
     },
+    "trayplay": {
+      "need": 280,
+      "capacity": 298,
+      "reserve": 18,
+      "blocks": {
+        "phead": 26,
+        "draft": 57,
+        "fireRow": 44,
+        "gesture": 0,
+        "tray": 115,
+        "drawer": 0,
+        "status": 0,
+        "draft/field": 33,
+        "draft/fxPicks": 20,
+        "draft/recBox": 0
+      }
+    },
     "drawer": {
       "need": 252,
       "capacity": 298,
@@ -354,23 +405,6 @@
         "tray": 0,
         "drawer": 0,
         "status": 0,
-        "draft/field": 33,
-        "draft/fxPicks": 0,
-        "draft/recBox": 0
-      }
-    },
-    "offline": {
-      "need": 162,
-      "capacity": 220,
-      "reserve": 58,
-      "blocks": {
-        "phead": 26,
-        "draft": 33,
-        "fireRow": 44,
-        "gesture": 0,
-        "tray": 0,
-        "drawer": 0,
-        "status": 23,
         "draft/field": 33,
         "draft/fxPicks": 0,
         "draft/recBox": 0

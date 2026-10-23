@@ -333,11 +333,15 @@ if (knownCuts.length) {
 }
 
 // ---- 场景模式：既有的那几条不变量（让位/不裁字/不透明/角色不挪）----
+// --fast 也跑**一条**场景：`offline-dark`。理由不是「多覆盖一点更保险」，而是
+// 预算扫描只遍历 LAYOUT_STATES —— 它永远不会进「后端全挂」那条分支，而
+// `setHoldPre is not defined`（把别名合并进 setWechatNote 时漏掉预览台那一句）
+// 就藏在这条分支里：sweep 全绿、真机一点才炸。0.7s 换这条路径，值。
 const scenes = STATIC_ONLY
   ? []
   : (argvScenes.length ? argvScenes
     : (UPDATE || process.env.VM_PET_LAYOUT_ALL === "1") ? ALL_SCENES
-      : FAST ? [] : DEFAULT_SCENES);
+      : FAST ? ["offline-dark"] : DEFAULT_SCENES);
 
 let got = {};
 if (scenes.length) {
