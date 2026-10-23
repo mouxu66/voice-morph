@@ -123,6 +123,31 @@ def chat(limit: int = 20):
     return snap
 
 
+@router.get("/replies")
+def replies(limit: int = 14, last_side: str = ""):
+    """读当前会话 → 本地 Qwen3-VL-4B（llama-server）给 2-3 条可直接发的回复。
+
+    为什么单独一个端点、不和 /chat 合并：/chat 是 50ms 的 UIA 只读，
+    /replies 要拉起 4B（实测首启 4.6s + 推理 0.7s）。合并会让「分析聊天」等模型，
+    而结论其实早就出来了 —— 前端先画结论、再异步拉这一条。
+
+    `last_side` 由前端从 /chat 的 signals 带过来（left/right）。不给也行：
+    模型只按最后一条像不像提问来写，给了则能避免「催用户回自己刚发的话」。
+    """
+    from chat_read import read_chat  # 惰性：不点按钮不碰 UIA
+    from reply_advisor import suggest
+
+    try:
+        snap = read_chat(limit=limit)
+    except Exception as exc:  # noqa: BLE001 —— 只读视图不该把接口打成 500
+        return {"ok": False, "error": f"读微信会话失败：{exc}"}
+    if not snap.get("ok"):
+        return snap
+    side = last_side if last_side in ("left", "right") else None
+    out = suggest(snap.get("messages") or [], snap.get("chat") or "", side)
+    return {"ok": True, "chat": snap.get("chat"), **out}
+
+
 @router.get("/probe")
 def probe():
     """诊断：窗口矩形 + 聊天区 ROI + 最近一次识别出的块数。**不推进观察状态。**

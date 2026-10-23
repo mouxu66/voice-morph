@@ -942,6 +942,39 @@
   #anaNote { margin-top: 3px; font-size: 9.5px; line-height: 1.4; color: rgb(var(--c-t-500)); }
   #anaNote:empty { display: none; }
   #anaNote.err { color: rgb(var(--c-err)); }
+  /* —— 怎么回：本地 Qwen3-VL-4B（llama-server）给的 2-3 条草稿 ——
+     这块的用途不是「看建议」，是「少打字」：点一条就填进输入框。
+     所以它是一组可点的整行按钮，不是灰字列表。 */
+  #anaReply {
+    margin-top: 6px; padding-top: 5px;
+    border-top: 1px solid rgb(var(--c-border) / 0.7);
+  }
+  #anaReplyHead { display: flex; align-items: center; gap: 4px; }
+  #anaReplyHead .st { font-size: 11px; font-weight: 650; color: rgb(var(--c-t-300)); }
+  #panel #anaReplyBtn {
+    flex: 0 0 auto; margin-left: auto; height: auto; padding: 1px 2px;
+    border: 0; background: transparent; box-shadow: none;
+    font-size: 9px; color: rgb(var(--c-t-500));
+  }
+  #panel #anaReplyBtn:hover { color: rgb(var(--c-accent-h)); }
+  #anaReplies { margin-top: 4px; display: grid; gap: 3px; }
+  #anaReplies:empty { display: none; }
+  #panel #anaReplies .rchip {
+    width: 100%; height: auto; padding: 5px 7px; border-radius: 9px;
+    border: 1px solid rgb(var(--c-border) / 0.9);
+    background: rgb(var(--c-surface-2) / 0.6);
+    /* justify-content: 全局 #panel button 是居中，草稿是整行句子，得左对齐才读得顺 */
+    justify-content: flex-start;
+    font-size: 10px; line-height: 1.35; text-align: left;
+    color: rgb(var(--c-t-200)); box-shadow: none; white-space: normal;
+  }
+  #panel #anaReplies .rchip:hover {
+    border-color: rgb(var(--c-accent) / 0.6);
+    color: rgb(var(--c-t-200));
+  }
+  #anaReplyNote { margin-top: 3px; font-size: 9px; line-height: 1.35; color: rgb(var(--c-t-500)); }
+  #anaReplyNote:empty { display: none; }
+  #anaReplyNote.err { color: rgb(var(--c-err)); }
 
   /* —— 更多抽屉 #drawer：音色 / 引擎 / 最近发送 ——
      这些是「设置」，进来的频率远低于发送；放进抽屉后它们不再跟主按钮抢注意力。
@@ -1426,6 +1459,16 @@
         <ul id="anaList" hidden></ul>
       </div>
       <div id="anaMsgs" role="list" hidden></div>
+      <!-- 怎么回：本地 Qwen3-VL-4B（llama-server）给的草稿。点一条 = 填进输入框，
+           然后退回主面板 —— 用户要的不是「建议」，是「少打字」。 -->
+      <div id="anaReply">
+        <div id="anaReplyHead">
+          <span class="st">怎么回</span>
+          <button type="button" id="anaReplyBtn" title="让本地模型再想一批">换一批</button>
+        </div>
+        <div id="anaReplies" role="list"></div>
+        <div id="anaReplyNote" aria-live="polite"></div>
+      </div>
       <div id="anaNote" aria-live="polite"></div>
     </div>
 
@@ -2165,6 +2208,10 @@ const anaSuggestEl = document.getElementById("anaSuggest");
 const anaListEl = document.getElementById("anaList");
 const anaMsgsEl = document.getElementById("anaMsgs");
 const anaNoteEl = document.getElementById("anaNote");
+// 「怎么回」：本地 4B 的草稿块（点一条填进 #say）
+const anaRepliesEl = document.getElementById("anaReplies");
+const anaReplyBtnEl = document.getElementById("anaReplyBtn");
+const anaReplyNoteEl = document.getElementById("anaReplyNote");
 const songBtnEl = document.getElementById("songBtn");
 const songBackEl = document.getElementById("songBack");
 const songSrcEl = document.getElementById("songSrc");
@@ -3386,6 +3433,10 @@ function resetRadar() {
  */
 const ANA_KIND_LABEL = { media: "图片/文件", system: "系统" };
 let anaBusy = false;
+//: 最近一次 /chat 的响应（「换一批」要拿它的 signals.last_side）。
+let anaLast = null;
+//: 只认最后一次回复请求 —— 连点「重新分析 / 换一批」时，旧响应不许覆盖新的。
+let anaReplySeq = 0;
 
 /** 拉一次 /chat 并渲染。失败按人话写进 #anaNote，不改已有结论卡。 */
 async function analyzeChat() {
@@ -3414,8 +3465,9 @@ async function analyzeChat() {
   }
 }
 
-/** 把 /chat 的响应画出来。`ok:false` 时保留卡片结构、只说读不到的原因。 */
-function renderAnalysis(j) {
+/** 把 /chat 的响应画出来。`ok:false` 时保留卡片结构、只说读不到的原因。
+ *  `autoReply=false` 只给预览/量测用：形态样本直接塞草稿，不去拉起模型。 */
+function renderAnalysis(j, autoReply = true) {
   const ok = !!(j && j.ok);
   const a = (j && j.analysis) || {};
   const s = a.suggest || {};
@@ -3442,6 +3494,79 @@ function renderAnalysis(j) {
     anaNoteEl.textContent = ok ? (j.verdict_note || "") : ((j && j.error) || "分析不可用");
     anaNoteEl.className = ok ? "" : "err";
   }
+  anaLast = ok ? j : null;
+  // 结论先上屏，草稿随后异步来 —— 4B 首启要 4~5s，不能拖住「该不该回」的判断。
+  if (autoReply) {
+    if (ok) void suggestReplies(j);
+    else clearReplies();
+  }
+}
+
+/** 清空草稿块（分析失败 / 重新分析前调用）。 */
+function clearReplies() {
+  anaReplySeq++;
+  if (anaRepliesEl) anaRepliesEl.innerHTML = "";
+  if (anaReplyNoteEl) { anaReplyNoteEl.textContent = ""; anaReplyNoteEl.className = ""; }
+}
+
+/**
+ * 本地 Qwen3-VL-4B 生成「怎么回」。走 `/api/radar/replies`：
+ * 后端读 UIA → 拼提示词 → llama-server（懒加载 + 空闲自杀）→ 严格校验 JSON。
+ * 模型没起来时后端已降级成模板，这里只把 engine/note 说出来（有草稿就先给草稿）。
+ */
+async function suggestReplies(j) {
+  // 与 analyzeChat 同一门控：能力关掉时后端没有 /api/radar/*。
+  if (!CAP.radar) return;
+  const seq = ++anaReplySeq;
+  if (anaRepliesEl) anaRepliesEl.innerHTML = "";
+  if (anaReplyNoteEl) {
+    anaReplyNoteEl.textContent = "本地模型在想怎么回…（首次要拉起模型，约 5 秒）";
+    anaReplyNoteEl.className = "";
+  }
+  const side = (j && j.signals && j.signals.last_side) || "";
+  const qs = "?limit=14" + (side === "left" || side === "right" ? "&last_side=" + side : "");
+  try {
+    const r = await fetch(RADAR_BASE + "/replies" + qs, { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    if (seq !== anaReplySeq) return;   // 有更新的请求了，这条作废
+    renderReplies(data);
+  } catch (err) {
+    if (seq !== anaReplySeq) return;
+    if (anaReplyNoteEl) {
+      anaReplyNoteEl.textContent = "回复建议拉不到（" + ((err && err.message) || "后端没连上") + "）";
+      anaReplyNoteEl.className = "err";
+    }
+  }
+}
+
+/** 画草稿按钮。一条都没有时保留提示行，但不留空块。 */
+function renderReplies(j) {
+  const ok = !!(j && j.ok);
+  const rows = (ok && Array.isArray(j.replies))
+    ? j.replies.filter((s) => typeof s === "string" && s.trim())
+    : [];
+  if (anaRepliesEl) {
+    anaRepliesEl.innerHTML = rows.map(
+      (t, i) => `<button type="button" class="rchip" data-i="${i}"`
+        + ` title="点一下填进输入框">${esc(t)}</button>`
+    ).join("");
+  }
+  if (anaReplyNoteEl) {
+    // why 是模型的理由；engine=rule 说明这条是模板兜底，必须显式告知。
+    const why = ok ? (j.why || "") : ((j && j.error) || "回复建议不可用");
+    const rule = ok && j.engine === "rule" ? "模板建议（本地模型没跑起来）" : "";
+    const note = ok ? (j.note || "") : "";
+    anaReplyNoteEl.textContent = [why, rule, note].filter(Boolean).join(" · ");
+    anaReplyNoteEl.className = ok && j.engine !== "rule" ? "" : (ok ? "" : "err");
+  }
+  // 草稿出来之后收掉原始消息列表与要点：面板 300px 是死预算。
+  // 「怎么回」比「刚才那几条原话」更该占这块地方 —— 而模型给的 why 一行
+  // 已经把要点里真正有用的那部分（对方在问 / 在等你）说出来了。
+  if (rows.length) {
+    if (anaMsgsEl) anaMsgsEl.hidden = true;
+    if (anaListEl) anaListEl.hidden = true;
+  }
 }
 
 /** 单条消息行。时间行单独一种样式；其余带一个短类型标签（长文本省略）。
@@ -3456,6 +3581,16 @@ function anaMsgRow(m) {
 
 if (anaBackEl) anaBackEl.addEventListener("click", () => setLayer(""));
 if (anaRefreshEl) anaRefreshEl.addEventListener("click", () => { void analyzeChat(); });
+// 草稿点一下就填进 #say 并退回主面板：这里不是「选中」，是「就用这句」。
+if (anaRepliesEl) anaRepliesEl.addEventListener("click", (e) => {
+  const btn = e.target && e.target.closest ? e.target.closest(".rchip") : null;
+  if (!btn || !sayEl) return;
+  sayEl.value = btn.textContent || "";
+  onSayInput();
+  sayEl.focus();
+  setLayer("");
+});
+if (anaReplyBtnEl) anaReplyBtnEl.addEventListener("click", () => { void suggestReplies(anaLast || {}); });
 
 /**
  * 按能力清单收起桌宠上用不到的控件 —— 关掉的能力意味着后端**根本没有那些接口**，
@@ -4883,6 +5018,8 @@ function resetLayoutState() {
   if (anaMsgsEl) { anaMsgsEl.innerHTML = ""; anaMsgsEl.hidden = true; }
   if (anaNoteEl) { anaNoteEl.textContent = ""; anaNoteEl.className = ""; }
   anaBusy = false;
+  // 草稿是异步来的跨形态状态：不清空会让下一个形态量到上一态的按钮。
+  clearReplies();
   setLayer("");
   setStatus("", "");
   renderFxPicks();
@@ -4998,6 +5135,13 @@ const LAYOUT_STATES = {
         { kind: "time", text: "23:21" },
         { kind: "media", text: "图片" },
       ],
+    }, false);
+    // 草稿块单独塞样本：`autoReply=false` 已经拦掉了真模型（量测绝不能拉 4B），
+    // 这里直接喂后端会返回的那种形状 —— 包括 why 一行。
+    renderReplies({
+      ok: true, engine: "local", model: "qwen3vl-4b",
+      replies: ["哈哈你吃这么快？", "红包我先收下了", "偷吃有风险哦"],
+      why: "对方发了语音和图片，想回应互动",
     });
     setLayer("ana");
   },

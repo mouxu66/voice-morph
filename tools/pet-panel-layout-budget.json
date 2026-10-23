@@ -171,9 +171,9 @@
       }
     },
     "sweep:analysis:bubble0": {
-      "need": 279,
+      "need": 270,
       "capacity": 298,
-      "reserve": 19,
+      "reserve": 28,
       "blocks": {
         "phead": 26,
         "draft": 0,
@@ -183,7 +183,7 @@
         "tray": 0,
         "songLayer": 0,
         "radarLayer": 0,
-        "analysisLayer": 227,
+        "analysisLayer": 218,
         "drawer": 0,
         "status": 0,
         "draft/field": 0,
@@ -402,9 +402,9 @@
       }
     },
     "sweep:analysis:bubble1": {
-      "need": 279,
+      "need": 270,
       "capacity": 298,
-      "reserve": 19,
+      "reserve": 28,
       "blocks": {
         "phead": 26,
         "draft": 0,
@@ -414,7 +414,7 @@
         "tray": 0,
         "songLayer": 0,
         "radarLayer": 0,
-        "analysisLayer": 227,
+        "analysisLayer": 218,
         "drawer": 0,
         "status": 0,
         "draft/field": 0,
@@ -772,6 +772,27 @@
         "songLayer": 177,
         "radarLayer": 0,
         "analysisLayer": 0,
+        "drawer": 0,
+        "status": 0,
+        "draft/field": 0,
+        "draft/fxPicks": 0,
+        "draft/recBox": 0
+      }
+    },
+    "analysis": {
+      "need": 270,
+      "capacity": 298,
+      "reserve": 28,
+      "blocks": {
+        "phead": 26,
+        "draft": 0,
+        "recs": 0,
+        "fireRow": 0,
+        "gesture": 0,
+        "tray": 0,
+        "songLayer": 0,
+        "radarLayer": 0,
+        "analysisLayer": 218,
         "drawer": 0,
         "status": 0,
         "draft/field": 0,

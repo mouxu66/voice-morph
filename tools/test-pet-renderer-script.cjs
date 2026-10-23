@@ -290,6 +290,15 @@ const CHAT_OK = {
   },
 };
 let chatStub = null;
+// 「怎么回」桩（2026-10-24）：/api/radar/replies 的最终形状由 m2_server/reply_advisor 决定
+// （ok / engine / replies / why / note）。`engine:"rule"` 是本地模型没起来时的降级 ——
+// 前端必须把这件事说出来，不能让用户以为那是模型认真想的。
+const REPLIES_OK = {
+  ok: true, chat: "117", engine: "local", model: "qwen3vl-4b",
+  replies: ["哈哈你吃这么快？", "红包我先收下了"],
+  why: "对方发了语音和图片，想回应互动",
+};
+let repliesStub = null;
 // 歌单桩（2026-10-22 放歌页）：接口只读，但**失败形态**也是契约的一部分 ——
 // 「后端比面板旧」（404）与「后端没起来」要说不同的话，且都只能说在页内。
 let bgmItems = [];
@@ -330,6 +339,11 @@ global.fetch = async (url, opts) => {
     if (typeof chatStub === "function") return chatStub();
     if (chatStub) return chatStub;
     return { ok: true, status: 200, json: async () => ({ ...CHAT_OK }) };
+  }
+  if (u.includes("/api/radar/replies")) {
+    if (typeof repliesStub === "function") return repliesStub();
+    if (repliesStub) return repliesStub;
+    return { ok: true, status: 200, json: async () => ({ ...REPLIES_OK }) };
   }
   if (u.includes("/api/soundboard/bgm/recent")) {
     if (bgmStatus !== 200) return { ok: false, status: bgmStatus, json: async () => ({ detail: "nope" }) };
@@ -1136,8 +1150,46 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       assert.strictEqual(els.anaSuggest.className, "s-reply", "「该回了」的建议没上绿色");
       assert.match(String(els.anaList.innerHTML), /红包领一/, "要点没渲染");
       assert.match(String(els.anaMsgs.innerHTML), /语音/, "消息列表没渲染（语音那条丢了）");
-      assert.strictEqual(els.anaMsgs.hidden, false);
+      // 草稿已经到了 → 消息列表让位（300px 死预算，怎么回比原话更该占地方）。
+      assert.strictEqual(els.anaMsgs.hidden, true, "草稿出来了但消息列表还占着高度");
     });
+
+    // ---------- 怎么回（2026-10-24）：本地 4B 的草稿 ----------
+    //
+    // 用户原话：「我就是想分析他的聊天记录，指导我怎么回。」
+    // 这一段的契约只有三条：
+    //   ① 必须真的打 /api/radar/replies（拉本地模型）；
+    //   ② 草稿与模型理由都要落进 DOM；
+    //   ③ 点一条 = 填进输入框并退回主面板（少打字才是目的）。
+    check("怎么回：打 /api/radar/replies 并把草稿画成可点按钮", () => {
+      assert.ok(fetchCalls.some((c) => /\/api\/radar\/replies\?limit=14/.test(c.url)),
+        "没打 /api/radar/replies —— 用户要的「指导怎么回」根本没接上");
+      assert.match(String(els.anaReplies.innerHTML), /吃这么快/, "草稿没渲染");
+      assert.match(String(els.anaReplies.innerHTML), /红包我先收下了/, "第二条草稿没渲染");
+      assert.match(String(els.anaReplyNote.textContent), /语音和图片/, "模型理由没落进提示行");
+      assert.strictEqual(els.anaReplyNote.className, "", "正常结果不该标红");
+    });
+
+    check("怎么回：点一条草稿就填进输入框并退回主面板", () => {
+      const chip = { textContent: "红包我先收下了" };
+      const h = (els.anaReplies._on.click || [])[0];
+      assert.ok(h, "草稿块没挂 click 监听 —— 按钮是死的");
+      h({ target: { closest: (sel) => (sel === ".rchip" ? chip : null) } });
+      assert.strictEqual(els.say.value, "红包我先收下了", "草稿没填进输入框");
+      assert.strictEqual(petFns.getPanelLayer(), "", "点了草稿还留在分析层 —— 用户还得再点一次返回");
+    });
+
+    repliesStub = { ok: false, status: 503, json: async () => ({}) };
+    await petFns.analyzeChat();
+    await flush();
+    check("怎么回失败：拉不到要说在草稿块里，不能顶掉已经出来的结论", () => {
+      assert.match(String(els.anaReplyNote.textContent), /HTTP 503/);
+      assert.strictEqual(els.anaReplyNote.className, "err");
+      assert.strictEqual(els.anaReplies.innerHTML, "", "失败时还留着上一轮的草稿");
+      assert.strictEqual(els.anaMsgs.hidden, false, "草稿没了就该把消息列表放回来");
+      assert.match(String(els.anaTitle.textContent), /117/, "回复失败把结论也带走了");
+    });
+    repliesStub = null;
 
     els.anaTitle.textContent = "上一轮的结论";
     els.anaMsgs.innerHTML = "<span>上一轮的结论</span>";
