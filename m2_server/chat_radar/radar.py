@@ -3,10 +3,14 @@
 对外只暴露一个 `Radar.tick()`，返回 `Tick`（信号 + 结论 + 原始帧），
 方便接到 CLI、桌面角标、FastAPI 路由或 Electron 前端。
 
-轮询间隔建议 500ms：
-    - 实测单帧解析 20-40ms（本模块优化过），500ms 轮询 CPU 占用 <1%
-    - 「该不该回」不需要更高频率——人感知不到 200ms 与 500ms 的差别，
-      但对方「正在输入」的状态变化在 500ms 下不会漏
+轮询间隔：**没有唯一的正确值，取决于谁在看**。
+    - 端到端单帧实测 ~97ms（抓图 57 + 解析 30 + 状态 8，p95 121ms），
+      与旧文档写的「解析 20-40ms」不同 —— 那只算了 analyze，没算 GDI 抓图。
+    - 桌宠面板角标：后端建议 1500ms（`radar_api.POLL_HINT_MS`）。角标不需要
+      亚秒级反应，而 1.5s 能把常驻 CPU 压到 500ms 轮询的一半以下。
+    - CLI 常驻观察：500ms 起，看 gap 的秒数变化用。
+    - 「该不该回」不靠高频：判断依据是 gap/连发/方向，几秒粒度足够；
+      真正的下限由「对方正在输入」的可见性决定，500ms 已远超需要。
 """
 
 from __future__ import annotations
@@ -95,6 +99,21 @@ class Radar:
         sig = self._state.feed(frame.image, frame.roi, lay)
         verdict = jd.judge_signals(sig, use_llm=self.use_llm)
         return Tick(sig, verdict, frame, lay)
+
+    def peek(self) -> tuple[cap.Frame | None, ly.Layout | None, str]:
+        """抓一帧并解析，但**不喂状态机** —— 诊断用的「看一眼」不等于「观察一次」。
+
+        为什么必须分开：`/probe` 这类接口如果复用 `tick()`，一次诊断就会推进
+        `frames_seen`、覆盖上一帧指纹、并可能重置 `_stable` 与 `_observed_since`
+        （后者直接决定冷启动的 `gap_lower_bound`）。也就是说**观测行为会改变被观测的东西**，
+        排查「为什么 gap 不动」时反而把它搅乱。
+
+        返回 `(frame, layout, error)`；失败时前两项为 None、第三项是人话原因。
+        """
+        frame, err = self._grab_with_roi()
+        if frame is None:
+            return None, None, err
+        return frame, ly.analyze(frame.image, frame.roi), ""
 
     def invalidate_roi(self) -> None:
         self._roi = None

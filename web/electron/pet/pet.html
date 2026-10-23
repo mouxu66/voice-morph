@@ -3045,6 +3045,7 @@ if (songListEl) songListEl.addEventListener("click", (e) => {
 // ⚠️ 能力关了必须整条链路停：polling 兜底、tick 直接 return（vitest 拿这行当锚点）。
 const RADAR_BASE = "http://127.0.0.1:8000/api/radar";
 let radarTimer = null;         // 快轮询句柄（层开着）
+let radarTimerMs = 0;          // 快轮询当前用的间隔 —— 与 radarPollHintMs 不等就要重建
 let radarBadgeTimer = null;    // 慢轮询句柄（层关着，养绿点）
 let radarBusy = false;         // 上一次请求还没回来就不叠下一发
 let radarPollHintMs = 1500;    // 跟随后端响应里的 poll_hint_ms 走
@@ -3052,23 +3053,46 @@ let radarPollHintMs = 1500;    // 跟随后端响应里的 poll_hint_ms 走
 function radarSetPolling() {
   // 快轮询：只在层开着且能力在时跑。
   const wantFast = panelLayer === "radar" && CAP.radar;
-  if (!wantFast && radarTimer) { clearInterval(radarTimer); radarTimer = null; }
-  if (wantFast && !radarTimer) radarTimer = setInterval(() => void radarTick(false), radarPollHintMs);
+  // 间隔变了必须重建定时器 —— 早先只判「有没有 timer」，于是后端把 poll_hint_ms
+  // 从 1500 调到 800 时永远不生效（clearInterval 被 `!wantFast` 挡住、
+  // setInterval 被 `!radarTimer` 挡住），跟注释承诺的「老前端自动跟上」相反。
+  if (radarTimer && (!wantFast || radarTimerMs !== radarPollHintMs)) {
+    clearInterval(radarTimer); radarTimer = null; radarTimerMs = 0;
+  }
+  if (wantFast && !radarTimer) {
+    radarTimerMs = radarPollHintMs;
+    radarTimer = setInterval(() => void radarTick(false), radarPollHintMs);
+  }
   // 慢轮询：能力在就常驻（绿点要跟上「该回了」的变化）。
   if (CAP.radar && !radarBadgeTimer) radarBadgeTimer = setInterval(() => void radarTick(false), 5000);
   if (!CAP.radar && radarBadgeTimer) { clearInterval(radarBadgeTimer); radarBadgeTimer = null; }
 }
 
+/** 秒数 → 展示串。null 一律给「—」：宁可说不知道，也别把 null 显示成 0s。 */
+function radarSecs(v) {
+  return (v === null || v === undefined) ? "—" : `${Math.round(v)}s`;
+}
+
 function radarSigRows(s) {
   const rows = [];
   if (s.last_side === "left") {
-    const gap = s.gap_lower_bound ? `≥${Math.round(s.gap_seconds)}s` : `${Math.round(s.gap_seconds)}s`;
-    rows.push(["对方最后发言", gap + "前"]);
-  } else {
+    // gap_seconds 为 null 时不能写成「0s前」——那是凭空造出来的「刚发」。
+    const g = s.gap_seconds;
+    const gap = (g === null || g === undefined)
+      ? "—"
+      : (s.gap_lower_bound ? `≥${Math.round(g)}s 前` : `${Math.round(g)}s 前`);
+    rows.push(["对方最后发言", gap]);
+    if (s.streak > 1) rows.push(["连发", `${s.streak} 条`]);
+  } else if (s.last_side === "right") {
     rows.push(["最后一条", "你说的"]);
-    rows.push(["等对方回", `${Math.round(s.my_last_reply_age ?? 0)}s`]);
+    // 冷启动时 _last_right_ts 还是空的 → my_last_reply_age 为 null，
+    // 早先 `?? 0` 会显示「等对方回 0s」，看着像刚发完，其实是不知道。
+    rows.push(["等对方回", radarSecs(s.my_last_reply_age)]);
+  } else {
+    // 一个消息块都没识别到（ROI 没对准 / 空会话 / 刚切窗口）：
+    // 早先落到 else 分支会声称「最后一条 你说的」，纯属编造。
+    rows.push(["最后一条", "没看到消息"]);
   }
-  if ((s.last_side === "left") && s.streak > 1) rows.push(["连发", `${s.streak} 条`]);
   rows.push(["已观察", `${s.frames_seen ?? 0} 帧`]);
   return rows;
 }
@@ -3077,7 +3101,8 @@ function renderRadar(j) {
   const v = j.verdict || {};
   const act = v.action || "unknown";
   if (rdCardEl) {
-    rdCardEl.className = "v-" + (act === "none" ? "none" : act);
+    // 卡片的配色类：v-none / v-wait / v-soon / v-now / v-unknown（见 CSS）。
+    rdCardEl.className = "v-" + act;
     if (rdVerdictEl) rdVerdictEl.textContent = v.label || act;
     if (rdReasonEl) rdReasonEl.textContent = v.reason || "";
   }
@@ -3114,9 +3139,11 @@ async function radarTick(force) {
       return;
     }
     const j = await r.json();
-    if (j.poll_hint_ms && j.poll_hint_ms !== radarPollHintMs && radarTimer) {
+    if (j.poll_hint_ms && j.poll_hint_ms !== radarPollHintMs) {
+      // 只在值真变了时走重建（radarSetPolling 内部比 radarTimerMs），
+      // 否则 1.5s 的轮询会因为每帧都「发现 hint 不一致」而被反复重建。
       radarPollHintMs = j.poll_hint_ms;
-      radarSetPolling();  // 后端调了节奏就跟上（老前端不用发版）
+      radarSetPolling();
     }
     renderRadar(j);
     if (panelLayer === "radar" && rdNoteEl) {

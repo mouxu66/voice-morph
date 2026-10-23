@@ -98,17 +98,24 @@ def reset():
 
 @router.get("/probe")
 def probe():
-    """诊断：窗口矩形 + 聊天区 ROI + 最近一次识别出的块数。不改变观察状态。"""
+    """诊断：窗口矩形 + 聊天区 ROI + 最近一次识别出的块数。**不推进观察状态。**
+
+    为什么不用 `tick()`（2026-10-23 修正）：tick 会喂状态机 —— 推进 `frames_seen`、
+    覆盖上一帧指纹、还可能重置 `_stable` 与 `_observed_since`（冷启动的
+    `gap_lower_bound` 就靠后者算）。结果就是「一诊断，gap 就从 0 重算」，
+    排查问题时反而把现场搅乱。这里改走 `Radar.peek()`：抓图 + 解析，不喂状态机。
+    """
+    start = time.perf_counter()
     with _RADAR_LOCK:
-        r = _radar()
-        tick = r.tick()
-    out: dict = {"ok": tick.ok, "elapsed_ms": tick.signals.elapsed_ms}
-    if not tick.ok:
-        out["error"] = tick.error
+        frame, layout, err = _radar().peek()
+    elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
+    out: dict = {"ok": err == "", "elapsed_ms": elapsed_ms}
+    if err:
+        out["error"] = err
         return out
-    assert tick.frame is not None and tick.layout is not None  # tick.ok 蕴含两者非空
-    win, roi = tick.frame.window, tick.frame.roi
+    assert frame is not None and layout is not None  # err 为空蕴含两者非空
+    win, roi = frame.window, frame.roi
     out["window"] = {"title": win.title, "rect": list(win.rect)}
     out["roi"] = [roi.left, roi.top, roi.right, roi.bottom]
-    out["n_blocks"] = len(tick.layout.blocks)
+    out["n_blocks"] = len(layout.blocks)
     return out

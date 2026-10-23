@@ -76,11 +76,20 @@ class _StubRadar:
     def __init__(self, tick_result):
         self._tick_result = tick_result
         self.tick_calls = 0
+        self.peek_calls = 0
         self.reset_calls = 0
 
     def tick(self):
         self.tick_calls += 1
         return self._tick_result
+
+    def peek(self):
+        """诊断路径：只抓图 + 解析，不喂状态机（与真 Radar.peek 同契约）。"""
+        self.peek_calls += 1
+        t = self._tick_result
+        if not t.ok:
+            return None, None, t.error
+        return t.frame, t.layout, ""
 
     def reset(self):
         self.reset_calls += 1
@@ -130,6 +139,20 @@ def test_probe_serializes_window_roi_and_blocks():
     assert out["window"]["rect"] == [100, 200, 1600, 900]
     assert out["roi"] == [343, 62, 1560, 1300]
     assert out["n_blocks"] == 5
+
+
+def test_probe_does_not_advance_observation_state():
+    """诊断不能改动被诊断的东西：/probe 必须走 peek，不能走 tick。
+
+    走 tick 的代价很实：会推进 frames_seen、覆盖上一帧指纹、并可能重置
+    _stable 与 _observed_since（冷启动的 gap_lower_bound 靠后者），
+    表现就是「一调 probe，gap 从 0 重算」。
+    """
+    stub = _StubRadar(_ok_tick())
+    _install(stub)
+    radar_api.probe()
+    assert stub.tick_calls == 0, "probe 不该喂状态机（tick 会推进观察状态）"
+    assert stub.peek_calls == 1
 
 
 def test_probe_failure_reports_error_without_window():

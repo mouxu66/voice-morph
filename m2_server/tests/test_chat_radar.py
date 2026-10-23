@@ -364,3 +364,47 @@ def test_verdict_dict_has_label():
     d = jd.judge_by_rule(_sig(gap_seconds=1200)).as_dict()
     assert d["label"] == "该回了"
     assert set(d) == {"action", "label", "score", "reason", "source"}
+
+
+# ------------------------------------------------------------------ 编排层
+
+
+def test_peek_does_not_advance_state(monkeypatch):
+    """peek（诊断）不能推进状态机 —— 否则「看一眼」等于「观察一次」。
+
+    走 tick 的实害：frames_seen +1、上一帧指纹被覆盖、_stable 可能归零、
+    _observed_since 可能重置（冷启动的 gap_lower_bound 就靠它）。
+    表现是「一调 /probe，gap 就从 0 重算」，排查问题时把现场搅乱。
+    """
+    from chat_radar import radar as rd
+    from chat_radar.capture import Frame, WindowInfo
+
+    img = make_chat_image([("left", 300, 350)])
+    win = WindowInfo(hwnd=1, title="微信", cls="Qt51514QWindowIcon", left=0, top=0, width=800, height=400)
+    frame = Frame(window=win, image=img, roi=ROI)
+
+    r = rd.Radar()
+    monkeypatch.setattr(r, "_grab_with_roi", lambda: (frame, ""))
+
+    r.tick()
+    after_tick = r._state._frames
+    assert after_tick == 1
+
+    got_frame, lay, err = r.peek()
+    assert err == ""
+    assert got_frame is frame
+    assert lay is not None and lay.blocks
+    assert r._state._frames == after_tick, "peek 不该推进观察帧数"
+
+
+def test_peek_reports_error_without_state_change(monkeypatch):
+    """观察失败时 peek 只回原因，同样不碰状态机。"""
+    from chat_radar import radar as rd
+
+    r = rd.Radar()
+    monkeypatch.setattr(r, "_grab_with_roi", lambda: (None, "没找到微信窗口（微信是否在运行？）"))
+    frame, lay, err = r.peek()
+    assert frame is None and lay is None
+    assert "没找到微信窗口" in err
+    assert r._state._frames == 0
+
