@@ -309,8 +309,11 @@ def test_default_preset_is_the_voice_morph_body():
 
 def test_scene_presets_are_pinned_literals():
     """三个场景套餐的**起点集**钉死：微信变声 / 声音保存（护嗓）/ 游戏变声。"""
+    # hook.radar（2026-10-23）：微信场景天然要「该不该回」雷达 —— 只看屏幕不发消息，
+    # 与 hook.wechat 互不依赖，所以单独列出而不是挂进 wechat 的 requires。
     assert plugin_manifest.PRESETS["wechat"] == [
-        "sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board", "sound.course"]
+        "sound.offline-vc", "sound.tts", "hook.wechat", "sound.fx-board", "sound.course",
+        "hook.radar"]
     assert plugin_manifest.PRESETS["preserve"] == [
         "sound.preserve", "sound.tts", "sound.audiobook", "sound.course"]
     # 游戏变声 = 变声本体本身（实时变声走虚拟声卡进游戏/直播/会议）

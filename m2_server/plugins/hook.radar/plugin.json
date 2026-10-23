@@ -1,0 +1,28 @@
+{
+  "id": "hook.radar",
+  "name": "微信状态雷达",
+  "kind": "builtin",
+  "category": "hook",
+  "order": 250,
+  "summary": "纯像素观察微信聊天窗口，判断「该不该回」（对方最后发言 / 连发条数 / 等了多久），桌宠面板可看状态",
+  "requires": [],
+  "routers": ["radar_api"],
+  "hooks": [],
+  "routes": [],
+  "legacy_routes": [],
+  "extras": {
+    "python": ["numpy"],
+    "external": [
+      {
+        "kind": "app",
+        "label": "微信 PC 版（运行中且未最小化）",
+        "doc": "docs/方案-微信状态雷达.md"
+      }
+    ],
+    "models": []
+  },
+  "health": null,
+  "disable": {
+    "note": "关闭后 /api/radar/* 与桌宠面板的雷达入口一起消失。与微信发送（hook.wechat）互不依赖：只看屏幕，不发消息"
+  }
+}
