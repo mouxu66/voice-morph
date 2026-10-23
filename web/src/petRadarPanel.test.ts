@@ -37,7 +37,9 @@ function loadPolling() {
   const created: Array<{ id: number; ms: number }> = []
   const cleared: number[] = []
   let seq = 1
-  let env: { layer: string; cap: boolean } = { layer: '', cap: true }
+  // const：真正的重新赋值发生在 new Function 内部的 apply（那是它的参数），
+  // 这个外层变量只被读一次（喂给沙箱）。写成 let 会被 prefer-const 拦。
+  const env: { layer: string; cap: boolean } = { layer: '', cap: true }
 
   const src = extractFn('radarSetPolling')
   const body = `

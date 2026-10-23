@@ -152,7 +152,9 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
     for (const call of [
       'hide("engRow", !CAP.live)',
       'hide("recent", !CAP.wechat)',
-      'hide("trayBtn", !CAP.fx)',
+      // 2026-10-23 二次重构：♪ 从 phead 挪进抽屉的「声音」行（trayRow），
+      // hide 的 id 必须跟着换 —— 只改 HTML 不改这里，能力关掉后会留一行点进去全 404 的入口。
+      'hide("trayRow", !CAP.fx)',
       'hide("radarRow", !CAP.radar)',
     ]) {
       expect(fn, `refreshCapVisibility 漏了 ${call}`).toContain(call)
@@ -180,8 +182,17 @@ describe('门控真的接到了调用点上（不是写了个没人用的函数�
     // loadSfx 打的是 /api/soundboard/*（sound.fx-board 插件的路由）：
     // 关掉后 catalog/play/premix 全部 404，所以入口和盘体必须一起收，
     // 且已经开着托盘的要被归位收起（否则用户面对一个全 404 的空盘）。
-    expect(html).toContain('id="trayBtn"')
+    // 入口从 #trayBtn（phead 的 ♪）换成抽屉里的 #trayRow，两者必须都还在文档里：
+    // 只留 #tray 而没有入口，用户永远进不了托盘；只留入口而没有 #tray，点了是空层。
+    expect(html).toContain('id="trayRow"')
     expect(html).toContain('id="tray"')
+    // 新守卫：入口必须真的长在抽屉里（否则 hide("trayRow") 收的是个不在界面上显示的东西，
+    // 而托盘仍然可以从别处打开）。用「drawer 起点 < trayRow 位置 < drawer 终点」判。
+    const drStart = html.indexOf('id="drawer"')
+    const rowAt = html.indexOf('id="trayRow"')
+    expect(drStart).toBeGreaterThan(-1)
+    expect(rowAt).toBeGreaterThan(drStart)
+    expect(html.slice(drStart, rowAt)).not.toContain("<!-- ── 状态行")
     const loadSfxBody = html.slice(html.indexOf('async function loadSfx('), html.indexOf('function renderFxGrid'))
     expect(loadSfxBody).toContain('if (!CAP.fx) return;')
     // 2026-10-23：搜歌层 `songs` 也归 sound.fx-board（它的入口长在放歌卡上），

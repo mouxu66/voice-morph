@@ -292,12 +292,6 @@
     background: rgb(var(--c-accent) / 0.16);
     color: rgb(var(--c-accent-h));
   }
-  /* 放歌中：♪ 带一颗常亮的小点（面板收起后由 #bgmBadge 接手这个提示） */
-  #panel .icb.playing::after {
-    content: ""; position: absolute; margin: -12px 0 0 12px;
-    width: 5px; height: 5px; border-radius: 50%;
-    background: rgb(var(--c-ok));
-  }
   #panel .icb { position: relative; }
 
   /* 药丸现在是个真 <button>（可点 = 变声开关）。⚠️ 选择器里那个 ".pill" 是必需的：
@@ -471,6 +465,61 @@
   #panel .fxchip .fm { font-size: 9px; color: rgb(var(--c-accent-h)); }
   #panel .fxchip .fxrm { color: rgb(var(--c-t-500)); font-weight: 600; padding: 0 1px; }
   #panel .fxchip .fxrm:hover { color: rgb(var(--c-err)); }
+
+  /* —— 建议区（2026-10-23 二次重构）———————————————————————————————
+     这一块替代了上一版的「音色 chip + ♪ 声音托盘入口」。理由是本项目已经踩过一次的
+     老坑：**入口数量本身不是问题，入口不区分此刻有没有用才是问题**。
+     12 个功能平铺时用户每次都要先扫一遍再挑；而打开面板的那一刻，上下文其实已经把
+     候选压到 2–3 个了（对方刚发消息 / 草稿里有字 / 正在放歌 / 有提案等你点头）。
+
+     所以这里只渲染 `rankActions()` 排在最前面的三条，其余全部退到
+     ①输入框搜索 ②⋯ 抽屉的「全部功能」网格。三条之外不再有常驻入口。
+
+     高度：每条 26px + 4px gap，最多 3 条 = 86px。空闲态整面板 ≈232px（上限 300px）。
+     `#recs[hidden]` 必须显式写：flex 容器会盖掉 UA 的 [hidden]{display:none}。 */
+  #recs { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+  #recs[hidden] { display: none; margin: 0; }
+  #panel .rec {
+    display: flex; align-items: center; gap: 6px;
+    box-sizing: border-box; width: 100%; height: 26px; padding: 0 8px;
+    /* flex: 0 0 auto 是必须的：`#panel button:not(.primary){flex:1}` 的优先级
+       比本选择器高（多了 :not 里的类），不写死会在 #recs 这个 column flex 里被
+       拉成等高，三条推荐把面板顶到上限。 */
+    flex: 0 0 auto;
+    border-radius: 9px;
+    border: 1px solid rgb(var(--c-border-2) / 0.55);
+    background: rgb(var(--c-surface-2) / 0.55);
+    color: rgb(var(--c-t-200));
+    font: inherit; font-size: 11px; text-align: left;
+    justify-content: flex-start;
+    cursor: pointer; transition: border-color .14s, background .14s;
+  }
+  #panel .rec:hover { border-color: rgb(var(--c-accent) / 0.55); background: rgb(var(--c-accent) / 0.1); }
+  #panel .rec:focus-visible { outline: 2px solid rgb(var(--c-accent) / 0.6); outline-offset: 1px; }
+  /* 图标位：15px 见方，纯描边 —— 与 .icb 保持同一套视觉，不加底色块 */
+  #panel .rec .ri {
+    flex: 0 0 13px; width: 13px; height: 13px;
+    color: rgb(var(--c-t-400));
+  }
+  #panel .rec .rl {
+    flex: 1 1 auto; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* 右侧理由：只在**有话可说**时出现（"对方在等"），不写"推荐"这种废话 */
+  #panel .rec .rh {
+    flex: 0 0 auto; max-width: 62px;
+    font-size: 9.5px; color: rgb(var(--c-t-500));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* 值得打断用户的推荐（对方在等 / 有提案待确认）用绿色描边 —— 与药丸的「在跑」
+     同色系，含义一致：**这里有个正在进行、需要你看一眼的事**。 */
+  #panel .rec.hot { border-color: rgb(var(--c-ok) / 0.5); background: rgb(var(--c-ok) / 0.08); }
+  #panel .rec.hot .rh { color: rgb(var(--c-ok)); }
+  /* 琥珀 = 「在提醒你」，绿 = 「有东西等你确认」。两种信号必须不同色：
+     上一版两条都用绿，视觉上是两团同样重的东西，用户反而看不出先做哪个。 */
+  #panel .rec.warn { border-color: rgb(var(--c-warn) / 0.5); background: rgb(var(--c-warn) / 0.08); }
+  #panel .rec.warn .rh { color: rgb(var(--c-warn)); }
+  #panel .rec.busy { opacity: .55; pointer-events: none; }
 
   /* —— 按住中的波形（替代输入框）——
      为什么要有它：改版前「按住说话」是独立页签里的一颗大按钮，按下后除了秒数没有
@@ -821,7 +870,10 @@
   /* 抽屉里的雷达行：整行可点（div[role=button]），行尾值实时显示结论。 */
   #panel #radarRow { cursor: pointer; }
   #panel #radarRow:hover { border-color: rgb(var(--c-accent) / 0.55); }
-  #panel #radarRowLabel { font-size: 10px; color: rgb(var(--c-t-400)); }
+  /* 行尾值必须靠右：.dl 是 flex:0 0 auto，label 不推就会紧贴标题左侧
+     （实测「该不该回 该回了」挤成一坨，看着像一句不通的话）。 */
+  #panel #radarRowLabel, #panel #trayRowLabel { margin-left: auto; font-size: 10px; color: rgb(var(--c-t-400)); }
+  #panel #radarRowLabel.rd-now { color: rgb(var(--c-ok)); font-weight: 600; }
   /* ⋯ 按钮上的「该回了」绿点：不打开抽屉也能看见 —— 这是雷达存在的意义。 */
   #moreBtn .rdot {
     position: absolute; top: 3px; right: 3px;
@@ -842,8 +894,17 @@
   }
   #drawer[hidden] { display: none; }
   /* 每个分层打开时，面板只留**该分层自己**的内容：抽屉是「配置」，托盘是「声音」，
-     而 #hint 讲的是发送手势与微信预检 —— 同时在场就会在 300px 上限边缘挣扎。 */
-  #panel.has-drawer #gesture, #panel.has-drawer #fxPicks { display: none; }
+     而 #hint 讲的是发送手势与微信预检 —— 同时在场就会在 300px 上限边缘挣扎。
+     建议区（#recs）同理：它是**主面板**的入口，进了分层就该让位。
+     不收起的话，抽屉里再出现「点歌 / 音效 / 该不该回」三条，就是刚删掉的那种重复。 */
+  /* 抽屉打开时底部留白收紧：内容本来就贴着 300px 上限，10px 的底 padding 换成 6px
+     刚好把「最近发送」的最后一条从折缝里拉回来（实测 304 → 300）。 */
+  #panel.has-drawer { padding-bottom: 6px; }
+  #panel.has-drawer #gesture, #panel.has-drawer #fxPicks,
+  #panel.has-drawer #recs,
+  #panel.has-tray #recs,
+  #panel.has-songs #recs,
+  #panel.has-radar #recs { display: none; }
   #panel .drow { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
   /* .drow 是 display:flex，而 UA 的 [hidden]{display:none} 优先级更低 —— 不写这条
      隐藏不掉（#latRow 靠它整行出现/消失）。 */
@@ -896,6 +957,7 @@
   #noRvcField span { font-size: 10px; color: rgb(var(--c-t-500)); }
   #panel .dsep { height: 1px; margin: 6px 0; background: rgb(var(--c-border) / 0.85); }
   #panel .dgroup { margin-bottom: 3px; font-size: 9.5px; letter-spacing: .2px; color: rgb(var(--c-t-500)); }
+
   /* 最近发送：单行横滚（换行会让高度随条目数浮动）。点一条 = 重发。 */
   #panel #recent {
     display: flex; flex-wrap: nowrap; gap: 4px;
@@ -946,6 +1008,13 @@
      收掉它之后这一行只剩「状态 + ♪ + ⋯」，三样都读得全；音色名在气泡收起后立刻回来，
      而且抽屉里一直有。让位给**正在说话的那块气泡**，比让状态或入口变省略号合理。 */
   #root.compact #panel #voiceBtn { display: none; }
+  /* ★ 气泡在屏时建议区只留**第一条**（2026-10-23 二次重构）。
+     实测：气泡一起来，可用高从 298 掉到 216，而主面板（phead 26 + draft 33 +
+     recs 86 + fireRow 44 + gesture 15）要 225px —— 底部被切 9px 并冒出内部滚动条。
+     三条推荐里只有第一条是「此刻最该做的」，其余两条是备选；让位给正在说话的气泡，
+     比给面板开一条滚动条合理（用户此时要么在读气泡、要么在等第一条）。
+     纯 CSS 实现（不碰 JS）：:nth-child(n+2) 收掉其余，recs 高度 86→26。 */
+  #root.compact #panel #recs .rec:nth-child(n+2) { display: none; }
 
   /* 放歌中角标：面板收起后（鼠标不在桌宠上）这是「歌还在放」的唯一提示。
      默认 display:none，靠 JS 挂 .on 才出现 —— 空闲时它不该在角色身上挂着。 */
@@ -1079,25 +1148,18 @@
     <div id="phead">
       <button type="button" id="pill" class="pill t-idle"
               title="实时变声开关（点一下开 / 再点一下关）"><i></i><b id="pillText">待机</b></button>
+      <!-- 音色**不是功能，是状态**：它显示面板接下来真会用哪个声音，所以留在状态条上，
+           但不给按钮外观（透明底、无边框、字号 10）—— 上一版它长得像一颗按钮，
+           13 个可点目标里有它一份。点它仍然能打开抽屉换音色，只是不再抢眼。 -->
       <button type="button" id="voiceBtn" class="vchip" title="当前音色：点一下打开「更多」换">
         <span id="rmVoice">—</span>
       </button>
-      <!-- 声音托盘：音效 + 放歌。两者的共同点是「此刻送进虚拟声卡，对面实时听到」，
-           与主按钮的「发一条消息到微信」是两条不同的链路，而且可以同时用。
-           既然总是一起被用到，就不该让用户先选进哪个页。 -->
-      <button type="button" id="trayBtn" class="icb" aria-expanded="false" aria-controls="tray"
-              title="声音：音效声板 + 放歌（都是此刻进虚拟声卡，微信那边听得到；本机喇叭不出声）">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
-        </svg>
-      </button>
-      <!-- 更多：音色 / 引擎 / 最近发送 / 微信雷达。都是「设置」，不该跟发送动作抢地方。
-           雷达的「该回了」绿点挂在这个按钮上（.rdot）：⋯ 是抽屉入口，徽标点亮的
-           意思是「抽屉里有东西要看」 —— 标准的角标语义，且不占 phead 宽度预算
-           （phead 塞第 5 个图标会把音色 chip 挤到裁切，门禁已验证）。 -->
+      <!-- ⋯ 是**唯一的**功能入口（2026-10-23 二次重构后）：
+           音色 / 引擎 / 声音（音效+放歌）/ 该不该回 / 最近发送 / 全部功能，全在里面。
+           ♪ 原位置并入抽屉的「声音」行 —— 托盘还在，只是不再是常驻按钮。
+           放歌中不再由 ♪ 上的小点表达，改由桌宠身上的 #bgmBadge 接手。 -->
       <button type="button" id="moreBtn" class="icb" aria-expanded="false" aria-controls="drawer"
-              title="音色 / 引擎 / 最近发送">
+              title="音色 / 引擎 / 声音 / 该不该回 / 最近发送（全部功能都在这里）">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <circle cx="5" cy="12" r="1.9" /><circle cx="12" cy="12" r="1.9" /><circle cx="19" cy="12" r="1.9" />
         </svg>
@@ -1121,8 +1183,8 @@
         <!-- 文案从「输入文字，自动合成发微信」收到「说点什么…」：
              那条链路（文字 → TTS → RVC → 自动录进微信）写进 title，
              204px 宽的占位文字只能是「邀请」，不能是「说明书」。 -->
-        <input id="say" placeholder="说点什么…" maxlength="200"
-               title="打一行字：合成 → 换声 → 发进微信。空着不写就按住按钮直接说。" />
+        <input id="say" placeholder="说点什么，或找功能" maxlength="200"
+               title="打一行字：合成 → 换声 → 发进微信。也能当搜索框用 —— 打「歌」「变声」「音效」会给出对应入口。空着不写就按住按钮直接说。" />
       </label>
       <!-- 这条语音里的音效片（原「预混队列」）。点 chip 主体循环切换混入位置（叠→头→尾），
            点 × 移出。它长在草稿下面，因为它**就是这条语音的一部分**。 -->
@@ -1136,6 +1198,19 @@
         <span id="micSec">0.0s</span>
       </div>
     </div>
+
+    <!-- ── 建议区（2026-10-23 二次重构的主角）────────────────────────────────
+         渲染 `rankActions()` 选出的最多 3 条，**随上下文变**：
+           有提案等你点头 → 「确认 发《晴天》」（.hot，绿色描边：这是正在进行的事）
+           雷达判「该回了」→ 「回一句」
+           草稿有字       → 「发语音说这句」；后端解析出点歌意图时换成「发《晴天》」
+           正在放歌       → 「停止放歌」
+           没有任何信号   → 兜底三条：点歌 / 音效 / 该不该回（空面板会让人以为坏了）
+         输入框有字时这一区**变成搜索结果**（本地动作 + 后端 /observe 解析出的提案），
+         于是「想用的功能找不到」也有路：打字就能找，不用记它藏在哪个抽屉。
+         ⚠️ hidden 时整块不占高度 —— CSS 里显式写了 #recs[hidden]{display:none}，
+         因为 flex 容器会盖掉 UA 的 [hidden]{display:none}（本项目踩过三次）。 -->
+    <div id="recs" hidden></div>
 
     <!-- ── 主按钮：面板上唯一的动作 ──────────────────────────────────────────
          文案与颜色跟着装填区变（见 CSS 的 .m-idle / .m-text / .m-rec）：
@@ -1280,6 +1355,15 @@
         <span class="dl">音色</span>
         <select id="voiceSel"></select>
       </div>
+      <!-- 声音：音效声板 + 放歌（2026-10-23 从 phead 的 ♪ 按钮挪进来）。
+           两者共同点是「此刻送进虚拟声卡，对面实时听到」，与主按钮的「发一条消息到微信」
+           是两条链路，可以同时用，所以仍然共用同一个托盘。行尾显示当前状态，
+           这样不用进托盘也知道「正在放什么歌」。 -->
+      <div class="drow" id="trayRow" role="button" tabindex="0"
+           title="声音托盘：音效声板 + 放歌（都是此刻送进虚拟声卡，微信那边听得到；本机喇叭不出声）">
+        <span class="dl">声音</span>
+        <span id="trayRowLabel">音效 · 放歌</span>
+      </div>
       <!-- 实时变声引擎：RVC 实时 / 千问变声 二选一。
            两者互斥（后端互相 409：抢 GPU 且都占 CABLE），所以是「选一个」而不是两个开关。
            启停合并进分段：点没选中的 = 切过去；点已选中的 = 启动/停止。
@@ -1315,7 +1399,17 @@
         <span id="radarRowLabel">查看</span>
       </div>
       <div class="dsep"></div>
-      <div class="dgroup">最近发送</div>
+      <!-- 这里曾有一张 11 项的「全部功能」网格，2026-10-23 撤掉了：
+           ① 抽屉本身已经把 11 个动作里的 9 个铺开了（音色/声音（音效+放歌）/引擎×2/
+              千问直出/该不该回/最近发送），网格列出来的第一行就是重复；
+           ② 剩下没入口的（点歌）走「声音 → 托盘 → 放大镜」，本来就通；
+           ③ 真要「找某个功能」有更快的路：在上面的输入框里打字。`ACT_META` 的 kw
+              覆盖全部 11 个动作（中英文都有），输入框一打就出候选 —— 比展开一张
+              被 300px 上限截断的表更直接。
+           实测：网格展开 164px，抽屉从 300px 涨到 476px，只能看到 2 行。 -->
+      <!-- margin 是算出来的：抽屉在 300px 上限里只剩 8px 余量（音色/声音/引擎/
+           千问直出/该不该回/全部功能 六行已经占满），所以这里用 4px 而不是 dsep 的 13px。 -->
+      <div class="dgroup" id="recentHead" style="margin-top:4px">最近发送</div>
       <div id="recent" title="最近发送的语音，点一下重发"></div>
     </div>
 
@@ -1933,10 +2027,16 @@ const recentEl = document.getElementById("recent");
 const hintEl = document.getElementById("gesture");
 // 声音托盘（音效 + 放歌）与更多抽屉（音色/引擎/历史）
 const trayEl = document.getElementById("tray");
+// ⚠️ trayBtn 已随 2026-10-23 二次重构从 phead 删掉（♪ 按钮），入口改为抽屉里的 #trayRow。
+//    保留这一行会得到 null，而 setLayer 里有 `if (trayBtn)` 判空，不会炸 —— 但别再加回来。
 const trayBtn = document.getElementById("trayBtn");
+const trayRowEl = document.getElementById("trayRow");
+const trayRowLabelEl = document.getElementById("trayRowLabel");
 const drawerEl = document.getElementById("drawer");
 const moreBtn = document.getElementById("moreBtn");
 const voiceBtn = document.getElementById("voiceBtn");
+// 建议区（#recs）：主面板上唯一随上下文变的东西
+const recsEl = document.getElementById("recs");
 // 装填区：录音中的波形块（替代输入框）
 const recBoxEl = document.getElementById("recBox");
 // 状态条（#phead）：药丸(pillEl/pillText)在文件上半段已取到，这里补两个只读 chip
@@ -2387,9 +2487,14 @@ function setLayer(next) {
   if (drawerEl) drawerEl.hidden = panelLayer !== "drawer";
   if (songLayerEl) songLayerEl.hidden = panelLayer !== "songs";
   if (radarLayerEl) radarLayerEl.hidden = panelLayer !== "radar";
-  if (trayBtn) {
-    trayBtn.classList.toggle("on", panelLayer === "tray");
-    trayBtn.setAttribute("aria-expanded", panelLayer === "tray" ? "true" : "false");
+  if (trayRowEl) {
+    // 抽屉里的「声音」行：托盘从抽屉进去，所以现在只有「当前在不在这层」的状态色，
+    // 没有 aria-expanded —— 它不是一个展开器，是一次跳转。
+    trayRowEl.classList.toggle("on", panelLayer === "tray");
+    if (trayRowLabelEl && panelLayer === "tray") trayRowLabelEl.textContent = "‹ 音效 · 放歌";
+    else if (trayRowLabelEl && !trayRowLabelEl.textContent.startsWith("正在放")) {
+      trayRowLabelEl.textContent = "音效 · 放歌";
+    }
   }
   if (moreBtn) {
     moreBtn.classList.toggle("on", panelLayer === "drawer");
@@ -2417,6 +2522,9 @@ function setLayer(next) {
   if (panelLayer === "radar") void radarTick(true);
   radarSetPolling();
   refreshFire();
+  // 进任何一层都重排一次建议区：分层打开后可用空间变了（CSS 的 has-* 会收起别处的行），
+  // 但那三条推荐仍然要跟着最新上下文走（比如刚点开抽屉换了引擎）。
+  refreshRecs();
 }
 
 /** 拉声板清单并渲染。force=false 时 60s 内不重复拉（refreshPanel 每次悬停都跑）。 */
@@ -2555,10 +2663,15 @@ if (fxPicksEl) fxPicksEl.addEventListener("click", (e) => {
   renderFxPicks();
   refreshFire();
 });
-// 两个入口：♪ 声音托盘 / ⋯ 更多抽屉。互斥（setLayer 内部保证）。
-if (trayBtn) trayBtn.addEventListener("click", () => {
-  setLayer(panelLayer === "tray" ? "" : "tray");
-});
+// 三个入口：托盘（现在只从抽屉的「声音」行进）/ ⋯ 更多抽屉 / 状态条音色名。互斥由 setLayer 保证。
+if (trayRowEl) {
+  const openTray = () => setLayer("tray");
+  trayRowEl.addEventListener("click", openTray);
+  // 与 .drow[role=button] 的既有约定一致（见 radarRow）：键盘 Enter / 空格也能进
+  trayRowEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openTray(); }
+  });
+}
 if (moreBtn) moreBtn.addEventListener("click", () => {
   setLayer(panelLayer === "drawer" ? "" : "drawer");
 });
@@ -2592,7 +2705,6 @@ let bgmNote = "";         // 拉歌单失败的说明 —— 写在**页内**提
 // 本次会话从搜歌层取回的歌。后端产物在 session 目录（退出即删），所以
 // /bgm/recent 永远不会列出它 —— 由这里把它**补进**下拉，才能在放歌卡里继续选/停。
 let bgmFetched = null;
-let trayTipDefault = "";  // ♪ 的原始 title（HTML 属性是唯一真相源，放歌时被临时换掉）
 
 /** 秒 → `m:ss`（204px 里多一个字符都可能在 select 尾部变成省略号）。 */
 function fmtDur(s) {
@@ -2643,16 +2755,15 @@ function renderBgm() {
   if (bgmIcEl) bgmIcEl.textContent = playing ? "■" : "▶";
   if (bgmLabelEl) bgmLabelEl.textContent = playing ? "停止" : "放歌";
   if (bgmCardEl) bgmCardEl.classList.toggle("on", playing);
-  // ♪ 上的「正在放」小点（.icb.playing::after）。托盘收起后由角色身上的 #bgmBadge
-  // 接手同一件事，但面板**还开着**时它是唯一提示 —— 这条 CSS 钩子之前没人接线，
-  // 放歌中 ♪ 长得和没放歌一模一样。
-  if (trayBtn) {
-    if (!trayTipDefault) trayTipDefault = trayBtn.title || "";
-    trayBtn.classList.toggle("playing", playing);
-    trayBtn.title = playing && song
-      ? "正在放：" + (song.title || song.name.replace(/\.[^.]+$/, "")) + "（点开 ♪ 可以停）"
-      : trayTipDefault;
+  // ♪ 上的「正在放」小点已随 2026-10-23 二次重构消失（♪ 按钮并入抽屉的「声音」行）。
+  // 现在由抽屉行尾的文案 + 角色身上的 #bgmBadge 两处表达「正在放什么」。
+  if (trayRowLabelEl) {
+    const t = playing && song ? (song.title || song.name.replace(/\.[^.]+$/, "")) : "";
+    trayRowLabelEl.textContent = t ? "正在放 " + t : "音效 · 放歌";
+    trayRowLabelEl.title = t || "";
   }
+  // 建议区里的「停止放歌」要跟着起停换文案（recommendations 是缓存渲染的，不是每帧重建）
+  if (playing) refreshRecs();
   if (bgmSelEl) bgmSelEl.disabled = playing;   // 不变量 3：选中项必须就是正在放的那首
   if (bgmGainEl && document.activeElement !== bgmGainEl) bgmGainEl.value = String(bgmGainV);
   if (bgmBadgeEl) bgmBadgeEl.classList.toggle("on", playing);
@@ -3100,6 +3211,12 @@ function radarSigRows(s) {
 function renderRadar(j) {
   const v = j.verdict || {};
   const act = v.action || "unknown";
+  // 建议区要读这个结论（「该回了」时第一条就应该是它），所以在这里镜像一份。
+  // ⚠️ 必须存在 renderRadar 里而不是 radarTick 里：绿点轮询也走这条路，
+  //    而面板没开时同样需要知道「现在该不该回」。
+  const prevAct = lastRadarAction();
+  lastRadar = j;
+  radarAt = Date.now();   // refreshPanel 用它判断「这份结论有多旧」
   if (rdCardEl) {
     // 卡片的配色类：v-none / v-wait / v-soon / v-now / v-unknown（见 CSS）。
     rdCardEl.className = "v-" + act;
@@ -3114,9 +3231,16 @@ function renderRadar(j) {
   // 绿点挂在 ⋯（抽屉入口）上：抽屉里就有雷达行，角标语义成立。
   if (rdotEl) rdotEl.hidden = act !== "now";
   // 抽屉雷达行的行尾值：开抽屉不用点进去也能看到当前结论。
-  if (radarRowLabelEl) radarRowLabelEl.textContent = v.label || "查看";
+  if (radarRowLabelEl) {
+    radarRowLabelEl.textContent = v.label || "查看";
+    // 结论是「该回了」时上绿色：抽屉里不用读字也知道该动手（与 ⋯ 上的绿点同一语义）
+    radarRowLabelEl.className = act === "now" ? "rd-now" : "";
+  }
   // 「重新观察」只在真的在观测时有用（连不上/没窗口时重观察也无从观察）。
   if (radarLiveEl) radarLiveEl.hidden = !j.ok;
+  // 结论变了才重排建议区：每 1.5s 重建 innerHTML 会把正在悬停的 chip 弄丢
+  // （用户刚要把鼠标点上去，节点被换掉了）。
+  if (panelOpen && lastRadarAction() !== prevAct) refreshRecs();
 }
 
 /** 抓一帧并渲染。层开着时整卡刷新；层关着时只动绿点（别把没开的层写成有字）。 */
@@ -3189,7 +3313,9 @@ function refreshCapVisibility() {
   hide("recent", !CAP.wechat);
   // 声音托盘（音效 + 放歌）整体归 sound.fx-board：入口和盘体一起收，
   // 只收一个的话，已经开着托盘的用户会看到一个全 404 的空盘。
-  hide("trayBtn", !CAP.fx);
+  // 入口从 phead 的 ♪ 变成抽屉里的「声音」行（2026-10-23），hide 的 id 跟着变 ——
+  // 只改 HTML 不改这里，能力关掉时会留下一行点进去全 404 的入口。
+  hide("trayRow", !CAP.fx);
   if (!CAP.fx && (panelLayer === "tray" || panelLayer === "songs")) setLayer("");
   // 雷达行与层一起归 hook.radar：能力关了后端就没有 /api/radar/*，
   // 已经开着雷达层的要被归位收起 —— 并把两档轮询都停掉（radarSetPolling）。
@@ -3210,11 +3336,556 @@ function refreshCapVisibility() {
 
 function refreshPanel() {
   loadVoices(); loadRecent(); refreshEngineSeg(); refreshCapVisibility(); refreshFire();
+  // 建议区：每次浮现都重排一次（上下文可能在面板收起的那几秒里变过 ——
+  // 对方发了新消息、歌放完了、提案执行完了）。提案清单同时拉一遍。
+  //
+  // 雷达结论也要**当场**抓一份：慢轮询是 5s 一次，如果只靠它，用户悬停打开面板的
+  // 头 5 秒里推荐区永远看不到「该回了」—— 而这恰恰是它最该出现的时候。
+  // 8s 节流是因为抓帧要 PrintWindow（30ms+），不能每次悬停都打。
+  if (CAP.radar && (!lastRadar || Date.now() - radarAt > 8000)) void radarTick(true);
+  refreshRecs();
+  void loadProposals();
   // 托盘里的两批清单只在托盘可见时拉：它们对未打开托盘的场景没用，而拉失败会把提示
   // 写进共用状态行 —— 轻则占一行高度，重则把刚发完微信的结果顶掉。
   // 打开托盘那一下由 setLayer 强制拉（绕过节流：音效/歌往往刚在主界面加过）。
   if (panelLayer === "tray") { loadSfx(false); loadBgm(false); }
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+//  建议面板（2026-10-23 二次重构）
+//
+//  上一版把面板从「13 个常驻入口」压到 5 个（药丸 / 音色 / ♪ / ⋯ / 主按钮），
+//  用户的原话是「功能太多显得很乱」「屏幕太小」。真正的病根不是数量，
+//  而是**入口和此刻该做什么没有关系**：打开面板时，上下文其实已经把候选压到 2–3 个
+//  （对方刚发消息 / 有提案等你点头 / 正在放歌 / 草稿里有字），剩下的 9 个是噪音。
+//
+//  所以这一版：
+//    · 主面板只显示 `rankActions()` 的前 3 条 —— 它随上下文变，不是固定菜单；
+//    · 音色 chip 不再是按钮，♪ 按钮整个删掉（音效/放歌进抽屉的「声音」行）；
+//    · 想找某个功能：在输入框里打（`matchActions` 做关键词匹配），
+//      或开 ⋯ 抽屉里的「全部功能」网格。两条路都通，但都不常驻。
+//
+//  ⚠️ 三条硬规矩（改这块之前先读）：
+//    1. `rankActions` / `matchActions` / `labelFor` 必须是**纯函数**（只看入参），
+//       因为它们被 test 用 `new Function` 沙箱抽出去跑真身（web/src/petActionPanel.test.ts）。
+//       一旦里面读 DOM/localStorage，测试就只能改成数行数，那就退化成了假测试。
+//    2. 主按钮能做的事**不进推荐**（发语音 / 试听）。推荐只放「主按钮干不了的」，
+//       否则同一件事在面板上出现两次，用户又要在两个入口之间判断哪个是对的。
+//    3. 推荐永远至少 3 条：空面板会让人以为坏了。信号只负责**排序**，不负责清空。
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 动作元数据（纯数据，不含任何副作用）。
+ *
+ * `cap` 是所属能力（对应 CAP 的键）；能力关掉时该动作既不显示也不匹配 ——
+ * 因为后端根本没挂那些 router，点了就是 404（见 refreshCapVisibility 的同一套理由）。
+ * `kw` 是搜索词：中英文都放，用户可能打「歌」也可能打「music」。
+ */
+const ACT_META = [
+  { id: "song.find", label: "点歌", hint: "搜 B 站", cap: "fx",
+    kw: "歌 音乐 点歌 发歌 搜歌 放歌 来一首 song music" },
+  { id: "sfx.play", label: "音效", hint: "声板", cap: "fx",
+    kw: "音效 声板 特效 掌声 笑声 sfx soundboard" },
+  { id: "bgm.toggle", label: "放歌", hint: "", cap: "fx",
+    kw: "放歌 垫歌 背景音乐 停歌 bgm music" },
+  { id: "radar.open", label: "该不该回", hint: "看一眼", cap: "radar",
+    kw: "雷达 该回 该不该 微信 等多久 回不回 radar" },
+  { id: "live.toggle", label: "开变声", hint: "", cap: "live",
+    kw: "变声 开关 实时 rvc 千问 live voice" },
+  { id: "voice.pick", label: "换音色", hint: "", cap: "",
+    kw: "音色 声音 换音 选音色 voice" },
+  { id: "engine.rvc", label: "RVC 引擎", hint: "", cap: "live",
+    kw: "引擎 rvc 实时 切换 engine" },
+  { id: "engine.qwen", label: "千问引擎", hint: "", cap: "live",
+    kw: "引擎 千问 qwen 切换 engine" },
+  { id: "recent.resend", label: "最近发送", hint: "重发", cap: "wechat",
+    kw: "最近 历史 重发 发送记录 recent history" },
+  // ★ 下面两个**只**出现在搜索结果里，不进 rankActions 的兜底池：
+  //   主按钮已经承担了它们（规矩 2），但打字时它们必须能被搜到，
+  //   否则「我想发这段」会被主按钮抢走而用户不知道自己搜的东西在哪。
+  { id: "draft.send", label: "发语音说这句", hint: "", cap: "wechat", searchOnly: true,
+    kw: "发 发送 说 语音 读 念 send" },
+  { id: "draft.preview", label: "先试听", hint: "", cap: "wechat", searchOnly: true,
+    kw: "试听 预览 听听 preview" },
+];
+
+/** 动作的副作用。key 与 ACT_META 的 id 一一对应（keyof 关系靠测试保证）。 */
+const ACT_RUN = {
+  "song.find": () => setLayer("songs"),
+  "sfx.play": () => setLayer("tray"),
+  "bgm.toggle": () => { setLayer("tray"); void toggleBgm(); },
+  "radar.open": () => setLayer("radar"),
+  "live.toggle": () => { void toggleLive(); },
+  "voice.pick": () => { setLayer("drawer"); queueMicrotask(() => voiceSel && voiceSel.focus()); },
+  "engine.rvc": () => { void pickEngine("rvc"); },
+  "engine.qwen": () => { void pickEngine("qwen"); },
+  "recent.resend": () => setLayer("drawer"),
+  "draft.send": () => { void fireSend(); },
+  "draft.preview": () => doPreview(),
+  // 提案的执行走单独一条（要带 pid），见 runAction
+  "proposal.confirm": (pid) => { void confirmProposal(pid); },
+};
+
+/** 动作能力门（纯函数）。`cap` 为空 = 无门控（音色、提案）。 */
+function actAvailable(meta, ctx) {
+  const key = meta && meta.cap;
+  if (!key) return true;
+  const caps = (ctx && ctx.cap) || {};
+  return caps[key] !== false;
+}
+
+/**
+ * 给动作挑一个**当前语境下的**标签。
+ *
+ * 为什么不能直接用 `ACT_META.label`：同一个动作在不同状态下做的事相反
+ * （放歌↔停止放歌、开变声↔关掉变声）。写死标签会出现「按钮说放歌，点了却停了」，
+ * 这是本项目已经吃过一次的亏（旧版 `toggleLive()` 被两个开关共用）。
+ */
+function labelFor(id, ctx) {
+  const c = ctx || {};
+  if (id === "bgm.toggle") return c.bgm ? "停止放歌" : "放歌";
+  if (id === "live.toggle") return c.live ? "关掉变声" : "开变声";
+  if (id === "proposal.confirm") return c.pendingTitle ? "确认 " + c.pendingTitle : "确认发送";
+  for (let i = 0; i < ACT_META.length; i++) if (ACT_META[i].id === id) return ACT_META[i].label;
+  return id;
+}
+
+/**
+ * 按上下文排序推荐。**纯函数**。
+ *
+ * ctx 形状：
+ *   { draft: "idle"|"text"|"rec", text: string, query: string,
+ *     radar: ""|"none"|"wait"|"soon"|"now"|"unknown",
+ *     bgm: bool, live: bool, pending: int, pendingTitle: string,
+ *     cap: { fx, radar, live, wechat }, freq: { [id]: count }, max: int }
+ *
+ * 返回 `[{ id, score, hint }]`，已按分数降序、已截断到 max 条。
+ *
+ * 分数表（写死在这里，测试逐条断言 —— 改分数就是改产品行为，必须同步改测试）：
+ *   100  有提案等你点头（已经解析完，只差一个确认，没有比这更该出现的事）
+ *    92  雷达判「该回了」      62「可以回了」
+ *    88  正在放歌（这时最可能想做的是停/换）
+ *    50  输入框有字 → 让路给搜索结果，rankActions 直接返回空（见末尾）
+ *   30/26/22  兜底：点歌 / 音效 / 该不该回（空面板会让人以为坏了）
+ *    18  变声没开 → 开变声（只在用户用过它之后才靠频率浮上来）
+ *   +0~15  使用频率加成（每个 id 每次 +3，封顶 15）—— 常用功能自己浮上来，
+ *          这就是「不用每次都打字」的那一半。
+ */
+function rankActions(ctx) {
+  const c = ctx || {};
+  const max = Math.max(1, parseInt(c.max, 10) || 3);
+  const pool = new Map();
+  const put = (id, score, hint) => {
+    const meta = ACT_META.find((m) => m.id === id);
+    // 提案不是 ACT_META 里的条目（它是后端给的动态动作），单独放行
+    if (id !== "proposal.confirm" && (!meta || meta.searchOnly || !actAvailable(meta, c))) return;
+    const cur = pool.get(id);
+    if (!cur) pool.set(id, { id, score, hint: hint || "" });
+    else if (score > cur.score) { cur.score = score; cur.hint = hint || cur.hint; }
+  };
+
+  // ── 信号 ──
+  if (Number(c.pending) > 0) put("proposal.confirm", 100, "待确认");
+  if (c.radar === "now") put("radar.open", 92, "对方在等");
+  else if (c.radar === "soon") put("radar.open", 62, "可以回了");
+  if (c.bgm) put("bgm.toggle", 88, "正在放");
+
+  // ── 兜底池（信号只改排序，不清空）──
+  put("song.find", 30, "搜 B 站");
+  put("sfx.play", 26, "声板");
+  put("radar.open", 22, "看一眼");
+  if (c.live !== true) put("live.toggle", 18, "没开");
+
+  // ── 输入框有字：这一区让给搜索结果（见 refreshRecs）──
+  // 返回空数组而不是 undefined：调用方一律 `rows.length` 判空，少一种形状少一个 bug。
+  if (String(c.query || "").trim()) return [];
+
+  const freq = c.freq || {};
+  const rows = [];
+  pool.forEach((r) => {
+    r.score += Math.min(15, (parseInt(freq[r.id], 10) || 0) * 3);
+    rows.push(r);
+  });
+  // 同分时按 id 排，保证每次渲染顺序一致（否则同样输入下 chip 会自己跳来跳去）
+  rows.sort((a, b) => (b.score - a.score) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return rows.slice(0, max);
+}
+
+/**
+ * 关键词匹配（输入框打字时用）。**纯函数**。
+ *
+ * 只做包含匹配，不引入模糊算法：动作只有 11 个，包含匹配已经够用，
+ * 而模糊匹配会带来「为什么『歌』没搜到点歌」这种无法解释的排序。
+ * `searchOnly` 的动作（发语音 / 试听）只在这里出现 —— 它们不进推荐池。
+ */
+function matchActions(q, ctx) {
+  const s = String(q || "").trim().toLowerCase();
+  if (!s) return [];
+  const out = [];
+  for (const m of ACT_META) {
+    if (!actAvailable(m, ctx)) continue;
+    const label = labelFor(m.id, ctx).toLowerCase();
+    const hay = (m.label + " " + m.kw).toLowerCase();
+    let score = 0;
+    if (label === s) score = 100;
+    else if (label.startsWith(s)) score = 80;
+    else if (label.includes(s)) score = 70;
+    else if (hay.includes(s)) score = 55;
+    if (score > 0) out.push({ id: m.id, score, hint: m.hint || "" });
+  }
+  out.sort((a, b) => (b.score - a.score) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return out.slice(0, 4);
+}
+
+// ---------------- 建议区的上下文与渲染 ----------------
+
+/** 使用频率（localStorage）。缓存的是**同一个对象**，bump 之后下次读就带上新值。 */
+const ACT_FREQ_KEY = "pet.actFreq";
+let actFreqCache = null;
+function actFreq() {
+  if (actFreqCache) return actFreqCache;
+  let v = {};
+  try { v = JSON.parse(localStorage.getItem(ACT_FREQ_KEY) || "{}") || {}; } catch { v = {}; }
+  actFreqCache = (typeof v === "object" && v) ? v : {};
+  return actFreqCache;
+}
+function bumpFreq(id) {
+  if (!id) return;
+  const f = actFreq();
+  f[id] = (parseInt(f[id], 10) || 0) + 1;
+  try { localStorage.setItem(ACT_FREQ_KEY, JSON.stringify(f)); } catch {}
+}
+
+/** 雷达最近一次结论（renderRadar 写，面板建议区读）—— 单一镜像点。 */
+let lastRadar = null;
+/** 上次成功拿到雷达结论的时刻。用来判断「这份结论还能不能用来推荐」。 */
+let radarAt = 0;
+function lastRadarAction() {
+  const v = lastRadar && lastRadar.verdict;
+  return v && typeof v.action === "string" ? v.action : "";
+}
+
+/** 待确认 / 执行中的提案（loadProposals 写）。 */
+let assistProps = [];
+const ASSIST_BASE = "http://127.0.0.1:8000/api/assistant";
+
+/** 由面板当前状态算一份 ctx（唯一装配点：纯函数要什么，这里给什么）。 */
+function panelCtx() {
+  const text = ((sayEl && sayEl.value) || "").trim();
+  return {
+    draft: draftKind(),
+    text,
+    query: text,
+    radar: lastRadarAction(),
+    bgm: !!bgmPlayingId,
+    live: !!runningEngine,
+    pending: assistProps.length,
+    pendingTitle: assistProps.length ? shortTitle(assistProps[0]) : "",
+    cap: { wechat: CAP.wechat, fx: CAP.fx, radar: CAP.radar, live: CAP.live },
+    freq: actFreq(),
+    max: 3,
+  };
+}
+
+/** 提案标题压到 chip 装得下的长度（"发一首歌：晴天" → "发《晴天》"）。 */
+function shortTitle(p) {
+  if (!p || typeof p !== "object") return "";
+  const spec = p.label || "";
+  const q = (p.params && (p.params.query || p.params.text)) || "";
+  if (q) {
+    const head = p.kind === "song.send" ? "发《" : "说「";
+    const tail = p.kind === "song.send" ? "》" : "」";
+    return head + String(q).slice(0, 10) + tail;
+  }
+  return String(spec || p.title || "发送").slice(0, 12);
+}
+
+/** 图标表：与 ACT_META 分开，因为它是纯展示、测试不需要它。 */
+const ACT_ICON = {
+  "song.find": '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+  "sfx.play": '<path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>',
+  "bgm.toggle": '<polygon points="6 4 20 12 6 20 6 4"/>',
+  "radar.open": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  "live.toggle": '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v4"/>',
+  "voice.pick": '<path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M8 21h8"/>',
+  "engine.rvc": '<path d="M4 12h4l2-6 4 12 2-6h4"/>',
+  "engine.qwen": '<circle cx="12" cy="12" r="9"/><path d="M8 12h8M12 8v8"/>',
+  "recent.resend": '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>',
+  "draft.send": '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+  "draft.preview": '<polygon points="7 4 20 12 7 20 7 4"/>',
+  "proposal.confirm": '<path d="M20 6 9 17l-5-5"/>',
+};
+
+function actIcon(id) {
+  const d = ACT_ICON[id] || '<circle cx="12" cy="12" r="9"/>';
+  return '<svg class="ri" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"'
+    + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + d + "</svg>";
+}
+
+/** 后端 /observe 的最近一次结果。`q` 与输入框内容对齐时才被采用（防竞态）。 */
+let obsState = { q: "", busy: false, hits: [], note: "", seq: 0 };
+let obsTimer = null;
+
+/** 输入变化：立刻重排本地候选，再 debounce 打一次后端意图解析。 */
+function onSayInput() {
+  refreshFire();          // 主按钮文案 / 试听显隐（原行为，必须保留）
+  refreshRecs();           // 推荐区立刻变成搜索结果（本地匹配，不等网络）
+  scheduleObserve();      // 300ms 后向后端要「这句话能做什么」
+}
+
+/**
+ * 300ms 后请后端解析这句话。**只解析，不执行**（dry_run），产出的是"可以做什么"的候选。
+ *
+ * 为什么不自己做正则：`assistant/extract.py` 已经有 60+ 条测试压着的中文意图解析，
+ * 前端再写一套必然出现「面板说能点歌、后端说听不懂」的分裂。这是单一真相源问题，
+ * 不是性能问题（本地往返 <15ms）。
+ */
+function scheduleObserve() {
+  if (obsTimer) clearTimeout(obsTimer);
+  const q = ((sayEl && sayEl.value) || "").trim();
+  if (!q || q.length < 2) {
+    obsState = { q: "", busy: false, hits: [], note: "", seq: obsState.seq + 1 };
+    return;
+  }
+  obsTimer = setTimeout(() => { void runObserve(q); }, 300);
+}
+
+async function runObserve(q) {
+  const seq = ++obsState.seq;
+  obsState.busy = true;
+  try {
+    const r = await fetch(ASSIST_BASE + "/observe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: q, dry_run: true, source: "panel" }),
+    });
+    if (seq !== obsState.seq) return;   // 打字更快，这次结果已经过期
+    if (!r.ok) { obsState = { q, busy: false, hits: [], note: "", seq }; return; }
+    const j = await r.json();
+    // 同一句话可能被解析成多条（"发首晴天再说句话"）—— 全留，渲染时再截断。
+    obsState = { q, busy: false, hits: Array.isArray(j.proposals) ? j.proposals : [], note: j.note || "", seq };
+  } catch {
+    if (seq === obsState.seq) obsState = { q, busy: false, hits: [], note: "", seq };
+  } finally {
+    if (seq === obsState.seq) {
+      // refreshFire 也要跟着跑：解析出点歌时主按钮的文案从「合成并发送」变成「发原话」，
+      // 不重算就会一直写着默认文案，跟下面那条「发《晴天》」自相矛盾。
+      refreshRecs();
+      refreshFire();
+    }
+  }
+}
+
+/** 把一条推荐/候选渲染成按钮。`data-act` 交给全局委托，`data-pid` 带提案 id。 */
+function recBtn(row) {
+  const id = row.id;
+  const label = row.label || labelFor(id, panelCtx());
+  const cls = "rec" + (row.hot ? " hot" : "") + (row.warn ? " warn" : "");
+  const pid = row.pid ? ` data-pid="${esc(row.pid)}"` : "";
+  // data-idx 指向 obsState.hits 的下标：提案对象带 params，塞不进 DOM 属性，
+  // 而把它序列化进属性又会被引号/长度坑到（中文 + 书名号）。下标是最小的那根线。
+  const idx = (typeof row.idx === "number") ? ` data-idx="${row.idx}"` : "";
+  const hint = row.hint ? `<span class="rh">${esc(row.hint)}</span>` : "";
+  const title = row.title || label;
+  return `<button type="button" class="${cls}" data-act="${esc(id)}"${pid}${idx} title="${esc(title)}">`
+    + actIcon(row.icon || id) + `<span class="rl">${esc(label)}</span>${hint}</button>`;
+}
+
+/**
+ * 重画建议区。三种形态，**同一个 DOM**（所以高度只有一处预算）：
+ *   ① 输入框有字 → 搜索结果：后端解析出的提案在前，本地动作在后
+ *   ② 输入框空   → `rankActions` 的前 3 条
+ *   ③ 一条都没有 → 整块 hidden（不占高度）
+ */
+function refreshRecs() {
+  if (!recsEl) return;
+  const ctx = panelCtx();
+  const rows = [];
+
+  if (ctx.query) {
+    // ① 后端解析出的提案：点了会**先创建提案**（不是直接发），
+    //    创建成功后它会出现在推荐区顶部等第二次确认 —— 见 runAction。
+    const q = ctx.query;
+    if (obsState.q === q && obsState.hits.length) {
+      for (let i = 0; i < obsState.hits.slice(0, 2).length; i++) {
+        const p = obsState.hits[i];
+        rows.push({
+          id: "proposal.create", pid: "", idx: i, hot: true,
+          label: shortTitle(p),
+          hint: p.kind === "song.send" ? "点歌" : p.kind === "voice.say" ? "语音" : "草稿",
+          title: (p.label || "") + "：" + (p.detail || ""),
+          icon: p.kind === "song.send" ? "song.find" : "draft.send",
+        });
+      }
+    }
+    for (const m of matchActions(q, ctx)) {
+      // 与上面重复的（比如已经解析出「发《晴天》」）不再单列「点歌」
+      if (rows.some((r) => (r.icon || r.id) === m.id)) continue;
+      rows.push({ ...m, label: labelFor(m.id, ctx) });
+    }
+    // ★ 兜底：打了字却一条动作都没匹配上 —— 这几个字至少能「原样发出去」。
+    //   这是**产品规则**（输入框里的话默认归宿就是发出去），不是匹配结果，
+    //   所以写在渲染层而不是 matchActions 里：那边保持「搜不到就是空」的诚实，
+    //   测试也钉着这一条（搜 zzzz 必须返回空数组）。
+    //   典型场景：用户打「发首晴天」，本地关键词匹配不到任何动作（"发首"不在 kw 里），
+    //   后端若不可用就一条候选都没有 —— 面板看起来像没反应。
+    if (!rows.length && ctx.text && ctx.cap.wechat !== false) {
+      rows.push({
+        id: "draft.send", label: "发语音说这句", hint: "原样发",
+        title: "把这句原样合成语音发到微信（不解析、不改写）",
+      });
+    }
+  } else {
+    // ② 上下文推荐
+    for (const r of rankActions(ctx)) {
+      rows.push({
+        id: r.id,
+        label: labelFor(r.id, ctx),
+        hint: r.hint,
+        hot: r.id === "proposal.confirm",
+        warn: r.id === "radar.open" && ctx.radar === "now",
+        pid: r.id === "proposal.confirm" && assistProps[0] ? assistProps[0].id : "",
+        title: r.id === "proposal.confirm" && assistProps[0]
+          ? "点一下执行：" + (assistProps[0].detail || assistProps[0].title || "")
+          : labelFor(r.id, ctx),
+      });
+    }
+  }
+
+  const final = rows.slice(0, 3);
+  if (!final.length) {
+    recsEl.innerHTML = "";
+    recsEl.hidden = true;
+    return;
+  }
+  recsEl.innerHTML = final.map(recBtn).join("");
+  recsEl.hidden = false;
+}
+
+/** 全局点击委托：建议区 + 抽屉里的全量功能网格共用 `data-act`。 */
+function runAction(id, pid, payload) {
+  if (!id) return;
+  bumpFreq(id);
+  // 提案两步走：这一步**只创建**，创建完它就是推荐区顶部的「确认 X」，
+  // 再由用户点第二下才真的发（与 assistant 的「一切发送都要人工确认」同一条规矩）。
+  if (id === "proposal.create") {
+    void createProposal(payload);
+    return;
+  }
+  const fn = ACT_RUN[id];
+  if (!fn) return;
+  fn(pid);
+}
+
+// ---------------- 提案：面板是 assistant 的正门 ----------------
+// 在这之前，`hook.assistant` 只能用 curl 驱动 —— 提案落在磁盘上，桌宠不知道它存在。
+// 这一段把它接进建议区，规矩跟后端一致：**创建 ≠ 执行**，
+// 点了候选只是「把这件事摆到桌上」，第二下点「确认」才动 TTS / RVC / 微信。
+
+/** 拉待确认 / 执行中的提案。面板每次浮现调一次；失败静默（能力可能没开）。 */
+async function loadProposals() {
+  try {
+    const r = await fetch(ASSIST_BASE + "/proposals?include_terminal=false", { cache: "no-store" });
+    if (!r.ok) { assistProps = []; return; }
+    const j = await r.json();
+    const list = Array.isArray(j.proposals) ? j.proposals : [];
+    assistProps = list.filter((p) => p && (p.status === "pending" || p.status === "running"));
+  } catch { assistProps = []; }
+  // 面板开着才重画：收起时画了也没人看，还会在下次浮现时被 refreshRecs 覆盖
+  if (panelOpen) refreshRecs();
+}
+
+/** 由 /observe 的候选创建一条提案（不执行）。 */
+async function createProposal(hit) {
+  if (!hit || !hit.kind) return;
+  setStatus("已加入待确认：" + shortTitle(hit));
+  try {
+    const r = await fetch(ASSIST_BASE + "/proposal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: hit.kind, title: hit.title || "", params: hit.params || {} }),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      setStatus("建提案失败（HTTP " + r.status + "）" + (t ? "：" + firstClause(t) : ""), "err");
+      return;
+    }
+    // 清空输入框：否则推荐区会一直被「搜索结果」占着，看不到刚建好的「确认 X」
+    if (sayEl) sayEl.value = "";
+    obsState = { q: "", busy: false, hits: [], note: "", seq: obsState.seq + 1 };
+    refreshFire();
+    await loadProposals();
+    setStatus("已加入待确认 · 点上面的「确认」才会真发");
+  } catch {
+    setStatus("建提案失败：后端没连上", "err");
+  }
+}
+
+/** 执行一条提案并跟到终态。进度写状态行（与发送链路的 setStatus 同一个位置）。 */
+async function confirmProposal(pid) {
+  if (!pid) return;
+  setStatus("开始执行…");
+  try {
+    const r = await fetch(ASSIST_BASE + "/proposals/" + encodeURIComponent(pid) + "/confirm", { method: "POST" });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      // 409 是「已经在跑 / 状态不允许」，不是失败 —— 原文回显比翻译成"失败"更准
+      setStatus("没执行（HTTP " + r.status + "）" + (t ? "：" + firstClause(t) : ""), "err");
+      void loadProposals();
+      return;
+    }
+    void loadProposals();
+    pollProposal(pid, 0);
+  } catch {
+    setStatus("执行失败：后端没连上", "err");
+  }
+}
+
+/**
+ * 跟提案到终态，把最后一步写进状态行。
+ *
+ * 为什么不轮询整张表：一条提案的每一步都已经在 `result.steps` 里（executor 逐步落盘），
+ * 拉单条就够了；拉整张表会在提案多的时候把状态行刷成别人的进度。
+ */
+async function pollProposal(pid, n) {
+  if (n > 240) return;   // 240 × 500ms = 2 分钟，超时就不再刷（不是失败，只是不再盯）
+  try {
+    const r = await fetch(ASSIST_BASE + "/proposals/" + encodeURIComponent(pid), { cache: "no-store" });
+    if (!r.ok) return;
+    const j = await r.json();
+    const p = j.proposal || {};
+    const steps = (p.result && Array.isArray(p.result.steps)) ? p.result.steps : [];
+    if (p.status === "running") {
+      setStatus(steps.length ? steps[steps.length - 1] : (p.detail || "执行中…"));
+      setTimeout(() => { void pollProposal(pid, n + 1); }, 500);
+      return;
+    }
+    if (p.status === "done") {
+      setStatus("完成：" + (steps.length ? steps[steps.length - 1] : (p.title || "已执行")), "ok");
+    } else if (p.status === "failed") {
+      setStatus("失败：" + (p.error || "执行器没给原因"), "err");
+    } else {
+      setStatus(steps.length ? steps[steps.length - 1] : "已结束");
+    }
+    void loadProposals();
+  } catch {
+    setTimeout(() => { void pollProposal(pid, n + 1); }, 1500);
+  }
+}
+
+// 建议区的点击委托：`data-act` 是唯一契约。
+// 用委托而不是给每条 chip 绑 listener：refreshRecs 会整块重写 innerHTML，
+// 逐个绑就要在每次重画后重绑一遍，漏一次就是「点了没反应」。
+document.addEventListener("click", (e) => {
+  const el = e.target && e.target.closest ? e.target.closest("[data-act]") : null;
+  if (!el || !panel || !panel.contains(el)) return;
+  e.preventDefault();
+  const idx = el.dataset.idx;
+  const payload = (idx !== undefined && obsState.hits[Number(idx)]) || null;
+  if (el.dataset.act === "proposal.create" && !payload) return;
+  runAction(el.dataset.act, el.dataset.pid || "", payload);
+});
+
 
 // ---------------- 主按钮：面板上唯一的动作 ----------------
 
@@ -3267,7 +3938,10 @@ function refreshFire() {
     } else if (kind === "text") {
       if (lastPreview) label = "发送试听";
       else if (text && picks) label = `合成并发送 · ${picks}`;
-      else if (text) label = "合成并发送";
+      // ★ 建议区里已经有「发《晴天》」这类解析结果时，主按钮必须说清自己发的是**原话**，
+      //   否则两条路径（点候选 = 搜歌发片段 / 点按钮 = 念这几个字）看起来像同一件事。
+      //   这是 2026-10-23 二次重构里唯一一处因为建议区而改文案的地方。
+      else if (text) label = (obsState.q === text && obsState.hits.length) ? "发原话" : "合成并发送";
       else label = picks ? `发送 ${picks} 个音效` : "合成并发送";
     } else {
       // 微信能力关掉时不能说「按住说话」—— 按了发不出去。说清缺什么。
@@ -3467,7 +4141,10 @@ async function premixAndSend() {
 previewBtn.addEventListener("click", doPreview);
 voiceSel.addEventListener("change", syncVoiceGates);
 // 输入框内容一变，主按钮的文案/图标/试听显隐就跟着变 —— 「内容决定类型」的唯一触发器。
-sayEl.addEventListener("input", () => refreshFire());
+// 输入框双用（2026-10-23）：既是「要发的内容」，也是「找功能的搜索框」。
+// 两者的区别不由模式开关决定，而由**下面这一行给出的候选**决定 —— 打字时建议区
+// 变成搜索结果，不发出去就只是一次搜索（Enter 仍然是发送，没变）。
+sayEl.addEventListener("input", onSayInput);
 sayEl.addEventListener("keydown", (e) => { if (e.key === "Enter") void fireSend(); });
 
 // —— 主按钮的两种手势 ——
