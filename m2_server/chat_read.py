@@ -82,14 +82,19 @@ def message_kind(name: str) -> str:
     return "text"
 
 
-def parse_messages(names: list[str], limit: int = 40) -> list[dict]:
+def parse_messages(names: list[str], limit: int = 40, sides: list[str] | None = None) -> list[dict]:
     """UIA ListItem 名称 → 消息 dict，保留**末尾** limit 条（含时间行）。
 
     保留末尾而不是开头：用户在聊的永远是最近几条，往上翻要靠滚动（改微信状态），
     不在只读边界内。
+
+    `sides` 与 `names` **逐位对齐**（多一个是给不出 side 的降级路径）；给了就带上
+    `side` 字段 —— 回复建议靠它区分「我」和「对方」，没有这个标记时模型会把群友
+    之间的话也当成对自己说的（2026-10-24 评测里 9 组踩了 2 组）。
     """
     items: list[dict] = []
-    for raw in names:
+    pairs = list(zip(names, sides, strict=False)) if sides is not None and len(sides) == len(names) else None
+    for idx, raw in enumerate(names):
         name = (raw or "").strip()
         if not name:
             continue
@@ -99,6 +104,9 @@ def parse_messages(names: list[str], limit: int = 40) -> list[dict]:
             m = _VOICE_RE.match(name)
             if m:
                 item["seconds"] = float(m.group(1))
+        side = pairs[idx][1] if pairs is not None else ""
+        if side:
+            item["side"] = side
         items.append(item)
     if limit > 0:
         items = items[-limit:]
@@ -149,19 +157,99 @@ def parse_sessions(names: list[str], limit: int = 8) -> list[dict]:
     return out
 
 
-def _item_names(ctrl) -> list[str]:
-    names: list[str] = []
+def _item_rows(ctrl) -> list[dict]:
+    """消息列表的每一行：`{text, top, bottom}`（屏幕坐标，给下面的左右判定用）。
+
+    为什么要把矩形一起带出来：UIA 的 ListItem **没有发送方**（群聊也一样），
+    连子节点都没有（2026-10-24 实测 4.1.15.13）。左右只能从气泡的横向位置判，
+    而判之前得先知道每条消息占的是哪一行。
+    """
+    rows: list[dict] = []
     try:
         children = ctrl.GetChildren()
     except Exception:
-        return names
+        return rows
     for c in children:
         try:
-            if c.ControlTypeName == "ListItemControl":
-                names.append(c.Name or "")
+            if c.ControlTypeName != "ListItemControl":
+                continue
+            r = c.BoundingRectangle
+            rows.append({"text": c.Name or "", "top": r.top, "bottom": r.bottom})
         except Exception:
             continue
-    return names
+    return rows
+
+
+def _item_names(ctrl) -> list[str]:
+    return [r["text"] for r in _item_rows(ctrl)]
+
+
+def _row_side(band, width: int) -> str:
+    """一条消息行的图像切片 → left / right / center / unknown。
+
+    判据是**墨迹的横向重心**：左气泡贴左、右气泡贴右、时间行居中。
+    `unknown` 不是失败兜底，而是一条必须保留的状态 —— 猜错方向的代价是
+    让模型把对方的话当成「我说的」，比不标更糟（见 docs/评测-117群-回复质量）。
+    """
+    import numpy as np
+
+    lum = band.min(axis=2)
+    cols = np.where((lum < 190).sum(axis=0) >= 2)[0]
+    # 掐掉左右边缘：右侧滚动条、左侧头像边线都会把重心拽向中间。
+    cols = cols[(cols > 8) & (cols < width - 40)]
+    if cols.size == 0:
+        return "unknown"
+    cx = (cols.min() + cols.max()) / 2.0
+    if cx < width * 0.40:
+        return "left"
+    if cx > width * 0.60:
+        return "right"
+    return "center"
+
+
+def label_sides(rows: list[dict], frame=None) -> list[str]:
+    """给每条消息标「谁发的」：right=我 / left=对方 / center=时间行 / unknown=判不出。
+
+    不用雷达的整帧切块：那套是「按投影把整帧切成块」，块与 UIA 行不是一一对应
+    （一条消息可能切出两段、相邻消息可能并成一块，实测 8 行对 11 块）。
+    这里直接用 UIA 给的行矩形去切图 —— 天然一一对应，不必再对齐。
+
+    `frame` 可注入（测试用）。抓不到窗口时全部 unknown，不抛。
+    """
+    if not rows:
+        return []
+    # 时间行按正文就能认，不必看像素（也免得浅灰文字被误判成「居中 = 时间」）
+    known = ["center" if _TIME_RE.match((r.get("text") or "").strip()) else "" for r in rows]
+    if frame is None:
+        try:
+            from chat_radar import capture as cap
+
+            frame = cap.capture_frame()
+        except Exception:
+            frame = None
+    if frame is None:
+        return [k or "unknown" for k in known]
+    win, roi, img = frame.window, frame.roi, frame.image
+    width = roi.right - roi.left
+    out: list[str] = []
+    for r, k in zip(rows, known, strict=False):
+        if k:
+            out.append(k)
+            continue
+        text = (r.get("text") or "").strip()
+        if not text:
+            out.append("unknown")
+            continue
+        try:
+            y0 = max(int(r["top"]) - win.top, roi.top) + 1
+            y1 = min(int(r["bottom"]) - win.top, roi.bottom) - 1
+            if y1 - y0 < 4:
+                out.append("unknown")
+                continue
+            out.append(_row_side(img[y0:y1, roi.left:roi.right], width))
+        except Exception:
+            out.append("unknown")
+    return out
 
 
 def _selected_chat(ctrl) -> str:
@@ -207,16 +295,15 @@ def _window_error() -> str:
     return "读不到微信控件树（窗口在，但 UIA 没物化）：把微信切到前台、点开一个聊天再点「重新分析」"
 
 
-def collect() -> tuple[list[str], list[str], str, str]:
-    """从活着的微信 UIA 树取原始名单。
+def _locate_lists():
+    """共用前置：窗口分因 → UIA 热激活 → 遍历找到「消息 / 会话」两个列表。
 
-    返回 `(消息名, 会话名, 当前会话标题, 错误)`。错误为空表示成功。
-    任何 UIA 异常都降级成错误文本 —— 这是只读视图，不该让接口 500。
+    返回 `(消息列表 ctrl, 会话列表 ctrl, 错误)`。错误非空时两个 ctrl 都是 None。
     """
     # ① 窗口层：没窗口（微信收进托盘 / 还在登录页）就分因报错，别去碰内存。
     hwnd, _pid = wechat_uia._wechat_hwnd_pid()
     if not hwnd:
-        return [], [], "", _window_error()
+        return None, None, _window_error()
 
     # ② gate 层：微信 4.x 冷启动时 Qt accessibility gate 的 active byte = 0，
     #    此时 UIA 树是**空的**（遍历出来像「微信什么都没打开」）。发送链路会先
@@ -227,7 +314,7 @@ def collect() -> tuple[list[str], list[str], str, str]:
     #    不点击、不抢焦点、不改微信任何状态。
     if not wechat_uia.ensure_active():
         why = wechat_uia.activation_reason()
-        return [], [], "", (
+        return None, None, (
             f"读不到微信控件（{why}）：把微信窗口切到前台再点「重新分析」"
             if why
             else "读不到微信控件：把微信窗口切到前台再点「重新分析」"
@@ -235,7 +322,7 @@ def collect() -> tuple[list[str], list[str], str, str]:
 
     root = wechat_uia._root()
     if root is None:
-        return [], [], "", _window_error()
+        return None, None, _window_error()
 
     found: dict[str, object] = {}
     seen = 0
@@ -260,7 +347,7 @@ def collect() -> tuple[list[str], list[str], str, str]:
     try:
         walk(root, 0)
     except Exception as exc:  # noqa: BLE001 —— COM 抖动是已知现象，降级不抛
-        return [], [], "", f"遍历微信控件失败：{exc}"
+        return None, None, f"遍历微信控件失败：{exc}"
 
     chat = found.get(LIST_CHAT)
     if chat is None:
@@ -268,8 +355,19 @@ def collect() -> tuple[list[str], list[str], str, str]:
         # 真正缺「消息」列表的是「窗口在、但没停在聊天界面」（通讯录/设置/搜索页），
         # 或者当前会话是「文件传输助手」这类没有消息区的空会话。说错原因会让人去
         # 反复最小化/还原窗口，怎么试都没用。
-        return [], [], "", "找不到「消息」列表：请先在微信里打开一个聊天（窗口这会儿可能停在通讯录/设置页）"
-    sessions = found.get(LIST_SESSIONS)
+        return None, None, "找不到「消息」列表：请先在微信里打开一个聊天（窗口这会儿可能停在通讯录/设置页）"
+    return chat, found.get(LIST_SESSIONS), ""
+
+
+def collect() -> tuple[list[str], list[str], str, str]:
+    """从活着的微信 UIA 树取原始名单（不带发送方）。
+
+    返回 `(消息名, 会话名, 当前会话标题, 错误)`。错误为空表示成功。
+    任何 UIA 异常都降级成错误文本 —— 这是只读视图，不该让接口 500。
+    """
+    chat, sessions, err = _locate_lists()
+    if err:
+        return [], [], "", err
     return (
         _item_names(chat),
         _item_names(sessions) if sessions is not None else [],
@@ -278,17 +376,39 @@ def collect() -> tuple[list[str], list[str], str, str]:
     )
 
 
+def collect_labeled() -> tuple[list[dict], list[str], str, str]:
+    """同 `collect()`，但每条消息带上「谁发的」（`side`）。
+
+    多出来的这一步只多抓一帧窗口像素（PrintWindow，不碰微信进程内存），
+    实测 ~120ms；拿不到就整批标 unknown —— 降级而不是报错。
+    """
+    chat, sessions, err = _locate_lists()
+    if err:
+        return [], [], "", err
+    rows = _item_rows(chat)
+    sides = label_sides(rows)
+    msgs = [{"text": r["text"], "side": s} for r, s in zip(rows, sides, strict=False)]
+    return (
+        msgs,
+        _item_names(sessions) if sessions is not None else [],
+        _selected_chat(sessions) if sessions is not None else "",
+        "",
+    )
+
+
 def read_chat(limit: int = 20) -> dict:
-    """当前会话快照：标题 + 最近消息 + 会话列表（未读）。"""
-    msg_names, sess_names, chat, err = collect()
+    """当前会话快照：标题 + 最近消息（带「谁说的」）+ 会话列表（未读）。"""
+    msgs, sess_names, chat, err = collect_labeled()
     if err:
         return {"ok": False, "error": err}
+    names = [m["text"] for m in msgs]
+    sides = [m["side"] for m in msgs]
     return {
         "ok": True,
         "chat": chat,
-        "messages": parse_messages(msg_names, limit=min(max(limit, 5), 60)),
+        "messages": parse_messages(names, limit=min(max(limit, 5), 60), sides=sides),
         "sessions": parse_sessions(sess_names),
-        "raw_n": len(msg_names),
+        "raw_n": len(names),
     }
 
 

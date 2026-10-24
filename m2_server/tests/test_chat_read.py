@@ -144,12 +144,14 @@ def test_analyze_without_verdict_falls_back_to_text_rules():
 
 # ---------------------------------------------------------------- 快照读取
 
+def _labeled(names, sides=None):
+    """把名字列表变成 collect_labeled 的返回形状（sides 缺省全 unknown）。"""
+    ss = sides or ["unknown"] * len(names)
+    return ([{"text": n, "side": s} for n, s in zip(names, ss, strict=False)], SESSIONS_SAMPLE, "117", "")
+
+
 def test_read_chat_shapes_collect_result(monkeypatch):
-    monkeypatch.setattr(
-        chat_read,
-        "collect",
-        lambda: (CHAT_SAMPLE, SESSIONS_SAMPLE, "117", ""),
-    )
+    monkeypatch.setattr(chat_read, "collect_labeled", lambda: _labeled(CHAT_SAMPLE))
     snap = chat_read.read_chat(limit=6)
     assert snap["ok"] is True
     assert snap["chat"] == "117"
@@ -158,10 +160,80 @@ def test_read_chat_shapes_collect_result(monkeypatch):
     assert snap["sessions"][1]["chat"] == "117"
 
 
+def test_read_chat_carries_sender_side(monkeypatch):
+    """消息要带 side：模型靠它区分「我 / 对方」（2026-10-24 评测的 2 组错位就栽在这）。"""
+    monkeypatch.setattr(
+        chat_read,
+        "collect_labeled",
+        lambda: _labeled(["啥东西", "收到"], ["left", "right"]),
+    )
+    snap = chat_read.read_chat()
+    assert [m["side"] for m in snap["messages"]] == ["left", "right"]
+
+
 def test_read_chat_degrades_to_error_not_exception(monkeypatch):
-    monkeypatch.setattr(chat_read, "collect", lambda: ([], [], "", "读不到微信窗口"))
+    monkeypatch.setattr(chat_read, "collect_labeled", lambda: ([], [], "", "读不到微信窗口"))
     snap = chat_read.read_chat()
     assert snap == {"ok": False, "error": "读不到微信窗口"}
+
+
+# ---------------------------------------------------------------- 谁说的（左右判定）
+# UIA 的 ListItem 只有正文、没有发送方（连子节点都没有），左右只能看气泡位置。
+# 这三个用例锁住判据本身，防止以后「顺手调阈值」把它调成瞎猜。
+
+
+def _band(width=1000, height=40, ink=None):
+    import numpy as np
+
+    a = np.full((height, width, 3), 250, dtype=np.uint8)
+    for x0, x1 in (ink or []):
+        a[:, x0:x1] = 0
+    return a
+
+
+def test_row_side_follows_ink_centroid():
+    assert chat_read._row_side(_band(ink=[(30, 60)]), 1000) == "left"
+    assert chat_read._row_side(_band(ink=[(900, 950)]), 1000) == "right"
+    assert chat_read._row_side(_band(ink=[(480, 520)]), 1000) == "center"
+    assert chat_read._row_side(_band(), 1000) == "unknown"
+
+
+def test_row_side_ignores_right_scrollbar_and_left_edge():
+    """右侧滚动条、左侧头像边线不能把重心拽到中间（实测会把右气泡判成 center）。"""
+    band = _band(ink=[(30, 60), (985, 995)])
+    assert chat_read._row_side(band, 1000) == "left"
+
+
+def test_label_sides_without_frame_marks_time_rows_only():
+    rows = [{"text": "23:21", "top": 0, "bottom": 10}, {"text": "啥东西", "top": 10, "bottom": 20}]
+    assert chat_read.label_sides(rows, frame=None) == ["center", "unknown"]
+
+
+def test_label_sides_reads_sides_from_frame():
+    import types
+
+    rows = [
+        {"text": "啥东西", "top": 10, "bottom": 40},
+        {"text": "收到", "top": 60, "bottom": 90},
+        {"text": "23:21", "top": 100, "bottom": 120},
+    ]
+    import numpy as np
+
+    img = np.full((200, 1000, 3), 250, dtype=np.uint8)
+    img[10:40, 30:60] = 0      # 第一条：左边
+    img[60:90, 900:950] = 0    # 第二条：右边
+    frame = types.SimpleNamespace(
+        window=types.SimpleNamespace(left=0, top=0),
+        roi=types.SimpleNamespace(left=0, top=0, right=1000, bottom=200),
+        image=img,
+    )
+    assert chat_read.label_sides(rows, frame=frame) == ["left", "right", "center"]
+
+
+def test_parse_messages_keeps_side_aligned_when_rows_are_blank():
+    """空行会被跳过，但 side 必须还是**按原名次序**对齐，不能错位一格。"""
+    out = chat_read.parse_messages(["啥东西", "  ", "收到"], sides=["left", "left", "right"])
+    assert [(m["text"], m["side"]) for m in out] == [("啥东西", "left"), ("收到", "right")]
 
 
 # ---------------------------------------------------------------- 窗口失败要分因
@@ -330,7 +402,7 @@ def teardown_function():
 
 def test_chat_endpoint_merges_snapshot_verdict_and_analysis(monkeypatch):
     _install_radar()
-    monkeypatch.setattr(chat_read, "collect", lambda: (CHAT_SAMPLE, SESSIONS_SAMPLE, "117", ""))
+    monkeypatch.setattr(chat_read, "collect_labeled", lambda: _labeled(CHAT_SAMPLE))
     out = radar_api.chat(limit=20)
     assert out["ok"] is True
     assert out["chat"] == "117"
@@ -342,7 +414,10 @@ def test_chat_endpoint_merges_snapshot_verdict_and_analysis(monkeypatch):
 
 def test_chat_endpoint_failure_is_200_with_error(monkeypatch):
     _install_radar()
-    monkeypatch.setattr(chat_read, "collect", lambda: ([], [], "", "读不到微信窗口（没开，或 UIA 未激活）"))
+    monkeypatch.setattr(
+        chat_read, "collect_labeled",
+        lambda: ([], [], "", "读不到微信窗口（没开，或 UIA 未激活）"),
+    )
     out = radar_api.chat()
     assert out["ok"] is False
     assert "读不到微信窗口" in out["error"]
@@ -359,8 +434,8 @@ def test_chat_endpoint_survives_radar_failure(monkeypatch):
     _install_radar(_Boom())
     monkeypatch.setattr(
         chat_read,
-        "collect",
-        lambda: (["23:21", "啥东西"], [], "117", ""),
+        "collect_labeled",
+        lambda: _labeled(["23:21", "啥东西"], ["center", "left"]),
     )
     out = radar_api.chat()
     assert out["ok"] is True

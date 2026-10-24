@@ -1,20 +1,21 @@
-"""本地 Qwen3-VL-4B（GGUF）生成「该怎么回」—— 只读消息，绝不发送。
+"""本地 Qwen3.5-9B（GGUF）生成「该怎么回」—— 只读消息，绝不发送。
 
 为什么是它
 ----------
-本机唯一的**能写中文**的模型。其余模型全是音频：Qwen3-TTS 只能把字读成声音、
-Whisper 只能听写、RVC/HuBERT/Demucs 只能变声和分离 —— 没有一个会「想一句话」。
-Qwen3-VL-4B 虽然是视觉模型，但纯文本推理完全可用，而且**不需要 mmproj**
-（那是图片投影器）：只传文字时省掉 433MiB 和整条视觉链路。
+本机能写中文、又能塞进 8G 显存的模型里，它答得最像人。其余模型全是音频：
+Qwen3-TTS 只能把字读成声音、Whisper 只能听写、RVC/HuBERT/Demucs 只能变声和分离。
 
-实测（2026-10-24，RTX 5060 8G / Ryzen 7 8840HX，见 docs/实测-4B视觉与TTS-RVC共存）：
-    GPU(-ngl 99, ctx 2048)  启动 4.6s + 推理 0.73s
-    CPU(-ngl 0,   ctx 2048) 启动 2.0s + 推理 5.90s
-纯文本 prompt 只有 ~160 token（整窗截图是 3037），所以比文档里的视觉延迟低一个档。
+**换过模型**（2026-10-24）：原先用 Qwen3-VL-4B。用 117 群 9 组真实语料同题横评，
+4B 的通病是「只接情绪不接事实」还老替用户答应（「我帮你买一瓶荔枝水」）；
+9B 会先问清再答（「行，买什么牌子？」），9 组里没有一组再乱许诺。
+代价：单次 0.6s → 4.7s，显存 2.5G → 5.4G，冷启 4.6s → 10.7s。
+
+★ Qwen3.5 是**思考型**模型：不开 `enable_thinking=False` 时答案全落在
+`reasoning_content`、`content` 是空串（实测 9 条全空，看着像模型挂了）。
+`_chat()` 默认关思考；要让它们想，设 `VM_REPLY_THINK=1`。
 
 生命周期：**懒加载 + 空闲 90 秒自杀**。它只在用户点「怎么回 / 换一批」时活着，
-绝不常驻 —— 实时变声要求显存余量 >2GB，而 4B 全量要 ~3.5GB。空闲退出后下次再拉起
-（模型已在系统缓存里，实测启动 4.6s）。
+绝不常驻 —— 实时变声要求显存余量 >2GB，而 9B Q4 要 ~5.4GB。空闲退出后下次再拉起。
 
 失败必须降级而不是报错
 ----------------------
@@ -28,6 +29,7 @@ import atexit
 import glob
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -45,9 +47,12 @@ ENV_IDLE = "VM_REPLY_IDLE_S"
 ENV_TIMEOUT = "VM_REPLY_TIMEOUT_S"
 ENV_BOOT = "VM_REPLY_BOOT_S"
 
-#: 默认模型：Q4_K_M 2.33GiB。不传 --mmproj —— 纯文本用不上视觉投影器。
-DEFAULT_MODEL = r"D:\Qwen3VL-4B-Instruct-Q4_K_M.gguf"
-MODEL_LABEL = "qwen3vl-4b"
+#: 默认模型：Qwen3.5-9B Q4_K_M（5.4GiB）。**换过**：原先用 Qwen3VL-4B，
+#: 2026-10-24 用 117 群 9 组真实语料同题横评 —— 9B 明显更接得住事，且**不再替用户答应**
+#: （4B「我帮你买一瓶荔枝水」→ 9B「行，买什么牌子？」），代价是 0.6s → 4.7s、显存 2.5G → 5.4G。
+#: 4B 仍在盘里，VM_REPLY_MODEL 指回去即可（快但答得糙）。
+DEFAULT_MODEL = r"D:\llama-b9660-bin-win-cuda-13.3-x64\Qwen3.5-9B-Q4_K_M.gguf"
+MODEL_LABEL = "qwen3.5-9b"
 
 #: 推理超时。CPU 档实测 5.9s，留 10 倍余量给「三者同卡」那种极端情况。
 CHAT_TIMEOUT = 90.0
@@ -60,14 +65,26 @@ TEMPERATURE = 0.4
 #: prompt 也只有 ~300 token —— 再长对 4B 只会更慢更糊涂。
 FEED_MESSAGES = 14
 
+#: 关不关「思考链」。思考型模型（Qwen3.5 / Qwen3-*-Thinking）不关的话，
+#: 答案会全部落在 `reasoning_content`、`content` 是空串 —— 2026-10-24 实测
+#: 9 条测例全空，看起来像模型挂了。设 VM_REPLY_THINK=1 才会放它想。
+NO_THINK = os.environ.get("VM_REPLY_THINK", "0") != "1"
+
 _SYSTEM = (
     "你是微信聊天助手，帮用户决定「该怎么回」。"
     "只输出一个 JSON 对象，不要解释、不要 markdown、不要代码块。格式："
     '{"should_reply":true,"why":"一句话理由（不超过20字）",'
     '"replies":["回复1","回复2","回复3"]}'
-    "replies 给 2-3 条，每条不超过 30 个汉字，必须是可以直接发出去的口语短句，"
-    "像真人随手打的；不要复述对方原话，不要写「建议你」这种旁白，不要加引号。"
-    "如果最后一条是用户自己发的、没有新问题，should_reply 为 false，replies 给空数组。"
+    "\n内容按这个优先级来："
+    "①先看对方的实质诉求 —— 问位置/时间/买什么/怎么操作，就把答案或明确态度说出来，"
+    "三条里**至少一条**必须落到这件事上；"
+    "②再看口气 —— 像真人随手打的，可以有梗、可以接话茬，但**梗不能替代答案**；"
+    "③对方只是在起哄、发表情、说闲话时，才可以只接梗。"
+    "\n分寸是硬约束：不要替用户答应任何事、不要承诺（请客/帮忙/马上办）、"
+    "不要道谢道贺、不要替用户做决定 —— 需要答应时写成问一句，不要写成已经答应了。"
+    "不要复述对方原话，不要写「建议你」「你可以回」这类旁白，不要加引号。"
+    "每条不超过 30 个汉字。"
+    "如果最后一条标着「我：」（用户自己发的）、没有新问题，should_reply 为 false，replies 给空数组。"
 )
 
 _KIND_LABEL = {"voice": "语音", "media": "图片/文件"}
@@ -81,6 +98,11 @@ _SYSTEM_ONE = (
     '{"reply":"要发出去的那句话","why":"一句话理由（不超过20字）"}'
     "reply 不超过 30 个汉字，像真人随手打的；不要复述对方原话，"
     "不要写「建议你」「你可以」「你可以回」这类旁白，不要加引号，不要加句号以外的装饰。"
+    # 自动托管是**真的发出去**，所以分寸比建议模式更硬：一句「我马上帮你买」就是替用户
+    # 许下了承诺（2026-10-24 评测里模型确实这么写过）。
+    "优先回答对方问的那件具体事；可以有梗，但梗不能替代答案。"
+    "绝不替用户答应、承诺、道谢或做决定 —— 需要答应时写成问一句。"
+    "最后一条标着「我：」时不要回。"
 )
 
 MAX_ONE_TOKENS = 96
@@ -234,7 +256,14 @@ atexit.register(shutdown)
 
 
 def _history_lines(messages: list[dict]) -> list[str]:
-    """把 UIA 消息压成模型好读的几行。时间行扔掉（只会白占 token）。"""
+    """把 UIA 消息压成模型好读的几行。时间行扔掉（只会白占 token）。
+
+    ⚠️ 2026-10-24 实测过「每行前面标 我：/对方：」，**不要再加回来**：
+    同一批 9 组真实语料上，带标记的 9 组没有一组比不带更好，还反复把
+    「我：」原样写进回复正文（那条一旦被点选就真的发出去）。
+    模型的问题不是「不知道谁说的」，而是接不住具体诉求 —— 详见
+    `outputs/评测-117群-回复质量-2026-10-24.md` 与 `_COMMIT_RE` 的说明。
+    """
     out: list[str] = []
     for m in messages:
         kind = (m or {}).get("kind") or "text"
@@ -253,8 +282,8 @@ def _history_lines(messages: list[dict]) -> list[str]:
 def build_prompt(messages: list[dict], chat: str = "", last_side: str | None = None) -> str:
     """拼用户消息。`last_side` 是雷达给的确定信号：right = 最后一条是我发的。
 
-    为什么不给每条消息标发送方：UIA 的 ListItem Name **不带发送方**（群聊也一样），
-    逐条猜左右是编造。只有雷达的几何信号能确定「最后一条是谁发的」，就只用它。
+    逐条发送方（`side`）**不进提示词**（理由见 `_history_lines`）；它只随
+    `/api/radar/chat` 一起返回，给面板和托管判定用。
     """
     lines = _history_lines(messages)
     head = f"当前会话：{chat or '未知'}\n" if chat else ""
@@ -303,6 +332,30 @@ def parse_reply_json(text: str) -> dict | None:
     why = why.strip()[:40] if isinstance(why, str) else ""
     should = data.get("should_reply")
     return {"why": why, "replies": replies[:3], "should_reply": should is not False}
+
+
+#: 「替你答应」的句式。4B 在真实语料上反复写这类话（2026-10-24 评测：
+#: 「我帮你买一瓶荔枝水」「好的，我马上帮你买！」「收到红包，谢谢！」），
+#: 提示词里写了「不要承诺」它照写 —— 所以必须在**输出侧**兜一道。
+#: 这是确定性过滤，不依赖模型听话：这些话一旦被点一下就真的发出去，
+#: 代价是替用户许下承诺，或者把别人的红包当成自己的。
+_COMMIT_RE = re.compile(
+    r"我(?:来|去)?(?:帮你|给你|替你)[^，。]{0,4}(?:买|下单|付|转|处理|搞定|安排)"
+    r"|我(?:马上|立刻|这就)[^，。]{0,6}(?:买|下单|付|转|办|弄)"
+    r"|我(?:来)?(?:请客|买单|付款|请你)"
+    r"|收到(?:红包|转账)"
+    r"|包在我身上"
+)
+
+
+def looks_like_promise(text: str) -> bool:
+    """这句是不是在**替用户**答应/承诺（含「收到红包谢谢」这种张冠李戴）。"""
+    return bool(_COMMIT_RE.search(text or ""))
+
+
+def drop_promises(replies: list[str]) -> list[str]:
+    """去掉替用户点头的候选。全被去掉时返回空 —— 调用方决定怎么降级。"""
+    return [r for r in replies if not looks_like_promise(r)]
 
 
 def parse_one_json(text: str) -> dict | None:
@@ -372,6 +425,11 @@ def _chat(
         "max_tokens": MAX_TOKENS if max_tokens is None else max_tokens,
         "temperature": TEMPERATURE if temperature is None else temperature,
     }
+    if NO_THINK:
+        # Qwen3.5 这类**思考型**模型：不关思考时，答案全在 reasoning_content 里，
+        # content 是空的（2026-10-24 实测：9 条测例全空，看着像模型挂了）。
+        # 这里对非思考模型是空操作 —— 模板里没有这个变量，llama.cpp 直接忽略。
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/chat/completions",
         data=json.dumps(payload).encode(),
@@ -379,7 +437,13 @@ def _chat(
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = json.loads(r.read())
-    return data["choices"][0]["message"]["content"]
+    msg = data["choices"][0]["message"]
+    content = msg.get("content") or ""
+    # ⚠️ 不要拿 reasoning_content 兜底：那是思考过程（还常常是英文），
+    # 里面的格式样例 `"replies":["reply1","reply2"]` 会被当成回复真发出去
+    # （2026-10-24 用 Qwopus3.5-9B 实测，9 条里 2 条吐了 reply1/reply2）。
+    # 空就让它空，调用方会降级成模板。
+    return content
 
 
 # ------------------------------------------------------------------ 对外入口
@@ -414,11 +478,21 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
             "replies": _rule_replies(messages, last_side),
             "note": "模型输出没通过校验，先给模板建议",
         }
+    raw_replies = parsed["replies"]
+    replies = drop_promises(raw_replies)
+    note = ""
+    if not replies:
+        # 三条都在替用户点头 —— 宁可退回模板，也不能摆出「点了就替他答应」的选项
+        replies = _rule_replies(messages, last_side)
+        note = "模型那几条都在替你答应，已换成安全的模板"
+    elif len(replies) < len(raw_replies):
+        note = f"有 {len(raw_replies) - len(replies)} 条在替你答应，已去掉"
     return {
         "engine": "local",
         "model": MODEL_LABEL,
-        "replies": parsed["replies"],
+        "replies": replies,
         "why": parsed["why"],
+        "note": note,
         "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
     }
 
@@ -444,7 +518,14 @@ def suggest_one(messages: list[dict], chat: str = "", last_side: str | None = No
         )
     except Exception:  # noqa: BLE001 —— 托管侧只关心「有没有可用的一条」
         return None
-    return parse_one_json(content)
+    out = parse_one_json(content)
+    if out is None:
+        return None
+    # 托管是**真的发出去**：模型一旦写了「我帮你买」，发出去就是替用户许了承诺。
+    # 这里不return，直接丢弃 —— 宁可这条不回，也不能替用户答应（2026-10-24 评测）。
+    if looks_like_promise(out.get("reply") or ""):
+        return None
+    return out
 
 
 def status() -> dict:

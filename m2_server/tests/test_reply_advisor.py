@@ -48,6 +48,134 @@ def test_build_prompt_limits_to_tail():
     assert "消息0" not in prompt          # 只喂最后 FEED_MESSAGES 条
 
 
+# ---------------------------------------------------------------- 发言人标记（2026-10-24）
+# 试过把「我：/对方：」写进提示词：9 组真实语料没有一组变好，还反复把「我：」
+# 原样写进回复正文（点一下就真发出去）。所以提示词里**不该**出现发送方标记 ——
+# 这条测试就是防止以后「看着挺合理」又加回去。
+
+
+def test_build_prompt_does_not_leak_sender_labels():
+    msgs = [
+        {"kind": "text", "text": "要不要出去玩", "side": "left"},
+        {"kind": "text", "text": "🉑", "side": "left"},
+        {"kind": "text", "text": "我下午没课", "side": "right"},
+    ]
+    prompt = ra.build_prompt(msgs, "117", "right")
+    assert "要不要出去玩" in prompt
+    for bad in ("我：", "对方：", "（我说的）"):
+        assert bad not in prompt
+
+
+def test_system_prompt_forbids_promises_but_allows_jokes():
+    """用户 2026-10-24 拍板：梗要留，但「先答上再谈梗」，且不许替我答应任何事。"""
+    s = ra._SYSTEM
+    assert "至少一条" in s            # 三条里必须先有一条落到实质诉求上
+    assert "梗不能替代答案" in s
+    assert "不要承诺" in s
+    # 自动托管是**真的发出去**，分寸更硬，也必须带上这条
+    assert "绝不替用户答应" in ra._SYSTEM_ONE
+
+
+# ---------------------------------------------------------------- 承诺拦截（确定性）
+# 提示词说了「不许承诺」，4B 照写（A/B 实测）。所以输出侧必须有一道确定性过滤。
+
+
+def test_promise_guard_catches_real_failures():
+    """样本就是 117 群里真实翻车的那些句子。"""
+    bad = [
+        "我帮你买一瓶荔枝水",
+        "好的，我马上帮你买！",
+        "荔枝水我马上去给你买",
+        "我帮你下单",
+        "我请你吃饭",
+        "收到红包，谢谢！",
+        "包在我身上",
+    ]
+    for s in bad:
+        assert ra.looks_like_promise(s), s
+
+
+def test_promise_guard_does_not_eat_normal_replies():
+    for s in ("已经很多人被点到了", "我来了", "取餐码 33", "外面等你们", "哈哈哈"):
+        assert not ra.looks_like_promise(s), s
+
+
+def test_suggest_drops_promise_candidates(monkeypatch):
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+
+    def _fake_chat(port, prompt, timeout, **kw):
+        return '{"should_reply":true,"why":"他让带水","replies":["我帮你买一瓶","上一次买过的"]}'
+
+    monkeypatch.setattr(ra, "_chat", _fake_chat)
+    out = ra.suggest([{"kind": "text", "text": "帮我买瓶水"}], "117", "left")
+    assert out["replies"] == ["上一次买过的"]
+    assert "替你答应" in out["note"]
+
+
+def test_suggest_falls_back_when_every_candidate_promises(monkeypatch):
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    monkeypatch.setattr(
+        ra, "_chat",
+        lambda *a, **k: '{"replies":["我帮你买","我请你吃饭","收到红包，谢谢"]}',
+    )
+    out = ra.suggest([{"kind": "text", "text": "帮我买瓶水"}], "117", "left")
+    assert out["replies"] == ra._rule_replies([{"kind": "text", "text": "帮我买瓶水"}], "left")
+    assert "安全的模板" in out["note"]
+
+
+def test_suggest_one_refuses_to_send_a_promise(monkeypatch):
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    monkeypatch.setattr(ra, "_chat", lambda *a, **k: '{"reply":"我马上帮你下单","why":"带水"}')
+    assert ra.suggest_one([{"kind": "text", "text": "帮我买瓶水"}], "117", "left") is None
+
+
+# ---------------------------------------------------------------- 思考型模型（2026-10-24）
+# Qwen3.5 不关思考时：content 是空串、答案全在 reasoning_content。实测 9 条全空，
+# 看着像模型挂了；拿 reasoning 兜底更糟 —— 里面的格式样例会被当成回复。
+
+
+def _fake_urlopen(payload_obj):
+    import io
+    import json as _json
+
+    class _R(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    return lambda req, timeout=None: _R(_json.dumps(payload_obj).encode())
+
+
+def test_chat_disables_thinking_by_default(monkeypatch):
+    import json as _json
+
+    captured = {}
+
+    def _spy(req, timeout=None):
+        captured.update(_json.loads(req.data.decode()))
+        return _fake_urlopen({"choices": [{"message": {"content": "好的"}}]})(req)
+
+    monkeypatch.setattr(ra.urllib.request, "urlopen", _spy)
+    assert ra._chat(1234, "hi", 5.0) == "好的"
+    assert captured["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_chat_never_returns_reasoning_as_answer(monkeypatch):
+    monkeypatch.setattr(
+        ra.urllib.request, "urlopen",
+        _fake_urlopen({"choices": [{"message": {
+            "content": "",
+            "reasoning_content": '思考…{"replies":["reply1","reply2"]}',
+        }}]}),
+    )
+    assert ra._chat(1234, "hi", 5.0) == ""    # 空就是空，让调用方降级成模板
+
+
 # ---------------------------------------------------------------- JSON 校验
 
 
