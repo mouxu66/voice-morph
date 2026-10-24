@@ -277,7 +277,7 @@ def test_suggest_parses_model_output(monkeypatch):
     monkeypatch.setattr(ra, "available", lambda: (True, ""))
     monkeypatch.setattr(ra, "_ensure_server", lambda: 8099)
     monkeypatch.setattr(
-        ra, "_chat", lambda port, prompt, timeout: '{"why":"他想聊","replies":["哈哈","收到"]}'
+        ra, "_chat", lambda port, prompt, timeout, **kw: '{"why":"他想聊","replies":["哈哈","收到"]}'
     )
     out = ra.suggest(MSGS, "117", "left")
     assert out["engine"] == "local"
@@ -301,7 +301,7 @@ def test_suggest_falls_back_when_inference_fails(monkeypatch):
 def test_suggest_falls_back_when_output_invalid(monkeypatch):
     monkeypatch.setattr(ra, "available", lambda: (True, ""))
     monkeypatch.setattr(ra, "_ensure_server", lambda: 8099)
-    monkeypatch.setattr(ra, "_chat", lambda port, prompt, timeout: "我觉得你应该先回一句")
+    monkeypatch.setattr(ra, "_chat", lambda port, prompt, timeout, **kw: "我觉得你应该先回一句")
     out = ra.suggest(MSGS, "117")
     assert out["engine"] == "rule"
     assert "校验" in out["note"]
@@ -465,3 +465,105 @@ def test_rvc_start_releases_reply_model_before_vram_precheck(monkeypatch):
     assert ei.value.status_code == 409
     assert order == ["release", "precheck"]
     assert "已卸载本地回复模型" in ei.value.detail   # 让路成功但还不够，要如实说
+
+
+# ---------------------------------------------------------------- 视觉（mmproj / 截图）
+# 9B 是原生多模态，缺的只是 ~918MB 投影器；4B 的投影器是 2560 维，**接不到 9B 的 4096**。
+
+
+def test_find_mmproj_matches_by_model_name(monkeypatch, tmp_path):
+    fake = tmp_path / "mmproj-9b.gguf"
+    fake.write_bytes(b"x")
+    monkeypatch.delenv(ra.ENV_MMPROJ, raising=False)
+    monkeypatch.setattr(ra, "MMPROJ_BY_MODEL", (("qwen3.5-9b", str(fake)),))
+    assert ra._find_mmproj(r"D:\llama-b9660\Qwen3.5-9B-Q4_K_M.gguf") == str(fake)
+    assert ra._find_mmproj(r"D:\Qwen3VL-4B-Instruct-Q4_K_M.gguf") is None
+
+
+def test_find_mmproj_empty_env_forces_text_only(monkeypatch, tmp_path):
+    fake = tmp_path / "mm.gguf"
+    fake.write_bytes(b"x")
+    monkeypatch.setattr(ra, "MMPROJ_BY_MODEL", (("qwen3.5-9b", str(fake)),))
+    monkeypatch.setenv(ra.ENV_MMPROJ, "")
+    assert ra._find_mmproj(r"D:\Qwen3.5-9B-Q4_K_M.gguf") is None
+
+
+def test_needs_look_only_when_media_in_tail():
+    text_only = [{"kind": "text", "text": "在吗"}] * 6
+    assert ra._needs_look(text_only) is False
+    with_media = [{"kind": "text", "text": "6666"}, {"kind": "media", "text": "图片"}]
+    assert ra._needs_look(with_media) is True
+    # 图片在很前面（窗口外）就不截图 —— 那多半已经聊过去了
+    old_media = [{"kind": "media", "text": "图片"}] + [{"kind": "text", "text": "嗯"}] * 6
+    assert ra._needs_look(old_media, window=6) is False
+
+
+def test_chat_sends_image_parts_only_when_given(monkeypatch):
+    import json as _json
+
+    seen = {}
+
+    def _spy(req, timeout=None):
+        seen.update(_json.loads(req.data.decode()))
+        return _fake_urlopen({"choices": [{"message": {"content": "好"}}]})(req)
+
+    monkeypatch.setattr(ra.urllib.request, "urlopen", _spy)
+    ra._chat(1234, "提示", 5.0, image_b64="QUJD")
+    parts = seen["messages"][1]["content"]
+    assert isinstance(parts, list) and parts[0]["type"] == "text"
+    assert parts[1]["image_url"]["url"] == "data:image/jpeg;base64,QUJD"
+
+    ra._chat(1234, "提示", 5.0)
+    assert seen["messages"][1]["content"] == "提示"      # 没图时仍是纯字符串
+
+
+def test_chat_snapshot_returns_none_when_window_missing(monkeypatch):
+    import chat_radar.capture as cap
+
+    monkeypatch.setattr(cap, "capture_frame", lambda *a, **k: None)
+    assert ra.chat_snapshot_b64() is None
+
+
+def test_system_forbids_unverified_assertions():
+    """「确实没录」这类断言和「我帮你买」一样危险 —— 都是替用户说没核实过的事。"""
+    assert "不要替用户断言" in ra._SYSTEM
+    assert "不确定就写成问一句" in ra._SYSTEM
+
+
+def test_start_puts_mmproj_on_cpu_by_default(monkeypatch, tmp_path):
+    """视觉塔默认不上 GPU：918MB 会把整卡顶到 7.7G，触发换页后单次 30s+。"""
+    fake_mm = tmp_path / "mm.gguf"
+    fake_mm.write_bytes(b"x")
+    monkeypatch.setattr(ra, "_find_exe", lambda: "llama-server.exe")
+    monkeypatch.setattr(ra, "_find_model", lambda: r"D:\Qwen3.5-9B-Q4_K_M.gguf")
+    monkeypatch.setattr(ra, "_find_mmproj", lambda m=None: str(fake_mm))
+    monkeypatch.setattr(ra, "_health", lambda port: True)
+    monkeypatch.delenv(ra.ENV_MMPROJ_CPU, raising=False)
+
+    captured = {}
+
+    class _P:
+        returncode = None
+
+        def poll(self):
+            return None
+
+    def _popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return _P()
+
+    monkeypatch.setattr(ra.subprocess, "Popen", _popen)
+    try:
+        ra._start_locked(9999)
+    finally:
+        ra._PROC = None
+    assert "-mm" in captured["cmd"]
+    assert "--no-mmproj-offload" in captured["cmd"]
+
+    captured.clear()
+    monkeypatch.setenv(ra.ENV_MMPROJ_CPU, "0")
+    try:
+        ra._start_locked(9999)
+    finally:
+        ra._PROC = None
+    assert "--no-mmproj-offload" not in captured["cmd"]

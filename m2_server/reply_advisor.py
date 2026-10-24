@@ -15,7 +15,7 @@ Qwen3-TTS 只能把字读成声音、Whisper 只能听写、RVC/HuBERT/Demucs �
 `_chat()` 默认关思考；要让它们想，设 `VM_REPLY_THINK=1`。
 
 生命周期：**懒加载 + 空闲 90 秒自杀**。它只在用户点「怎么回 / 换一批」时活着，
-绝不常驻 —— 实时变声要求显存余量 >2GB，而 9B Q4 要 ~5.4GB。空闲退出后下次再拉起。
+绝不常驻 —— 实时变声要求显存余量 >2GB，而 9B Q4 + 视觉塔要 ~6.3GB。空闲退出后下次再拉起。
 
 失败必须降级而不是报错
 ----------------------
@@ -26,7 +26,9 @@ Qwen3-TTS 只能把字读成声音、Whisper 只能听写、RVC/HuBERT/Demucs �
 from __future__ import annotations
 
 import atexit
+import base64
 import glob
+import io
 import json
 import os
 import re
@@ -46,6 +48,8 @@ ENV_CTX = "VM_REPLY_CTX"
 ENV_IDLE = "VM_REPLY_IDLE_S"
 ENV_TIMEOUT = "VM_REPLY_TIMEOUT_S"
 ENV_BOOT = "VM_REPLY_BOOT_S"
+ENV_MMPROJ = "VM_REPLY_MMPROJ"
+ENV_MMPROJ_CPU = "VM_REPLY_MMPROJ_CPU"
 
 #: 默认模型：Qwen3.5-9B Q4_K_M（5.4GiB）。**换过**：原先用 Qwen3VL-4B，
 #: 2026-10-24 用 117 群 9 组真实语料同题横评 —— 9B 明显更接得住事，且**不再替用户答应**
@@ -54,9 +58,20 @@ ENV_BOOT = "VM_REPLY_BOOT_S"
 DEFAULT_MODEL = r"D:\llama-b9660-bin-win-cuda-13.3-x64\Qwen3.5-9B-Q4_K_M.gguf"
 MODEL_LABEL = "qwen3.5-9b"
 
-#: 9B Q4 常驻时的显存占用（2026-10-24 实测 5.4G）。**只用于日志里说人话**，
+#: 视觉权重（mmproj）是**独立的一个文件**，不是模型自带的。9B 两个模型都是原生多模态
+#: （GGUF 元数据 general.architecture=qwen35、projection_dim=4096），缺的就是这 ~918MB 投影器。
+#: ⚠️ 4B 的 mmproj 是 2560 维，**接不到 9B 的 4096**，别混用（llama.cpp 会直接报形状错）。
+#: 按模型名配表；`VM_REPLY_MMPROJ` 可覆盖，设空串则强制纯文本。
+MMPROJ_BY_MODEL = (
+    ("ornith", r"D:\mmproj-Ornith-1.5-9B-f16.gguf"),
+    ("qwen3.5-9b", r"D:\mmproj-Qwen3.5-9B-F16.gguf"),
+    ("qwen3vl-4b", r"D:\mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf"),
+)
+
+#: 9B Q4 **带视觉塔**常驻时的显存占用（2026-10-25 实测：整卡 7223MB − 基线 882MB ≈ 6.3G；
+#: 纯文本只有 5.4G，差的就是那 918MB mmproj）。**只用于日志里说人话**，
 #: 不参与任何判断 —— 要不要让路看的是「谁在跑」，不是这个估算值。
-MODEL_VRAM_MB = 5400
+MODEL_VRAM_MB = 6300
 
 #: 推理超时。CPU 档实测 5.9s，留 10 倍余量给「三者同卡」那种极端情况。
 CHAT_TIMEOUT = 90.0
@@ -87,6 +102,8 @@ _SYSTEM = (
     "\n分寸是硬约束：不要替用户答应任何事、不要承诺（请客/帮忙/马上办）、"
     "不要道谢道贺、不要替用户做决定 —— 需要答应时写成问一句，不要写成已经答应了。"
     "不要复述对方原话，不要写「建议你」「你可以回」这类旁白，不要加引号。"
+    "看不到 / 没核实的事**不要替用户断言**（「确实没录」「我没开过」「就是这样的」），"
+    "不确定就写成问一句，或写「我看看」。"
     "每条不超过 30 个汉字。"
     "如果最后一条标着「我：」（用户自己发的）、没有新问题，should_reply 为 false，replies 给空数组。"
 )
@@ -143,6 +160,25 @@ def _find_model() -> str | None:
     if env and Path(env).is_file():
         return env
     return DEFAULT_MODEL if Path(DEFAULT_MODEL).is_file() else None
+
+
+def _find_mmproj(model: str | None = None) -> str | None:
+    """给当前模型配视觉投影器。没有就返回 None（纯文本，与以前行为一致）。
+
+    `VM_REPLY_MMPROJ`：
+      · 不设   → 按模型名查表（ornith / qwen3.5-9b / qwen3vl-4b）
+      · 设路径 → 用它
+      · 设空串 → **强制纯文本**（不想吃这 ~918MB 显存时的开关）
+    """
+    env = os.environ.get(ENV_MMPROJ)
+    if env is not None:
+        env = env.strip()
+        return env if env and Path(env).is_file() else None
+    name = Path(model or _find_model() or "").name.lower()
+    for key, path in MMPROJ_BY_MODEL:
+        if key in name and Path(path).is_file():
+            return path
+    return None
 
 
 def available() -> tuple[bool, str]:
@@ -207,12 +243,22 @@ def _start_locked(port: int) -> None:
     flags = 0
     if os.name == "nt":
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    cmd = [
+        exe, "-m", model,
+        "--host", "127.0.0.1", "--port", str(port),
+        "-ngl", str(ngl), "-c", str(ctx), "-t", "8", "--no-warmup",
+    ]
+    mmproj = _find_mmproj(model)
+    if mmproj:
+        cmd += ["-mm", mmproj]
+        # 视觉塔**默认留在 CPU**（--no-mmproj-offload）：918MB 投影器上 GPU 会把整卡顶到
+        # 7.7~7.8G，llama.cpp 随即把部分层换到 CPU —— 单次点「怎么回」从 1s 变 29~76s
+        # （2026-10-25 实测：基线 1600MB 时）。放 CPU 只影响「看图那一下」（~6.7s），
+        # 纯文本仍是 1s 级。真要快：`VM_REPLY_MMPROJ_CPU=0`（前提是显存真的空）。
+        if os.environ.get(ENV_MMPROJ_CPU, "1") != "0":
+            cmd.append("--no-mmproj-offload")
     _PROC = subprocess.Popen(
-        [
-            exe, "-m", model,
-            "--host", "127.0.0.1", "--port", str(port),
-            "-ngl", str(ngl), "-c", str(ctx), "-t", "8", "--no-warmup",
-        ],
+        cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=flags,
@@ -358,9 +404,8 @@ def close_unbalanced_json(text: str) -> str | None:
             in_str = True
         elif ch in "{[":
             stack.append("}" if ch == "{" else "]")
-        elif ch in "}]":
-            if not stack or stack.pop() != ch:
-                return None          # 结构本来就乱了，不硬修
+        elif ch in "}]" and (not stack or stack.pop() != ch):
+            return None              # 结构本来就乱了，不硬修
     if in_str or not stack or len(stack) > 3:
         return None
     return body + "".join(reversed(stack))
@@ -487,6 +532,45 @@ def parse_one_json(text: str) -> dict | None:
     return {"reply": reply, "why": why}
 
 
+#: 聊天区截图的最长边。470×1024 在真机 A/B 里吃 408~819 token（2026-10-25 实测），
+#: 再大只会更慢；再小连「结算画面/聊天截图」都认不出。
+SNAP_MAX_SIDE = 1024
+
+
+def chat_snapshot_b64(max_side: int = SNAP_MAX_SIDE, quality: int = 85) -> str | None:
+    """抓当前聊天区，压成 base64 JPEG —— 给模型「看一眼图」。
+
+    为什么截**整个聊天区**而不是只裁那张图：雷达块与 UIA 消息没有稳定的一一对应
+    （一条消息可能切两段、相邻两条可能并成一块，实测 8 行对 11 块），
+    先按整区送进去；真机 A/B 证明这样已经能从「当成起哄」变成「看出是结算画面、在问录没录」。
+
+    抓不到（微信最小化 / 被判不可见 / PIL 异常）返回 None —— 调用方退回纯文本，不报错。
+    """
+    try:
+        from chat_radar import capture as cap
+        from PIL import Image
+
+        frame = cap.capture_frame()
+        if frame is None:
+            return None
+        img = Image.fromarray(frame.roi.crop(frame.image)).convert("RGB")
+        w, h = img.size
+        scale = max_side / max(w, h)
+        if scale < 1:
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=quality)
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return None
+
+
+def _needs_look(messages: list[dict], window: int = 6) -> bool:
+    """最近几条里有没有图片/视频 —— 没有就不付截图的代价（多 400~800 token + 200ms）。"""
+    tail = list(messages or [])[-window:]
+    return any((m or {}).get("kind") == "media" for m in tail)
+
+
 def _rule_replies(messages: list[dict], last_side: str | None = None) -> list[str]:
     """模型不在时的兜底。只求「能直接点着发」，不假装懂语境。"""
     if last_side == "right":
@@ -509,12 +593,21 @@ def _chat(
     system: str | None = None,
     max_tokens: int | None = None,
     temperature: float | None = None,
+    image_b64: str | None = None,
 ) -> str:
+    user_content = prompt
+    if image_b64:
+        # OpenAI 视觉格式；llama-server 认 data URI。纯文本请求保持字符串，
+        # 免得给不带 mmproj 的模型塞一个它解析不了的结构。
+        user_content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + image_b64}},
+        ]
     payload = {
         "model": "qwen3vl",
         "messages": [
             {"role": "system", "content": system or _SYSTEM},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": user_content},
         ],
         "max_tokens": MAX_TOKENS if max_tokens is None else max_tokens,
         "temperature": TEMPERATURE if temperature is None else temperature,
@@ -562,7 +655,11 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
         }
     try:
         port = _ensure_server()
-        content = _chat(port, build_prompt(messages, chat, last_side), CHAT_TIMEOUT)
+        # 最近有图片/视频才截图（多 400~800 token + ~200ms）；没有就纯文本。
+        image = chat_snapshot_b64() if _needs_look(messages) else None
+        content = _chat(
+            port, build_prompt(messages, chat, last_side), CHAT_TIMEOUT, image_b64=image
+        )
     except Exception as exc:  # noqa: BLE001 —— 本地推理失败一律降级
         return {
             "engine": "rule",
@@ -627,6 +724,7 @@ def suggest_one(messages: list[dict], chat: str = "", last_side: str | None = No
             system=_SYSTEM_ONE,
             max_tokens=MAX_ONE_TOKENS,
             temperature=ONE_TEMPERATURE,
+            image_b64=chat_snapshot_b64() if _needs_look(messages) else None,
         )
     except Exception:  # noqa: BLE001 —— 托管侧只关心「有没有可用的一条」
         return None
