@@ -181,15 +181,61 @@ def _selected_chat(ctrl) -> str:
     return ""
 
 
+def _window_error() -> str:
+    """`_root()` 拿不到根控件时的**分因**说明。
+
+    为什么不能只说「读不到微信窗口（没开，或 UIA 未激活）」：2026-10-24 实测，
+    微信收进托盘时同一块桌宠面板给出两个互相矛盾的说法 —— 发送预检说
+    「它还在运行、多半被关进了托盘：请点开微信主窗口」，而「分析聊天」说「没开」。
+    用户只会信第一句，于是认定「分析聊天坏了」。
+
+    `wechat_proc.find_wechat_hwnd()` 早就按「进程没开 / 收进托盘 / 还在登录页」分了因，
+    这里直接复用它抛出来的原文 —— 文案的唯一真相源留在一处，别再编第二句。
+    """
+    if not wechat_uia.UIA_ENABLED:
+        return "微信 UIA 被关闭（VM_WECHAT_UIA=0）：分析聊天读不到消息，改回 1 再重启后端"
+    try:
+        import wechat_proc
+
+        # 窗口在的时候它正常返回（这里只借它分因的报错文案）。
+        wechat_proc.find_wechat_hwnd()
+    except Exception as exc:  # noqa: BLE001 —— RuntimeError 是预期分支：它带着人话原因
+        msg = str(exc).strip()
+        if msg:
+            return msg
+    # 走到这里说明窗口找得到、但 UIA 根控件拿不到：树还没物化 / COM 抖动。
+    return "读不到微信控件树（窗口在，但 UIA 没物化）：把微信切到前台、点开一个聊天再点「重新分析」"
+
+
 def collect() -> tuple[list[str], list[str], str, str]:
     """从活着的微信 UIA 树取原始名单。
 
     返回 `(消息名, 会话名, 当前会话标题, 错误)`。错误为空表示成功。
     任何 UIA 异常都降级成错误文本 —— 这是只读视图，不该让接口 500。
     """
+    # ① 窗口层：没窗口（微信收进托盘 / 还在登录页）就分因报错，别去碰内存。
+    hwnd, _pid = wechat_uia._wechat_hwnd_pid()
+    if not hwnd:
+        return [], [], "", _window_error()
+
+    # ② gate 层：微信 4.x 冷启动时 Qt accessibility gate 的 active byte = 0，
+    #    此时 UIA 树是**空的**（遍历出来像「微信什么都没打开」）。发送链路会先
+    #    `ensure_active()`，而「分析聊天」不走那条路 —— 于是**微信每重启一次**，
+    #    第一次点按钮都只会看到「找不到消息列表」，直到用户碰巧发过一条语音才变好
+    #    （犯错档案-微信 §5.1、犯错指南速查表第 15 条）。这里补上同一次热激活：
+    #    只写 1 字节进微信内存 + 等 0.5s（已激活时按 PID 直接命中缓存，零开销），
+    #    不点击、不抢焦点、不改微信任何状态。
+    if not wechat_uia.ensure_active():
+        why = wechat_uia.activation_reason()
+        return [], [], "", (
+            f"读不到微信控件（{why}）：把微信窗口切到前台再点「重新分析」"
+            if why
+            else "读不到微信控件：把微信窗口切到前台再点「重新分析」"
+        )
+
     root = wechat_uia._root()
     if root is None:
-        return [], [], "", "读不到微信窗口（没开，或 UIA 未激活）"
+        return [], [], "", _window_error()
 
     found: dict[str, object] = {}
     seen = 0
@@ -218,7 +264,11 @@ def collect() -> tuple[list[str], list[str], str, str]:
 
     chat = found.get(LIST_CHAT)
     if chat is None:
-        return [], [], "", "找不到消息列表（微信可能最小化了）"
+        # 旧文案说「微信可能最小化了」—— 实测最小化（iconic）的窗口照样有这棵 UIA 树，
+        # 真正缺「消息」列表的是「窗口在、但没停在聊天界面」（通讯录/设置/搜索页），
+        # 或者当前会话是「文件传输助手」这类没有消息区的空会话。说错原因会让人去
+        # 反复最小化/还原窗口，怎么试都没用。
+        return [], [], "", "找不到「消息」列表：请先在微信里打开一个聊天（窗口这会儿可能停在通讯录/设置页）"
     sessions = found.get(LIST_SESSIONS)
     return (
         _item_names(chat),

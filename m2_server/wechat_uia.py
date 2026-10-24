@@ -424,6 +424,17 @@ def uia_ready() -> bool:
     return ensure_active()
 
 
+def activation_reason() -> str:
+    """上一次 `ensure_active()` 没成功的原因（成功时为空串）。
+
+    给「读 UIA 的只读接口」用：窗口在、但 gate 打不开时，别让调用方再编一句
+    「找不到消息列表」——那会把人引去反复最小化窗口（2026-10-24 用户实测）。
+    """
+    if _state.get("ready"):
+        return ""
+    return str(_state.get("reason") or "").strip()
+
+
 def reset_state() -> None:
     """清空激活缓存与线程级 root 缓存（测试与微信重启后调用）。"""
     _state.update(pid=None, ready=False, rva=None, reason="", checked=0.0)

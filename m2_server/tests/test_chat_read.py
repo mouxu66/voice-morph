@@ -164,6 +164,139 @@ def test_read_chat_degrades_to_error_not_exception(monkeypatch):
     assert snap == {"ok": False, "error": "读不到微信窗口"}
 
 
+# ---------------------------------------------------------------- 窗口失败要分因
+# 2026-10-24 用户视角实测：微信收进托盘时，同一块面板上「发送预检」说
+# 「它还在运行、多半被关进了托盘」，而「分析聊天」只说「没开」——
+# 两个说法冲突，用户会认定分析按钮坏了。原因在 collect() 把
+# wechat_proc.find_wechat_hwnd() 的分因报错吞掉了。
+
+
+def test_collect_uses_tray_reason_when_window_missing(monkeypatch):
+    import wechat_proc
+    import wechat_uia
+
+    monkeypatch.setattr(wechat_uia, "_wechat_hwnd_pid", lambda: (None, None))
+    monkeypatch.setattr(wechat_uia, "_root", lambda: None)
+    monkeypatch.setattr(wechat_uia, "UIA_ENABLED", True)
+
+    tray_msg = (
+        "微信没有任何可见窗口（pid: 9848）——它还在运行、多半被关进了托盘："
+        "请点开微信主窗口、进入聊天界面后重试"
+    )
+
+    def _no_window():
+        raise RuntimeError(tray_msg)
+
+    monkeypatch.setattr(wechat_proc, "find_wechat_hwnd", _no_window)
+    msgs, sess, chat, err = chat_read.collect()
+    assert err == tray_msg          # 原文透传，不再改写成「没开」
+    assert "托盘" in err
+    assert msgs == [] and sess == [] and chat == ""
+
+
+def test_collect_reports_disabled_uia_before_probing_window(monkeypatch):
+    """UIA 被人为关掉时，别去怪微信没开 —— 那是配置问题。"""
+    import wechat_uia
+
+    monkeypatch.setattr(wechat_uia, "_wechat_hwnd_pid", lambda: (None, None))
+    monkeypatch.setattr(wechat_uia, "_root", lambda: None)
+    monkeypatch.setattr(wechat_uia, "UIA_ENABLED", False)
+    err = chat_read.collect()[3]
+    assert "VM_WECHAT_UIA" in err
+
+
+def test_collect_says_uia_not_materialized_when_window_exists(monkeypatch):
+    import wechat_proc
+    import wechat_uia
+
+    monkeypatch.setattr(wechat_uia, "_wechat_hwnd_pid", lambda: (123, 456))
+    monkeypatch.setattr(wechat_uia, "ensure_active", lambda force=False: True)
+    monkeypatch.setattr(wechat_uia, "_root", lambda: None)
+    monkeypatch.setattr(wechat_uia, "UIA_ENABLED", True)
+    monkeypatch.setattr(wechat_proc, "find_wechat_hwnd", lambda: 12345)
+    err = chat_read.collect()[3]
+    assert "控件树" in err
+
+
+def test_collect_missing_message_list_points_at_chat_view(monkeypatch):
+    """窗口在、树也在，只是没停在聊天界面 → 别再说「最小化了」（怎么试都没用）。"""
+
+    class _List:
+        def __init__(self, name):
+            self.Name = name
+            self.ControlTypeName = "ListControl"
+
+        def GetChildren(self):
+            return []
+
+    class _Root:
+        Name = "root"
+        ControlTypeName = "WindowControl"
+
+        def GetChildren(self):
+            return [_List("会话")]      # 只有会话列表，没有「消息」
+
+    monkeypatch.setattr(chat_read.wechat_uia, "_wechat_hwnd_pid", lambda: (123, 456))
+    monkeypatch.setattr(chat_read.wechat_uia, "ensure_active", lambda force=False: True)
+    monkeypatch.setattr(chat_read.wechat_uia, "_root", lambda: _Root())
+    err = chat_read.collect()[3]
+    assert "消息" in err
+    assert "最小化" not in err
+
+
+def test_collect_activates_uia_gate_before_reading(monkeypatch):
+    """读之前必须先热激活 gate —— 微信重启后 gate 归零，不激活就永远读到空树。
+
+    （2026-10-24 实测：发送链路会激活，而「分析聊天」不走那条路，
+      于是重启微信后第一次点分析只看到「找不到消息列表」。）
+    """
+    import wechat_uia
+
+    calls: list[bool] = []
+
+    def _act(force=False):
+        calls.append(force)
+        return True
+
+    monkeypatch.setattr(wechat_uia, "_wechat_hwnd_pid", lambda: (123, 456))
+    monkeypatch.setattr(wechat_uia, "ensure_active", _act)
+    monkeypatch.setattr(chat_read.wechat_uia, "_root", lambda: _RootWithChat())
+    chat_read.collect()
+    assert calls == [False]          # 只激活一次，不 force（force 是发送链路的重试用）
+
+
+def test_collect_surfaces_gate_failure_reason(monkeypatch):
+    """gate 打不开时要说清「为什么」，别再落到「找不到消息列表」那句误导文案上。"""
+    import wechat_uia
+
+    monkeypatch.setattr(wechat_uia, "_wechat_hwnd_pid", lambda: (123, 456))
+    monkeypatch.setattr(wechat_uia, "ensure_active", lambda force=False: False)
+    monkeypatch.setattr(wechat_uia, "activation_reason", lambda: "写内存失败")
+    err = chat_read.collect()[3]
+    assert "写内存失败" in err
+    assert "消息列表" not in err
+
+
+class _RootWithChat:
+    """最小可用的假 UIA 根：一份「消息」列表 + 一份「会话」列表。"""
+
+    Name = "root"
+    ControlTypeName = "WindowControl"
+
+    class _List:
+        def __init__(self, name):
+            self.Name = name
+            self.ControlTypeName = "ListControl"
+
+        def GetChildren(self):
+            return []
+
+    def GetChildren(self):
+        return [self._List("消息"), self._List("会话")]
+
+
+
+
 # ---------------------------------------------------------------- HTTP 壳
 
 def _ok_tick():
