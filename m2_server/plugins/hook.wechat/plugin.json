@@ -1,14 +1,21 @@
 {
   "id": "hook.wechat",
-  "name": "微信发送",
+  "name": "微信发送与托管",
   "kind": "builtin",
   "category": "hook",
   "order": 220,
-  "summary": "把变声结果发进微信 PC 版（UIA 自动化 + 录音浮层绿钮判据）",
+  "summary": "把变声结果发进微信 PC 版；以及「全局托管」——盯白名单会话、只回提问和 @你、后台发纯文本",
   "requires": [],
-  "routers": ["wechat_voice"],
+  "routers": ["wechat_voice", "autopilot_api"],
   "hooks": [],
-  "routes": [],
+  "routes": [
+    {
+      "path": "/autopilot",
+      "module": "Autopilot",
+      "export": "AutopilotRoute",
+      "nav": { "label": "全局托管", "icon": "Bot", "group": "desktop", "order": 20 }
+    }
+  ],
   "legacy_routes": [{ "path": "/wechat", "redirect": "/tts?tab=wechat" }],
   "extras": {
     "python": ["Pillow", "psutil", "uiautomation"],
@@ -23,6 +30,6 @@
   },
   "health": { "module": "wechat_uia", "attr": "status" },
   "disable": {
-    "note": "关闭后微信发送入口消失。这一环最依赖外部环境，单独成插件就是为了让「是这个能力不可用」一眼可见"
+    "note": "关闭后微信发送入口与「全局托管」页一起消失（托管默认关，开不开由用户每次授权）。这一环最依赖外部环境，单独成插件就是为了让「是这个能力不可用」一眼可见"
   }
 }

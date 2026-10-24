@@ -111,7 +111,7 @@
 │   ├── config.py         # 路径/端口/鉴权/模型目录（环境变量可覆盖）
 │   ├── common.py history.py clip_qc.py speaker_sep.py loopback_capture.py quality_verdict.py ...
 │   ├── cascade.py rvc_live.py offline_vc.py seed_vc.py audiobook.py
-│   ├── effects.py wechat_voice.py finetune.py history_api.py openai_compat.py   # 各能力 APIRouter
+│   ├── effects.py wechat_voice.py autopilot_api.py finetune.py history_api.py openai_compat.py   # 各能力 APIRouter
 │   ├── remote_api.py    # 手机遥控（编排层：只报"三个标签各自能不能用"，不Own 功能）
 │   ├── watermark_api.py blindtest_api.py course_api.py course_video.py radar_api.py   # 音频水印溯源 / 盲听评测（手机扫码盲听打分）/ 讲稿录课（逐页旁白 + 课件画面出片）/ 微信「该不该回」雷达（纯像素）
 │   ├── assistant_api.py     # 会话助理：/observe 只出提案，/proposals/{id}/confirm 才是唯一执行入口
@@ -162,9 +162,9 @@
 
 ## 后端 M2（FastAPI）
 
-`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 42 个独立 router 模块**（默认 `standard` 预设只挂 17 个，见上面「关掉一个能力」那节的说明）：
+`server.py` 是统一应用，通过 `APIRouter` 把各能力挂到 `/api` 前缀（开发走 vite proxy、生产直连共用一套路径）。**全开预设下 43 个独立 router 模块**（默认 `standard` 预设只挂 17 个，见上面「关掉一个能力」那节的说明）：
 
-`cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history_api`（历史）、`cover_api`（翻唱）、`ytdlp_api`（在线扒歌）、`audition_api`（试音间）、`soundboard`（特效声板 / 歌声垫底三档预混）、`market_api` / `pet_market_api`（市场）、`openai_compat`（OpenAI 兼容层）、`watermark_api`（音频水印溯源）、`blindtest_api`（盲听评测）、`course_api`（讲稿录课：PPT 备注页逐页旁白）、`radar_api`（微信「该不该回」像素雷达 —— 只看屏幕不发消息）、`assistant_api`（会话助理：点歌 / 发语音 / 拟回复，一切发送先出提案再等确认）、`remote_api`（手机遥控的**能力现状查询** —— 见下）。
+`cascade`（级联变声）、`rvc_live`（实时变声）、`offline_vc`（离线变声）、`seed_vc`、`audiobook`（有声书）、`effects`（音效）、`wechat_voice`（微信发送）、`finetune`（音色微调/QLoRA）、`history_api`（历史）、`cover_api`（翻唱）、`ytdlp_api`（在线扒歌）、`audition_api`（试音间）、`soundboard`（特效声板 / 歌声垫底三档预混）、`market_api` / `pet_market_api`（市场）、`openai_compat`（OpenAI 兼容层）、`watermark_api`（音频水印溯源）、`blindtest_api`（盲听评测）、`course_api`（讲稿录课：PPT 备注页逐页旁白）、`radar_api`（微信「该不该回」像素雷达 —— 只看屏幕不发消息）、`assistant_api`（会话助理：点歌 / 发语音 / 拟回复，一切发送先出提案再等确认）、`remote_api`（手机遥控的**能力现状查询** —— 见下）、`autopilot_api`（微信全局托管：授权后按白名单自动回文本，默认关、可急停、只走本地模型）。
 
 > `remote_api` 是这套系统里第一个**不拥有功能、只拥有依赖知识**的 router：手机遥控页的
 > 三个标签分别打 `sound.rvc-live` / `hook.wechat` / `pet.companion` 的端点，

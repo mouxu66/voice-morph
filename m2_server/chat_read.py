@@ -114,6 +114,8 @@ def parse_sessions(names: list[str], limit: int = 8) -> list[dict]:
         i志愿\\n已置顶\\n[1条] \\n2026年…\\n昨天 08:58\\n消息免打扰
 
     「已置顶 / 消息免打扰」是状态标记不是内容，先剔掉再按位置取。
+    2026-10-24：这两个标记不再只是丢弃 —— `muted` / `pinned` 现在是显式字段，
+    自动托管必须知道「这个会话免打扰」（免打扰的群不该替用户回）。
     """
     out: list[dict] = []
     for raw in names:
@@ -121,6 +123,8 @@ def parse_sessions(names: list[str], limit: int = 8) -> list[dict]:
         if not lines:
             continue
         title = lines[0]
+        muted = "消息免打扰" in lines
+        pinned = "已置顶" in lines
         rest = [x for x in lines[1:] if x not in ("已置顶", "消息免打扰")]
         unread = 0
         if rest:
@@ -136,6 +140,8 @@ def parse_sessions(names: list[str], limit: int = 8) -> list[dict]:
                 "unread": unread,
                 "preview": preview[:80],
                 "time": when,
+                "muted": muted,
+                "pinned": pinned,
             }
         )
         if len(out) >= limit:

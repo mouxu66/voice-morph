@@ -24,4 +24,5 @@ export * from "./domains/pet";
 export * from "./domains/audition";
 export * from "./domains/preserve";
 export * from "./domains/watermark";
+export * from "./domains/autopilot";
 export * from "./domains/blindtest";

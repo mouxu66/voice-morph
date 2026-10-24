@@ -339,6 +339,17 @@ FAST_TESTS = [
     # 错的是我挑的 20s 在 345Hz、他的参照 116Hz → +19 半音。守：降调必须是负整数、
     # 挑窗口与报音高同一把尺子（YIN 会被 fmax 边界骗）、A3 只能是 EQ 派生（重跑模型会换随机性）。
     "m2_server/tests/test_cover_register.py",
+    # ★ 微信全局托管（约 2s，全假 ops / 假 UIA 控件 / 裸 FastAPI）：这是全项目**唯一
+    # 会替用户给别人发消息**的能力，而它的每条退化都**不报错** ——
+    #   ① 白名单/免打扰/静默时段判错 → 半夜替用户回了不该回的会话（真实社交事故）；
+    #   ② 草稿守卫失效 → 把用户打了一半的字冲掉；
+    #   ③ 会话校验失效 → 消息发到错误的聊天窗口；
+    #   ④ loopback/consent 双闸失效 → 同网段任何人可开托管，或没授权就开跑。
+    # 四条都只有「别人收到了什么」能发现，必须钉在提交那一刻。见 `docs/方案-全局托管.md`。
+    "m2_server/tests/test_chat_autopilot.py",
+    "m2_server/tests/test_wechat_text.py",
+    "m2_server/tests/test_autopilot_api.py",
+    "m2_server/tests/test_radar_peek.py",
 ]
 
 

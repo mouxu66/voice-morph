@@ -148,6 +148,32 @@ def replies(limit: int = 14, last_side: str = ""):
     return {"ok": True, "chat": snap.get("chat"), **out}
 
 
+def peek_side() -> dict:
+    """**只看最后一条是谁发的**（左=对方 / 右=自己），不推进观察状态机。
+
+    为什么自动托管要这个：UIA 的消息 ListItem **不带发送方**，群聊里也没有可靠的
+    几何信息（每个 ListItem 的矩形都是整行）。而「对方最后发言」是托管敢回的前提，
+    只有雷达的像素左右分栏能确定。走 `peek()` 而不是 `tick()`：托管每轮只取一个值，
+    不该喂状态机、更不该把用户的「等了多久」算乱。
+    """
+    try:
+        with _RADAR_LOCK:
+            frame, layout, err = _radar().peek()
+    except Exception as exc:  # noqa: BLE001 —— 观察失败是常态（微信没开/最小化）
+        return {"ok": False, "side": "", "kind": "", "n_blocks": 0, "error": f"雷达不可用：{exc}"}
+    if err:
+        return {"ok": False, "side": "", "kind": "", "n_blocks": 0, "error": err}
+    assert layout is not None  # err 为空蕴含非空
+    last = layout.last_chat
+    return {
+        "ok": last is not None,
+        "side": last.side if last is not None else "",
+        "kind": last.kind if last is not None else "",
+        "n_blocks": len(layout.blocks),
+        "error": "" if last is not None else "聊天区没有识别到消息块",
+    }
+
+
 @router.get("/probe")
 def probe():
     """诊断：窗口矩形 + 聊天区 ROI + 最近一次识别出的块数。**不推进观察状态。**

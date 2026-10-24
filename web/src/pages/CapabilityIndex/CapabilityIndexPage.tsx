@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom"
-import { ArrowRight, Boxes, Camera, CloudDownload, Hammer, Headphones, Library, Mic2, Music4, Presentation, Radio, ScanSearch, ShieldCheck, ShoppingBag, Sparkles, Volume2 } from "lucide-react"
+import { ArrowRight, Bot, Boxes, Camera, CloudDownload, Hammer, Headphones, Library, Mic2, Music4, Presentation, Radio, ScanSearch, ShieldCheck, ShoppingBag, Sparkles, Volume2 } from "lucide-react"
 import { Card, PageShell } from "@/components/layout/PageShell"
 import { pluginVisible, usePluginCatalog } from "@/lib/pluginRoutes"
 import { RemoteQrCard } from "./RemoteQrCard"
@@ -50,6 +50,7 @@ export function CapabilityIndexRoute() {
     { to: "/voices?tab=mine", name: "我的音色", desc: "所有音色档案的管理与导出", icon: Library, plugin: null },
     { to: "/voices?tab=market", name: "音色市场", desc: "开源音色下载安装，含断点续传与回滚", icon: ShoppingBag, plugin: null },
     { to: "/pet-market", name: "桌宠与人偶市场", desc: "桌面人偶本体、皮肤市场、自定义形象", icon: Sparkles, plugin: "pet.market" },
+    { to: "/autopilot", name: "全局托管", desc: "授权后替你盯着白名单会话，只在对方提问或 @ 你时回一条短文本；默认关、可急停", icon: Bot, plugin: "hook.wechat" },
   ]
 
   const visible = ITEMS.filter((it) => it.plugin === null || pluginVisible(catalog, it.plugin))

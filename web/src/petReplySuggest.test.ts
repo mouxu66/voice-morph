@@ -40,6 +40,8 @@ function fakeEl() {
 type ReplyPayload = {
   ok?: boolean
   engine?: string
+  /** 后端 `suggest()` 会回报实际用的模型名（页面暂不展示，但夹具按真实响应写） */
+  model?: string
   replies?: string[]
   why?: string
   note?: string

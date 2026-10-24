@@ -869,10 +869,11 @@ def _key(vk: int, up: bool = False, scan: int = 0) -> None:
     _send_input_kb(vk, scan, up)
 
 
-def _send_input_mouse(flags: int, dx: int = 0, dy: int = 0) -> None:
+def _send_input_mouse(flags: int, dx: int = 0, dy: int = 0, mouse_data: int = 0) -> None:
+    """鼠标事件。`mouse_data` 给滚轮用（MOUSEEVENTF_WHEEL 的 delta），其余事件恒为 0。"""
     inp = _INPUT()
     inp.type = _INPUT_MOUSE
-    inp.mi = _MOUSEINPUT(dx, dy, 0, flags, 0, None)
+    inp.mi = _MOUSEINPUT(dx, dy, mouse_data, flags, 0, None)
     _user32().SendInput(1, _ctypes.byref(inp), _ctypes.sizeof(inp))
 
 

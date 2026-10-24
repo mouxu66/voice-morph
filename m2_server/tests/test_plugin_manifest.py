@@ -550,6 +550,7 @@ _FROZEN_ROUTES: tuple[tuple[str, str, str], ...] = (
     ("/preserve", "Preserve", "PreserveRoute"),  # 声音保存：教师等职业用嗓人群的嗓音档案
     ("/watermark", "Watermark", "WatermarkRoute"),  # 音频水印：AudioSeal 溯源码（可检出/可溯源）
     ("/blindtest", "BlindTest", "BlindTestRoute"),  # 盲听评测：手机扫码盲听打 MOS 分，回传汇总
+    ("/autopilot", "Autopilot", "AutopilotRoute"),  # 全局托管：授权后按白名单自动回文本（默认关、可急停）
 )
 
 _FROZEN_LEGACY: tuple[tuple[str, str], ...] = (
@@ -584,6 +585,7 @@ _FROZEN_NAV: tuple[tuple[str, str, str, str, int], ...] = (
     ("/preserve", "声音保存", "ShieldCheck", "voices", 40),
     ("/watermark", "音频水印", "Fingerprint", "voices", 50),
     ("/blindtest", "盲听评测", "Headphones", "voices", 25),
+    ("/autopilot", "全局托管", "Bot", "desktop", 20),
 )
 
 

@@ -72,6 +72,20 @@ _SYSTEM = (
 
 _KIND_LABEL = {"voice": "语音", "media": "图片/文件"}
 
+#: 自动托管用的系统提示：**只出一条**、**不许旁白**。
+#: 与 `_SYSTEM` 分开而不是复用：列表里给 3 条时模型会倾向「给选项」，
+#: 托管要的是「现在就把这句话发出去」，多给一条反而增加发错的风险。
+_SYSTEM_ONE = (
+    "你是微信聊天助手。读下面的聊天记录，写**一条**现在就能直接发出去的中文口语回复。"
+    "只输出一个 JSON 对象，不要解释、不要 markdown、不要代码块。格式："
+    '{"reply":"要发出去的那句话","why":"一句话理由（不超过20字）"}'
+    "reply 不超过 30 个汉字，像真人随手打的；不要复述对方原话，"
+    "不要写「建议你」「你可以」「你可以回」这类旁白，不要加引号，不要加句号以外的装饰。"
+)
+
+MAX_ONE_TOKENS = 96
+ONE_TEMPERATURE = 0.5
+
 _LOCK = threading.RLock()
 _PROC: subprocess.Popen | None = None
 _PORT: int = 0
@@ -291,6 +305,41 @@ def parse_reply_json(text: str) -> dict | None:
     return {"why": why, "replies": replies[:3], "should_reply": should is not False}
 
 
+def parse_one_json(text: str) -> dict | None:
+    """从模型输出里抠出**一条**可直接发送的 `{reply, why}`。校验不过返回 None。
+
+    校验比 `parse_reply_json` 更严：托管是**真的会发出去**，所以
+    「建议你…」「你可以回…」这类旁白、带换行的长文、引号包裹、空串都要拦下。
+    调用方拿到 None 必须**放弃本次回复**（不是退回模板再发 —— 模板是给人点的，
+    自动发出去就成了复读机）。
+    """
+    if not text:
+        return None
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start : end + 1])
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("reply")
+    if not isinstance(raw, str):
+        return None
+    reply = raw.strip().strip('"“”').strip()
+    if not reply or len(reply) > 40:
+        return None
+    if "\n" in reply or "\r" in reply:
+        return None
+    for bad in ("建议你", "你可以回", "你可以回复", "回复建议", "这是一条回复"):
+        if reply.startswith(bad):
+            return None
+    why = data.get("why")
+    why = why.strip()[:40] if isinstance(why, str) else ""
+    return {"reply": reply, "why": why}
+
+
 def _rule_replies(messages: list[dict], last_side: str | None = None) -> list[str]:
     """模型不在时的兜底。只求「能直接点着发」，不假装懂语境。"""
     if last_side == "right":
@@ -305,15 +354,23 @@ def _rule_replies(messages: list[dict], last_side: str | None = None) -> list[st
     return ["收到", "哈哈哈", "好嘞"]
 
 
-def _chat(port: int, prompt: str, timeout: float) -> str:
+def _chat(
+    port: int,
+    prompt: str,
+    timeout: float,
+    *,
+    system: str | None = None,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> str:
     payload = {
         "model": "qwen3vl",
         "messages": [
-            {"role": "system", "content": _SYSTEM},
+            {"role": "system", "content": system or _SYSTEM},
             {"role": "user", "content": prompt},
         ],
-        "max_tokens": MAX_TOKENS,
-        "temperature": TEMPERATURE,
+        "max_tokens": MAX_TOKENS if max_tokens is None else max_tokens,
+        "temperature": TEMPERATURE if temperature is None else temperature,
     }
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/chat/completions",
@@ -364,6 +421,30 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
         "why": parsed["why"],
         "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
     }
+
+
+def suggest_one(messages: list[dict], chat: str = "", last_side: str | None = None) -> dict | None:
+    """自动托管用：**一条**可直接发送的回复；任何一步不成立都返回 None。
+
+    为什么不像 `suggest()` 那样降级到规则模板：模板是给用户点的备选，
+    自动发出去会变成复读机（「收到」「哈哈哈」），比不回更糟。
+    """
+    ok, _why_not = available()
+    if not ok:
+        return None
+    try:
+        port = _ensure_server()
+        content = _chat(
+            port,
+            build_prompt(messages, chat, last_side),
+            CHAT_TIMEOUT,
+            system=_SYSTEM_ONE,
+            max_tokens=MAX_ONE_TOKENS,
+            temperature=ONE_TEMPERATURE,
+        )
+    except Exception:  # noqa: BLE001 —— 托管侧只关心「有没有可用的一条」
+        return None
+    return parse_one_json(content)
 
 
 def status() -> dict:
