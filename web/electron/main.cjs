@@ -15,6 +15,12 @@ const sfxWindow = require("./sfx-window.cjs");
 const setup = require("./setup-ipc.cjs");
 const { registerUpdateIpc, scheduleStartupUpdateCheck } = require("./update-ipc.cjs");
 
+// 坏管道（EPIPE）静默：必须赶在任何 console.log 之前装。
+// 主进程 stdout 是启动者给的管道；启动者退出后每写一次日志就 EPIPE，
+// 无兜底时 Electron 弹模态框，后端持续打日志时会一个接一个弹（2026-10-24 实测）。
+// 原理与取舍见 pipe-guard.cjs 文件头。
+require("./pipe-guard.cjs").installPipeGuard();
+
 // 主窗口引用（setup IPC 弹目录选择器时需要 parent window，保证对话框置顶居中）
 let mainWindow = null;
 

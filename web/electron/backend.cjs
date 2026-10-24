@@ -5,6 +5,7 @@ const { spawn, execFileSync } = require("child_process");
 const http = require("http");
 const path = require("path");
 const fs = require("fs");
+const { writableStream } = require("./pipe-guard.cjs");
 
 const BACKEND_PORT = 8000;
 let backendProc = null;
@@ -12,6 +13,49 @@ let projectRoot = null;
 const PID_FILE = path.join(app.getPath("userData"), "backend.pid");
 // 后端 stdout/stderr 落盘：装到别人机器上出问题时，这是唯一能自查的线索
 const BACKEND_LOG = path.join(app.getPath("userData"), "backend.log");
+
+// ── 后端日志流（模块级，便于测试注入与全链路复用）──────────────────────
+// 2026-10-24 EPIPE 根治：日志既镜像到主进程 stdout（pumpBackendLine），也落盘
+// （appendBackendLog）。两条路都可能坏：
+//   - stdout 是启动者给的管道，启动者退出后写它即 EPIPE（见 pipe-guard.cjs）；
+//   - 文件流自身出错（磁盘满、文件被占）会 emit 'error'，无监听时升级成
+//     未捕获异常 → Electron 弹模态框。日志不是关键路径，坏了静默停写即可。
+let logStream = null;
+let logStreamBroken = false;
+
+function ensureBackendLogStream() {
+  if (logStream || logStreamBroken) return logStream;
+  try {
+    logStream = fs.createWriteStream(BACKEND_LOG, { flags: "a" });
+    logStream.on("error", () => {
+      logStreamBroken = true;
+    });
+  } catch {
+    logStreamBroken = true;
+  }
+  return logStream;
+}
+
+function appendBackendLog(text) {
+  if (logStreamBroken || !logStream) return;
+  try {
+    logStream.write(text);
+  } catch {
+    logStreamBroken = true;
+  }
+}
+
+/**
+ * 把后端子进程的一行输出镜像到主进程 stdout 并落盘。
+ * stdout 已死（启动者关了管道）时只落盘不镜像 —— 安装版本来就没人看主进程
+ * stdout，日志文件才是排查线索；硬写只会攒 EPIPE 模态框。
+ */
+function pumpBackendLine(tag, text) {
+  if (writableStream(process.stdout)) {
+    console.log(`[backend${tag}]`, text.trim());
+  }
+  appendBackendLog(text);
+}
 
 function setProjectRoot(root) {
   projectRoot = root;
@@ -501,7 +545,7 @@ async function startBackend(root) {
       "utf-8",
     );
   } catch {}
-  const logStream = fs.createWriteStream(BACKEND_LOG, { flags: "a" });
+  ensureBackendLogStream();
 
   let spawnError = "";
   const dataRoot = resolveDataRoot(root);
@@ -513,15 +557,11 @@ async function startBackend(root) {
       const mig = migrateLegacyData(legacy, dataRoot);
       const line = `[data] 数据根 ${legacy} → ${dataRoot}：${mig.status} ${JSON.stringify(mig)}\n`;
       console.log(line.trim());
-      try {
-        logStream.write(line);
-      } catch {}
+      appendBackendLog(line);
     } catch (err) {
       const line = `[data] 迁移失败（不影响启动）：${err && err.message}\n`;
       console.log(line.trim());
-      try {
-        logStream.write(line);
-      } catch {}
+      appendBackendLog(line);
     }
   }
   backendProc = spawn(python, [serverPy], {
@@ -531,20 +571,12 @@ async function startBackend(root) {
     windowsHide: true,
   });
   saveBackendPid();
-  const pump = (tag) => (d) => {
-    const text = d.toString();
-    console.log(`[backend${tag}]`, text.trim());
-    try {
-      logStream.write(text);
-    } catch {}
-  };
+  const pump = (tag) => (d) => pumpBackendLine(tag, d.toString());
   backendProc.stdout.on("data", pump(""));
   backendProc.stderr.on("data", pump(":err"));
   backendProc.on("exit", (code) => {
     console.log(`[backend] exited with code ${code}`);
-    try {
-      logStream.write(`\n[exit] code=${code}\n`);
-    } catch {}
+    appendBackendLog(`\n[exit] code=${code}\n`);
     backendProc = null;
   });
   // spawn 失败（如 python 不存在）会触发 error，未监听将导致主进程崩溃
@@ -552,9 +584,7 @@ async function startBackend(root) {
     spawnError = err.message;
     console.error(`[backend] 启动失败: ${err.message}`);
     console.error(`[backend] 请确认 Python 后端环境就绪（.venv 或系统 python）`);
-    try {
-      logStream.write(`\n[spawn error] ${err.message}\n`);
-    } catch {}
+    appendBackendLog(`\n[spawn error] ${err.message}\n`);
     backendProc = null;
   });
   return { attempted: true, python, reason: spawnError, reusedExternal: false };
@@ -792,4 +822,13 @@ module.exports = {
   reportBackendTrouble,
   backendPost,
   httpJson,
+  appendBackendLog,
+  pumpBackendLine,
+  ensureBackendLogStream,
+  // 测试专用：注入假日志流（模拟磁盘满/文件被占），并重置损坏 flag。
+  // 与 externalResourceEnv 同一模式——经导出对象替换，不动闭包。
+  _setBackendLogStreamForTest: (s) => {
+    logStream = s;
+    logStreamBroken = false;
+  },
 };

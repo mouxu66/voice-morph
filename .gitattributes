@@ -27,3 +27,15 @@
 # 不用 `eol=lf`：上面的实测已经证明在本机（git + Git for Windows）没生效，
 # 而 `-text` 是"不碰"而非"要求某个值"，没有让位问题。
 web/public/licenses/** -text
+
+# 主进程源码行尾钉 LF（2026-10-24 加）
+#
+# 为什么单钉这一类：web/electron/*.cjs 的 blob 本来就是 LF，但本机
+# core.autocrlf=true 会把它们检出/smudge 成 CRLF（git stash pop、
+# checkout 都会触发）。app.asar 内的副本按字节与工作区比对
+# （tools/audit_asar_freshness.cjs，pre-commit 门禁）——行尾一漂就报
+# 「陈旧 N 个」假红，而 asar 内容其实是对的（2026-10-24 实踩：
+# stash pop 后 audit 报 backend.cjs/pipe-guard.cjs 陈旧，白查一轮）。
+# blob 已是 LF，所以 eol=lf 在这里**会**生效（.githooks 那条不生效
+# 是因为它的 blob 是 CRLF，见上方 2026-09-11 实测）。
+web/electron/*.cjs text eol=lf
