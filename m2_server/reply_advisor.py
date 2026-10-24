@@ -54,6 +54,10 @@ ENV_BOOT = "VM_REPLY_BOOT_S"
 DEFAULT_MODEL = r"D:\llama-b9660-bin-win-cuda-13.3-x64\Qwen3.5-9B-Q4_K_M.gguf"
 MODEL_LABEL = "qwen3.5-9b"
 
+#: 9B Q4 常驻时的显存占用（2026-10-24 实测 5.4G）。**只用于日志里说人话**，
+#: 不参与任何判断 —— 要不要让路看的是「谁在跑」，不是这个估算值。
+MODEL_VRAM_MB = 5400
+
 #: 推理超时。CPU 档实测 5.9s，留 10 倍余量给「三者同卡」那种极端情况。
 CHAT_TIMEOUT = 90.0
 
@@ -247,6 +251,33 @@ def shutdown() -> None:
     """后端退出时顺手带走子进程（否则任务管理器里躺一个 2.3GB 的 llama-server）。"""
     with _LOCK:
         _kill_locked()
+
+
+def is_running() -> bool:
+    """子进程是否活着。纯内存态，不探端口 —— 调用方只想问「现在占没占着显存」。"""
+    proc = _PROC
+    return proc is not None and proc.poll() is None
+
+
+def _realtime_busy() -> str:
+    """实时变声是否在跑；在跑返回人话原因，不在跑返回空串。
+
+    为什么本模块要主动让路：9B 一进显存就是 5.4G，而 RVC 实时链路要 1.37G、
+    且要求余量 ≥2G（`rvc_live.MIN_LIVE_FREE_VRAM_MB`）。2026-10-25 实测：
+    9B 起来后整卡只剩 ~780MB —— 此时再开变声就是 OOM（无声 + 声卡残留）。
+    与其让变声跑到一半崩，不如这条建议先给模板。
+
+    探测按「查不到就当不忙」处理：`rvc_live` 导入失败、探测本身抛异常，
+    都不该让人点不动按钮。
+    """
+    try:
+        from rvc_live import _live_proc_alive
+
+        if _live_proc_alive():
+            return "实时变声正在运行（显存让它先占着），先给模板建议"
+    except Exception:  # noqa: BLE001 —— 探测失败不是「忙」
+        return ""
+    return ""
 
 
 atexit.register(shutdown)
@@ -518,6 +549,10 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
     engine=local 表示真模型给的；engine=rule 是降级模板（note 里写原因）。
     """
     start = time.perf_counter()
+    busy = _realtime_busy()
+    if busy:
+        # 与实时变声互斥：不拉起模型，但仍要给能点的东西（桌宠不该「点了没反应」）。
+        return {"engine": "rule", "replies": _rule_replies(messages, last_side), "note": busy}
     ok, why_not = available()
     if not ok:
         return {
@@ -577,6 +612,9 @@ def suggest_one(messages: list[dict], chat: str = "", last_side: str | None = No
     为什么不像 `suggest()` 那样降级到规则模板：模板是给用户点的备选，
     自动发出去会变成复读机（「收到」「哈哈哈」），比不回更糟。
     """
+    if _realtime_busy():
+        # 托管是**真发**：没有模型就不发，绝不拿模板顶出去（与 suggest 的降级不同）。
+        return None
     ok, _why_not = available()
     if not ok:
         return None

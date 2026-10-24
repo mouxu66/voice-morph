@@ -191,6 +191,35 @@ def _sync_worker_for_profile(profile: str) -> bool:
     return was_alive
 
 
+def _release_reply_model() -> bool:
+    """启动实时变声前让路：卸载本地回复模型（9B，约 5.4GB）。
+
+    与 `_sync_worker_for_profile` 同一思路（game 档卸载 TTS），但触发条件不同：
+    这里不是「换档位」，而是「RVC 要开始吃显存了」。2026-10-25 实测：9B 起来后
+    整卡只剩 ~780MB，而 RVC 峰值 1372MB、预检阈值 2048MB —— 不让路就是 OOM。
+
+    **单向**：不在这里、也不在 RVC 停止时回拉。回复模型是懒加载的，用户下次点
+    「怎么回」时 `_ensure_server()` 自己会起（空闲 90 秒再自杀）—— 跟 game 档
+    「回到 balanced 也不主动拉起」是同一条规矩，否则每次开麦都白付 10 秒冷启。
+
+    返回卸载前模型是否活着。失败只记日志，绝不阻断变声本身。
+    """
+    try:
+        import reply_advisor
+
+        was_alive = reply_advisor.is_running()
+        if was_alive:
+            reply_advisor.shutdown()
+            logger.info(
+                "[live] 已卸载本地回复模型（释放约 %.1fGB 显存）",
+                reply_advisor.MODEL_VRAM_MB / 1024,
+            )
+        return was_alive
+    except Exception as e:  # noqa: BLE001 —— 释放失败不该拦住变声
+        logger.warning("[live] 卸载本地回复模型失败（不影响变声）: %s", e)
+        return False
+
+
 # GPU 显存探测缓存：均衡档 1s TTL（显存条跟手）；游戏档 10s TTL。
 # 为什么游戏档要拉长：_gpu_snapshot 一次要 spawn 3 个 nvidia-smi（used/total/pid），
 # 而 /rvc/live/status 被前端（忙时 1.5s）与桌宠（2s）同时轮询 —— 相当于游戏中每秒
@@ -1369,7 +1398,11 @@ def rvc_live_start(
     if not RUNTIME_PY.exists():
         raise HTTPException(status_code=500, detail=f"未找到 RVC 运行时: {RUNTIME_PY}")
     # 显存余量预检：避免在余量不足时启动 → 高负载下 OOM 崩溃（压测证实会崩）
+    # 预检之前先让回复模型让路：它是懒加载的，腾出来的是 5.4G，而且不会自己回来。
+    released = _release_reply_model()
     hint = _vram_precheck()
+    if hint and released:
+        hint += "（已卸载本地回复模型，但余量仍然不够）"
     if hint:
         raise HTTPException(status_code=409, detail=hint)
     if not _apply_model_config():

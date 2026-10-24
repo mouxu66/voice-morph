@@ -351,3 +351,117 @@ def test_radar_replies_passthrough_when_wechat_closed(monkeypatch):
     out = radar_api.replies(limit=14)
     assert out["ok"] is False
     assert "读不到微信窗口" in out["error"]
+
+
+# ---------------------------------------------------------------- 与实时变声互斥（2026-10-25）
+# 2026-10-25 本机实测：9B 起来后整卡只剩 ~780MB，而 RVC 峰值 1372MB、预检阈值 2048MB。
+# 换 4B 时代「4B+RVC 还能剩 1040MB」的数据不可外推（4B 全量才 4.1G）。
+# 这一节锁住两件事：RVC 在跑时**不许**拉起模型；RVC 要起时**必须**先让模型让路。
+
+
+def test_realtime_busy_detects_running_rvc(monkeypatch):
+    import rvc_live
+
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: True)
+    note = ra._realtime_busy()
+    assert "实时变声" in note          # 给用户看的原因，不能是空串
+
+
+def test_realtime_busy_is_empty_when_rvc_idle(monkeypatch):
+    import rvc_live
+
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: False)
+    assert ra._realtime_busy() == ""
+
+
+def test_realtime_busy_swallows_probe_errors(monkeypatch):
+    """探测失败 ≠ 忙：一次 import/查询异常不该把「怎么回」按钮变成死按钮。"""
+    import rvc_live
+
+    def boom():
+        raise RuntimeError("UIA 挂了")
+
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", boom)
+    assert ra._realtime_busy() == ""
+
+
+def test_suggest_degrades_to_template_when_realtime_running(monkeypatch):
+    monkeypatch.setattr(ra, "_realtime_busy", lambda: "实时变声正在运行（显存让它先占着）")
+    monkeypatch.setattr(
+        ra, "_ensure_server",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("RVC 在跑时不许拉起模型")),
+    )
+    out = ra.suggest(MSGS, "117", "left")
+    assert out["engine"] == "rule"
+    assert "实时变声" in out["note"]
+    assert out["replies"]              # 仍要给出能点的东西
+
+
+def test_suggest_one_skips_instead_of_sending_template(monkeypatch):
+    """托管是真发：没有模型就不发，不能拿「收到/哈哈哈」顶出去。"""
+    monkeypatch.setattr(ra, "_realtime_busy", lambda: "实时变声正在运行")
+    monkeypatch.setattr(
+        ra, "_ensure_server",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("不该拉起模型")),
+    )
+    assert ra.suggest_one(MSGS, "117", "left") is None
+
+
+def test_release_reply_model_unloads_when_running(monkeypatch):
+    import rvc_live
+
+    calls = {"shutdown": 0}
+    monkeypatch.setattr(ra, "is_running", lambda: True)
+    monkeypatch.setattr(ra, "shutdown", lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1))
+    assert rvc_live._release_reply_model() is True
+    assert calls["shutdown"] == 1
+
+
+def test_release_reply_model_noop_when_idle(monkeypatch):
+    import rvc_live
+
+    calls = {"shutdown": 0}
+    monkeypatch.setattr(ra, "is_running", lambda: False)
+    monkeypatch.setattr(ra, "shutdown", lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1))
+    assert rvc_live._release_reply_model() is False
+    assert calls["shutdown"] == 0
+
+
+def test_release_reply_model_never_raises(monkeypatch):
+    """释放失败只记日志 —— 不能因为它把变声拦住。"""
+    import rvc_live
+
+    def boom():
+        raise RuntimeError("进程表读不到")
+
+    monkeypatch.setattr(ra, "is_running", boom)
+    assert rvc_live._release_reply_model() is False
+
+
+def test_rvc_start_releases_reply_model_before_vram_precheck(monkeypatch):
+    """起实时变声时必须**先**让回复模型让路，再读显存余量。
+
+    顺序不是细节：预检读的是「让路之后」的余量。先检查再卸载，等于拿旧数字做决定 ——
+    这正是 2026-10-25 之前漏掉的那一步（9B 驻留时余量 ~2.7G > 2048 阈值 → 放行 →
+    RVC 起来只剩 ~1.4G，预检想拦的那种 OOM 照样发生）。
+    """
+    import cascade
+    import pytest
+    import rvc_live
+    from fastapi import HTTPException
+
+    order = []
+    monkeypatch.setattr(rvc_live.live_settings, "get", lambda: {"perf_profile": "balanced"})
+    monkeypatch.setattr(rvc_live, "_sync_worker_for_profile", lambda profile: False)
+    monkeypatch.setattr(rvc_live, "_live_proc_alive", lambda: False)
+    monkeypatch.setattr(rvc_live, "_model_status", lambda *a, **k: True)
+    monkeypatch.setattr(rvc_live, "RUNTIME_PY", Path(__file__))
+    monkeypatch.setattr(rvc_live, "_release_reply_model", lambda: order.append("release") or True)
+    monkeypatch.setattr(rvc_live, "_vram_precheck", lambda: order.append("precheck") or "余量不够")
+    monkeypatch.setattr(cascade, "_cascade_alive", lambda: False)
+
+    with pytest.raises(HTTPException) as ei:
+        rvc_live.rvc_live_start()
+    assert ei.value.status_code == 409
+    assert order == ["release", "precheck"]
+    assert "已卸载本地回复模型" in ei.value.detail   # 让路成功但还不够，要如实说
