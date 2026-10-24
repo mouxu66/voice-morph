@@ -473,18 +473,23 @@
      候选压到 2–3 个了（对方刚发消息 / 草稿里有字 / 正在放歌 / 有提案等你点头）。
 
      所以这里只渲染 `rankActions()` 排在最前面的三条，其余全部退到
-     ①输入框搜索 ②⋯ 抽屉的「全部功能」网格。三条之外不再有常驻入口。
+     ①输入框搜索 ②⋯ 抽屉的「全部功能」网格。
+     2026-10-24 增：第 4 条是**固定入口**「托管」（见 refreshRecs）——它不是推荐，
+     是用户找「全局托管」时必须永远在同一位置的一页；极简模式下侧栏会把桌面组折叠，
+     光靠侧栏用户根本找不到它（当天的报障原话「重启之后仍然没有做按钮」）。
 
-     高度：每条 26px + 4px gap，最多 3 条 = 86px。空闲态整面板 ≈232px（上限 300px）。
+     高度：每条 24px + 3px gap，4 条 = 105px。为此每条从 26/4 压到 24/3：
+     多一条就会把最挤的 picked 形态顶出 298px 的可用高（3×26+2×4+30=116 → 300）。
+     空闲态整面板 ≈251px（上限 300px）。
      `#recs[hidden]` 必须显式写：flex 容器会盖掉 UA 的 [hidden]{display:none}。 */
-  #recs { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+  #recs { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
   #recs[hidden] { display: none; margin: 0; }
   #panel .rec {
     display: flex; align-items: center; gap: 6px;
-    box-sizing: border-box; width: 100%; height: 26px; padding: 0 8px;
+    box-sizing: border-box; width: 100%; height: 24px; padding: 0 8px;
     /* flex: 0 0 auto 是必须的：`#panel button:not(.primary){flex:1}` 的优先级
        比本选择器高（多了 :not 里的类），不写死会在 #recs 这个 column flex 里被
-       拉成等高，三条推荐把面板顶到上限。 */
+       拉成等高，四条推荐把面板顶到上限。 */
     flex: 0 0 auto;
     border-radius: 9px;
     border: 1px solid rgb(var(--c-border-2) / 0.55);
@@ -1294,12 +1299,12 @@
     </div>
 
     <!-- ── 建议区（2026-10-23 二次重构的主角）────────────────────────────────
-         渲染 `rankActions()` 选出的最多 3 条，**随上下文变**：
+         渲染 `rankActions()` 选出的最多 3 条 + 固定第 4 条「托管」，**随上下文变**：
            有提案等你点头 → 「确认 发《晴天》」（.hot，绿色描边：这是正在进行的事）
            雷达判「该回了」→ 「回一句」
            草稿有字       → 「发语音说这句」；后端解析出点歌意图时换成「发《晴天》」
            正在放歌       → 「停止放歌」
-           没有任何信号   → 兜底三条：点歌 / 音效 / 该不该回（空面板会让人以为坏了）
+           没有任何信号   → 兜底三条：点歌 / 音效 / 分析聊天，再加第 4 条固定入口「托管」
          输入框有字时这一区**变成搜索结果**（本地动作 + 后端 /observe 解析出的提案），
          于是「想用的功能找不到」也有路：打字就能找，不用记它藏在哪个抽屉。
          ⚠️ hidden 时整块不占高度 —— CSS 里显式写了 #recs[hidden]{display:none}，
@@ -3663,7 +3668,9 @@ function refreshPanel() {
 //  （对方刚发消息 / 有提案等你点头 / 正在放歌 / 草稿里有字），剩下的 9 个是噪音。
 //
 //  所以这一版：
-//    · 主面板只显示 `rankActions()` 的前 3 条 —— 它随上下文变，不是固定菜单；
+//    · 主面板显示 `rankActions()` 的前 3 条（随上下文变，不是固定菜单）
+//      + 第 4 条**固定入口**「托管」（2026-10-24 增：它不是推荐，位置永远不变，
+//      理由见 refreshRecs 里那段注释）；
 //    · 音色 chip 不再是按钮，♪ 按钮整个删掉（音效/放歌进抽屉的「声音」行）；
 //    · 想找某个功能：在输入框里打（`matchActions` 做关键词匹配），
 //      或开 ⋯ 抽屉里的「全部功能」网格。两条路都通，但都不常驻。
@@ -3698,6 +3705,12 @@ const ACT_META = [
   // 用「分析」而不是「读屏」：后者会让用户以为在截图，而这条链路只读 UIA 控件树。
   { id: "analyze.open", label: "分析聊天", hint: "读当前会话", cap: "radar",
     kw: "分析 聊天 分析聊天 总结 未读 谁找我 读消息 analyze" },
+  // 「托管」：打开主界面的 /autopilot（全局托管：授权后自动回白名单会话）。
+  // ⚠️ 它**故意不进** rankActions 的兜底池 —— 兜底池只有 3 个位置、按「此刻该做什么」
+  // 排序，被雷达/放歌/提案任一信号挤掉就等于用户又找不到（2026-10-24 的报障就是
+  // 「找不到入口」）。它由 refreshRecs 固定追加为第 4 条，位置永远不变。
+  { id: "autopilot.open", label: "托管", hint: "自动回", cap: "wechat",
+    kw: "托管 自动回复 自动回 全局 挂机 代回 autopilot" },
   { id: "live.toggle", label: "开变声", hint: "", cap: "live",
     kw: "变声 开关 实时 rvc 千问 live voice" },
   { id: "voice.pick", label: "换音色", hint: "", cap: "",
@@ -3725,6 +3738,11 @@ const ACT_RUN = {
   "radar.open": () => setLayer("radar"),
   // 先开层（拉取期间显示「正在读当前会话…」），再打后端的 /api/radar/chat。
   "analyze.open": () => { setLayer("ana"); void analyzeChat(); },
+  // 主窗口是 hash 路由（/#/autopilot），主进程负责 show/focus + 改 hash。
+  // window.pet 可能不存在（浏览器里单开 pet.html 做布局量测），所以必须带兜底。
+  "autopilot.open": () => {
+    try { if (window.pet && window.pet.openPage) window.pet.openPage("/autopilot"); } catch {}
+  },
   "live.toggle": () => { void toggleLive(); },
   "voice.pick": () => { setLayer("drawer"); queueMicrotask(() => voiceSel && voiceSel.focus()); },
   "engine.rvc": () => { void pickEngine("rvc"); },
@@ -3922,6 +3940,8 @@ const ACT_ICON = {
   "radar.open": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   // 带对勾的消息列表：分析聊天的语义是「读一遍、告诉你哪几条要看」。
   "analyze.open": '<path d="M9 5h11M9 12h11M9 19h11"/><path d="m3 5 1.5 1.5L7 4"/><path d="m3 12 1.5 1.5L7 11"/><circle cx="4.5" cy="19" r="1"/>',
+  // 机器人头 + 天线：托管是「机器替你回」，与「分析聊天」的清单图标区分开。
+  "autopilot.open": '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4"/><circle cx="9.5" cy="13" r="1"/><circle cx="14.5" cy="13" r="1"/>',
   "live.toggle": '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v4"/>',
   "voice.pick": '<path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M8 21h8"/>',
   "engine.rvc": '<path d="M4 12h4l2-6 4 12 2-6h4"/>',
@@ -4021,8 +4041,8 @@ function recBtn(row) {
 
 /**
  * 重画建议区。三种形态，**同一个 DOM**（所以高度只有一处预算）：
- *   ① 输入框有字 → 搜索结果：后端解析出的提案在前，本地动作在后
- *   ② 输入框空   → `rankActions` 的前 3 条
+ *   ① 输入框有字 → 搜索结果：后端解析出的提案在前，本地动作在后（最多 3 条）
+ *   ② 输入框空   → `rankActions` 的前 3 条 + 固定第 4 条「托管」
  *   ③ 一条都没有 → 整块 hidden（不占高度）
  */
 function refreshRecs() {
@@ -4080,9 +4100,22 @@ function refreshRecs() {
           : labelFor(r.id, ctx),
       });
     }
+    // ★ 固定入口（**不是推荐**）：托管永远排在第 4 条，位置不随信号变。
+    //   为什么不做成推荐项：兜底池只有 3 个位置且按「此刻该做什么」排序，
+    //   「该回了 / 正在放歌 / 有提案」任一信号都能把它挤掉 —— 而它恰恰是
+    //   「我第一次用，不知道去哪开」时唯一的入口。2026-10-24 的报障就是找不到它。
+    //   搜索框里打「托管」也搜得到（ACT_META 的 kw），两条路都通。
+    if (ctx.cap.wechat !== false) {
+      rows.push({
+        id: "autopilot.open", label: labelFor("autopilot.open", ctx), hint: "设置",
+        title: "打开主界面的「全局托管」：授权后自动回白名单会话（默认关，可急停）",
+      });
+    }
   }
 
-  const final = rows.slice(0, 3);
+  // 推荐区 4 条（3 条随上下文 + 1 条固定入口）；搜索区仍是 3 条 —— 打字时
+  // 用户要的是「哪个功能对得上」，不是被一个固定项占掉一格。
+  const final = rows.slice(0, ctx.query ? 3 : 4);
   if (!final.length) {
     recsEl.innerHTML = "";
     recsEl.hidden = true;

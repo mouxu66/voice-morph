@@ -3,13 +3,13 @@
   "tolerance_px": 1,
   "keys": {
     "sweep:idle:bubble0": {
-      "need": 246,
+      "need": 265,
       "capacity": 298,
-      "reserve": 52,
+      "reserve": 33,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 86,
+        "recs": 105,
         "fireRow": 44,
         "gesture": 15,
         "tray": 0,
@@ -24,13 +24,13 @@
       }
     },
     "sweep:typed:bubble0": {
-      "need": 246,
+      "need": 265,
       "capacity": 298,
-      "reserve": 52,
+      "reserve": 33,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 86,
+        "recs": 105,
         "fireRow": 44,
         "gesture": 15,
         "tray": 0,
@@ -45,13 +45,13 @@
       }
     },
     "sweep:picked:bubble0": {
-      "need": 270,
+      "need": 289,
       "capacity": 298,
-      "reserve": 28,
+      "reserve": 9,
       "blocks": {
         "phead": 26,
         "draft": 57,
-        "recs": 86,
+        "recs": 105,
         "fireRow": 44,
         "gesture": 15,
         "tray": 0,
@@ -66,13 +66,13 @@
       }
     },
     "sweep:rec:bubble0": {
-      "need": 246,
+      "need": 265,
       "capacity": 298,
-      "reserve": 52,
+      "reserve": 33,
       "blocks": {
         "phead": 26,
         "draft": 32,
-        "recs": 86,
+        "recs": 105,
         "fireRow": 44,
         "gesture": 15,
         "tray": 0,
@@ -213,13 +213,13 @@
       }
     },
     "sweep:busy:bubble0": {
-      "need": 246,
+      "need": 265,
       "capacity": 298,
-      "reserve": 52,
+      "reserve": 33,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 86,
+        "recs": 105,
         "fireRow": 44,
         "gesture": 15,
         "tray": 0,
@@ -234,13 +234,13 @@
       }
     },
     "sweep:idle:bubble1": {
-      "need": 165,
+      "need": 163,
       "capacity": 216,
-      "reserve": 51,
+      "reserve": 53,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 26,
+        "recs": 24,
         "fireRow": 44,
         "gesture": 0,
         "tray": 0,
@@ -255,13 +255,13 @@
       }
     },
     "sweep:typed:bubble1": {
-      "need": 165,
+      "need": 163,
       "capacity": 216,
-      "reserve": 51,
+      "reserve": 53,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 26,
+        "recs": 24,
         "fireRow": 44,
         "gesture": 0,
         "tray": 0,
@@ -276,13 +276,13 @@
       }
     },
     "sweep:picked:bubble1": {
-      "need": 189,
+      "need": 187,
       "capacity": 216,
-      "reserve": 27,
+      "reserve": 29,
       "blocks": {
         "phead": 26,
         "draft": 55,
-        "recs": 26,
+        "recs": 24,
         "fireRow": 44,
         "gesture": 0,
         "tray": 0,
@@ -297,13 +297,13 @@
       }
     },
     "sweep:rec:bubble1": {
-      "need": 166,
+      "need": 164,
       "capacity": 216,
-      "reserve": 50,
+      "reserve": 52,
       "blocks": {
         "phead": 26,
         "draft": 32,
-        "recs": 26,
+        "recs": 24,
         "fireRow": 44,
         "gesture": 0,
         "tray": 0,
@@ -444,13 +444,13 @@
       }
     },
     "sweep:busy:bubble1": {
-      "need": 165,
+      "need": 163,
       "capacity": 216,
-      "reserve": 51,
+      "reserve": 53,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 26,
+        "recs": 24,
         "fireRow": 44,
         "gesture": 0,
         "tray": 0,
@@ -465,13 +465,13 @@
       }
     },
     "idle": {
-      "need": 246,
+      "need": 265,
       "capacity": 298,
-      "reserve": 52,
+      "reserve": 33,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 86,
+        "recs": 105,
         "fireRow": 44,
         "gesture": 15,
         "tray": 0,
@@ -486,13 +486,13 @@
       }
     },
     "typed": {
-      "need": 246,
+      "need": 265,
       "capacity": 298,
-      "reserve": 52,
+      "reserve": 33,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 86,
+        "recs": 105,
         "fireRow": 44,
         "gesture": 15,
         "tray": 0,
@@ -507,13 +507,13 @@
       }
     },
     "picked": {
-      "need": 270,
+      "need": 289,
       "capacity": 298,
-      "reserve": 28,
+      "reserve": 9,
       "blocks": {
         "phead": 26,
         "draft": 57,
-        "recs": 86,
+        "recs": 105,
         "fireRow": 44,
         "gesture": 15,
         "tray": 0,
@@ -528,13 +528,13 @@
       }
     },
     "rec": {
-      "need": 246,
+      "need": 265,
       "capacity": 298,
-      "reserve": 52,
+      "reserve": 33,
       "blocks": {
         "phead": 26,
         "draft": 32,
-        "recs": 86,
+        "recs": 105,
         "fireRow": 44,
         "gesture": 15,
         "tray": 0,
@@ -612,13 +612,13 @@
       }
     },
     "busy": {
-      "need": 246,
+      "need": 265,
       "capacity": 298,
-      "reserve": 52,
+      "reserve": 33,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 86,
+        "recs": 105,
         "fireRow": 44,
         "gesture": 15,
         "tray": 0,
@@ -633,13 +633,13 @@
       }
     },
     "offline": {
-      "need": 194,
+      "need": 192,
       "capacity": 220,
-      "reserve": 26,
+      "reserve": 28,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 26,
+        "recs": 24,
         "fireRow": 44,
         "gesture": 0,
         "tray": 0,
@@ -654,13 +654,13 @@
       }
     },
     "live": {
-      "need": 209,
+      "need": 207,
       "capacity": 238,
-      "reserve": 29,
+      "reserve": 31,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 26,
+        "recs": 24,
         "fireRow": 44,
         "gesture": 0,
         "tray": 0,
@@ -675,13 +675,13 @@
       }
     },
     "qwen": {
-      "need": 209,
+      "need": 207,
       "capacity": 238,
-      "reserve": 29,
+      "reserve": 31,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 26,
+        "recs": 24,
         "fireRow": 44,
         "gesture": 0,
         "tray": 0,
@@ -696,13 +696,13 @@
       }
     },
     "think": {
-      "need": 194,
+      "need": 192,
       "capacity": 238,
-      "reserve": 44,
+      "reserve": 46,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 26,
+        "recs": 24,
         "fireRow": 44,
         "gesture": 0,
         "tray": 0,
@@ -717,13 +717,13 @@
       }
     },
     "guide": {
-      "need": 165,
+      "need": 163,
       "capacity": 216,
-      "reserve": 51,
+      "reserve": 53,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 26,
+        "recs": 24,
         "fireRow": 44,
         "gesture": 0,
         "tray": 0,
@@ -738,13 +738,13 @@
       }
     },
     "holdwarn": {
-      "need": 246,
+      "need": 265,
       "capacity": 298,
-      "reserve": 52,
+      "reserve": 33,
       "blocks": {
         "phead": 26,
         "draft": 33,
-        "recs": 86,
+        "recs": 105,
         "fireRow": 44,
         "gesture": 15,
         "tray": 0,

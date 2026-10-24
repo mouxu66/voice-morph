@@ -34,4 +34,7 @@ contextBridge.exposeInMainWorld("pet", {
   },
   // 查看后端日志：后端离线时在气泡上点一下，主进程在文件管理器里定位 backend.log
   showBackendLog: () => ipcRenderer.invoke("backend:show-log"),
+  // 打开主界面的某一页（hash 路由）：建议区第 4 条固定入口「托管」用它跳到 /autopilot。
+  // 极简模式下侧栏会把「桌面」组折叠，光靠侧栏用户找不到那一页（2026-10-24 报障）。
+  openPage: (p) => ipcRenderer.send("pet:open-page", String(p || "")),
 });

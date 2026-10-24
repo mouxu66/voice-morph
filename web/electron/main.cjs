@@ -2,7 +2,7 @@
 // 2026-09-03 重构：按职责拆分为 backend.cjs（后端进程/HTTP/故障提示）、
 // pet.cjs（桌宠窗口）、pet-actions.cjs（桌宠动作）、alt-hint.cjs（置顶提示）、
 // update-ipc.cjs（自动更新 IPC），本文件只保留装配与生命周期。
-const { app, BrowserWindow, globalShortcut } = require("electron");
+const { app, BrowserWindow, ipcMain, globalShortcut } = require("electron");
 const { execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
@@ -92,6 +92,7 @@ async function createWindow(root) {
 app.whenReady().then(async () => {
   const root = backend.resolveProjectRoot();
   backend.setProjectRoot(root);
+  registerPetPageIpc();
   // VM_PET_MOCK=1：桌宠单独调试模式，不拉后端不开主窗口，动画自动轮播
   if (process.env.VM_PET_MOCK === "1") {
     pet.createPetWindow(petActions);
@@ -139,6 +140,30 @@ app.whenReady().then(async () => {
     if (BrowserWindow.getAllWindows().length === 0) void createWindow(root);
   });
 });
+
+/**
+ * 桌宠 → 主窗口切页（前端是 hash 路由，见 web/src 的 HashRouter）。
+ *
+ * 场景：极简模式下侧栏把「桌面」组折叠成一行，「全局托管」在导航里根本看不见
+ * （2026-10-24 报障「重启之后仍然没有做按钮」的根因）。桌宠建议区第 4 条固定
+ * 入口「托管」点一下必须真的到那一页，而不是让人再去侧栏里找。
+ *
+ * 只接受站内路径（`/` 开头 + 字母数字/斜杠），因为它会被拼进 executeJavaScript ——
+ * 不做这层过滤，任意字符串都能变成一段脚本。失败静默：这个入口不是关键路径。
+ */
+function registerPetPageIpc() {
+  ipcMain.on("pet:open-page", (_e, raw) => {
+    const p = String(raw || "");
+    if (!/^\/[A-Za-z0-9/_-]*$/.test(p)) return;
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    // 页面可能还在加载 —— 这时改 hash 会丢；下一次点击再试即可，不排队。
+    win.webContents.executeJavaScript("location.hash = " + JSON.stringify("#" + p)).catch(() => {});
+  });
+}
 
 /** 全局热键 Ctrl+Alt+V：一键启停级联变声（游戏全屏/微信通话中无需切回应用）。
  *  toggle 逻辑跑在主进程，直接 HTTP 调本机后端：

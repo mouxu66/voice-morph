@@ -212,3 +212,22 @@ describe('建议面板：注册表完整性', () => {
     expect(api.labelFor('nope', {})).toBe('nope')
   })
 })
+
+describe('建议面板：「托管」是固定入口，不参与推荐排序', () => {
+  it('★ 它是 wechat 能力下的动作，关掉微信能力就不该出现', () => {
+    const m = api.ACT_META.find((x) => x.id === 'autopilot.open')
+    expect(m).toMatchObject({ label: '托管', cap: 'wechat' })
+    expect(api.matchActions('托管', base()).map((r) => r.id)).toContain('autopilot.open')
+    expect(
+      api.matchActions('托管', base({ cap: { ...ALL_CAP, wechat: false } })).map((r) => r.id),
+    ).not.toContain('autopilot.open')
+  })
+
+  it('★ 它**不在** rankActions 的池子里 —— 池子只有 3 格，被信号挤掉就等于找不到', () => {
+    // 推荐池按「此刻该做什么」排序；托管是「去哪开启」的固定页，必须永远占第 4 条
+    // （由 refreshRecs 追加，见 petAutopilotEntry.test.ts）。进了池子就会在
+    // 「有提案 / 该回了 / 正在放歌」时消失 —— 这正是 2026-10-24 报障的形态。
+    const ids = api.rankActions(base({ max: 99 })).map((r) => r.id)
+    expect(ids).not.toContain('autopilot.open')
+  })
+})
