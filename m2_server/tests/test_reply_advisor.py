@@ -90,13 +90,17 @@ def test_promise_guard_catches_real_failures():
         "我请你吃饭",
         "收到红包，谢谢！",
         "包在我身上",
+        # 2026-10-24 实测漏过的两条（都在 9B/Ornith 的真输出里）
+        "洗衣机在哪？我帮你拿",
+        "我去买一瓶",
+        "我给他带过去",
     ]
     for s in bad:
         assert ra.looks_like_promise(s), s
 
 
 def test_promise_guard_does_not_eat_normal_replies():
-    for s in ("已经很多人被点到了", "我来了", "取餐码 33", "外面等你们", "哈哈哈"):
+    for s in ("已经很多人被点到了", "我来了", "我去洗澡了", "取餐码 33", "外面等你们", "哈哈哈"):
         assert not ra.looks_like_promise(s), s
 
 
@@ -199,6 +203,56 @@ def test_parse_reply_json_clamps_and_dedupes():
     long = "很长" * 30
     out = ra.parse_reply_json(json.dumps({"replies": ["好", "好", long, "收到"]}))
     assert out["replies"] == ["好", "收到"]
+
+
+# ---------------------------------------------------------------- 括号补齐（Ornith）
+# Ornith-1.5-9B 实测 27 次里 11 次**少写结尾的 `}`**（finish=stop、token 没用完），
+# 全被判成「输出非法」白降级。这里只补括号，不猜内容。
+
+
+def test_close_unbalanced_json_fixes_missing_brace():
+    raw = '{"should_reply":true,"why":"顺势接梗","replies":["哈哈确实","神秘嘉宾是谁","藏得挺深"]'
+    fixed = ra.close_unbalanced_json(raw)
+    assert fixed.endswith("]}")
+    assert json.loads(fixed)["replies"] == ["哈哈确实", "神秘嘉宾是谁", "藏得挺深"]
+
+
+def test_parse_reply_json_repairs_ornith_truncated_tail():
+    """就是 2026-10-24 抓到的真实输出：末尾缺一个 `}`。"""
+    raw = '{"should_reply":true,"why":"对方要买荔枝水，先确认具体需求","replies":["哪买？","要几瓶？","发个链接我看看"]'
+    out = ra.parse_reply_json(raw)
+    assert out["replies"] == ["哪买？", "要几瓶？", "发个链接我看看"]
+
+
+def test_parse_one_json_also_repairs_brace():
+    out = ra.parse_one_json('{"reply":"行，买什么牌子？","why":"先问清楚"')
+    assert out["reply"] == "行，买什么牌子？"
+
+
+def test_close_unbalanced_json_refuses_broken_structure():
+    assert ra.close_unbalanced_json("没有花括号") is None
+    assert ra.close_unbalanced_json('{"a":"没闭合的字符串') is None
+    assert ra.close_unbalanced_json('{"a":1}}') is None      # 多一个收尾，结构本来就乱
+
+
+def test_should_reply_false_is_a_verdict_not_a_failure():
+    """模型说「这条不用回」时别退回模板 —— 用户点了按钮收到「哈哈哈」更糟。"""
+    out = ra.parse_reply_json('{"should_reply":false,"why":"对方只是知会，无新问题","replies":[]}')
+    assert out["should_reply"] is False
+    assert out["replies"] == []
+    assert out["why"] == "对方只是知会，无新问题"
+
+
+def test_suggest_returns_empty_when_model_says_no_reply(monkeypatch):
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    monkeypatch.setattr(
+        ra, "_chat",
+        lambda *a, **k: '{"should_reply":false,"why":"对方只是知会","replies":[]}',
+    )
+    out = ra.suggest([{"kind": "text", "text": "我回去了"}], "117", "left")
+    assert out["replies"] == []          # 不再拿「收到/哈哈哈」凑数
+    assert out["note"] == "对方只是知会"
 
 
 # ---------------------------------------------------------------- 降级模板

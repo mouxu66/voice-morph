@@ -297,21 +297,68 @@ def build_prompt(messages: list[dict], chat: str = "", last_side: str | None = N
     return f"{head}最近的聊天记录（按时间顺序）：\n{body}{tail}\n\n该怎么回？"
 
 
+def close_unbalanced_json(text: str) -> str | None:
+    """把「只差几个收尾括号」的 JSON 补齐；补不了返回 None。
+
+    为什么需要：Ornith-1.5-9B 有 ~40% 的输出会**少一个结尾 `}`**
+    （`finish_reason=stop`、token 也没用完，纯粹是没写），
+    实测 27 次里 11 次因此被判成「输出非法」，白降级成模板。
+    这里只做一件事：从第一个 `{` 扫到底，数清还没闭合的 `{` / `[`，按栈逆序补上。
+    字符串没闭合、括号提前闭合（比开的多）、超长，一律返回 None —— 不做任何猜测，
+    「宁可退回模板，也不把旁白塞进输入框」这条不变。
+    """
+    start = (text or "").find("{")
+    if start < 0:
+        return None
+    body = text[start:]
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    for ch in body:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if not stack or stack.pop() != ch:
+                return None          # 结构本来就乱了，不硬修
+    if in_str or not stack or len(stack) > 3:
+        return None
+    return body + "".join(reversed(stack))
+
+
 def parse_reply_json(text: str) -> dict | None:
     """从模型输出里抠出 {why, replies}。校验不通过返回 None（调用方降级）。
 
     模型偶尔会加 ```json 围栏或前后废话，所以取第一个 { 到最后一个 }。
-    严格校验是刻意的：宁可退回模板，也不把「建议你…」这种旁白塞进输入框。
+    括号没闭合的（Ornith 常犯）先尝试补齐一次；补不了就放弃。
+    其余校验**刻意严格**：宁可退回模板，也不把「建议你…」这种旁白塞进输入框。
     """
     if not text:
         return None
     start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return None
-    try:
-        data = json.loads(text[start : end + 1])
-    except Exception:
-        return None
+    data = None
+    if start >= 0 and end > start:
+        try:
+            data = json.loads(text[start : end + 1])
+        except Exception:
+            data = None
+    if data is None:
+        repaired = close_unbalanced_json(text)
+        if repaired is None:
+            return None
+        try:
+            data = json.loads(repaired)
+        except Exception:
+            return None
     if not isinstance(data, dict):
         return None
     raw = data.get("replies")
@@ -326,11 +373,15 @@ def parse_reply_json(text: str) -> dict | None:
             continue
         if s not in replies:
             replies.append(s)
-    if not replies:
-        return None
     why = data.get("why")
     why = why.strip()[:40] if isinstance(why, str) else ""
     should = data.get("should_reply")
+    if not replies:
+        # 「不用回」是模型的**结论**，不是解析失败。以前一律当失败 → 退回模板，
+        # 于是用户点了「怎么回」收到「收到/哈哈哈/好嘞」，而模型其实在说「这条不用回」。
+        if should is False:
+            return {"why": why, "replies": [], "should_reply": False}
+        return None
     return {"why": why, "replies": replies[:3], "should_reply": should is not False}
 
 
@@ -340,8 +391,11 @@ def parse_reply_json(text: str) -> dict | None:
 #: 这是确定性过滤，不依赖模型听话：这些话一旦被点一下就真的发出去，
 #: 代价是替用户许下承诺，或者把别人的红包当成自己的。
 _COMMIT_RE = re.compile(
-    r"我(?:来|去)?(?:帮你|给你|替你)[^，。]{0,4}(?:买|下单|付|转|处理|搞定|安排)"
-    r"|我(?:马上|立刻|这就)[^，。]{0,6}(?:买|下单|付|转|办|弄)"
+    # 帮他做某事：动词表要够宽 —— 2026-10-24 实测漏过「我帮你拿」「我去买一瓶」
+    r"我(?:来|去)?(?:帮|给|替)(?:你|他|她|大家|他们)[^，。]{0,4}"
+    r"(?:买|下单|付|转|处理|搞定|安排|拿|带|送|取|借|订|叫|问|发你)"
+    r"|我(?:马上|立刻|这就)[^，。]{0,6}(?:买|下单|付|转|办|弄|拿|送)"
+    r"|我(?:去|来)(?:买|拿|带|送|取|办|弄|订|叫)"
     r"|我(?:来)?(?:请客|买单|付款|请你)"
     r"|收到(?:红包|转账)"
     r"|包在我身上"
@@ -369,12 +423,21 @@ def parse_one_json(text: str) -> dict | None:
     if not text:
         return None
     start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return None
-    try:
-        data = json.loads(text[start : end + 1])
-    except Exception:
-        return None
+    data = None
+    if start >= 0 and end > start:
+        try:
+            data = json.loads(text[start : end + 1])
+        except Exception:
+            data = None
+    if data is None:
+        # 与 parse_reply_json 同一套补齐：Ornith 常少写结尾的 `}`
+        repaired = close_unbalanced_json(text)
+        if repaired is None:
+            return None
+        try:
+            data = json.loads(repaired)
+        except Exception:
+            return None
     if not isinstance(data, dict):
         return None
     raw = data.get("reply")
@@ -479,6 +542,17 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
             "note": "模型输出没通过校验，先给模板建议",
         }
     raw_replies = parsed["replies"]
+    if not raw_replies:
+        # 模型明确判定「这条不用回」：别拿模板凑数 —— 用户点了按钮却收到
+        # 「收到 / 哈哈哈 / 好嘞」，比看到「这条不用回」更糟（也更假）。
+        return {
+            "engine": "local",
+            "model": MODEL_LABEL,
+            "replies": [],
+            "why": parsed["why"],
+            "note": parsed["why"] or "模型认为这条不用回",
+            "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
+        }
     replies = drop_promises(raw_replies)
     note = ""
     if not replies:
