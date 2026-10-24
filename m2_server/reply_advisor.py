@@ -51,12 +51,13 @@ ENV_BOOT = "VM_REPLY_BOOT_S"
 ENV_MMPROJ = "VM_REPLY_MMPROJ"
 ENV_MMPROJ_CPU = "VM_REPLY_MMPROJ_CPU"
 
-#: 默认模型：Qwen3.5-9B Q4_K_M（5.4GiB）。**换过**：原先用 Qwen3VL-4B，
-#: 2026-10-24 用 117 群 9 组真实语料同题横评 —— 9B 明显更接得住事，且**不再替用户答应**
-#: （4B「我帮你买一瓶荔枝水」→ 9B「行，买什么牌子？」），代价是 0.6s → 4.7s、显存 2.5G → 5.4G。
-#: 4B 仍在盘里，VM_REPLY_MODEL 指回去即可（快但答得糙）。
-DEFAULT_MODEL = r"D:\llama-b9660-bin-win-cuda-13.3-x64\Qwen3.5-9B-Q4_K_M.gguf"
-MODEL_LABEL = "qwen3.5-9b"
+#: 默认模型：**Ornith-1.5-9B**（Q4_K_M，5.4GiB）。演进：
+#: Qwen3VL-4B → Qwen3.5-9B（2026-10-24 横评：4B 只接情绪不接事实、还替用户答应）→
+#: Ornith-1.5-9B（2026-10-25 用户拍板；同为 9B、同速 1.1s，**更像群友说话**，
+#: 且视觉 A/B 就是拿它做的）。它俩是同一代基座，差别只在语气：
+#: Ornith 更爱接梗，Qwen3.5 更爱追问。想换回来：VM_REPLY_MODEL 指 Qwen3.5 那份即可。
+DEFAULT_MODEL = r"D:\Ornith-1.5-9B-Q4_K_M.gguf"
+MODEL_LABEL = "ornith-1.5-9b"
 
 #: 视觉权重（mmproj）是**独立的一个文件**，不是模型自带的。9B 两个模型都是原生多模态
 #: （GGUF 元数据 general.architecture=qwen35、projection_dim=4096），缺的就是这 ~918MB 投影器。
