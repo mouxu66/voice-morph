@@ -195,8 +195,20 @@ _PORT_OVERRIDE: int | None = None  # 测试用：指定已启动的端口
 def _find_exe() -> str | None:
     """llama-server.exe：环境变量优先，否则在本机几个 llama.cpp 构建里挑最新的。
 
+    **生产路径由 `.env` 的 `VM_REPLY_LLAMA_SERVER` 钉死**（2026-10-26 起指向
+    `D:\\llama-b11881-cuda13.4\\llama-server.exe`），下面的 mtime 兜底只在没配
+    env 时生效 —— 因为「下载即换引擎」太危险：本机 `D:\\llama-b8833-*` 目录里
+    实际是 build 9102，若它成为 mtime 最新，prefill 掉 4.3 倍且不报错。
+
     不能按目录名字典序 —— `b8833` 会排在 `b10488` 后面（"8" > "1"），
     挑到的反而是旧包。按 mtime 取最新。
+
+    2026-10-26 升级实测（RTX 5060 8G / Ornith-9B / c=8192 + q8_0 KV / 2560×1600 图）：
+      b11881（0.7.0-dev, CUDA 13.4, `ARCHS` 含 1200/1210）→ 端到端 20.7s
+      b10488（CUDA 12 包，`ARCHS` 只到 900）            → 端到端 23.3s
+    ⚠️ b10488 的 ggml-cuda.dll **没有 sm_120 cubin**（只有 sm_86/89，靠 JIT 跑），
+    却比更老的「原生 sm_120」包（build 9102）prefill 快 4.3 倍（701 vs 164 tok/s）
+    —— 代码代差 > 架构匹配度，**别再为「原生 kernel」去降级旧包**。
     """
     env = os.environ.get(ENV_EXE)
     if env and Path(env).is_file():
@@ -369,10 +381,13 @@ def _start_locked(port: int) -> None:
     ]
     # KV 量化是「显存换 context」唯一便宜的杠杆（实测见上）。q8_0 对 KV 近似无损
     # （上游社区在 Qwen2.5-7B 上量到 ppl +0.42%），f16 是退路：VM_REPLY_KV=f16。
-    # ⚠️ V 量化要求 flash attention；b10488 默认 `-fa auto` 已经启用了，**不要显式加
-    # `-fa on`** —— 更老的 llama-server 把 -fa 当开关，多给一个 on 会直接启动失败。
+    # ⚠️ V 量化要求 flash attention；当前 b11881（0.7.0-dev）默认 `-fa auto` 已启用，
+    # 且 `FA_QUANTS` 里带 `q8_0-q8_0` 专用 kernel，**不要显式加 `-fa on`** —— 更老的
+    # llama-server 把 -fa 当开关，多给一个 on 会直接启动失败。
     # ⚠️ 也别为了省显存去调小 `-ub`：多模态的非因果图 batch 必须装进一个 ubatch，
     # 调小会撞 `n_ubatch >= n_tokens` 断言（上游 issue #21550），而不是变慢。
+    # 2026-10-26 在 0.7.0-dev 复核：新增的 `mtmd_build_inp_attn_mask`(PR #30259)
+    # 只是把 mask 在 FA 下改成 f16，**没有放松**这个约束。
     if kv and kv not in ("f16", "none", "off"):
         cmd += ["-ctk", kv, "-ctv", kv]
     mmproj = _find_mmproj(model)
