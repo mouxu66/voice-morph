@@ -113,7 +113,11 @@ def test_suggest_drops_promise_candidates(monkeypatch):
 
     monkeypatch.setattr(ra, "_chat", _fake_chat)
     out = ra.suggest([{"kind": "text", "text": "帮我买瓶水"}], "117", "left")
-    assert out["replies"] == ["上一次买过的"]
+    # 只验意图：承诺那条必须消失，正常那条必须留着。
+    # 不断言完整列表 —— 删完不足 2 条时实现会补一条模板（2026-10-26 加的补位，
+    # 否则会剩一堆「666」这种不回答问题的候选），条数不该被这个测试锁死。
+    assert "我帮你买一瓶" not in out["replies"]
+    assert "上一次买过的" in out["replies"]
     assert "替你答应" in out["note"]
 
 
@@ -288,12 +292,14 @@ def test_suggest_parses_model_output(monkeypatch):
     monkeypatch.setattr(ra, "_ensure_server", lambda: 8099)
     # 样例不能用「哈哈」「收到」：那两个词用户本人 0 次说过，会被 looks_like_offstyle
     # 过滤掉（2026-10-25），这个测试验的是**解析**而不是过滤，所以换成他真会说的词。
+    # 也不能用「行」「好」「可以」—— 裸答应词现在会被 looks_like_promise 当成
+    # 「替你答应」删掉（2026-10-26 补的规则，见 _COMMIT_RE 第 ④ 条）。
     monkeypatch.setattr(
-        ra, "_chat", lambda port, prompt, timeout, **kw: '{"why":"他想聊","replies":["行","666"]}'
+        ra, "_chat", lambda port, prompt, timeout, **kw: '{"why":"他想聊","replies":["666","有点东西"]}'
     )
     out = ra.suggest(MSGS, "117", "left")
     assert out["engine"] == "local"
-    assert out["replies"] == ["行", "666"]
+    assert out["replies"] == ["666", "有点东西"]
     assert out["why"] == "他想聊"
     assert isinstance(out["elapsed_ms"], float)
 
@@ -1318,3 +1324,36 @@ def test_chat_releases_busy_counter_when_request_fails(monkeypatch):
         ra._chat(1, "hi", 5.0)
     assert ra._BUSY == 0
     assert ra._LAST_USED > 0
+
+
+# ---------------------------------------------------------------- 裸答应也算「替你答应」
+#
+# 2026-10-26 端到端评测发现：「让带东西」场景三次都给出「行，楼下哪家？」
+# 「行，几点去拿？」——先答应再问细节。而 _COMMIT_RE 原有每条规则都要求答应词
+# 后面跟「我 / 马上 / 这就」，于是**最朴素的答应形式全漏**，10 个样本判定全 False。
+
+
+@pytest.mark.parametrize("text", [
+    "行", "好", "可以啊", "行吧", "好的", "好嘞", "没问题", "收到",
+    "行，楼下哪家？", "行，几点去拿？", "好的👌",
+])
+def test_bare_agreement_counts_as_promise(text):
+    assert ra.looks_like_promise(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "好热",          # 「好」是程度副词
+    "行不行",        # 疑问
+    "可以吗",        # 疑问
+    "嗯嗯这天气",     # 附和天气，不是在答应什么
+    "嗯",             # 状态词，不算承诺（判成承诺会误删「嗯嗯在听」）
+    "嗯",             # 状态词，不算承诺（判成承诺会误删「嗯嗯在听」）
+    "热死了", "666",
+])
+def test_non_agreement_is_not_promise(text):
+    assert ra.looks_like_promise(text) is False
+
+
+def test_drop_promises_removes_bare_agreement(monkeypatch):
+    got = ra.drop_promises(["行，楼下哪家？", "哪家？", "要几份"], [])
+    assert got == ["哪家？", "要几份"]
