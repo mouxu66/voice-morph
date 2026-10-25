@@ -604,6 +604,73 @@ def test_mmproj_follows_free_vram_by_default(monkeypatch, tmp_path):
     assert "--no-mmproj-offload" not in _start()
 
 
+def _capture_start(monkeypatch, tmp_path):
+    """跑一次 _start_locked，把 Popen 收到的 cmd 拿回来。"""
+    fake_mm = tmp_path / "mm.gguf"
+    fake_mm.write_bytes(b"x")
+    monkeypatch.setattr(ra, "_find_exe", lambda: "llama-server.exe")
+    monkeypatch.setattr(ra, "_find_model", lambda: r"D:\Ornith-1.5-9B-Q4_K_M.gguf")
+    monkeypatch.setattr(ra, "_find_mmproj", lambda m=None: str(fake_mm))
+    monkeypatch.setattr(ra, "_health", lambda port: True)
+    monkeypatch.setattr(ra, "_vram_free_mib", lambda: 99_999)
+    captured = {}
+
+    class _P:
+        returncode = None
+
+        def poll(self):
+            return None
+
+    def _popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return _P()
+
+    monkeypatch.setattr(ra.subprocess, "Popen", _popen)
+
+    def _start():
+        captured.clear()
+        try:
+            ra._start_locked(9999)
+        finally:
+            ra._PROC = None
+        return captured["cmd"]
+
+    return _start
+
+
+def test_start_uses_8192_with_kv_quant(monkeypatch, tmp_path):
+    """context 上到 8192 **必须**配套 KV q8_0。
+
+    2026-10-26 实测（同一张 2560×1600、同一套 prompt，只改这两个参数）：
+        c=6144  f16 KV  → 14.8s
+        c=8192  f16 KV  → 180s（两次复现，不报错、只是静默分页）
+        c=8192  q8_0 KV → 13~20s，峰值显存还更低（KV 768→512 MiB）
+    所以这两个参数是一对，拆开就等于把面板从 15 秒拖到 3 分钟。
+    """
+    monkeypatch.delenv(ra.ENV_CTX, raising=False)
+    monkeypatch.delenv(ra.ENV_KV, raising=False)
+    cmd = _capture_start(monkeypatch, tmp_path)()
+    assert cmd[cmd.index("-c") + 1] == "8192"
+    assert cmd[cmd.index("-ctk") + 1] == "q8_0"
+    assert cmd[cmd.index("-ctv") + 1] == "q8_0"
+    # 老版 llama-server 把 -fa 当开关，多给一个值会启动失败 —— 不要自己加
+    assert "-fa" not in cmd
+
+
+def test_kv_quant_can_be_turned_off(monkeypatch, tmp_path):
+    """VM_REPLY_KV=f16 时退回不量化（老显卡/老 llama-server 的退路）。"""
+    monkeypatch.setenv(ra.ENV_KV, "f16")
+    cmd = _capture_start(monkeypatch, tmp_path)()
+    assert "-ctk" not in cmd and "-ctv" not in cmd
+
+
+def test_ctx_override_still_wins(monkeypatch, tmp_path):
+    """VM_REPLY_CTX 仍然优先于默认的 8192（用户自己要降回去时）。"""
+    monkeypatch.setenv(ra.ENV_CTX, "4096")
+    cmd = _capture_start(monkeypatch, tmp_path)()
+    assert cmd[cmd.index("-c") + 1] == "4096"
+
+
 def test_system_says_praise_is_about_someone_else():
     """群里刷「高手」「佩服」是在夸**别的群友**，不是在夸用户。
 

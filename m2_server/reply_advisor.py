@@ -51,6 +51,7 @@ ENV_TIMEOUT = "VM_REPLY_TIMEOUT_S"
 ENV_BOOT = "VM_REPLY_BOOT_S"
 ENV_MMPROJ = "VM_REPLY_MMPROJ"
 ENV_MMPROJ_CPU = "VM_REPLY_MMPROJ_CPU"
+ENV_KV = "VM_REPLY_KV"
 
 #: 默认模型：**Ornith-1.5-9B**（Q4_K_M，5.4GiB）。演进：
 #: Qwen3VL-4B → Qwen3.5-9B（2026-10-24 横评：4B 只接情绪不接事实、还替用户答应）→
@@ -344,13 +345,19 @@ def _start_locked(port: int) -> None:
     exe, model = _find_exe(), _find_model()
     assert exe and model, "available() 已保证两者存在"
     ngl = os.environ.get(ENV_NGL, "99")
-    # 6144 而不是 2048：**一张攻略图就吃 3475 token**。
-    # 2026-10-25 实测（2315×1550 的万圣节安排表，Qwen3-VL patch 切分后）：
+    # 8192 而不是 2048：**一张攻略图就吃 3.5k~4k token**。
+    # 2026-10-25 实测（2315×1550 的万圣节安排表）：
     #   c=2048 → HTTP 400 `request (3475 tokens) exceeds the available context size`
-    # 图是按 token 计价的，不是按像素：2300 宽 ≈ 3.5k token。纯文本生成用不到这么多，
-    # 但两条链路共用同一个 llama-server（省一次 6G 的模型装卸），只能按最大那个配。
-    # 代价：显存 +约 400MiB、首 token 不变（prefill 只看实际长度，不看 -c）。
-    ctx = os.environ.get(ENV_CTX, "6144")
+    # 图是按 token 计价的，但**引擎自己有 4096 token/图 的上限**（2026-10-26 实测：
+    # 16M 像素的方图只算出 4096 token）—— 所以「把图缩得更小」省不下多少，能省的只有 KV。
+    # 2026-10-26 实测（RTX 5060 8G，Ornith-9B，视觉塔在 GPU，同一张 2560×1600）：
+    #   c=6144  f16 KV  → 14.8s，峰值 7680/8151
+    #   c=8192  f16 KV  → **180s**（两次复现；不报错、不 OOM，静默分页）
+    #   c=8192  q8_0 KV → 13~20s，峰值 7629 —— 比 6144 更低，因为 KV 768→512 MiB
+    #   c=16384 q8_0 KV → 182s（必挂，别试）
+    # 所以 context 上到 8192 **必须配套 KV 量化**；只加 -c 不加量化会慢 12 倍。
+    ctx = os.environ.get(ENV_CTX, "8192")
+    kv = (os.environ.get(ENV_KV, "q8_0") or "").strip().lower()
     boot_s = float(os.environ.get(ENV_BOOT, "90"))
     flags = 0
     if os.name == "nt":
@@ -360,6 +367,14 @@ def _start_locked(port: int) -> None:
         "--host", "127.0.0.1", "--port", str(port),
         "-ngl", str(ngl), "-c", str(ctx), "-t", "8", "--no-warmup",
     ]
+    # KV 量化是「显存换 context」唯一便宜的杠杆（实测见上）。q8_0 对 KV 近似无损
+    # （上游社区在 Qwen2.5-7B 上量到 ppl +0.42%），f16 是退路：VM_REPLY_KV=f16。
+    # ⚠️ V 量化要求 flash attention；b10488 默认 `-fa auto` 已经启用了，**不要显式加
+    # `-fa on`** —— 更老的 llama-server 把 -fa 当开关，多给一个 on 会直接启动失败。
+    # ⚠️ 也别为了省显存去调小 `-ub`：多模态的非因果图 batch 必须装进一个 ubatch，
+    # 调小会撞 `n_ubatch >= n_tokens` 断言（上游 issue #21550），而不是变慢。
+    if kv and kv not in ("f16", "none", "off"):
+        cmd += ["-ctk", kv, "-ctv", kv]
     mmproj = _find_mmproj(model)
     if mmproj:
         cmd += ["-mm", mmproj]
