@@ -3525,7 +3525,7 @@ async function suggestReplies(j) {
   const seq = ++anaReplySeq;
   if (anaRepliesEl) anaRepliesEl.innerHTML = "";
   if (anaReplyNoteEl) {
-    anaReplyNoteEl.textContent = "本地模型在想怎么回…（首次要拉起模型+视觉权重，约 20 秒；之后 1~2 秒，看图约 7 秒）";
+    anaReplyNoteEl.textContent = "本地模型在想怎么回…（首次要拉起模型+视觉权重，约 20 秒；之后 1~2 秒，看图 1~7 秒）";
     anaReplyNoteEl.className = "";
   }
   const side = (j && j.signals && j.signals.last_side) || "";

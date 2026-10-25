@@ -276,12 +276,14 @@ def test_suggest_falls_back_when_model_missing(monkeypatch):
 def test_suggest_parses_model_output(monkeypatch):
     monkeypatch.setattr(ra, "available", lambda: (True, ""))
     monkeypatch.setattr(ra, "_ensure_server", lambda: 8099)
+    # 样例不能用「哈哈」「收到」：那两个词用户本人 0 次说过，会被 looks_like_offstyle
+    # 过滤掉（2026-10-25），这个测试验的是**解析**而不是过滤，所以换成他真会说的词。
     monkeypatch.setattr(
-        ra, "_chat", lambda port, prompt, timeout, **kw: '{"why":"他想聊","replies":["哈哈","收到"]}'
+        ra, "_chat", lambda port, prompt, timeout, **kw: '{"why":"他想聊","replies":["行","666"]}'
     )
     out = ra.suggest(MSGS, "117", "left")
     assert out["engine"] == "local"
-    assert out["replies"] == ["哈哈", "收到"]
+    assert out["replies"] == ["行", "666"]
     assert out["why"] == "他想聊"
     assert isinstance(out["elapsed_ms"], float)
 
@@ -530,8 +532,11 @@ def test_system_forbids_unverified_assertions():
     assert "不确定就写成问一句" in ra._SYSTEM
 
 
-def test_start_puts_mmproj_on_cpu_by_default(monkeypatch, tmp_path):
-    """视觉塔默认不上 GPU：918MB 会把整卡顶到 7.7G，触发换页后单次 30s+。"""
+def test_mmproj_follows_free_vram_by_default(monkeypatch, tmp_path):
+    """视觉塔默认 auto：够显存就上 GPU（看图 7.2s→1.1s），不够才留 CPU。
+
+    永远留 CPU 是旧结论：那是 c=24576 时量的（KV 多吃 3~4G 才溢出），产品只跑 c=2048。
+    """
     fake_mm = tmp_path / "mm.gguf"
     fake_mm.write_bytes(b"x")
     monkeypatch.setattr(ra, "_find_exe", lambda: "llama-server.exe")
@@ -553,17 +558,210 @@ def test_start_puts_mmproj_on_cpu_by_default(monkeypatch, tmp_path):
         return _P()
 
     monkeypatch.setattr(ra.subprocess, "Popen", _popen)
-    try:
-        ra._start_locked(9999)
-    finally:
-        ra._PROC = None
-    assert "-mm" in captured["cmd"]
-    assert "--no-mmproj-offload" in captured["cmd"]
 
-    captured.clear()
+    def _start() -> list[str]:
+        captured.clear()
+        try:
+            ra._start_locked(9999)
+        finally:
+            ra._PROC = None
+        return captured["cmd"]
+
+    # auto + 显存够 → 视觉塔上 GPU，不加 flag
+    monkeypatch.setattr(ra, "_vram_free_mib", lambda: ra.MMPROJ_NEED_MIB)
+    assert "--no-mmproj-offload" not in _start()
+
+    # auto + 显存紧（用户开着游戏）→ 退回 CPU，不赌
+    monkeypatch.setattr(ra, "_vram_free_mib", lambda: ra.MMPROJ_NEED_MIB - 1)
+    assert "--no-mmproj-offload" in _start()
+
+    # 量不出显存（无独显/超时）→ 保守留 CPU
+    monkeypatch.setattr(ra, "_vram_free_mib", lambda: None)
+    assert "--no-mmproj-offload" in _start()
+
+    # 显式开关优先于现场判断
+    monkeypatch.setattr(ra, "_vram_free_mib", lambda: 99_999)
+    monkeypatch.setenv(ra.ENV_MMPROJ_CPU, "1")
+    assert "--no-mmproj-offload" in _start()
+
+    monkeypatch.setattr(ra, "_vram_free_mib", lambda: 0)
     monkeypatch.setenv(ra.ENV_MMPROJ_CPU, "0")
-    try:
-        ra._start_locked(9999)
-    finally:
-        ra._PROC = None
-    assert "--no-mmproj-offload" not in captured["cmd"]
+    assert "--no-mmproj-offload" not in _start()
+
+
+def test_system_says_praise_is_about_someone_else():
+    """群里刷「高手」「佩服」是在夸**别的群友**，不是在夸用户。
+
+    2026-10-25 实测：只说「不要道谢道贺」时，纯夸赞刷屏 3 次里有 2 次回出
+    「哈哈过奖啦」「谢谢，一起冲呀」—— 用户点一下就在群里莫名道谢。
+    改写成针对性规则后 3/3 正确（不回或跟着夸）。
+    """
+    assert "不是在夸你" in ra._SYSTEM
+    assert "过奖" in ra._SYSTEM
+    # 但不能写成「遇到夸就别回」：实测那样会把「高手/佩服」后面的吐槽、问事一起压掉
+    assert "跟着夸一句" in ra._SYSTEM
+    assert "优先接那个" in ra._SYSTEM
+
+
+# ---- 2026-10-25：3864 群 4363 条真实语料上的「替你答应/复述别人」回归 ----
+# 40 个真实回话时机、每类重跑 3 次的实测结论：旧规则只列了「买/送/取」这类跑腿动词，
+# 群聊里真正高频的是**接活和排计划**，全部 3/3 稳定漏过。下面这些句子都来自真实输出。
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("text", [
+    "那我先刷王城，你打熊我记下了",      # 替你分工
+    "周五熊我打，你安心搬炉子",          # 替你排日程
+    "行，明早我准时上线挖",              # 替你承诺上线
+    "收到，我报名",                      # 替你报名
+    "五毛就五毛，周二那车我帮你打",      # 接活（旧规则漏）
+    "这攻略不错，我明天就试试",          # 时间词在「我」后面（旧规则漏）
+    "行啊，那你先忙，王城我慢慢刷",      # 「慢慢」也是排计划
+    "好嘞，马上安排",                    # 没有「我」也是点头
+    "[得意] 那熊归你，峡谷我扛着",        # 揽活
+])
+def test_promise_catches_task_commitment(text):
+    assert ra.looks_like_promise(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "继续啊，点左下那个",
+    "全栈那不得秃头",
+    "这算盘打得我在隔壁都听见了",
+    "驻防呢？谁在防？",
+    "燃霜应该还有，具体看公告",
+    "手册换火晶看你要哪个，缺哪个就换哪个",
+    "哈哈你这号谁登的",
+])
+def test_promise_does_not_kill_normal_replies(text):
+    assert not ra.looks_like_promise(text), text
+
+
+def test_echo_detects_repeating_others_first_person():
+    """对方说「我控号都给驻防」，模型给用户的候选是同一句 —— 点发就成了用户认领别人的话。"""
+    ctx = [{"side": "left", "text": "我控号都给驻防"}]
+    assert ra.echoes_context("我控号只给驻防，没动你号", ctx)
+    assert ra.echoes_context("我控号都给驻防，没动你号哈", ctx)
+
+
+def test_echo_ignores_at_mention_of_others():
+    """「巴黎才下课吗」被回复成「@巴黎才下课吗 我没叫你打乔伊呀」是正常接话，不能判成抄。
+
+    这条是实测误杀过的：按子串判把一句跟用户真人原话几乎一样的候选拦掉了。
+    现在只检对方句子里带「我」的（那才是「我指向谁」的坑）。
+    """
+    ctx = [{"side": "left", "text": "巴黎才下课吗"}]
+    assert not ra.echoes_context("@巴黎才下课吗 我没叫你打乔伊呀，我也没开电脑", ctx)
+
+
+def test_system_has_no_copyable_examples():
+    """提示词里不许举具体句子当例子：写过「这运气绝了」之后，40 条采样里 4 条原样抄。"""
+    assert "这运气绝了" not in ra._SYSTEM
+    assert "太离谱了吧" not in ra._SYSTEM
+
+
+def test_system_says_model_does_not_know_user_situation():
+    """最致命的一类不是答得差，是编用户的处境（在不在家/号里有什么/打到多少分）。"""
+    assert "不知道用户的情况" in ra._SYSTEM
+    assert "不许写用户的具体安排" in ra._SYSTEM
+
+
+# ---- 2026-10-25：按用户本人 474 条发言量出来的「风格指纹」----
+# 需求原话：「让他知道我的语言风格，但不需要完全照抄」。所以不做微调，
+# 而是把人肉量出来的统计写进提示词 + 输出侧过滤。下列断言锁的就是这份量出来的事实。
+
+import pytest  # noqa: E402
+
+
+def test_system_demands_short_length_and_no_punctuation():
+    """中位 8 字、88% 完全无标点 —— 模型原来写带逗号的完整句，一眼就不是本人。"""
+    assert "多数 3~10 个字" in ra._SYSTEM
+    assert "不要句号、逗号、叹号" in ra._SYSTEM
+    assert "几乎不打标点" in ra._SYSTEM
+
+
+def test_system_bans_words_user_never_says():
+    """474 条发言里「哈哈」「收到」「好嘞」「嗯」「哦」「牛」「厉害」「确实」全部 0 次。
+
+    模型却满屏都是，这是「看着不像本人」的最大来源，比长度问题更致命。
+    """
+    for w in ("「哈哈」", "「收到」", "「好嘞」", "「嗯」", "「哦」"):
+        assert w in ra._SYSTEM, w
+    assert "用户从来不这么说" in ra._SYSTEM
+
+
+def test_system_keeps_666_because_user_actually_says_it():
+    """「666」是他开头词第一名（20 次）—— 允许举例，因为抄了也是他的真话。
+
+    反过来说：提示词里能写具体词的唯一标准就是「用户真的这么说」，
+    模型自己编的通顺句（第 205 条的「这运气绝了」）一律不许写。
+    """
+    assert "666" in ra._SYSTEM
+
+
+def test_system_requires_staggered_lengths():
+    """三条候选长度错开，否则用户看到的是三句一样长的话。"""
+    assert "长度要错开" in ra._SYSTEM
+    assert "五个字以内" in ra._SYSTEM
+
+
+@pytest.mark.parametrize("text", [
+    "动画表情", "图片", "视频", "动画表情 3张", "语音",
+])
+def test_placeholder_output_is_dropped(text):
+    """模型会把微信占位符当正文给出来 —— 2026-10-25 实测 #27 直接给「动画表情」，
+    用户点「发送」就真的在群里发出这四个字。"""
+    assert ra.is_placeholder(text), text
+
+
+@pytest.mark.parametrize("text", ["[奸笑]", "[旺柴]", "[得意]", "行", "666"])
+def test_real_emoji_names_survive_placeholder_filter(text):
+    assert not ra.is_placeholder(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "收到", "好嘞", "嗯", "哦", "哈哈", "哈哈哈", "我看看", "我试试",
+    "确实", "在呢", "等下", "明白了", "收到！",
+])
+def test_offstyle_boilerplate_is_dropped(text):
+    """用户本人 0 次说过的套话，整条只剩它时丢弃。"""
+    assert ra.looks_like_offstyle(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "好的", "可以", "行", "666", "[奸笑]", "我靠", "笑死",
+    "哈哈哈这波血赚",         # 套话后面有实质内容，不能砍
+    "收到晚上挖矿",
+    "我看看规则吧",
+])
+def test_offstyle_does_not_kill_meaningful_replies(text):
+    assert not ra.looks_like_offstyle(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "我这就来", "在呢马上", "行 我摆着", "那我先囤着",
+    "收到 你打熊我盯会战", "驻防我盯着", "@某人 我这就来",
+])
+def test_short_sentence_promises_are_caught(text):
+    """把回复改短（中位 5 字）后承诺变得**更难**抓：短句里「我+动作」几乎只有一种含义。
+
+    这 6 条全部通过了旧规则（旧动词表里没有 来/摆/囤/盯）。
+    """
+    assert ra.looks_like_promise(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "真的假的，我也以为不放了",   # 「我…放…了」曾因跨过否定词被误杀
+    "这奖励真香，那我就不摆啦",
+    "我明天不上线了",
+    "我没摆啊",
+    "明天不打了",
+])
+def test_promise_rule_does_not_cross_negation(text):
+    """规则里 `[^，。！？]{0,4}` 会把中间的「不/没/别」一并吃掉，导致拒绝被当成承诺。
+
+    2026-10-25 实测误杀过「真的假的，我也以为不放了」和「那我就不摆啦」，
+    改成 `[^，。！？不没别]{0,2}` 之后两者都放行、真承诺仍照拦。
+    """
+    assert not ra.looks_like_promise(text), text
