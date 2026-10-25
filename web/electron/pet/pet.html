@@ -962,6 +962,13 @@
     font-size: 9px; color: rgb(var(--c-t-500));
   }
   /* 「搜攻略」排在「换一批」前面，由它顶到右边；两个都在同一行，不多占一像素高。 */
+  #panel #anaLookBtn {
+    flex: 0 0 auto; height: auto; padding: 1px 2px;
+    border: 0; background: transparent; box-shadow: none;
+    font-size: 9px; color: rgb(var(--c-t-500));
+  }
+  #panel #anaLookBtn:hover { color: rgb(var(--c-accent-h)); }
+  #panel #anaLookBtn[hidden] { display: none; }
   #panel #anaSearchBtn { margin-left: auto; }
   #panel #anaSearchBtn.hot { color: rgb(var(--c-accent-h)); font-weight: 650; }
   #panel #anaSearchBtn[hidden] { display: none; }
@@ -1031,6 +1038,22 @@
   #anaDigestNote:empty { display: none; }
   #anaDigestNote.err { color: rgb(var(--c-err)); }
   /* 展开后 4 张卡最多占 132px，再多就内部滚 —— 面板高度是死预算。 */
+  /* 看图读出来的要点：读者是用户本人，所以字号比卡片标题大一点、可以两行。
+     最多 3 条 —— 再多就把下面的来源卡挤出面板（300px 是死预算）。 */
+  #anaDigestAdvice { margin-top: 3px; display: grid; gap: 3px; }
+  #anaDigestAdvice:empty { display: none; }
+  #anaDigestAdvice[hidden] { display: none; }
+  #anaDigestAdvice .adv {
+    position: relative; padding-left: 9px;
+    /* 9.5px 是这块的**上限**：试过 10px，在 220px 宽里多折一行、吃掉 3px 余量，
+       而 petlayout 的规矩是「余量不许变少」——那 3px 留给后面任何一次加东西。 */
+    font-size: 9.5px; line-height: 1.4; color: rgb(var(--c-t-200));
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  #anaDigestAdvice .adv::before {
+    content: ""; position: absolute; left: 1px; top: 4px;
+    width: 3px; height: 3px; border-radius: 50%; background: rgb(var(--c-accent));
+  }
   /* 只摆 2 条：3 条就要内部滚动，而滚动容器会从卡片中间截一刀，
      看起来像渲染坏了（2026-10-25 截图）。要看更多就改词再搜一次。 */
   #anaDigestList { margin-top: 4px; display: grid; gap: 4px; }
@@ -1548,6 +1571,10 @@
           <span class="st">怎么回</span>
           <!-- 搜攻略的入口：跟「换一批」同一行，不多占高度。点开才展开下面那块 ——
                面板 300px 是死预算，一个「可能用不上」的输入框不该常驻。 -->
+          <!-- 看图的入口：专门对付群里发的那张攻略表 —— 缩略图只有 418×270，
+               字全糊，光靠截图聊天区读不出来（2026-10-25 实测两个模型都读不了）。
+               点它会双击放大那张图再读，会抢一下焦点，所以不自动做。 -->
+          <button type="button" id="anaLookBtn" title="放大读群里那张图（要点只给你看，不进群）">看图</button>
           <button type="button" id="anaSearchBtn" title="去网上查一下（结果只给你看，不进群）">搜攻略</button>
           <button type="button" id="anaReplyBtn" title="让本地模型再想一批">换一批</button>
         </div>
@@ -1565,6 +1592,9 @@
           <button type="button" id="anaDigestBtn" title="按这个去网上搜一下">查</button>
         </div>
         <div id="anaDigestNote" aria-live="polite"></div>
+        <!-- 看图读出来的要点。读者是**用户本人**，不是群里 —— 所以可以带数字、
+             可以是完整句子，跟下面那些「能发出去的短句」是两种东西，别混着排。 -->
+        <div id="anaDigestAdvice" role="list" hidden></div>
         <div id="anaDigestList" role="list"></div>
         <button type="button" id="anaDigestWrite" hidden>照这个写一条</button>
       </div>
@@ -2322,6 +2352,8 @@ const anaDigestQEl = document.getElementById("anaDigestQ");
 const anaDigestNoteEl = document.getElementById("anaDigestNote");
 const anaDigestListEl = document.getElementById("anaDigestList");
 const anaDigestWriteEl = document.getElementById("anaDigestWrite");
+const anaDigestAdviceEl = document.getElementById("anaDigestAdvice");
+const anaLookBtnEl = document.getElementById("anaLookBtn");
 const songBtnEl = document.getElementById("songBtn");
 const songBackEl = document.getElementById("songBack");
 const songSrcEl = document.getElementById("songSrc");
@@ -3696,6 +3728,10 @@ function renderReplies(j) {
 // 攻略块的状态：并发序号（丢弃过期响应）+ 上一次搜到的那份（要回传给后端写句子）
 let anaDigestSeq = 0;
 let anaDigestLast = null;
+/** 看图链路**已经生成好**的候选，等用户点「写一句」再上屏。
+ *  为什么先存着不直接画：候选属于「怎么回」那一栏，而看图视图把它让位了。
+ *  存着的好处是省掉第二次模型调用（那要再等 10 秒），点一下就能看到。 */
+let anaLookPending = null;
 
 /** 清掉攻略块（换上下文 / 重新分析前调用）。 */
 function clearDigest() {
@@ -3704,8 +3740,10 @@ function clearDigest() {
   // 收回折叠态：换了上下文，上一轮搜的东西既不对应当前这句，也不该继续占那 72px。
   if (anaDigestEl) anaDigestEl.hidden = true;
   if (anaDigestListEl) anaDigestListEl.innerHTML = "";
+  if (anaDigestAdviceEl) { anaDigestAdviceEl.innerHTML = ""; anaDigestAdviceEl.hidden = true; }
   if (anaDigestWriteEl) anaDigestWriteEl.hidden = true;
   if (anaDigestQEl) anaDigestQEl.value = "";
+  anaLookPending = null;
   if (anaDigestNoteEl) { anaDigestNoteEl.textContent = ""; anaDigestNoteEl.className = ""; }
 }
 
@@ -3779,11 +3817,115 @@ function renderDigest(j) {
 }
 
 /**
+ * 画「看图读出来的要点」。
+ *
+ * 这些字**不进群** —— 它们是给用户自己看懂这件事的，所以允许是完整句子、允许带数字，
+ * 跟下面那些 3~10 字能点发的短句是两种东西。混着排会让人分不清哪句能发。
+ */
+function renderAdvice(items) {
+  const list = Array.isArray(items) ? items.filter((t) => typeof t === "string" && t.trim()).slice(0, 3) : [];
+  if (anaDigestAdviceEl) {
+    anaDigestAdviceEl.innerHTML = list.map((t) => `<div class="adv">${esc(t)}</div>`).join("");
+    anaDigestAdviceEl.hidden = !list.length;
+  }
+  return list.length;
+}
+
+/**
+ * 放大读群里那张图：POST /api/radar/replies/from-image。
+ *
+ * 一次拿回三样：`advice`（怎么打，给你看）、`replies`（能发的短句）、`digest`（网上
+ * 搜到的来源）。后端在同一次调用里做——分成两次就要多等十倍：读图和写作都要
+ * 那 9B 在显存里，分开调就是两次 prefill。
+ *
+ * 代价写在明面上：会双击一下缩略图、弹一下预览窗再自动关掉（1~2 秒）。
+ * 不做成自动的就是这个原因 —— 自动抢焦点会打断正在打的字。
+ */
+async function lookImage() {
+  if (!CAP.radar) return;
+  const seq = ++anaDigestSeq;
+  openDigestView();
+  anaLookPending = null;
+  if (anaDigestListEl) anaDigestListEl.innerHTML = "";
+  if (anaDigestAdviceEl) { anaDigestAdviceEl.innerHTML = ""; anaDigestAdviceEl.hidden = true; }
+  if (anaDigestWriteEl) anaDigestWriteEl.hidden = true;
+  if (anaDigestNoteEl) {
+    anaDigestNoteEl.textContent = "放大读图…（会弹一下预览窗，别碰鼠标）";
+    anaDigestNoteEl.className = "";
+  }
+  const side = (anaLast && anaLast.signals && anaLast.signals.last_side) || "";
+  try {
+    const r = await fetch(RADAR_BASE + "/replies/from-image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ last_side: side, search: true }),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    if (seq !== anaDigestSeq) return;
+    renderLook(j);
+  } catch (err) {
+    if (seq !== anaDigestSeq) return;
+    if (anaDigestNoteEl) {
+      anaDigestNoteEl.textContent = "没读成（" + ((err && err.message) || "后端没连上") + "）";
+      anaDigestNoteEl.className = "err";
+    }
+  }
+}
+
+/** 画看图结果：要点在上、来源一条在下、候选先存着等「写一句」。 */
+function renderLook(j) {
+  const ok = !!(j && j.ok);
+  const advice = (ok && Array.isArray(j.advice)) ? j.advice : [];
+  const all = (ok && j.digest && Array.isArray(j.digest.items))
+    ? j.digest.items.filter((it) => it && it.title) : [];
+  const nAdv = renderAdvice(advice);
+  // 有要点时来源只留一条：300px 里要点才是主角，来源是佐证。
+  const items = all.slice(0, nAdv ? 1 : 2);
+  if (anaDigestListEl) {
+    anaDigestListEl.innerHTML = items.map((it) => {
+      const meta = [it.source, it.date].filter(Boolean).join(" · ") || "网页";
+      return `<div class="dcard"><div class="dt">${esc(it.title)}</div>`
+        + (it.snippet ? `<div class="ds">${esc(it.snippet)}</div>` : "")
+        + `<div class="dm">${esc(meta)}</div></div>`;
+    }).join("");
+  }
+  anaDigestLast = items.length ? { q: (j.digest && j.digest.q) || "", items } : null;
+  const reps = (ok && Array.isArray(j.replies)) ? j.replies : [];
+  if (reps.length) {
+    anaLookPending = { replies: reps, why: "", engine: j.engine, intent: "need_info", note: "" };
+  }
+  if (anaDigestWriteEl) anaDigestWriteEl.hidden = !(reps.length || nAdv);
+  if (anaDigestQEl && j && j.digest && j.digest.q && !anaDigestQEl.value.trim()) {
+    anaDigestQEl.value = j.digest.q;
+  }
+  if (anaDigestNoteEl) {
+    const img = (j && j.image) || {};
+    const bits = [];
+    if (!img.ok) bits.push("没读到图：" + (img.note || "未知"));
+    else bits.push("图 " + (img.note || "已读"));
+    // 不写检索词：它已经回填在输入框里了，再念一遍只是把两行榨成三行。
+    if (j && j.digest && j.digest.q) bits.push("网上 " + all.length + " 条");
+    bits.push(Math.round(((j && j.elapsed_ms) || 0) / 100) / 10 + "s");
+    anaDigestNoteEl.textContent = bits.join(" · ");
+    anaDigestNoteEl.className = img.ok && (nAdv || reps.length) ? "" : "err";
+  }
+}
+
+/**
  * 照这条攻略写一句：POST /api/radar/replies/from-digest。
  * 检索结果由前端回传 —— 用户可能连搜三次、只挑其中一条，这条链路要用的
  * 必须是**他正在看的那份**。写出来的句子进「怎么回」那三个按钮，点一下才进输入框。
  */
 async function writeFromDigest() {
+  // 看图链路已经把候选写好了：直接上屏，省掉第二次调用（那要再等 10 秒）。
+  if (anaLookPending) {
+    const p = anaLookPending;
+    anaLookPending = null;
+    renderReplies({ ok: true, ...p });
+    closeDigest();
+    return;
+  }
   if (!anaDigestLast) return;
   const side = (anaLast && anaLast.signals && anaLast.signals.last_side) || "";
   if (anaReplyNoteEl) {
@@ -3838,15 +3980,20 @@ if (anaReplyBtnEl) anaReplyBtnEl.addEventListener("click", () => { void suggestR
  * 2026-10-25 这一块常驻时把 analysisLayer 从 218px 顶到 290px，
  * 最紧的场景余量 28px → -44px、底部被切 44px（petlayout 门禁红的）。
  */
-function openDigest() {
+function openDigestView() {
   if (!anaDigestEl) return;
   anaDigestEl.hidden = false;
-  // 让位：300px 面板一次只放得下一件事。攻略展开时收掉「怎么回」——
+  // 让位：300px 面板一次只放得下一件事。攻略/看图展开时收掉「怎么回」——
   // 实测两块全摆要 493px，而布局只给 298px（底部切 195px）。
   if (anaReplyEl) anaReplyEl.hidden = true;
   if (anaCardEl) anaCardEl.hidden = true;
   if (anaMsgsEl) anaMsgsEl.hidden = true;
   if (anaListEl) anaListEl.hidden = true;
+}
+
+/** 展开并立刻搜一次（「搜攻略」按钮走这条）。 */
+function openDigest() {
+  openDigestView();
   void fetchDigest();
 }
 
@@ -3857,6 +4004,7 @@ function closeDigest() {
   if (anaReplyEl) anaReplyEl.hidden = false;
 }
 
+if (anaLookBtnEl) anaLookBtnEl.addEventListener("click", () => { void lookImage(); });
 if (anaSearchBtnEl) anaSearchBtnEl.addEventListener("click", openDigest);
 if (anaDigestBackEl) anaDigestBackEl.addEventListener("click", closeDigest);
 if (anaDigestBtnEl) anaDigestBtnEl.addEventListener("click", () => { void fetchDigest(); });
@@ -5450,6 +5598,38 @@ const LAYOUT_STATES = {
   // 攻略展开态：面板的**第二种视图**（分析摘要/原话/怎么回全部让位）。
   // 300px 一次只放得下一件事，所以这一态必须登记进预算 —— 否则攻略块
   // 悄悄长高时没人知道是谁吃掉的（2026-10-25 未让位时实测要 493px）。
+  // 看图结果态：要点 3 条 + 来源 1 条 + 「写一句」按钮。
+  // 这是面板**最挤的一种形态**（要点比搜索卡高），所以它必须进预算表 ——
+  // 只登记纯搜攻略那一态会漏掉它（advice 是 2026-10-25 新加的）。
+  look: () => {
+    LAYOUT_STATES.analysis();
+    renderLook({
+      ok: true, elapsed_ms: 20300, engine: "local",
+      image: { ok: true, note: "2315×1550" },
+      digest: {
+        q: "无尽冬日 万圣节 活动 打法",
+        items: [
+          { title: "无尽冬日万圣节活动怎么刷-抖音",
+            snippet: "无尽冬日万圣节活动爆料预测大全，主要通过消耗特定道具获得材料",
+            source: "抖音", date: "2026-10-21" },
+        ],
+      },
+      // 三条都取真实跑出来的长度（最长的 20 字），不写「要点1」这种假数据 ——
+      // 假数据量出来的高度永远比真机松。
+      advice: [
+        "南瓜大侵袭要13000积分才打，先攒够再上",
+        "最后1天别打，材料攒着别浪费",
+        "奇味天降每1000钻换1材料，加速换1单位",
+      ],
+      replies: ["先攒积分再打", "最后1天别打", "材料攒着"],
+    });
+    if (anaDigestEl) anaDigestEl.hidden = false;
+    if (anaReplyEl) anaReplyEl.hidden = true;
+    if (anaCardEl) anaCardEl.hidden = true;
+    if (anaMsgsEl) anaMsgsEl.hidden = true;
+    if (anaListEl) anaListEl.hidden = true;
+  },
+
   digest: () => {
     LAYOUT_STATES.analysis();
     renderDigest({

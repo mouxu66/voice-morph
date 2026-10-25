@@ -523,7 +523,12 @@ def test_chat_sends_image_parts_only_when_given(monkeypatch):
     ra._chat(1234, "提示", 5.0, image_b64="QUJD")
     parts = seen["messages"][1]["content"]
     assert isinstance(parts, list) and parts[0]["type"] == "text"
-    assert parts[1]["image_url"]["url"] == "data:image/jpeg;base64,QUJD"
+    # mime 按 magic bytes 判：`iVBORw0KGgo` 才是 PNG，`/9j/` 才是 JPEG。
+    # 以前这里写死 image/jpeg，靠 llama.cpp 自己嗅探才没炸 —— 换个解码器就 400。
+    assert parts[1]["image_url"]["url"] == "data:image/png;base64,QUJD"
+
+    ra._chat(1234, "提示", 5.0, image_b64="/9j/4AAQSkZJRg")
+    assert seen["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;")
 
     ra._chat(1234, "提示", 5.0)
     assert seen["messages"][1]["content"] == "提示"      # 没图时仍是纯字符串
@@ -1078,3 +1083,121 @@ def test_repeats_self_skips_tiny_lines():
 def test_drop_promises_removes_self_echo():
     msgs = [{"side": "right", "text": "码发给我"}]
     assert ra.drop_promises(["码发给我", "666"], msgs) == ["666"]
+
+
+# ---- 看图链路：advice 是「给本人看的」，与 replies 规则相反 -------------------
+
+def test_clean_advice_keeps_full_sentences():
+    """advice 允许长、允许标点、允许数字 —— 它就是给用户看懂用的。"""
+    out = ra.clean_advice([
+        "南瓜大侵袭要13000积分才打，先攒够再上",
+        "最后1天别打，材料攒着别浪费",
+    ])
+    assert out == ["南瓜大侵袭要13000积分才打，先攒够再上", "最后1天别打，材料攒着别浪费"]
+
+
+def test_clean_advice_strips_model_numbering():
+    """模型爱自己加「1. 」「- 」，那是排版不是内容。"""
+    assert ra.clean_advice(["1. 先攒积分", "- 再打包子", "2、看背包"]) == ["先攒积分", "再打包子", "看背包"]
+
+
+def test_clean_advice_drops_dupes_and_walls():
+    """重复的去掉；超过 120 字的是「把整篇攻略抄下来」，不是一条要点。"""
+    long = "打" * 130
+    assert ra.clean_advice(["先攒积分", "先攒积分", long, ""]) == ["先攒积分"]
+
+
+def test_clean_advice_caps_at_five():
+    assert len(ra.clean_advice([f"要点{i}" for i in range(9)])) == 5
+
+
+def test_clean_advice_rejects_non_list():
+    assert ra.clean_advice("先攒积分") == []
+    assert ra.clean_advice(None) == []
+
+
+def test_parse_reply_json_reads_advice():
+    got = ra.parse_reply_json(
+        '{"advice":["a1","a2"],"replies":["x","y","z"],"why":"说的这个"}'
+    )
+    assert got["advice"] == ["a1", "a2"]
+    assert got["replies"] == ["x", "y", "z"]
+
+
+def test_parse_reply_json_accepts_advice_without_replies():
+    """只有 advice 也算成功。
+
+    用户点「看图」最想要的往往就是那几条要点（图讲的是排期，不是非接不可的话头），
+    这时候一条回复都没写出来是正常的 —— 以前这里会判成「输出非法」退回模板。
+    """
+    got = ra.parse_reply_json('{"advice":["先攒13000积分","最后一天别打"]}')
+    assert got is not None
+    assert got["advice"] == ["先攒13000积分", "最后一天别打"]
+    assert got["replies"] == []
+
+
+def test_parse_reply_json_still_fails_when_both_empty():
+    assert ra.parse_reply_json('{"replies":[]}') is None
+
+
+# ---- 视觉入口的守卫 ---------------------------------------------------------
+
+def test_sniff_mime_reads_magic_bytes():
+    """mime 按内容判，不按扩展名 —— 硬写 image/jpeg 传 PNG 只是靠解码器嗅探。"""
+    assert ra._sniff_mime("iVBORw0KGgoAAAANSUhEUg") == "image/png"
+    assert ra._sniff_mime("/9j/4AAQSkZJRg") == "image/jpeg"
+    assert ra._sniff_mime("UklGRiQAAABXRUJQ") == "image/webp"
+    assert ra._sniff_mime("QUJD") == "image/png"      # 判不出来当 PNG（微信截图都是 PNG）
+
+
+def test_vision_ready_reports_missing_mmproj(monkeypatch):
+    monkeypatch.setattr(ra, "_find_mmproj", lambda *a, **k: None)
+    ok, why = ra.vision_ready()
+    assert ok is False
+    assert "mmproj" in why
+
+
+def test_vision_ready_true_when_mmproj_present(monkeypatch):
+    monkeypatch.setattr(ra, "_find_mmproj", lambda *a, **k: r"D:\mmproj-Ornith.gguf")
+    assert ra.vision_ready() == (True, "")
+
+
+def test_image_payload_shrinks_only_when_too_big(tmp_path):
+    """不超限就别缩 —— 这张安排表缩到 1200 宽后小榜活动全读错（2026-10-25 实测）。"""
+    from PIL import Image
+
+    small = tmp_path / "s.png"
+    Image.new("RGB", (800, 600), "white").save(small)
+    b64 = ra.image_payload(str(small), max_side=2400)
+    assert len(b64) > 100
+
+    big = tmp_path / "b.png"
+    Image.new("RGB", (4000, 3000), "white").save(big)
+    b64b = ra.image_payload(str(big), max_side=1200)
+    # 缩过之后再解回来量长边：应该压到 1200 以内
+    import base64
+    import io
+
+    im = Image.open(io.BytesIO(base64.b64decode(b64b)))
+    assert max(im.size) <= 1200
+
+
+def test_clean_advice_keeps_leading_dates():
+    """日期开头的要点不许被当成序号吃掉。
+
+    2026-10-25 真机：模型给的五条要点里三条以「10月27日先升巴尔德…」开头，
+    旧正则把开头那段数字连同点号一起剥掉，于是输出成「月27日先升…」。
+    序号只认 `1.` `1、` `1)` 和项目符号，不认裸数字。
+    """
+    got = ra.clean_advice([
+        "10月27日先升巴尔德1技能再总动员",
+        "28号士官计划刷宝石",
+        "11月3日最后一天，要拿榜的注意",
+    ])
+    assert got[0].startswith("10月27日")
+    assert got[1].startswith("28号")
+    assert got[2].startswith("11月3日")
+
+
+def test_clean_advice_still_strips_real_numbering():
+    assert ra.clean_advice(["1.先攒", "2、再打", "3) 最后看背包"]) == ["先攒", "再打", "最后看背包"]

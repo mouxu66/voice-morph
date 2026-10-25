@@ -344,7 +344,13 @@ def _start_locked(port: int) -> None:
     exe, model = _find_exe(), _find_model()
     assert exe and model, "available() 已保证两者存在"
     ngl = os.environ.get(ENV_NGL, "99")
-    ctx = os.environ.get(ENV_CTX, "2048")
+    # 6144 而不是 2048：**一张攻略图就吃 3475 token**。
+    # 2026-10-25 实测（2315×1550 的万圣节安排表，Qwen3-VL patch 切分后）：
+    #   c=2048 → HTTP 400 `request (3475 tokens) exceeds the available context size`
+    # 图是按 token 计价的，不是按像素：2300 宽 ≈ 3.5k token。纯文本生成用不到这么多，
+    # 但两条链路共用同一个 llama-server（省一次 6G 的模型装卸），只能按最大那个配。
+    # 代价：显存 +约 400MiB、首 token 不变（prefill 只看实际长度，不看 -c）。
+    ctx = os.environ.get(ENV_CTX, "6144")
     boot_s = float(os.environ.get(ENV_BOOT, "90"))
     flags = 0
     if os.name == "nt":
@@ -571,8 +577,15 @@ def parse_reply_json(text: str) -> dict | None:
             return None
     if not isinstance(data, dict):
         return None
+    # advice 是「给本人看的要点」，读者不同，清洗规则也不同（这里是**宽松**的：
+    # 可以有标点、可以有数字），所以不跟 replies 走同一个循环。
+    advice = clean_advice(data.get("advice"))
     raw = data.get("replies")
+    # 只有 advice 没有 replies 也算成功：用户点「看图」最想要的往往正是那几条要点，
+    # 这时候一条回复都没写出来是正常的（图讲的是排期，不是非接不可的话头）。
     if not isinstance(raw, list):
+        if advice:
+            return {"why": "", "replies": [], "advice": advice, "should_reply": False}
         return None
     replies: list[str] = []
     for item in raw:
@@ -589,10 +602,15 @@ def parse_reply_json(text: str) -> dict | None:
     if not replies:
         # 「不用回」是模型的**结论**，不是解析失败。以前一律当失败 → 退回模板，
         # 于是用户点了「怎么回」收到「收到/哈哈哈/好嘞」，而模型其实在说「这条不用回」。
-        if should is False:
-            return {"why": why, "replies": [], "should_reply": False}
+        if should is False or advice:
+            return {"why": why, "replies": [], "advice": advice, "should_reply": False}
         return None
-    return {"why": why, "replies": replies[:3], "should_reply": should is not False}
+    return {
+        "why": why,
+        "replies": replies[:3],
+        "advice": advice,
+        "should_reply": should is not False,
+    }
 
 
 #: 「替你答应」的句式。4B 在真实语料上反复写这类话（2026-10-24 评测：
@@ -1057,6 +1075,56 @@ def _rule_replies(messages: list[dict], last_side: str | None = None) -> list[st
     return ["666", "[奸笑]"]
 
 
+def _sniff_mime(image_b64: str) -> str:
+    """按 base64 头几个字节判图片真实格式。
+
+    `iVBORw0KGgo` = PNG / `/9j/` = JPEG / `UklGR` = WebP。判不出来就当 PNG ——
+    微信截图和裁切出来的都是 PNG，猜错的概率远小于硬写 jpeg。
+    """
+    head = (image_b64 or "")[:8]
+    if head.startswith("/9j/"):
+        return "image/jpeg"
+    if head.startswith("UklGR"):
+        return "image/webp"
+    return "image/png"
+
+
+#: 送进视觉塔前，图片长边压到这个像素以内。
+#: 6144 的 context 里，图的预算约 4500 token（要留 prompt 与输出）；
+#: 按 Qwen3-VL 的 patch 切分，2315×1550 实测 3475 token，约等于 2600 宽的极限。
+#: 2400 是「不缩原图、又给别的留出余地」的交点。
+VISION_MAX_SIDE = 2400
+
+
+def image_payload(path: str, max_side: int = VISION_MAX_SIDE) -> str:
+    """读一张图 → （必要时先缩小再）base64。读不了就抛，调用方降级。
+
+    缩图是**按长边**缩，保持比例：直接 resize 到固定宽高会把表格拉变形，字也糊。
+    2026-10-25 实测这张安排表：缩到 1200 宽只剩 3.6s 但小榜活动全读错（把总结栏
+    当成活动），所以**能用原图就别缩**，只有超限才动手。
+    """
+    import base64
+    import io as _io
+
+    with open(path, "rb") as f:
+        raw = f.read()
+    try:
+        from PIL import Image
+
+        im = Image.open(_io.BytesIO(raw))
+        if max(im.size) > max_side:
+            k = max_side / max(im.size)
+            im = im.convert("RGB").resize(
+                (max(1, round(im.width * k)), max(1, round(im.height * k))), Image.LANCZOS
+            )
+            buf = _io.BytesIO()
+            im.save(buf, "PNG", optimize=True)
+            raw = buf.getvalue()
+    except Exception:  # noqa: BLE001 —— 没装 Pillow 也照样能把原图发过去
+        pass
+    return base64.b64encode(raw).decode()
+
+
 def _chat(
     port: int,
     prompt: str,
@@ -1071,9 +1139,11 @@ def _chat(
     if image_b64:
         # OpenAI 视觉格式；llama-server 认 data URI。纯文本请求保持字符串，
         # 免得给不带 mmproj 的模型塞一个它解析不了的结构。
+        # mime 按 magic bytes 判，**不要照抄 `image/jpeg`**：我们传的是截图裁出来的
+        # PNG，硬写 jpeg 只是靠 llama.cpp 自己嗅探才没炸，换个解码器就 400。
         user_content = [
             {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + image_b64}},
+            {"type": "image_url", "image_url": {"url": f"data:{_sniff_mime(image_b64)};base64,{image_b64}"}},
         ]
     payload = {
         "model": "qwen3vl",
@@ -1240,58 +1310,158 @@ _DIGEST_TAIL = (
     "资料里没有的照样不许编 —— 宁可只接一句「我看看」，也不要补一个数。"
 )
 
+#: 有图/有资料时用的提示：在原来的 `replies` 之外**多要一段 `advice`**。
+#:
+#: 为什么多这一层：用户原话是「有些东西只有我能回答，只能 AI 建议我回答什么；
+#: 攻略类的搜出来给我看，我照着攻略再让他做更多事」。他要的是先**看懂**（advice），
+#: 再挑一句话发出去（replies）。两者受众不同，不能混在一条字段里 ——
+#: advice 进面板给本人读，可以有标点、可以说得细；replies 要能原样发进群，还是 3~10 字。
+_ADVICE_TAIL = (
+    "\n这条链路要输出 **advice + replies 两样**，JSON 变成："
+    '{"advice":["要点1","要点2"],"replies":["回复1","回复2","回复3"]}'
+    "\n两样东西的读者不同，别写混："
+    "\n- `advice` 是给**用户本人**看的（不进群）：3~5 条，每条一句话，"
+    "说清「做什么/什么时候/多少数量」。可以有标点、可以用数字。"
+    "**只写图和资料里真有的**，凑不满就少写两条，绝不许补一条听起来像攻略的空话。"
+    "\n- `replies` 是能**原样点发进群**的：每条 3~10 个字、不带标点、不用「哈哈」、"
+    "不替用户答应任何事、不复述群里已有的话，三条长度要错开。"
+    "\n图里是**这一期具体排了什么**（日期、活动名、数量门槛），资料是**这类活动怎么打**。"
+    "两边都读，冲突时以图为准 —— 那张图才是这个群这一周真正要过的内容。"
+    "\n资料和图上都没有的照样不许编：宁可只写两条 advice、说「我看看」。"
+    "\n只输出 JSON，不要解释、不要代码块。"
+)
+
+#: 读图那条链路的超时与 token。比纯文本宽得多：
+#: 2026-10-25 实测（RTX 5060 8G，Ornith-9B + mmproj）：一张 2315×1550 的表
+#: prefill 3.5k token，整条「读图 + 消化资料 + 出 5 条建议 + 3 条回复」15.9s / 146 token；
+#: 只读图 22s。给到 90s 是因为显存紧张时视觉塔会退到 CPU，那档慢 3~4 倍。
+VISION_TIMEOUT = 90.0
+ADVICE_MAX_TOKENS = 520
+
+
+
+def vision_ready() -> tuple[bool, str]:
+    """能不能读图。返回 (能否, 不能的人话原因)。
+
+    条件是**有 mmproj**。文件在但模型不是多模态的就别硬上 —— llama.cpp 会直接
+    报投影维度错（4B 的 2560 维接不到 9B 的 4096），那种错对用户是黑箱。
+    """
+    if (os.environ.get(ENV_MMPROJ) or "").strip() == "" and ENV_MMPROJ in os.environ:
+        return False, "已用 VM_REPLY_MMPROJ= 关掉了看图"
+    mm = _find_mmproj()
+    if not mm:
+        return False, "没找到视觉权重 mmproj（当前模型可能不是多模态）"
+    return True, ""
+
+
+def clean_advice(raw) -> list[str]:
+    """把模型给的 advice 洗成「能读的几条」。
+
+    与 `replies` 完全相反：advice 是给本人看的，**允许长、允许标点、允许数字**。
+    只挡三样：空串、整段复读（同一句出现两次）、以及超过 120 字的流水账
+    （那已经不是「一条要点」，是模型把整篇攻略抄下来了）。
+    """
+    out: list[str] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        s = str(item or "").strip().strip('"“”').strip()
+        # 去掉模型自己加的项目符号，但**只认真正的序号形态**：
+        # `1.` `1、` `1)` `-` `•`。
+        # ⚠️ 不能写成 `^[-*·•\d.、)\s]+` —— 那样会把「10月27日先升巴尔德」开头的
+        # 「10」当序号吃掉，变成「月27日先升巴尔德」（2026-10-25 真机实测，
+        # 五条建议里三条开头都少了日期）。
+        s = re.sub(r"^\s*(?:[-*·•]\s*|\d{1,2}\s*[.、)）]\s*)", "", s)
+        if not s or len(s) > 120 or s in out:
+            continue
+        out.append(s)
+    return out[:5]
+
 
 def suggest_from_digest(
-    messages: list[dict], digest: dict, chat: str = "", last_side: str | None = None
+    messages: list[dict],
+    digest: dict,
+    chat: str = "",
+    last_side: str | None = None,
+    image: str | None = None,
 ) -> dict:
-    """用户点了「查攻略」之后：拿搜到的几条当参考，写 2~3 句能直接点发的话。
+    """有外部参考时写建议：`advice` 给用户自己看，`replies` 能直接点发。
 
-    为什么单独一条链路、而不是把资料塞进 `suggest()`：资料是可选的，要用户点一下才
-    付这 2 秒；塞进默认链路还会让模型开始「主动查攻略」—— 它没有联网能力，
+    参考可以来自两处，**至少要有一样**：
+    - `digest`：搜狗搜到的几条攻略（用户点了「搜攻略」）
+    - `image`：群里那张图（用户点了「看图」）
+
+    两样都给了就一起用 —— 这是最有用的一种组合：图说「这一期排了什么」，
+    资料说「这类活动怎么打」，模型只需把它们接起来。
+
+    为什么单独一条链路、而不是把资料塞进 `suggest()`：参考资料要用户点一下才付
+    这十几秒；塞进默认链路还会让模型开始「主动查攻略」—— 它没有联网能力，
     那条路最后只会变成编造带站名的假引用。
 
     与 `suggest()` 唯一的分歧是多了一段参考，**风格约束一个字没松**：
-    最后这句还是要真人点着发进群里。
+    最后那句还是要真人点着发进群里。
     """
     start = time.perf_counter()
     from web_digest import digest_prompt
 
     items = [it for it in ((digest or {}).get("items") or []) if it.get("title") or it.get("snippet")]
-    if not items:
+    # 图可能读不了（模型不是多模态 / 文件没了）。读不了就当没图，但**要在 note 里说**，
+    # 否则用户会以为模型看过图、只是没写出东西来。
+    img_b64 = None
+    img_note = ""
+    if image:
+        can, why_not = vision_ready()
+        if not can:
+            img_note = f"没读图：{why_not}"
+        else:
+            try:
+                img_b64 = image_payload(image)
+            except Exception as exc:  # noqa: BLE001
+                img_note = f"图打不开：{type(exc).__name__}"
+    if not items and not img_b64:
         return {
-            "engine": "rule", "replies": [], "note": "没搜到可用的资料，先按你自己的话回",
+            "engine": "rule", "replies": [], "advice": [], "note": img_note or "没搜到可用的资料，先按你自己的话回",
             "intent": "need_info",
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
         }
     ok, why_not = available()
     if not ok:
         return {
-            "engine": "rule", "replies": [], "note": why_not, "intent": "need_info",
+            "engine": "rule", "replies": [], "advice": [], "note": why_not, "intent": "need_info",
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
         }
     try:
         port = _ensure_server()
-        prompt = (
-            build_prompt(messages, chat, last_side)
-            + "\n\n【查到的资料】\n"
-            + digest_prompt(digest, messages)
-        )
+        prompt = build_prompt(messages, chat, last_side)
+        if items:
+            prompt += "\n\n【查到的资料】\n" + digest_prompt(digest, messages)
+        if img_b64:
+            prompt += (
+                "\n\n【群里那张图】用户刚点了「看图」，图附在下面。"
+                "它是这个群这一周真正要过的安排，先把上面的日期/活动名/数量读准，再看资料。"
+            )
         content = _chat(
-            port, prompt, CHAT_TIMEOUT, system=_SYSTEM + _DIGEST_TAIL, max_tokens=110
+            port,
+            prompt,
+            VISION_TIMEOUT if img_b64 else CHAT_TIMEOUT,
+            system=_SYSTEM + _ADVICE_TAIL,
+            max_tokens=ADVICE_MAX_TOKENS if img_b64 or items else 110,
+            image_b64=img_b64,
         )
     except Exception as exc:  # noqa: BLE001 —— 与 suggest 一致：失败一律降级，不抛
         return {
-            "engine": "rule", "replies": [], "note": f"本地模型没跑起来：{exc}",
+            "engine": "rule", "replies": [], "advice": [], "note": f"本地模型没跑起来：{exc}",
             "intent": "need_info",
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
         }
     parsed = parse_reply_json(content)
     if parsed is None:
         return {
-            "engine": "rule", "replies": [], "note": "模型输出没通过校验",
+            "engine": "rule", "replies": [], "advice": [], "note": "模型输出没通过校验",
             "intent": "need_info",
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
         }
+    advice = clean_advice(parsed.get("advice"))
     replies = drop_promises(parsed["replies"], messages)
     # 抄标题是最常见的失败形态：搜索结果的标题被整句搬过来当回复
     # （「无尽冬日英雄搭配攻略」），长度和语体都跟群聊对不上。
@@ -1301,8 +1471,9 @@ def suggest_from_digest(
         "engine": "local",
         "model": MODEL_LABEL,
         "replies": replies,
+        "advice": advice,
         "why": parsed["why"],
-        "note": "" if replies else "模型没写出能用的，自己说一句更稳",
+        "note": "" if (replies or advice) else "模型没写出能用的，自己说一句更稳",
         "intent": "need_info",
         "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
     }

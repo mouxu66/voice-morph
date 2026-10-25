@@ -42,7 +42,7 @@ const OUT_DIR = path.join(ROOT, "outputs", "pet-preview");
 const SCENES = ["idle-dark", "idle-light", "typed-dark", "picked-dark", "rec-dark",
                 "tray-dark", "trayplay-dark", "drawer-dark", "busy-dark", "offline-dark",
                 "live-dark", "qwen-dark", "think-dark", "guide-dark", "holdwarn-dark",
-                "songs-dark", "analysis-dark", "digest-dark"];
+                "songs-dark", "analysis-dark", "digest-dark", "look-dark"];
 
 /** 找 Playwright 缓存里的 chromium-headless-shell。找不到返回 null（调用方负责报错/跳过）。 */
 function findChrome() {
@@ -230,6 +230,8 @@ const SCENE_STATE = {
   // 攻略展开态（2026-10-25）：分析摘要/原话/怎么回全部让位，只留检索结果。
   // 它是面板的第二种视图，不是「分析层多一块」—— 300px 一次只放得下一件事。
   digest: "digest",
+  // 看图结果态（2026-10-25）：要点 + 一条来源 + 「写一句」，最挤的形态。
+  look: "look",
   // 以下都是「空草稿 + 一段状态」：形态本身不变，变的是状态行/气泡。
   offline: "idle", live: "idle", qwen: "idle", think: "idle", guide: "idle",
   // 预检告警要配一段草稿：这条告警只有「真的要发」时才有意义。

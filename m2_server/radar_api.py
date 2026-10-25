@@ -234,6 +234,70 @@ def replies_from_digest(body: dict | None = None):
     return {"ok": True, "chat": snap.get("chat"), **out}
 
 
+@router.post("/replies/from-image")
+def replies_from_image(body: dict | None = None):
+    """看群里那张图 → 给「怎么打」的要点 + 能直接发的话。
+
+    这是用户原话的正解：「他问了一句话，比如说这个活动怎么打呀，我希望他能上网
+    搜索，给我点建议，我拿着去生成回复给他。」
+
+    所以一条链路里做三件事，顺序不能换：
+      ① 把图**放大**读出来（缩略图读不了，见 `vision_grab`）
+      ② 拿「群名实体 + 对方问的那句」去搜 —— 注意搜的是**那句话**，不是图。
+         图只回答「这一期排了什么」，不回答「这类活动怎么打」；反过来用图当
+         检索词会拼出一串活动名，搜狗返回的全是日程表，没有打法。
+      ③ 图和资料一起喂模型，出 `advice`（给本人看）+ `replies`（能发）。
+
+    `search=0` 可以跳过第 ②步 —— 有时候用户只想让它读图，不想等那 2 秒。
+    """
+    from chat_read import read_chat
+    from reply_advisor import suggest_from_digest
+    from vision_grab import grab_biggest_image
+
+    body = body or {}
+    try:
+        snap = read_chat(limit=14)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"读微信会话失败：{exc}"}
+    if not snap.get("ok"):
+        return snap
+    msgs = snap.get("messages") or []
+    chat = snap.get("chat") or ""
+    side = body.get("last_side") if body.get("last_side") in ("left", "right") else None
+
+    start = time.perf_counter()
+    img_path, img_note = grab_biggest_image()
+
+    digest: dict = {"q": "", "items": []}
+    if img_path and body.get("search", True):
+        from web_digest import build_query, search  # 惰性：不点按钮不联网
+
+        # 检索词取**最后一条对方说的、有信息量的那句**。逐条往回找而不是只看最后一条：
+        # 「这个活动怎么打呀」前面常常只隔一个表情或一句「+1」。
+        frag = ""
+        for m in reversed(msgs):
+            if (m.get("kind") or "text") != "text" or m.get("side") != "left":
+                continue
+            t = str(m.get("text") or "").strip()
+            if len(t) >= 3 and not t.startswith("["):
+                frag = t
+                break
+        q = build_query(chat, None, frag)
+        if q:
+            digest = search(q, limit=3)
+            digest["q"] = q
+
+    out = suggest_from_digest(msgs, digest, chat, side, image=img_path)
+    return {
+        "ok": True,
+        "chat": chat,
+        "image": {"ok": bool(img_path), "note": img_note},
+        "digest": digest,
+        "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
+        **out,
+    }
+
+
 def peek_side() -> dict:
     """**只看最后一条是谁发的**（左=对方 / 右=自己），不推进观察状态机。
 
