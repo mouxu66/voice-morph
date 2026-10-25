@@ -148,6 +148,92 @@ def replies(limit: int = 14, last_side: str = ""):
     return {"ok": True, "chat": snap.get("chat"), **out}
 
 
+#: 每个会话里用户**亲手给过**的检索词。
+#: 「117」「3864区」这类群名给不出实体，只能靠用户说一次；
+#: 说一次就该记住 —— 否则每点一次「查」都在问同一个问题。
+_Q_HINT: dict[str, str] = {}
+
+
+@router.get("/digest")
+def digest(q: str = "", chat: str = "", limit: int = 4):
+    """按当前会话的最后一个问题去搜攻略/数值，结果**只给用户看，不进群**。
+
+    为什么单独一个端点、不和 /replies 合并：检索要 2~3 秒，而「该不该回」的结论
+    150ms 就该出来。更重要的是这一步要**用户自己按** —— 原话是「我看着攻略，
+    再让他做更多额外的事」；自动搜会把面板塞满，还没人看。
+
+    `q` 给了就用给的（前端可以改词再搜一次）；不给就从当前会话的最后一条对方
+    消息里剪一段当检索词。剪法是 `web_digest.build_query`，很保守 —— 搜狗对长句
+    直接返回 0 条，宁可短。
+    """
+    from web_digest import build_query, search, useful_frag
+
+    used_chat = chat
+    frag = ""
+    # 就算用户自己给了词，也要把会话名读出来 —— `_Q_HINT` 是按会话存的，
+    # 拿不到会话名就会把词存进空 key，下次自动拼词时对不上（2026-10-25 实测）。
+    if not q or not used_chat:
+        try:
+            from chat_read import read_chat  # 惰性：不点按钮不碰 UIA
+
+            snap = read_chat(limit=10)
+            msgs = snap.get("messages") or []
+            used_chat = used_chat or (snap.get("chat") or "")
+            if not q:
+                for m in reversed(msgs):
+                    if (m.get("kind") or "text") != "text" or m.get("side") != "left":
+                        continue
+                    frag = str(m.get("text") or "").strip()
+                    if frag:
+                        break
+        except Exception:  # noqa: BLE001 —— 读不到微信也能搜，只是只剩群名
+            pass
+    if not q:
+        q = build_query(used_chat, None, frag)
+        if not q:
+            # 自动拼不出来（群名是「117」、对方只报了个数）：用这台机器上
+            # 这个会话里用户自己说过的词。仍然没有就让 search() 去说「说个词」。
+            q = build_query("", None, _Q_HINT.get(used_chat, ""))
+    elif useful_frag(q):
+        _Q_HINT[used_chat] = q.strip()
+    out = search(q, limit=max(1, min(8, limit)))
+    return {
+        "ok": out["ok"],
+        "chat": used_chat,
+        "q": out["q"],
+        "items": out["items"],
+        "weak": out["weak"],
+        "note": out["note"],
+        "hint": _Q_HINT.get(used_chat, ""),
+        "elapsed_ms": out.get("elapsed_ms", 0),
+    }
+
+
+@router.post("/replies/from-digest")
+def replies_from_digest(body: dict | None = None):
+    """拿刚搜到的那份攻略，写 2~3 句能直接点发的话。
+
+    检索结果由前端回传而不是后端自己缓存：用户可能连搜三次、只挑其中一条看，
+    这条链路要用的必须是**他正在看的那份**。
+    """
+    from chat_read import read_chat
+    from reply_advisor import suggest_from_digest
+
+    body = body or {}
+    digest_doc = body.get("digest") or {}
+    try:
+        snap = read_chat(limit=14)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"读微信会话失败：{exc}"}
+    if not snap.get("ok"):
+        return snap
+    side = body.get("last_side") if body.get("last_side") in ("left", "right") else None
+    out = suggest_from_digest(
+        snap.get("messages") or [], digest_doc, snap.get("chat") or "", side
+    )
+    return {"ok": True, "chat": snap.get("chat"), **out}
+
+
 def peek_side() -> dict:
     """**只看最后一条是谁发的**（左=对方 / 右=自己），不推进观察状态机。
 

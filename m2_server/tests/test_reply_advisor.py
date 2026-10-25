@@ -892,3 +892,189 @@ def test_claims_done_does_not_kill_requests(text):
 def test_drop_promises_removes_claims_done():
     out = ra.drop_promises(["发你了", "码发我", "666"])
     assert out == ["码发我", "666"]
+
+
+# ---- 2026-10-25：意图分级 —— 到底该不该由 AI 给正文 ----
+
+#: 顶替模型的最小夹具：让 suggest() 走到「拿到 JSON」那一步，但一个 token 都不真跑。
+def _fake_model(monkeypatch, payload: str, replies=None):
+    monkeypatch.setattr(ra, "_realtime_busy", lambda: "")
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1)
+    monkeypatch.setattr(ra, "_needs_look", lambda *a, **kw: False)
+    monkeypatch.setattr(ra, "_chat", lambda *a, **kw: payload)
+
+
+def _ctx(*texts, side="left"):
+    return [{"side": side, "text": t, "kind": "text"} for t in texts]
+
+
+@pytest.mark.parametrize("text", [
+    "码发给我", "你地址发我", "链接给我", "截图发一下", "账号给我", "收款码发我",
+])
+def test_intent_need_you_when_asking_for_things(text):
+    """对方在要东西 → 不给正文。
+
+    117 群实测：对方要收款码，模型三条「发你了 / 码给你 / @你 我发你了」，
+    用户一个字节都没发出去。这类错不是措辞不好，是替用户声称做过一件事。
+    """
+    out = ra.classify_intent(_ctx(text))
+    assert out["intent"] == "need_you", text
+    assert out["block"] is True, text
+    assert "只有你能给" in out["gap"]
+
+
+@pytest.mark.parametrize("text", [
+    "你今晚打不打", "你几点上线", "你几级了", "你号还在不", "你有空吗", "你明天来不来",
+])
+def test_intent_need_you_when_asking_user_state(text):
+    """问用户自己的处境 → 同样不给正文（答案只在他脑子里）。"""
+    out = ra.classify_intent(_ctx(text))
+    assert out["intent"] == "need_you", text
+    # 这条不 block：候选里要是有句纯表态（「行」），还能放行
+    assert out["block"] is False, text
+
+
+def test_intent_lets_pure_stance_through():
+    """嘴里已经有一句「行」就够答了 —— 表态不需要知道细节。"""
+    out = ra.classify_intent(_ctx("你今晚打不打"), ["行", "在的怎么了"])
+    assert out["intent"] == "direct"
+
+
+@pytest.mark.parametrize("text", [
+    "无尽冬日阵容怎么配", "茉莉值得练吗", "盾矛弓配比多少", "打熊怎么打", "专武升到几",
+])
+def test_intent_need_info_when_public_knowledge(text):
+    """公共知识（攻略/数值）→ 不编，给「查攻略」入口。
+
+    与 need_you 的分界：攻略搜得到，用户的处境搜不到。
+    """
+    out = ra.classify_intent(_ctx(text))
+    assert out["intent"] == "need_info", text
+    assert out["can_search"] is True
+
+
+@pytest.mark.parametrize("text", ["哈哈哈哈哈", "6666", "动画表情", "[奸笑]"])
+def test_intent_ack_for_noise(text):
+    out = ra.classify_intent(_ctx("行", text))
+    assert out["intent"] == "ack", text
+
+
+def test_intent_direct_for_ordinary_question():
+    out = ra.classify_intent(_ctx("点哪个", "3000还是600"))
+    assert out["intent"] == "direct"
+
+
+def test_intent_reads_two_messages_not_just_the_last():
+    """群聊一句话常被拆成几条，最后一条往往是收尾词。
+
+    2026-10-25 拿 3864 群 40 个真实时机只看最后一条 → 37/40 判成 ack，
+    而真正的问题（「点哪个」「3000还是600」）就在前一条。
+    """
+    out = ra.classify_intent(_ctx("点哪个", "左下"))
+    assert out["intent"] == "direct"
+    assert out["asked"] == "左下"          # 提示用的是最后一条，判据用两条
+
+
+def test_suggest_does_not_run_model_when_asking_for_things(monkeypatch):
+    """要东西这类连模型都不该拉起来 —— 拉起来也只有「发你了」。"""
+    def boom(*a, **kw):
+        raise AssertionError("对方在要东西，不该调模型")
+
+    monkeypatch.setattr(ra, "_realtime_busy", lambda: "")
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", boom)
+    out = ra.suggest(_ctx("带一份", "码发给我"), chat="117")
+    assert out["replies"] == []
+    assert out["intent"] == "need_you"
+    assert "码" in out["gap"]
+
+
+def test_suggest_clears_replies_when_public_knowledge(monkeypatch):
+    """攻略类问题：模型给了候选也要清掉 —— 那几条里的数字都是编的。"""
+    _fake_model(monkeypatch,
+                '{"should_reply":true,"why":"对方在问阵容",'
+                '"replies":["茉莉先练","赫克托毕业盾","我看看"]}')
+    out = ra.suggest(_ctx("无尽冬日阵容怎么配"), chat="3864")
+    assert out["replies"] == []
+    assert out["intent"] == "need_info"
+    assert out["can_search"] is True
+    assert "查攻略" in out["note"]
+
+
+def test_suggest_keeps_replies_for_direct(monkeypatch):
+    _fake_model(monkeypatch,
+                '{"should_reply":true,"why":"在问选哪个","replies":["3000","最低那个","两个都行吧"]}')
+    out = ra.suggest(_ctx("点哪个", "3000还是600"), chat="3864")
+    assert out["replies"] == ["3000", "最低那个", "两个都行吧"]
+    assert out["intent"] == "direct"
+
+
+# ---- 攻略检索：拿到资料之后重写一句 ----
+
+def test_suggest_from_digest_drops_copied_titles(monkeypatch):
+    """搜索结果的标题被整句搬进回复是最常见的失败形态 —— 长度语体都不对。"""
+    _fake_model(monkeypatch,
+                '{"should_reply":true,"why":"照资料说",'
+                '"replies":["无尽冬日英雄搭配攻略","茉莉先拉到4星","盾矛弓4比1比5"]}')
+    digest = {"items": [{"title": "无尽冬日英雄搭配攻略", "snippet": "茉莉 4 星够用"}]}
+    out = ra.suggest_from_digest(_ctx("阵容怎么配"), digest, chat="3864")
+    assert "无尽冬日英雄搭配攻略" not in out["replies"]
+    assert "茉莉先拉到4星" in out["replies"]
+    assert out["intent"] == "need_info"
+
+
+def test_suggest_from_digest_without_items_does_not_call_model(monkeypatch):
+    def boom(*a, **kw):
+        raise AssertionError("没搜到东西不该调模型")
+
+    monkeypatch.setattr(ra, "_ensure_server", boom)
+    out = ra.suggest_from_digest(_ctx("阵容怎么配"), {"items": []}, chat="3864")
+    assert out["replies"] == []
+    assert "没搜到" in out["note"]
+
+
+def test_digest_prompt_never_leaks_urls():
+    """URL 会被模型抄进回复发出去 —— 给模型的资料里不能有。"""
+    from web_digest import digest_prompt
+
+    text = digest_prompt(
+        {"items": [{"title": "攻略", "snippet": "茉莉4星", "url": "https://x.com/a"}]}, []
+    )
+    assert "http" not in text
+    assert "茉莉4星" in text
+
+
+def test_repeats_self_catches_own_last_line():
+    """117 群真实翻车：用户刚说「码发给我」，候选里又出现「码发我」。
+
+    点下去就是把刚打的字再打一遍。这条纯字符串比对，不需要语义。
+    """
+    msgs = [
+        {"side": "left", "text": "谁有码"},
+        {"side": "right", "text": "码发给我"},
+    ]
+    assert ra.repeats_self("码发我", msgs) is False   # 不完全同句，放行
+    assert ra.repeats_self("码发给我", msgs) is True
+
+
+def test_repeats_self_ignores_punctuation_and_at():
+    msgs = [{"side": "right", "text": "@瑜清 码发给我！"}]
+    assert ra.repeats_self("码发给我", msgs) is True
+
+
+def test_repeats_self_ignores_other_side():
+    """别人说的话不算「自己说过」—— 那是 echoes_context 的活。"""
+    msgs = [{"side": "left", "text": "码发给我"}]
+    assert ra.repeats_self("码发给我", msgs) is False
+
+
+def test_repeats_self_skips_tiny_lines():
+    """两个字以下不拦：「嗯」「好」本来就该能重复。"""
+    msgs = [{"side": "right", "text": "嗯"}]
+    assert ra.repeats_self("嗯", msgs) is False
+
+
+def test_drop_promises_removes_self_echo():
+    msgs = [{"side": "right", "text": "码发给我"}]
+    assert ra.drop_promises(["码发给我", "666"], msgs) == ["666"]

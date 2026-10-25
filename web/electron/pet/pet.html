@@ -956,11 +956,15 @@
   }
   #anaReplyHead { display: flex; align-items: center; gap: 4px; }
   #anaReplyHead .st { font-size: 11px; font-weight: 650; color: rgb(var(--c-t-300)); }
-  #panel #anaReplyBtn {
-    flex: 0 0 auto; margin-left: auto; height: auto; padding: 1px 2px;
+  #panel #anaReplyBtn, #panel #anaSearchBtn {
+    flex: 0 0 auto; height: auto; padding: 1px 2px;
     border: 0; background: transparent; box-shadow: none;
     font-size: 9px; color: rgb(var(--c-t-500));
   }
+  /* 「搜攻略」排在「换一批」前面，由它顶到右边；两个都在同一行，不多占一像素高。 */
+  #panel #anaSearchBtn { margin-left: auto; }
+  #panel #anaSearchBtn.hot { color: rgb(var(--c-accent-h)); font-weight: 650; }
+  #panel #anaSearchBtn[hidden] { display: none; }
   #panel #anaReplyBtn:hover { color: rgb(var(--c-accent-h)); }
   #anaReplies { margin-top: 4px; display: grid; gap: 3px; }
   #anaReplies:empty { display: none; }
@@ -980,6 +984,79 @@
   #anaReplyNote { margin-top: 3px; font-size: 9px; line-height: 1.35; color: rgb(var(--c-t-500)); }
   #anaReplyNote:empty { display: none; }
   #anaReplyNote.err { color: rgb(var(--c-err)); }
+
+  /* —— 查攻略：「记录里没有、模型也没有」的那类问题，搜一次摆在下面 ——
+     资料只上屏、**永不进群**：进群的只有模型按它写出来的那句话。
+     结果是给人看的，所以标题给足两行、摘要压到 9px —— 面板 300px 是死预算。 */
+  /* 展开后这一块是**整屏视图**（分析摘要/原话/怎么回都让位了），跟上面没有
+     「两块内容」之分，所以既不要分隔线也不要上边距 —— 13px 在这种面板里是笔钱。 */
+  #anaDigest { margin-top: 2px; }
+  /* 折叠态必须真的 0 高：这一块是「你想查才展开」的，默认占着 72px 会把
+     面板余量吃光（2026-10-25 petlayout 实测：analysisLayer 218→290px，
+     最紧的场景余量 28px→-44px，底部被切）。展开时由 JS 让出消息列表那块地方。 */
+  #anaDigest[hidden] { display: none; }
+  /* 展开后结果 4 张卡最多占 132px，再多就内部滚 —— 面板高度是死预算。 */
+  #anaDigestHead { display: flex; align-items: center; gap: 4px; }
+  /* `white-space: nowrap` 不能省：这块的输入框是 flex:1，宽度一紧就把「攻略」
+     折成两行竖排，整行被顶到 44px，连返回键都跟着变形（2026-10-25 截图实测）。 */
+  #anaDigestHead .st {
+    flex: 0 0 auto; white-space: nowrap;
+    font-size: 11px; font-weight: 650; color: rgb(var(--c-t-300));
+  }
+  /* 与 #anaBack 同尺寸：这块是「怎么回」让位出来的独立视图，得有退路。 */
+  #panel #anaDigestBack {
+    flex: 0 0 auto; width: 20px; height: 18px; padding: 0; margin-right: 1px;
+    border-radius: 6px; font-size: 12px; line-height: 1;
+  }
+  /* 检索词必须能改：群名里没有游戏名时（比如「117」），自动拼出来的词一定是垃圾，
+     用户看着结果不对却没法改，这个按钮就废了。 */
+  #anaDigestQ {
+    flex: 1 1 auto; min-width: 0; height: 17px; margin-left: 2px; padding: 0 5px;
+    border-radius: 5px; border: 1px solid rgb(var(--c-border) / 0.8);
+    background: rgb(var(--c-surface-2) / 0.5);
+    font-size: 9px; line-height: 17px; color: rgb(var(--c-t-200));
+    font-family: inherit;
+  }
+  #anaDigestQ::placeholder { color: rgb(var(--c-t-500)); }
+  #anaDigestQ:focus { outline: none; border-color: rgb(var(--c-accent) / 0.7); }
+  #panel #anaDigestBtn {
+    flex: 0 0 auto; margin-left: auto; height: auto; padding: 1px 2px;
+    border: 0; background: transparent; box-shadow: none;
+    font-size: 9px; color: rgb(var(--c-t-500));
+  }
+  #panel #anaDigestBtn:hover { color: rgb(var(--c-accent-h)); }
+  /* 后端说这条要查（can_search）时才点亮 —— 常驻一个高亮按钮会变成噪音 */
+  #panel #anaDigestBtn.hot { color: rgb(var(--c-accent-h)); font-weight: 650; }
+  #anaDigestNote { margin-top: 3px; font-size: 9px; line-height: 1.35; color: rgb(var(--c-t-500)); }
+  #anaDigestNote:empty { display: none; }
+  #anaDigestNote.err { color: rgb(var(--c-err)); }
+  /* 展开后 4 张卡最多占 132px，再多就内部滚 —— 面板高度是死预算。 */
+  /* 只摆 2 条：3 条就要内部滚动，而滚动容器会从卡片中间截一刀，
+     看起来像渲染坏了（2026-10-25 截图）。要看更多就改词再搜一次。 */
+  #anaDigestList { margin-top: 4px; display: grid; gap: 4px; }
+  #anaDigestList:empty { display: none; }
+  .dcard {
+    padding: 4px 6px; border-radius: 7px;
+    background: rgb(var(--c-surface-2) / 0.55);
+    border: 1px solid rgb(var(--c-border) / 0.7);
+  }
+  /* 220px 宽放不下两行标题：标题截断到一行，把高度让给摘要（摘要才是要读的东西）。 */
+  .dcard .dt {
+    font-size: 10px; line-height: 1.3; color: rgb(var(--c-t-200));
+    display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .dcard .ds {
+    margin-top: 2px; font-size: 9px; line-height: 1.35; color: rgb(var(--c-t-500));
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .dcard .dm { margin-top: 2px; font-size: 8px; color: rgb(var(--c-t-500)); opacity: 0.75; }
+  #panel #anaDigestWrite {
+    width: 100%; height: auto; margin-top: 4px; padding: 4px 6px; border-radius: 8px;
+    font-size: 9px; color: rgb(var(--c-t-300));
+    border: 1px solid rgb(var(--c-border) / 0.9);
+    background: rgb(var(--c-surface-2) / 0.5);
+  }
+  #panel #anaDigestWrite:hover { border-color: rgb(var(--c-accent) / 0.6); }
 
   /* —— 更多抽屉 #drawer：音色 / 引擎 / 最近发送 ——
      这些是「设置」，进来的频率远低于发送；放进抽屉后它们不再跟主按钮抢注意力。
@@ -1469,10 +1546,27 @@
       <div id="anaReply">
         <div id="anaReplyHead">
           <span class="st">怎么回</span>
+          <!-- 搜攻略的入口：跟「换一批」同一行，不多占高度。点开才展开下面那块 ——
+               面板 300px 是死预算，一个「可能用不上」的输入框不该常驻。 -->
+          <button type="button" id="anaSearchBtn" title="去网上查一下（结果只给你看，不进群）">搜攻略</button>
           <button type="button" id="anaReplyBtn" title="让本地模型再想一批">换一批</button>
         </div>
         <div id="anaReplies" role="list"></div>
         <div id="anaReplyNote" aria-live="polite"></div>
+      </div>
+      <!-- 查攻略：对方在问机制/数值/排行时，这些东西记录里没有、模型也没有。
+           搜一次摆在这儿给**你看**，你一眼就知道该说什么；点「照这个写一条」
+           才让模型按它压一句 —— 资料永远不进群，进群的只有那句话。 -->
+      <div id="anaDigest" hidden>
+        <div id="anaDigestHead">
+          <button type="button" id="anaDigestBack" title="收起攻略，回到「怎么回」">‹</button>
+          <span class="st">攻略</span>
+          <input id="anaDigestQ" type="text" placeholder="搜什么（可改）" />
+          <button type="button" id="anaDigestBtn" title="按这个去网上搜一下">查</button>
+        </div>
+        <div id="anaDigestNote" aria-live="polite"></div>
+        <div id="anaDigestList" role="list"></div>
+        <button type="button" id="anaDigestWrite" hidden>照这个写一条</button>
       </div>
       <div id="anaNote" aria-live="polite"></div>
     </div>
@@ -2217,6 +2311,17 @@ const anaNoteEl = document.getElementById("anaNote");
 const anaRepliesEl = document.getElementById("anaReplies");
 const anaReplyBtnEl = document.getElementById("anaReplyBtn");
 const anaReplyNoteEl = document.getElementById("anaReplyNote");
+// 查攻略：搜来的资料只上屏、不进群（进群的只有模型按它写出来的那句）
+const anaSearchBtnEl = document.getElementById("anaSearchBtn");
+const anaDigestEl = document.getElementById("anaDigest");
+const anaCardEl = document.getElementById("anaCard");
+const anaReplyEl = document.getElementById("anaReply");
+const anaDigestBackEl = document.getElementById("anaDigestBack");
+const anaDigestBtnEl = document.getElementById("anaDigestBtn");
+const anaDigestQEl = document.getElementById("anaDigestQ");
+const anaDigestNoteEl = document.getElementById("anaDigestNote");
+const anaDigestListEl = document.getElementById("anaDigestList");
+const anaDigestWriteEl = document.getElementById("anaDigestWrite");
 const songBtnEl = document.getElementById("songBtn");
 const songBackEl = document.getElementById("songBack");
 const songSrcEl = document.getElementById("songSrc");
@@ -3475,6 +3580,11 @@ async function analyzeChat() {
 function renderAnalysis(j, autoReply = true) {
   const ok = !!(j && j.ok);
   const a = (j && j.analysis) || {};
+  // 重读一次会话 = 回到「分析视图」。上一轮展开的攻略块必须收掉：
+  // ①它讲的是上一轮的词，②它把摘要/原话/怎么回都让位了，不收就一直是空的。
+  if (anaDigestEl) anaDigestEl.hidden = true;
+  if (anaCardEl) anaCardEl.hidden = false;
+  if (anaReplyEl) anaReplyEl.hidden = false;
   const s = a.suggest || {};
   if (anaTitleEl) anaTitleEl.textContent = ok ? (a.headline || j.chat || "当前会话") : "读不到当前会话";
   if (anaSuggestEl) {
@@ -3512,6 +3622,8 @@ function clearReplies() {
   anaReplySeq++;
   if (anaRepliesEl) anaRepliesEl.innerHTML = "";
   if (anaReplyNoteEl) { anaReplyNoteEl.textContent = ""; anaReplyNoteEl.className = ""; }
+  // 攻略块跟着一起清：换了一段上下文，上一轮搜到的东西就不再对应现在这句了。
+  clearDigest();
 }
 
 /**
@@ -3559,18 +3671,140 @@ function renderReplies(j) {
   }
   if (anaReplyNoteEl) {
     // why 是模型的理由；engine=rule 说明这条是模板兜底，必须显式告知。
+    // gap 排在最前：它是「缺什么只有你自己知道」，need_you / need_info 两档后端
+    // 不给正文，这一行就是那条唯一的信息。
+    const gap = ok ? (j.gap || "") : "";
     const why = ok ? (j.why || "") : ((j && j.error) || "回复建议不可用");
     const rule = ok && j.engine === "rule" ? "模板建议（本地模型没跑起来）" : "";
     const note = ok ? (j.note || "") : "";
-    anaReplyNoteEl.textContent = [why, rule, note].filter(Boolean).join(" · ");
+    anaReplyNoteEl.textContent = [gap, why, rule, note].filter(Boolean).join(" · ");
     anaReplyNoteEl.className = ok && j.engine !== "rule" ? "" : (ok ? "" : "err");
   }
+  // 后端说这条要查（can_search）才点亮 —— 常亮会变成噪音。
+  if (anaSearchBtnEl) anaSearchBtnEl.classList.toggle("hot", !!(ok && j.can_search));
+  // 换了上下文，上一轮的检索结果就不再对应当前这句了。
+  if (ok && j.intent !== "need_info") clearDigest();
   // 草稿出来之后收掉原始消息列表与要点：面板 300px 是死预算。
   // 「怎么回」比「刚才那几条原话」更该占这块地方 —— 而模型给的 why 一行
   // 已经把要点里真正有用的那部分（对方在问 / 在等你）说出来了。
   if (rows.length) {
     if (anaMsgsEl) anaMsgsEl.hidden = true;
     if (anaListEl) anaListEl.hidden = true;
+  }
+}
+
+// 攻略块的状态：并发序号（丢弃过期响应）+ 上一次搜到的那份（要回传给后端写句子）
+let anaDigestSeq = 0;
+let anaDigestLast = null;
+
+/** 清掉攻略块（换上下文 / 重新分析前调用）。 */
+function clearDigest() {
+  anaDigestSeq++;
+  anaDigestLast = null;
+  // 收回折叠态：换了上下文，上一轮搜的东西既不对应当前这句，也不该继续占那 72px。
+  if (anaDigestEl) anaDigestEl.hidden = true;
+  if (anaDigestListEl) anaDigestListEl.innerHTML = "";
+  if (anaDigestWriteEl) anaDigestWriteEl.hidden = true;
+  if (anaDigestQEl) anaDigestQEl.value = "";
+  if (anaDigestNoteEl) { anaDigestNoteEl.textContent = ""; anaDigestNoteEl.className = ""; }
+}
+
+/**
+ * 查攻略：GET /api/radar/digest —— 后端按当前会话最后一句去搜，**结果只上屏**。
+ *
+ * 为什么这一步必须由用户自己按：检索要 2~3 秒，而且「看哪条、按哪条写」是他的判断。
+ * 自动搜会把 300px 的面板塞满，还会让人以为模型自己会上网 —— 它不会。
+ */
+async function fetchDigest() {
+  if (!CAP.radar) return;
+  const seq = ++anaDigestSeq;
+  if (anaDigestListEl) anaDigestListEl.innerHTML = "";
+  if (anaDigestWriteEl) anaDigestWriteEl.hidden = true;
+  if (anaDigestNoteEl) {
+    anaDigestNoteEl.textContent = "在搜…";
+    anaDigestNoteEl.className = "";
+  }
+  // 输入框里写了就用它 —— 群名里抽不出游戏名时（「117」这种），自动拼的词一定不对。
+  const typed = anaDigestQEl ? anaDigestQEl.value.trim() : "";
+  // 只要 2 条：面板高度是死预算，多出来的第 3、4 条会把卡片截断（见 #anaDigestList）。
+  const qs = "?limit=2" + (typed ? "&q=" + encodeURIComponent(typed) : "");
+  try {
+    const r = await fetch(RADAR_BASE + "/digest" + qs, { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    if (seq !== anaDigestSeq) return;   // 有更新的请求了，这条作废
+    renderDigest(j);
+  } catch (err) {
+    if (seq !== anaDigestSeq) return;
+    if (anaDigestNoteEl) {
+      anaDigestNoteEl.textContent = "没搜到（" + ((err && err.message) || "后端没连上") + "）";
+      anaDigestNoteEl.className = "err";
+    }
+  }
+}
+
+/** 画攻略卡。标题两行、摘要压到 9px —— 面板 300px 是死预算。 */
+function renderDigest(j) {
+  const ok = !!(j && j.ok);
+  const items = (ok && Array.isArray(j.items)) ? j.items.filter((it) => it && it.title) : [];
+  anaDigestLast = ok && items.length ? { q: j.q || "", items } : null;
+  if (anaDigestListEl) {
+    anaDigestListEl.innerHTML = items.map((it) => {
+      const meta = [it.source, it.date].filter(Boolean).join(" · ") || "网页";
+      return `<div class="dcard"><div class="dt">${esc(it.title)}</div>`
+        + (it.snippet ? `<div class="ds">${esc(it.snippet)}</div>` : "")
+        + `<div class="dm">${esc(meta)}</div></div>`;
+    }).join("");
+  }
+  if (anaDigestWriteEl) anaDigestWriteEl.hidden = !items.length;
+  // 第一次是后端自动拼的词，回填进输入框 —— 用户想改就有得改，而不是只能重按。
+  if (anaDigestQEl && items.length && !anaDigestQEl.value.trim() && j && j.q) {
+    anaDigestQEl.value = j.q;
+  }
+  // 一条都没搜到、但后端记得你上次给过的词：把它填回去。
+  // 见过一次的词属于这台机器，不该每次点「查」都重新打一遍。
+  if (anaDigestQEl && !items.length && !anaDigestQEl.value.trim() && j && j.hint) {
+    anaDigestQEl.value = j.hint;
+  }
+  if (anaDigestNoteEl) {
+    if (items.length) {
+      anaDigestNoteEl.textContent = "搜「" + (j.q || "") + "」· " + items.length + " 条 · "
+        + Math.round(j.elapsed_ms || 0) + "ms";
+      anaDigestNoteEl.className = "";
+    } else {
+      anaDigestNoteEl.textContent = (j && (j.note || j.error)) || "没搜到";
+      anaDigestNoteEl.className = "err";
+    }
+  }
+}
+
+/**
+ * 照这条攻略写一句：POST /api/radar/replies/from-digest。
+ * 检索结果由前端回传 —— 用户可能连搜三次、只挑其中一条，这条链路要用的
+ * 必须是**他正在看的那份**。写出来的句子进「怎么回」那三个按钮，点一下才进输入框。
+ */
+async function writeFromDigest() {
+  if (!anaDigestLast) return;
+  const side = (anaLast && anaLast.signals && anaLast.signals.last_side) || "";
+  if (anaReplyNoteEl) {
+    anaReplyNoteEl.textContent = "照着攻略写…";
+    anaReplyNoteEl.className = "";
+  }
+  try {
+    const r = await fetch(RADAR_BASE + "/replies/from-digest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ digest: anaDigestLast, last_side: side }),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    renderReplies(await r.json());
+    // 写出来的句子在「怎么回」里 —— 不收起攻略块，那三条就被挤到面板外面了。
+    closeDigest();
+  } catch (err) {
+    if (anaReplyNoteEl) {
+      anaReplyNoteEl.textContent = "写不出来（" + ((err && err.message) || "后端没连上") + "），自己说一句更稳";
+      anaReplyNoteEl.className = "err";
+    }
   }
 }
 
@@ -3596,6 +3830,41 @@ if (anaRepliesEl) anaRepliesEl.addEventListener("click", (e) => {
   setLayer("");
 });
 if (anaReplyBtnEl) anaReplyBtnEl.addEventListener("click", () => { void suggestReplies(anaLast || {}); });
+// 查攻略：搜一次摆在那儿，资料不进群；点「照这个写一条」才让模型按它压一句。
+/**
+ * 展开攻略块并立刻搜一次。
+ *
+ * 展开的代价从别处出：先把原始消息和要点收掉。面板 300px 是死预算，
+ * 2026-10-25 这一块常驻时把 analysisLayer 从 218px 顶到 290px，
+ * 最紧的场景余量 28px → -44px、底部被切 44px（petlayout 门禁红的）。
+ */
+function openDigest() {
+  if (!anaDigestEl) return;
+  anaDigestEl.hidden = false;
+  // 让位：300px 面板一次只放得下一件事。攻略展开时收掉「怎么回」——
+  // 实测两块全摆要 493px，而布局只给 298px（底部切 195px）。
+  if (anaReplyEl) anaReplyEl.hidden = true;
+  if (anaCardEl) anaCardEl.hidden = true;
+  if (anaMsgsEl) anaMsgsEl.hidden = true;
+  if (anaListEl) anaListEl.hidden = true;
+  void fetchDigest();
+}
+
+/** 收起攻略，回到「怎么回」。搜到的那份留在 anaDigestLast 里，不丢。 */
+function closeDigest() {
+  if (anaDigestEl) anaDigestEl.hidden = true;
+  if (anaCardEl) anaCardEl.hidden = false;
+  if (anaReplyEl) anaReplyEl.hidden = false;
+}
+
+if (anaSearchBtnEl) anaSearchBtnEl.addEventListener("click", openDigest);
+if (anaDigestBackEl) anaDigestBackEl.addEventListener("click", closeDigest);
+if (anaDigestBtnEl) anaDigestBtnEl.addEventListener("click", () => { void fetchDigest(); });
+if (anaDigestWriteEl) anaDigestWriteEl.addEventListener("click", () => { void writeFromDigest(); });
+// 回车就搜：输入框只有 17px 高，让用户去点那颗「查」太费劲。
+if (anaDigestQEl) anaDigestQEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); void fetchDigest(); }
+});
 
 /**
  * 按能力清单收起桌宠上用不到的控件 —— 关掉的能力意味着后端**根本没有那些接口**，
@@ -5177,6 +5446,30 @@ const LAYOUT_STATES = {
       why: "对方发了语音和图片，想回应互动",
     });
     setLayer("ana");
+  },
+  // 攻略展开态：面板的**第二种视图**（分析摘要/原话/怎么回全部让位）。
+  // 300px 一次只放得下一件事，所以这一态必须登记进预算 —— 否则攻略块
+  // 悄悄长高时没人知道是谁吃掉的（2026-10-25 未让位时实测要 493px）。
+  digest: () => {
+    LAYOUT_STATES.analysis();
+    renderDigest({
+      ok: true, q: "无尽冬日 打熊 阵容", elapsed_ms: 2100,
+      items: [
+        { title: "无尽冬日打熊阵容怎么搭配-无尽冬日打熊阵容搭配推荐_游侠手游",
+          snippet: "打熊讲究的是盾兵扛伤害、输出位站后排，火男带盾兵是当前版本最稳的搭法",
+          source: "游侠手游", date: "2026-09-18" },
+        { title: "无尽冬日七代英雄打熊阵容推荐什么-阵容推荐_3DM手游",
+          snippet: "七代英雄里赫罗尼莫和茉莉的组合输出最高，配比建议按 3:3:4 分配兵种",
+          source: "3DM手游", date: "2026-09-02" },
+        // 只摆两条 —— 前端 /digest?limit=2，条目数与真实运行时一致，
+        // 否则这一态量到的是「塞满 4 条」的假高度。
+      ],
+    });
+    anaDigestEl.hidden = false;
+    if (anaReplyEl) anaReplyEl.hidden = true;
+    if (anaCardEl) anaCardEl.hidden = true;
+    if (anaMsgsEl) anaMsgsEl.hidden = true;
+    if (anaListEl) anaListEl.hidden = true;
   },
   // 更多抽屉：音色 + 引擎 + 直出 + 历史（抽屉打开时提示行与音效片收起，见 CSS）。
   drawer: () => setLayer("drawer"),

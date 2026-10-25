@@ -756,8 +756,30 @@ def echoes_context(reply: str, messages: list[dict]) -> bool:
     return False
 
 
+def repeats_self(reply: str, messages: list[dict]) -> bool:
+    """这句是不是用户**自己刚说过**的那句原话。
+
+    `echoes_context` 只管「别人的话」，管不到这一侧。2026-10-25 跑真实 117 群：
+    用户上一句是「码发给我」，模型照攻略写完又递了一条「码发我」——
+    点下去等于把刚打过的字再打一遍。自己说过的原句永远不该进候选，
+    这条判据纯字符串比对，不看语义，也就不会误杀。
+    """
+    r = _norm_text(reply)
+    if len(r) < 3:
+        return False
+    for m in messages or []:
+        if (m or {}).get("side") != "right":
+            continue
+        # 自己那句话可能带 @某人 前缀，比之前先切掉：`_norm_text` 只去掉 @ 符号，
+        # 名字会留下来，于是「@瑜清 码发给我」跟「码发给我」对不上（2026-10-25 实测）。
+        t = re.sub(r"^\s*@\S+\s*", "", str(m.get("text") or ""))
+        if _norm_text(t) == r:
+            return True
+    return False
+
+
 def drop_promises(replies: list[str], messages: list[dict] | None = None) -> list[str]:
-    """去掉替用户点头、复述别人、裸占位符、以及用户从不说的套话。空 = 调用方决定怎么降级。"""
+    """去掉替用户点头、复述别人、复读自己、裸占位符、以及用户从不说的套话。空 = 调用方决定怎么降级。"""
     out = [
         r
         for r in replies
@@ -767,7 +789,10 @@ def drop_promises(replies: list[str], messages: list[dict] | None = None) -> lis
         and not looks_like_offstyle(r)
     ]
     if messages:
-        out = [r for r in out if not echoes_context(r, messages)]
+        out = [
+            r for r in out
+            if not echoes_context(r, messages) and not repeats_self(r, messages)
+        ]
     return out
 
 
@@ -852,6 +877,159 @@ def _needs_look(messages: list[dict], window: int = 6) -> bool:
     """最近几条里有没有图片/视频 —— 没有就不付截图的代价（多 400~800 token + 200ms）。"""
     tail = list(messages or [])[-window:]
     return any((m or {}).get("kind") == "media" for m in tail)
+
+
+# ------------------------------------------------------------------ 意图分级
+
+#: 「对方在要东西」—— 要的是只有用户手里才有的那几个物件。
+#: 2026-10-25 在 117 群实测的原始事故就落在这条上：对方要收款码，模型给的三条是
+#: 「发你了 / 码给你 / @你 我发你了」，而用户一个字节都没发出去。这不是措辞不好，
+#: 是**替用户声称做了一件没做的事** —— 点一下就真进群了。
+#: 所以命中的一律不摆「可直接点发」的候选，改成一句「只有你能给」。
+_WANT_THING_RE = re.compile(
+    r"(收款码|付款码|二维码|(?<![起号密打加编解])码|地址|链接|账号|密码|截图|原图)"
+)
+#: 「问用户自己的情况」—— 在不在、几点、打不打、号里有什么、几级。
+#: 答案只存在于用户脑子里；模型写的任何具体回答都是编的（已 3/3 复现）。
+_YOU_STATE_RE = re.compile(
+    r"(你在哪|你那儿|你那边|你有空|你几点|你什么时候|你多少|你几级|你的号|你号|你的装备|你的分"
+    r"|你上来|你在线"
+    # 不带「你」的动词式问安排：「今晚打不打」「明天来不来」。中文里省略主语是常态，
+    # 光靠「你」会漏掉一大半 —— 2026-10-25 单测里「你今晚打不打」就因为中间插了
+    # 「今晚」而漏判。
+    r"|打不打|来不来|去不去|上不上|有空没|有没有空|几点上|几点来|几点到"
+    r"|什么时候上|什么时候来|在不在)"
+)
+#: 「要查一下才知道」—— 游戏机制/数值/排行这类**公共知识**。
+#: 与 `_YOU_STATE_RE` 的分界很重要：攻略是能搜的，用户的处境不能搜。
+#: 命中时给 `can_search=True`，前端把「查攻略」亮出来，搜完再生成候选 ——
+#: 这就是用户说的「我看着攻略，再让他做更多额外的事」。
+_KNOW_RE = re.compile(
+    r"(攻略|阵容|搭配|配比|怎么玩|怎么打|怎么过|怎么升|值得|排行|强度|天赋|加点"
+    r"|几级解锁|兑换码|专武)"
+)
+#: 纯表态：不含任何具体安排，答错了也不会替用户许下什么。
+_STANCE_RE = re.compile(
+    r"^(行|不行|好|不好|可以|不可以|来|不来|打|不打|去|不去|要|不要|没空|有空|等会|晚点|在)"
+)
+#: 有没有在问。比 chat_read.is_question 宽一点（那个只认问号和十几个词），
+#: 但**只用来区分 ack 和 direct**，判错了最多是「多给一条候选」。
+_ASK_RE = re.compile(
+    r"[?？]|(吗|呢|咋|怎么|什么|多少|几点|哪|谁|为什么|是不是|有没有|要不要|行不行|好不好)"
+)
+#: 雷达没抓到左右分栏时的提醒。2026-10-25 现场：微信不在前台 → `label_sides`
+#: 全返回 unknown → suggest 既不能短路（不知道最后一条是不是自己发的），也给不了
+#: 「最后一条是对方发的」这句方向提示 —— 模型于是抓了 8 条之前的「带一份」当当前
+#: 话题，答出「带啥/带吃的」。方向提示不是锦上添花，没有它模型会跑偏。
+_SIDE_WARN = "读不到左右分栏（微信可能不在前台），方向不保证"
+
+
+def _side_warn(messages: list[dict] | None) -> str:
+    """侧栏读不到时提醒一句；调用方**根本没给 side 字段**时不提醒。
+
+    这两种情况要分清：`chat_read` 给的每条消息都有 side 键（值可能是空串，
+    表示雷达没抓到左右）；而有些调用方（测试、或别的入口）压根不带这个键 ——
+    那不是「读不到」，是「不关心」。对着后者喊「微信不在前台」就是狼来了。
+    """
+    msgs = list(messages or [])
+    if not msgs or not any("side" in (m or {}) for m in msgs):
+        return ""
+    return "" if any((m or {}).get("side") for m in msgs) else _SIDE_WARN
+
+
+def _n(*parts: str) -> str:
+    """拼 note：只留非空段，用「·」连。前端把 note 当一行显示。"""
+    return " · ".join(str(p) for p in parts if p)
+#: 没有正文的消息。`media` 的 text 就是「图片」两个字，拿它当"对方说的话"
+#: 会判出奇怪的意图（「对方在要图片」）。
+_BARE_MEDIA = ("图片", "视频", "动画表情", "文件", "语音")
+#: 纯笑（「哈哈哈哈哈」「嘿嘿」）—— 没有信息量，不能当"对方在问什么"。
+_LAUGH_RE = re.compile(r"^[哈呵嘿嘻]{2,}$")
+
+
+def _recent_other(messages: list[dict], keep: int = 2) -> list[str]:
+    """最近几条**对方发的、有实质内容**的消息（从旧到新，最多 `keep` 条）。
+
+    为什么不只看最后一条：群聊里一句话经常被拆成好几条，最后一条往往是「左下」
+    「行」这种收尾词，或者一个表情。2026-10-25 拿 3864 群 40 个真实回话时机回放，
+    只看最后一条 → **37/40 被判成「没有实质问题」**（ack），而真正的问题
+    （「点哪个」「3000还是600」）就在前一条。
+
+    `keep=2` 是折中：再多会把几句不相干的话拼成一个假问题，误伤率上升。
+    """
+    out: list[str] = []
+    for m in reversed(messages or []):
+        kind = (m or {}).get("kind") or "text"
+        if kind in ("time", "system"):
+            continue
+        if (m or {}).get("side") == "right":
+            break                       # 最后一条是自己发的：对方没说话，没什么可判
+        text = str((m or {}).get("text") or "").strip()
+        if not text or text in _BARE_MEDIA or text.startswith("[") or _LAUGH_RE.match(text):
+            continue
+        if len(text) < 2:
+            continue
+        out.append(text)
+        if len(out) >= keep:
+            break
+    out.reverse()
+    return out
+
+
+def classify_intent(messages: list[dict], replies: list[str] | None = None) -> dict:
+    """判这类话**该不该由 AI 给正文**。返回 `{intent, gap, asked, can_search}`。
+
+    四档，只有 `direct` 会摆出能直接点发的候选：
+
+    - `direct`    记录里有答案，或者只是接个话茬。给候选。
+    - `ack`       对方在起哄/发表情/丢一串数字，没有实质问题。只给附和的一句。
+    - `need_you`  答案只在用户脑子里（对方要东西、问用户在不在/几级）。**不给正文**。
+    - `need_info` 公共知识（攻略/数值/排行），搜一下就有。给「查攻略」入口。
+
+    为什么不问模型「你知不知道」：9B 的自评和它的答案一样不可靠 —— 它在 117 群那三条
+    「发你了」上是**确信**的，why 里写的是「对方要收款码，给个明确回应」。
+    判据必须是能从文本上复核的规则，判错了能指着某一行改。
+    """
+    asked = ""
+    near = _recent_other(messages)
+    blob = " ".join(near)
+    if near:
+        asked = near[-1]
+    if not blob:
+        return {"intent": "ack", "gap": "", "asked": asked, "can_search": False, "block": False}
+    thing = _WANT_THING_RE.search(blob)
+    if thing:
+        # block：这类连模型都不用跑 —— 跑出来也只有「发你了」那三条，
+        # 白等 2 秒还多一个点错的机会。
+        return {
+            "intent": "need_you",
+            "gap": f"对方在要{thing.group(1)}，只有你能给",
+            "asked": asked,
+            "can_search": False,
+            "block": True,
+        }
+    if _YOU_STATE_RE.search(blob):
+        # 已经有一句纯表态（「行」「来」）就不用拦：表态不需要知道细节。
+        if any(_STANCE_RE.match(r or "") and len(r) <= 6 for r in (replies or [])):
+            return {"intent": "direct", "gap": "", "asked": asked, "can_search": False, "block": False}
+        return {
+            "intent": "need_you",
+            "gap": "你在不在/几点/打不打，只有你自己知道",
+            "asked": asked,
+            "can_search": False,
+            "block": False,
+        }
+    if _KNOW_RE.search(blob):
+        return {
+            "intent": "need_info",
+            "gap": "这条查一下才知道",
+            "asked": asked,
+            "can_search": True,
+            "block": False,
+        }
+    if not _ASK_RE.search(blob):
+        return {"intent": "ack", "gap": "", "asked": asked, "can_search": False, "block": False}
+    return {"intent": "direct", "gap": "", "asked": asked, "can_search": False, "block": False}
 
 
 def _rule_replies(messages: list[dict], last_side: str | None = None) -> list[str]:
@@ -958,16 +1136,33 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
             "note": "你刚说完，对方还没回 —— 不用接",
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
         }
+    # 对方在要东西（码/地址/图/账号）：这件事的答案不在记录里，只在用户手里。
+    # 这里**连模型都不调** —— 调了也只有 117 群那三条「发你了」，白等 2 秒，
+    # 还多一次点错的机会。给一句「只有你能给」，比三条编的话有用。
+    pre = classify_intent(messages, None)
+    if pre["block"]:
+        return {
+            "engine": "local",
+            "model": MODEL_LABEL,
+            "replies": [],
+            "why": "",
+            "note": _n(_side_warn(messages), pre["gap"]),
+            "intent": pre["intent"],
+            "gap": pre["gap"],
+            "asked": pre["asked"],
+            "can_search": False,
+            "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
+        }
     busy = _realtime_busy()
     if busy:
         # 与实时变声互斥：不拉起模型，但仍要给能点的东西（桌宠不该「点了没反应」）。
-        return {"engine": "rule", "replies": _rule_replies(messages, last_side), "note": busy}
+        return {"engine": "rule", "replies": _rule_replies(messages, last_side), "note": _n(_side_warn(messages), busy)}
     ok, why_not = available()
     if not ok:
         return {
             "engine": "rule",
             "replies": _rule_replies(messages, last_side),
-            "note": why_not,
+            "note": _n(_side_warn(messages), why_not),
         }
     try:
         port = _ensure_server()
@@ -980,14 +1175,14 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
         return {
             "engine": "rule",
             "replies": _rule_replies(messages, last_side),
-            "note": f"本地模型没跑起来：{exc}",
+            "note": _n(_side_warn(messages), f"本地模型没跑起来：{exc}"),
         }
     parsed = parse_reply_json(content)
     if parsed is None:
         return {
             "engine": "rule",
             "replies": _rule_replies(messages, last_side),
-            "note": "模型输出没通过校验，先给模板建议",
+            "note": _n(_side_warn(messages), "模型输出没通过校验，先给模板建议"),
         }
     raw_replies = parsed["replies"]
     if not raw_replies:
@@ -998,7 +1193,7 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
             "model": MODEL_LABEL,
             "replies": [],
             "why": parsed["why"],
-            "note": parsed["why"] or "模型认为这条不用回",
+            "note": _n(_side_warn(messages), parsed["why"] or "模型认为这条不用回"),
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
         }
     replies = drop_promises(raw_replies, messages)
@@ -1009,12 +1204,106 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
         note = "模型那几条都在替你答应，已换成安全的模板"
     elif len(replies) < len(raw_replies):
         note = f"有 {len(raw_replies) - len(replies)} 条在替你答应，已去掉"
+    # 判完候选再收口：`_YOU_STATE_RE` 那条要不要放行，取决于候选里有没有纯表态，
+    # 所以这一次判定必须在 `drop_promises` 之后做。
+    tier = classify_intent(messages, replies)
+    if tier["intent"] == "need_you":
+        # 候选一条都不留：这个尺寸的模型在「只有用户知道」的问题上，
+        # 三条里必然至少一条在替他说具体的事（实测 3/3），留着就是留着坑。
+        note = "这条只有你自己能答，没给候选" + (" · " + note if note else "")
+        replies = []
+    elif tier["intent"] == "need_info":
+        # 公共知识（攻略/数值/排行）模型同样没有 —— 给了就是编。
+        # 这里不给正文，把出路放到 `can_search` 上：搜到之后再让它照着写一句。
+        note = "这条得查一下 —— 点「查攻略」，搜到再让我写" + (" · " + note if note else "")
+        replies = []
     return {
         "engine": "local",
         "model": MODEL_LABEL,
         "replies": replies,
         "why": parsed["why"],
-        "note": note,
+        "note": _n(_side_warn(messages), note),
+        "intent": tier["intent"],
+        "gap": tier["gap"],
+        "asked": tier["asked"],
+        "can_search": tier["can_search"],
+        "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
+    }
+
+
+#: 攻略模式在 `_SYSTEM` 后面追加的一段。刻意不动 `_SYSTEM` 本体：
+#: 那段是 40 个真实回话时机上逐条调出来的，改一个字都要重新跑对照。
+_DIGEST_TAIL = (
+    "\n下面附的是刚在网上查到的资料（攻略站的行文，可能有广告味）。"
+    "**只取一两个具体点**（名字、数量、比例、顺序），说成一句像你自己随手打的话；"
+    "不要整段抄，不要写「资料显示」「攻略上说」「根据资料」，不要带网址和站名。"
+    "资料里没有的照样不许编 —— 宁可只接一句「我看看」，也不要补一个数。"
+)
+
+
+def suggest_from_digest(
+    messages: list[dict], digest: dict, chat: str = "", last_side: str | None = None
+) -> dict:
+    """用户点了「查攻略」之后：拿搜到的几条当参考，写 2~3 句能直接点发的话。
+
+    为什么单独一条链路、而不是把资料塞进 `suggest()`：资料是可选的，要用户点一下才
+    付这 2 秒；塞进默认链路还会让模型开始「主动查攻略」—— 它没有联网能力，
+    那条路最后只会变成编造带站名的假引用。
+
+    与 `suggest()` 唯一的分歧是多了一段参考，**风格约束一个字没松**：
+    最后这句还是要真人点着发进群里。
+    """
+    start = time.perf_counter()
+    from web_digest import digest_prompt
+
+    items = [it for it in ((digest or {}).get("items") or []) if it.get("title") or it.get("snippet")]
+    if not items:
+        return {
+            "engine": "rule", "replies": [], "note": "没搜到可用的资料，先按你自己的话回",
+            "intent": "need_info",
+            "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
+        }
+    ok, why_not = available()
+    if not ok:
+        return {
+            "engine": "rule", "replies": [], "note": why_not, "intent": "need_info",
+            "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
+        }
+    try:
+        port = _ensure_server()
+        prompt = (
+            build_prompt(messages, chat, last_side)
+            + "\n\n【查到的资料】\n"
+            + digest_prompt(digest, messages)
+        )
+        content = _chat(
+            port, prompt, CHAT_TIMEOUT, system=_SYSTEM + _DIGEST_TAIL, max_tokens=110
+        )
+    except Exception as exc:  # noqa: BLE001 —— 与 suggest 一致：失败一律降级，不抛
+        return {
+            "engine": "rule", "replies": [], "note": f"本地模型没跑起来：{exc}",
+            "intent": "need_info",
+            "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
+        }
+    parsed = parse_reply_json(content)
+    if parsed is None:
+        return {
+            "engine": "rule", "replies": [], "note": "模型输出没通过校验",
+            "intent": "need_info",
+            "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
+        }
+    replies = drop_promises(parsed["replies"], messages)
+    # 抄标题是最常见的失败形态：搜索结果的标题被整句搬过来当回复
+    # （「无尽冬日英雄搭配攻略」），长度和语体都跟群聊对不上。
+    titles = {str(it.get("title") or "") for it in items}
+    replies = [r for r in replies if len(r) <= 30 and r not in titles]
+    return {
+        "engine": "local",
+        "model": MODEL_LABEL,
+        "replies": replies,
+        "why": parsed["why"],
+        "note": "" if replies else "模型没写出能用的，自己说一句更稳",
+        "intent": "need_info",
         "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
     }
 
