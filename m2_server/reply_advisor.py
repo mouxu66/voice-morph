@@ -152,7 +152,11 @@ _SYSTEM = (
     "三条候选**长度要错开**：一条极短（五个字以内）、一条中等、一条稍长可以带梗 —— "
     "不要三条一样长，更不要三条都是完整句。"
     "每次最多 30 个汉字。"
-    "如果最后一条标着「我：」（用户自己发的）、没有新问题，should_reply 为 false，replies 给空数组。"
+    # 记录仍是单一时间线（分块试过，A/B 净收益为负，见 build_prompt 的说明）。
+    # 能给的只有这一句方向：最后一句是谁说的，决定要不要接。
+    "不要写「对方说的」「用户」「我：」这类标签，只写要发出去的那句话。"
+    "最后一条是用户自己发的、对方没有留下新问题时，should_reply 为 false，"
+    "replies 给空数组。"
 )
 
 _KIND_LABEL = {"voice": "语音", "media": "图片/文件"}
@@ -431,37 +435,41 @@ atexit.register(shutdown)
 # ------------------------------------------------------------------ 提示词与解析
 
 
-def _history_lines(messages: list[dict]) -> list[str]:
-    """把 UIA 消息压成模型好读的几行。时间行扔掉（只会白占 token）。
-
-    ⚠️ 2026-10-24 实测过「每行前面标 我：/对方：」，**不要再加回来**：
-    同一批 9 组真实语料上，带标记的 9 组没有一组比不带更好，还反复把
-    「我：」原样写进回复正文（那条一旦被点选就真的发出去）。
-    模型的问题不是「不知道谁说的」，而是接不住具体诉求 —— 详见
-    `outputs/评测-117群-回复质量-2026-10-24.md` 与 `_COMMIT_RE` 的说明。
-    """
-    out: list[str] = []
-    for m in messages:
-        kind = (m or {}).get("kind") or "text"
-        text = str((m or {}).get("text") or "").strip()
-        if not text or kind in ("time", "system"):
-            continue
-        if kind == "voice":
-            out.append(f"[语音 {m.get('seconds', '?')} 秒]")
-        elif kind == "media":
-            out.append(f"[{text}]")
-        else:
-            out.append(text)
-    return out[-FEED_MESSAGES:]
+def _line_of(m: dict) -> str:
+    """一条消息压成一行。语音/图片走占位符，时间行由调用方丢掉。"""
+    kind = (m or {}).get("kind") or "text"
+    text = str((m or {}).get("text") or "").strip()
+    if kind == "voice":
+        return f"[语音 {m.get('seconds', '?')} 秒]"
+    if kind == "media":
+        return f"[{text}]"
+    return text
 
 
 def build_prompt(messages: list[dict], chat: str = "", last_side: str | None = None) -> str:
     """拼用户消息。`last_side` 是雷达给的确定信号：right = 最后一条是我发的。
 
-    逐条发送方（`side`）**不进提示词**（理由见 `_history_lines`）；它只随
-    `/api/radar/chat` 一起返回，给面板和托管判定用。
+    ⚠️ 两种「标明谁说的」都试过，都回退了，别再改回去：
+
+    1. 每行前面标「我：/对方：」（2026-10-24）—— 前缀会被写进回复正文，
+       用户点一下就真发出「我：晚上打球吗」。
+    2. 拆成「【对方说的】/【用户自己已经发过的】」两块（2026-10-25）——
+       在 3864 群 40 个真实时机上 A/B：禁词（哈哈/谢谢/确实）从 1/36 涨到 3/39，
+       该「不回」的从 4 条掉到 1 条（模型看到「用户已经说过话」就更想接），
+       其余指标持平。**净收益为负**，回退。
+
+    所以记录保持**单一时间线、不带发言人**，只靠 `last_side` 这一句方向提示。
+    分不清「谁在跟谁说什么」是这个尺寸模型的真实上限，不是提示词写法问题 ——
+    要根治得换结构（按话题分段 + 带发言人），那是另一件事。
     """
-    lines = _history_lines(messages)
+    lines: list[str] = []
+    for m in messages:
+        text = str((m or {}).get("text") or "").strip()
+        if not text or ((m or {}).get("kind") or "text") in ("time", "system"):
+            continue
+        lines.append(_line_of(m))
+    lines = lines[-FEED_MESSAGES:]
+
     head = f"当前会话：{chat or '未知'}\n" if chat else ""
     if last_side == "right":
         tail = "\n（注：最后一条是用户自己发的，对方还没回。）"
@@ -510,6 +518,33 @@ def close_unbalanced_json(text: str) -> str | None:
     return body + "".join(reversed(stack))
 
 
+#: 模型可能把提示词里的分区标题当成正文抄出来（「对方说的：行」「我：行」）。
+#: 这条坑已经踩过两次：第 203 条是行内「我：」前缀被写进正文，现在是分区标题。
+#: 所以清洗放在**输出侧**做，不指望提示词拦住。
+_LABEL_RE = re.compile(
+    r"^\s*(?:【[^】]{1,10}】"
+    r"|(?:对方说的|用户自己已经发过的|用户说的|对方|用户|回复|答复|候选\s*\d*)\s*[:：]"
+    r"|我\s*[:：])\s*"
+)
+
+
+def strip_section_label(text: str) -> str:
+    """剥掉候选开头的分区标签 / 编号，只留真正要发出去的那句话。
+
+    宁可多剥一层也不放过：「【对方说的】行」和「1. 我：行」都要变成「行」。
+    只在**开头**剥，句中出现的「我：」保持不动（那可能是正常的冒号用法）。
+    """
+    s = (text or "").strip()
+    for _ in range(3):          # 「1. 【对方说的】行」会叠三层
+        before = s
+        s = _LABEL_RE.sub("", s)
+        s = re.sub(r"^\s*\d+\s*[.、)]\s*", "", s)
+        s = s.strip().strip('"“”「」').strip()
+        if s == before:
+            break
+    return s
+
+
 def parse_reply_json(text: str) -> dict | None:
     """从模型输出里抠出 {why, replies}。校验不通过返回 None（调用方降级）。
 
@@ -543,7 +578,7 @@ def parse_reply_json(text: str) -> dict | None:
     for item in raw:
         if not isinstance(item, str):
             continue
-        s = item.strip().strip('"“”').strip()
+        s = strip_section_label(item.strip().strip('"“”').strip())
         if not s or len(s) > 40:
             continue
         if s not in replies:
@@ -670,6 +705,27 @@ def looks_like_promise(text: str) -> bool:
     return bool(_COMMIT_RE.search(text or ""))
 
 
+#: 「声称已经做了某件事」。和「承诺」是两回事：承诺是**将来**（我明天打），
+#: 这条是**完成态**（发你了 / 转你了）—— 用户根本没发过，点发就是一句假话。
+#: 2026-10-25 117 群实测：用户问「码发给我」、对方回了两个取餐码，模型给的候选是
+#: 「发你了」，三次里两次。这比答得差严重得多，它让用户在群里声称自己办了事。
+_CLAIM_DONE_RE = re.compile(
+    r"(?:^|[\s，,。！？@])(?:我)?(?:已经)?"
+    r"(?:发|转|传|寄|送|给|弄|搞|做|办|拍|买|充|打|写|整理)"
+    r"(?:你|你们|他|她|大家|群里)"
+    # 「发你了」和光秃秃的「发你」都是声称已发（后者是前者省略，语义一样）
+    r"(?:了|啦|过了|$)"
+    # 「给你发了」：动词在「你」后面，上面那条覆盖不到
+    r"|(?:^|[\s，,。！？@])(?:我)?(?:已经)?给(?:你|你们|他|她|大家)"
+    r"(?:发|转|传|寄|送|弄|做|买|充)(?:了|啦|过了)"
+)
+
+
+def claims_done(text: str) -> bool:
+    """这句是不是在声称「我已经把东西给你了」（用户其实没做）。"""
+    return bool(_CLAIM_DONE_RE.search(text or ""))
+
+
 def echoes_context(reply: str, messages: list[dict]) -> bool:
     """这句是不是把**别人刚说的话**当成自己的话又说了一遍。
 
@@ -705,7 +761,10 @@ def drop_promises(replies: list[str], messages: list[dict] | None = None) -> lis
     out = [
         r
         for r in replies
-        if not looks_like_promise(r) and not is_placeholder(r) and not looks_like_offstyle(r)
+        if not looks_like_promise(r)
+        and not claims_done(r)
+        and not is_placeholder(r)
+        and not looks_like_offstyle(r)
     ]
     if messages:
         out = [r for r in out if not echoes_context(r, messages)]
@@ -743,7 +802,7 @@ def parse_one_json(text: str) -> dict | None:
     raw = data.get("reply")
     if not isinstance(raw, str):
         return None
-    reply = raw.strip().strip('"“”').strip()
+    reply = strip_section_label(raw.strip().strip('"“”').strip())
     if not reply or len(reply) > 40:
         return None
     if "\n" in reply or "\r" in reply:
@@ -796,17 +855,28 @@ def _needs_look(messages: list[dict], window: int = 6) -> bool:
 
 
 def _rule_replies(messages: list[dict], last_side: str | None = None) -> list[str]:
-    """模型不在时的兜底。只求「能直接点着发」，不假装懂语境。"""
+    """模型不在时的兜底。只求「能直接点着发」，不假装懂语境。
+
+    兜底文案也必须走用户本人的口癖：原来这里给的是「收到 / 哈哈哈 / 好嘞」，
+    而这三个词在他 474 条真实发言里**一次都没出现过**（第 209 条）。
+    模型挂了就够糟糕了，不该再让用户看到三句一眼不是自己说的话。
+    """
     if last_side == "right":
         return ["等对方回就行"]
-    texts = [m for m in _history_lines(messages) if not m.startswith("[")]
+    texts = [
+        str((m or {}).get("text") or "").strip()
+        for m in (messages or [])
+        if ((m or {}).get("kind") or "text") == "text"
+        and not str((m or {}).get("text") or "").strip().startswith("[")
+    ]
+    texts = [t for t in texts if t]
     last = texts[-1] if texts else ""
     if last:
         from chat_read import is_question
 
         if is_question(last):
-            return ["在的，怎么了？", "刚看到，你说"]
-    return ["收到", "哈哈哈", "好嘞"]
+            return ["在的怎么了", "刚看到 你说"]
+    return ["666", "[奸笑]"]
 
 
 def _chat(
@@ -866,6 +936,28 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
     engine=local 表示真模型给的；engine=rule 是降级模板（note 里写原因）。
     """
     start = time.perf_counter()
+    # 前端可能不传 last_side（/replies 的注释里写着「不给也行」），所以自己再推一次：
+    # 往前找最后一条有 side 的消息。时间行（center）没有发送方，跳过。
+    if not last_side:
+        for m in reversed(messages or []):
+            s = (m or {}).get("side")
+            if s in ("left", "right"):
+                last_side = s
+                break
+    # 最后一条是用户自己发的：对方还没开口，「怎么回」这道题没有正确答案。
+    # 这里**故意不调模型**——实测它会硬编一个：2026-10-25 在 117 群，用户刚发完
+    # 「码发给我 @瑜清」，模型给出「在的，地址发你了」「地址给你」，而整段记录里
+    # 根本没有「地址」这两个字。宁可明确说「不用接」，也不能摆出三条编出来的话。
+    if last_side == "right":
+        return {
+            "engine": "local",
+            "model": MODEL_LABEL,
+            "replies": [],
+            # why 留空：面板会把 why 和 note 用「·」拼起来，这里只要一句话就够
+            "why": "",
+            "note": "你刚说完，对方还没回 —— 不用接",
+            "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
+        }
     busy = _realtime_busy()
     if busy:
         # 与实时变声互斥：不拉起模型，但仍要给能点的东西（桌宠不该「点了没反应」）。
@@ -957,9 +1049,10 @@ def suggest_one(messages: list[dict], chat: str = "", last_side: str | None = No
         return None
     # 托管是**真的发出去**：模型一旦写了「我帮你买」，发出去就是替用户许了承诺。
     # 这里不return，直接丢弃 —— 宁可这条不回，也不能替用户答应（2026-10-24 评测）。
-    # 同理，复述群友的话（echoes_context）发出去等于把别人的话认成自己的。
+    # 同理，复述群友的话（echoes_context）发出去等于把别人的话认成自己的；
+    # 声称「发你了」（claims_done）更是直接替用户说了一句没做过的假话。
     reply = out.get("reply") or ""
-    if looks_like_promise(reply) or echoes_context(reply, messages):
+    if looks_like_promise(reply) or claims_done(reply) or echoes_context(reply, messages):
         return None
     return out
 

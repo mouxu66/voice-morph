@@ -260,9 +260,19 @@ def test_suggest_returns_empty_when_model_says_no_reply(monkeypatch):
 
 def test_rule_replies_question_vs_right_side():
     q = ra._rule_replies([{"kind": "text", "text": "啥东西"}], None)
-    assert "在的，怎么了？" in q
+    assert "在的怎么了" in q
     # 最后一条是我发的：唯一正确的建议是「不用追」
     assert ra._rule_replies([{"kind": "text", "text": "吃了吗"}], "right") == ["等对方回就行"]
+
+
+def test_rule_replies_uses_user_own_phrases_not_boilerplate():
+    """兜底文案原来是「收到 / 哈哈哈 / 好嘞」—— 这三个词用户一次都没说过（第 209 条）。
+
+    模型挂掉已经够糟了，不该再让他看到三句一眼不是自己说的话。
+    """
+    out = ra._rule_replies([{"kind": "text", "text": "不服来干我"}], None)
+    assert out == ["666", "[奸笑]"]
+    assert not any(w in x for x in out for w in ("收到", "哈哈", "好嘞"))
 
 
 def test_suggest_falls_back_when_model_missing(monkeypatch):
@@ -765,3 +775,120 @@ def test_promise_rule_does_not_cross_negation(text):
     改成 `[^，。！？不没别]{0,2}` 之后两者都放行、真承诺仍照拦。
     """
     assert not ra.looks_like_promise(text), text
+
+
+# ---- 2026-10-25：为什么记录**不能**标出「谁说的」（两次尝试都回退了）----
+
+def test_prompt_keeps_single_timeline_without_side_prefix():
+    """不许写行内「我：/对方：」（2026-10-24 回退）：前缀会被抄进正文。
+
+    也不许拆成「【对方说的】/【用户自己已经发过的】」两块（2026-10-25 回退）：
+    40 个真实时机 A/B 结果是净亏 —— 禁词 1/36 → 3/39（冒出「哈哈谢谢啊」
+    「确实是我大号」「确实红姜惨」），该「不回」的从 4 条掉到 1 条，其余持平。
+    """
+    msgs = [
+        {"side": "right", "text": "码发给我"},
+        {"side": "left", "text": "2561"},
+        {"side": "left", "text": "2562"},
+    ]
+    p = ra.build_prompt(msgs, chat="117", last_side="left")
+    assert "我：码发给我" not in p
+    assert "对方：2561" not in p
+    assert "【对方说的】" not in p
+    assert "【用户自己已经发过的】" not in p
+    # 单一时间线：三句都在，顺序不变
+    assert p.index("码发给我") < p.index("2561") < p.index("2562")
+
+
+def test_prompt_only_hints_who_spoke_last():
+    """方向提示只给一句（最后一条是谁说的）——这是分不清发言人时唯一可靠的信号。"""
+    theirs = ra.build_prompt([{"side": "left", "text": "2561"}], chat="117", last_side="left")
+    mine = ra.build_prompt([{"side": "right", "text": "码发给我"}], chat="117", last_side="right")
+    assert "最后一条是对方发的" in theirs
+    assert "最后一条是用户自己发的" in mine
+
+
+def test_prompt_drops_time_rows():
+    p = ra.build_prompt(
+        [{"side": "left", "kind": "time", "text": "18:48"}, {"side": "left", "text": "2561"}],
+        chat="117",
+    )
+    assert "18:48" not in p
+    assert "2561" in p
+
+
+@pytest.mark.parametrize("text,expect", [
+    ("【对方说的】行", "行"),
+    ("对方说的：行", "行"),
+    ("用户：行", "行"),
+    ("我：行", "行"),
+    ("1. 行", "行"),
+    ("1. 【对方说的】行", "行"),
+    ("建议你回一句", "建议你回一句"),   # 没有标签，不要乱剥
+    ("我靠", "我靠"),                   # 「我」后面不是冒号，别动
+    ("对方在吗", "对方在吗"),
+])
+def test_strip_section_label(text, expect):
+    """模型会把提示词里的标题当成正文抄出来（和第 203 条的「我：」是同一个坑）。
+
+    清在输出侧：提示词拦不住，但剥标题是确定性操作。
+    """
+    assert ra.strip_section_label(text) == expect
+
+
+def test_parsed_replies_are_label_free():
+    raw = '{"why":"问码","replies":["【对方说的】2561","我：发你","行"]}'
+    out = ra.parse_reply_json(raw)
+    assert out["replies"] == ["2561", "发你", "行"]
+
+
+# ---- 2026-10-25：117 群真实模拟暴露的三件事 ----
+
+def test_suggest_does_not_call_model_when_user_spoke_last(monkeypatch):
+    """最后一条是用户自己发的 → 直接说「不用接」，**不调模型**。
+
+    117 群实测：用户刚发完「码发给我 @瑜清」，点「怎么回」得到
+    「在的，地址发你了」「地址给你」—— 整段记录里根本没有「地址」这两个字。
+    模型被问了就一定要编一句，所以这道题不该问它。
+    """
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+
+    def boom(*a, **kw):
+        raise AssertionError("最后一条是自己发的，不该拉起模型")
+
+    monkeypatch.setattr(ra, "_ensure_server", boom)
+    out = ra.suggest([{"side": "left", "text": "带一份"}, {"side": "right", "text": "码发给我"}],
+                     chat="117", last_side="right")
+    assert out["replies"] == []
+    assert "不用接" in out["note"]
+    assert out["elapsed_ms"] >= 0
+
+
+def test_suggest_infers_last_side_when_caller_forgets(monkeypatch):
+    """前端可能不传 last_side（/replies 注释写着「不给也行」）—— 后端自己推。"""
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: (_ for _ in ()).throw(AssertionError("不该调模型")))
+    out = ra.suggest([{"side": "left", "text": "带一份"}, {"side": "right", "text": "码发给我"}], chat="117")
+    assert out["replies"] == []
+
+
+@pytest.mark.parametrize("text", ["发你了", "发你", "转你了", "给你发了", "@瑜清 发你了"])
+def test_claims_done_is_dropped(text):
+    """声称「我已经发给你了」是**完成态的假话**，和承诺（将来时）不是一回事。
+
+    117 群实测三次里两次给「发你了」，而用户一个字都没发出去。
+    """
+    assert ra.claims_done(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "给我看看", "发我", "你发码", "码发我", "你发给我", "这个给你", "辛苦你了", "给你点赞",
+])
+def test_claims_done_does_not_kill_requests(text):
+    """「发我」「码发我」是**要东西**，不是声称已给 —— 别拦。"""
+    assert not ra.claims_done(text), text
+
+
+def test_drop_promises_removes_claims_done():
+    out = ra.drop_promises(["发你了", "码发我", "666"])
+    assert out == ["码发我", "666"]
