@@ -187,6 +187,8 @@ _PORT: int = 0
 _LAST_USED: float = 0.0
 _WATCHER: threading.Thread | None = None
 _PORT_OVERRIDE: int | None = None  # 测试用：指定已启动的端口
+#: 正在等模型回话的请求数。>0 时**空闲自杀必须让路** —— 见 `_should_kill()`。
+_BUSY: int = 0
 
 
 # ------------------------------------------------------------------ 定位
@@ -341,13 +343,32 @@ def _kill_locked() -> None:
             pass
 
 
+def _should_kill(idle_s: float, now: float | None = None) -> bool:
+    """这次轮询要不要把 llama-server 杀掉。
+
+    ⚠️ **`_BUSY > 0` 时必须让路**。这是 2026-10-26 实测踩到的坑：
+    `_LAST_USED` 只在 `_ensure_server()` 里更新，一次读图推理要是比 `idle_s` 长
+    （调试时把 `VM_REPLY_IDLE_S` 设成 8 秒、推理要 23 秒），watcher 就会在第 8 秒
+    把正在干活的服务杀掉。前端看到的只是
+    `[WinError 10054] 远程主机强迫关闭了一个现有的连接` —— 看着像模型崩了，
+    其实是被自己的空闲计时器打死的，极难归因。
+    默认 `idle_s` 是 90 秒、正常推理 20~30 秒，平时踩不到；但显存紧张到触发
+    Windows 静默分页时（实测能到 180s），这个坑就会把「慢」变成「莫名报错」。
+    """
+    return (
+        _PROC is not None
+        and _BUSY == 0
+        and (time.time() if now is None else now) - _LAST_USED >= idle_s
+    )
+
+
 def _watch_idle() -> None:
     """空闲自杀。5 秒粒度足够 —— 目的不是省显存到极致，而是「不用时别赖着」。"""
     while True:
         time.sleep(5)
         idle_s = float(os.environ.get(ENV_IDLE, "90"))
         with _LOCK:
-            if _PROC is not None and time.time() - _LAST_USED >= idle_s:
+            if _should_kill(idle_s):
                 _kill_locked()
 
 
@@ -1194,8 +1215,18 @@ def _chat(
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        data = json.loads(r.read())
+    # 推理期间把自己标成「忙」，别让 `_watch_idle` 按空闲把服务杀掉（见 `_should_kill`）。
+    # 用 try/finally：超时抛异常也要把计数还回去，否则 _BUSY 永远 >0，服务再也不会自己退出。
+    global _BUSY, _LAST_USED
+    with _LOCK:
+        _BUSY += 1
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read())
+    finally:
+        with _LOCK:
+            _BUSY -= 1
+            _LAST_USED = time.time()  # 从「最后一次真正用完」开始重新计空闲
     msg = data["choices"][0]["message"]
     content = msg.get("content") or ""
     # ⚠️ 不要拿 reasoning_content 兜底：那是思考过程（还常常是英文），

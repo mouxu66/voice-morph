@@ -1268,3 +1268,53 @@ def test_clean_advice_keeps_leading_dates():
 
 def test_clean_advice_still_strips_real_numbering():
     assert ra.clean_advice(["1.先攒", "2、再打", "3) 最后看背包"]) == ["先攒", "再打", "最后看背包"]
+
+
+# ---------------------------------------------------------------- 空闲自杀不能打死正在干活的
+#
+# 2026-10-26 实测踩到的坑：调试时把 VM_REPLY_IDLE_S 设成 8 秒、读图推理要 23 秒，
+# watcher 在第 8 秒把服务杀了，前端只看到 WinError 10054，看着像模型崩了。
+
+
+def test_should_kill_true_when_idle_and_not_busy(monkeypatch):
+    monkeypatch.setattr(ra, "_PROC", object())
+    monkeypatch.setattr(ra, "_BUSY", 0)
+    monkeypatch.setattr(ra, "_LAST_USED", 1000.0)
+    assert ra._should_kill(90, now=1091.0) is True
+
+
+def test_should_kill_false_while_busy_even_past_idle(monkeypatch):
+    """推理中的服务**不能**因为超过 idle 就被杀 —— 这是那次 10054 的直接原因。"""
+    monkeypatch.setattr(ra, "_PROC", object())
+    monkeypatch.setattr(ra, "_BUSY", 1)
+    monkeypatch.setattr(ra, "_LAST_USED", 1000.0)
+    assert ra._should_kill(90, now=1200.0) is False
+
+
+def test_should_kill_false_when_not_idle_yet(monkeypatch):
+    monkeypatch.setattr(ra, "_PROC", object())
+    monkeypatch.setattr(ra, "_BUSY", 0)
+    monkeypatch.setattr(ra, "_LAST_USED", 1000.0)
+    assert ra._should_kill(90, now=1050.0) is False
+
+
+def test_should_kill_false_when_no_process(monkeypatch):
+    monkeypatch.setattr(ra, "_PROC", None)
+    monkeypatch.setattr(ra, "_BUSY", 0)
+    monkeypatch.setattr(ra, "_LAST_USED", 0.0)
+    assert ra._should_kill(90, now=99999.0) is False
+
+
+def test_chat_releases_busy_counter_when_request_fails(monkeypatch):
+    """请求抛异常也必须把 _BUSY 还回去，否则服务再也不会自己退出（永久占显存）。"""
+    monkeypatch.setattr(ra, "_BUSY", 0)
+    monkeypatch.setattr(ra, "_LAST_USED", 0.0)
+
+    def boom(*a, **kw):
+        raise TimeoutError("模拟超时")
+
+    monkeypatch.setattr(ra.urllib.request, "urlopen", boom)
+    with pytest.raises(TimeoutError):
+        ra._chat(1, "hi", 5.0)
+    assert ra._BUSY == 0
+    assert ra._LAST_USED > 0
