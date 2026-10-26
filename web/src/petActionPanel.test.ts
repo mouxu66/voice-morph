@@ -129,6 +129,17 @@ describe('建议面板：上下文信号', () => {
     expect(soon[0].score).toBeLessThan(api.rankActions(base({ radar: 'now' }))[0].score)
   })
 
+  it('★ 这一行回答的是「怎么回」，不是「该不该回」', () => {
+    // 2026-10-26 用户原话：「这个该不该回怎么没把它变成推荐我怎么回呢？」
+    // 判断本身没有一个字是用户能发出去的 —— 所以标题从「该不该回」改成「怎么回」，
+    // 行尾在拿到草稿后显示那句能直接发的话（渲染层覆盖，见 refreshRecs）。
+    expect(api.labelFor('radar.open', {})).toBe('怎么回')
+    const meta = api.ACT_META.find((m) => m.id === 'radar.open')!
+    // 两个词都得能搜到：老用户记的是「该不该回」，新语义是「怎么回」。
+    expect(meta.kw).toContain('怎么回')
+    expect(meta.kw).toContain('该不该')
+  })
+
   it('★ 正在放歌时第一条是「停止放歌」（这时最可能想做的是停）', () => {
     const rows = api.rankActions(base({ bgm: true }))
     expect(rows[0].id).toBe('bgm.toggle')

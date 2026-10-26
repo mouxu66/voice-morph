@@ -516,6 +516,12 @@
     font-size: 9.5px; color: rgb(var(--c-t-500));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  /* 「怎么回」那一行的行尾不是状态词，是一句**能直接发出去的话** —— 62px 只装得下
+     五个字，「火男当车头」正好被切一半。面板宽度只有 204px，扣掉图标与「怎么回」
+     三个字后能给的极限约 92px（≈8 个汉字），再多就会把 label 挤成省略号。 */
+  #panel .rec .rh.cand {
+    max-width: 92px; color: rgb(var(--c-accent-h)); font-weight: 550;
+  }
   /* 值得打断用户的推荐（对方在等 / 有提案待确认）用绿色描边 —— 与药丸的「在跑」
      同色系，含义一致：**这里有个正在进行、需要你看一眼的事**。 */
   #panel .rec.hot { border-color: rgb(var(--c-ok) / 0.5); background: rgb(var(--c-ok) / 0.08); }
@@ -2521,6 +2527,10 @@ function showPanel() {
   panelOpen = true;
   panel.style.display = "block";
   refreshPanel();   // 每次浮现刷新：音色下拉 + 最近发送 + 主按钮文案
+  // 面板一出现就该有「怎么回」的内容。雷达慢轮询是常驻的，verdict 早在面板
+  // 没开时就变成「该回了」，那次边沿已经过去 —— 这里补一次（30s 冷却在
+  // primeCand 里）。
+  if (lastRadarAction() === "now" && !candFresh()) void primeCand();
 }
 petBox.addEventListener("mouseenter", showPanel);
 panel.addEventListener("mouseenter", showPanel);
@@ -3429,6 +3439,68 @@ let radarBadgeTimer = null;    // 慢轮询句柄（层关着，养绿点）
 let radarBusy = false;         // 上一次请求还没回来就不叠下一发
 let radarPollHintMs = 1500;    // 跟随后端响应里的 poll_hint_ms 走
 
+/**
+ * 当前会话的「怎么回」候选（主面板那一行要显示第一条）。
+ *
+ * 之前这一段只在分析层里用：主面板那行写「可以回了」，用户得点进去才看见能发什么。
+ * 实测用户的原话是「这个该不该回怎么没把它变成推荐我怎么回呢」—— 判断本身没有
+ * 可执行的东西，所以现在把第一条摆到行尾，点一下直接填进输入框。
+ */
+let candRows = [];
+let candChat = "";
+let candAt = 0;                // 上次拉到的时间（做 30s 冷却 + 90s 过期）
+let candBusy = false;
+let candPending = false;       // 正在拉：行尾显示「在想…」，否则用户以为没反应
+
+/** 行尾只放得下 9 个字（300px 面板里「怎么回」占掉一半）。 */
+function clipCand(t) {
+  const s = String(t || "").trim();
+  return s.length > 9 ? s.slice(0, 9) + "…" : s;
+}
+
+/** 候选上屏的唯一入口：主面板行尾、点一下的填充、分析层都从这里取。 */
+function applyCand(j) {
+  const rows = (j && Array.isArray(j.replies))
+    ? j.replies.filter((s) => typeof s === "string" && s.trim())
+    : [];
+  candRows = rows.slice(0, 3);
+  candChat = (j && j.chat) || "";
+  candAt = Date.now();
+  if (panelOpen) refreshRecs();
+}
+
+/** 90s 后的候选不再上屏：群里过了两分钟，那三条已经不对应当前这句话了。 */
+function candFresh() {
+  return candRows.length && (Date.now() - candAt) < 90000;
+}
+
+/**
+ * 顺手要一份草稿，只为主面板那一行能显示一句真能发的话。
+ *
+ * 为什么不在 tick 里无条件拉：每拉一次都要跑模型（热 1~2s、冷 20s），
+ * 而面板每 5s 就走一次 tick。所以只在 verdict **边沿**（变成「该回了」）触发，
+ * 外面再叠 30s 冷却兜住来回切会话的情况。拉失败就保持原样 —— 宁可显示
+ * 「可以回了」，也不在没拿到模型输出时编一句。
+ */
+async function primeCand() {
+  if (!CAP.radar || candBusy) return;
+  if (Date.now() - candAt < 30000) return;
+  candBusy = true;
+  // 冷启动实测要 55s（9B 被空闲杀掉后要重新加载）。这段时间面板必须**有反应**：
+  // 行尾从「可以回了」换成「在想…」，拿到再换成那一句。
+  candPending = true;
+  if (panelOpen) refreshRecs();
+  try {
+    const r = await fetch(RADAR_BASE + "/replies?limit=14", { cache: "no-store" });
+    if (r.ok) applyCand(await r.json());
+  } catch { /* 后端没起来 / 微信没开：保持雷达结论，不编草稿 */ }
+  finally {
+    candBusy = false;
+    candPending = false;
+    if (panelOpen) refreshRecs();
+  }
+}
+
 function radarSetPolling() {
   // 快轮询：只在层开着且能力在时跑。
   const wantFast = panelLayer === "radar" && CAP.radar;
@@ -3485,6 +3557,16 @@ function renderRadar(j) {
   const prevAct = lastRadarAction();
   lastRadar = j;
   radarAt = Date.now();   // refreshPanel 用它判断「这份结论有多旧」
+  // 「该回了」这一刻顺手要一份草稿 —— 主面板那一行要从「可以回了」变成
+  // 一句真能发的话。**边沿触发**：跟着 5s 轮询拉，等于每 5 秒跑一次模型。
+  if (act === "now" && prevAct !== "now") void primeCand();
+  // 最后一条是自己发的（act=none）时旧候选立刻作废：那三条是回复**上一句**的，
+  // 现在轮到你等对方了，摆着只会让人点错。wait/unknown 不清 —— 雷达偶尔读不到，
+  // 一抖就清会让行尾的候选闪来闪去。
+  if (act === "none" && candRows.length) {
+    candRows = [];
+    if (panelOpen) refreshRecs();
+  }
   if (rdCardEl) {
     // 卡片的配色类：v-none / v-wait / v-soon / v-now / v-unknown（见 CSS）。
     rdCardEl.className = "v-" + act;
@@ -3644,8 +3726,12 @@ function renderAnalysis(j, autoReply = true) {
   anaLast = ok ? j : null;
   // 结论先上屏，草稿随后异步来 —— 4B 首启要 4~5s，不能拖住「该不该回」的判断。
   if (autoReply) {
-    if (ok) void suggestReplies(j);
-    else clearReplies();
+    if (!ok) clearReplies();
+    // 主面板刚为主这一句话拉过一份（15s 内），直接摆出来 —— 再跑一次模型
+    // 等 1~2s，结果还是同一批。超过 15s 就重新拉：用户点进来要的是"现在"。
+    else if (candRows.length && (Date.now() - candAt) < 15000) {
+      renderReplies({ ok: true, replies: candRows, engine: "cache" });
+    } else void suggestReplies(j);
   }
 }
 
@@ -3695,6 +3781,8 @@ function renderReplies(j) {
   const rows = (ok && Array.isArray(j.replies))
     ? j.replies.filter((s) => typeof s === "string" && s.trim())
     : [];
+  // 分析层拿到的这份候选，主面板也有一份同样的用途（那一行的行尾 + 点一下就用）。
+  if (ok) applyCand(j);
   if (anaRepliesEl) {
     anaRepliesEl.innerHTML = rows.map(
       (t, i) => `<button type="button" class="rchip" data-i="${i}"`
@@ -4122,8 +4210,8 @@ const ACT_META = [
     kw: "音效 声板 特效 掌声 笑声 sfx soundboard" },
   { id: "bgm.toggle", label: "放歌", hint: "", cap: "fx",
     kw: "放歌 垫歌 背景音乐 停歌 bgm music" },
-  { id: "radar.open", label: "该不该回", hint: "看一眼", cap: "radar",
-    kw: "雷达 该回 该不该 微信 等多久 回不回 radar" },
+  { id: "radar.open", label: "怎么回", hint: "看一眼", cap: "radar",
+    kw: "雷达 该回 该不该 怎么回 回复 建议 微信 等多久 回不回 radar" },
   // 「分析聊天」：读当前会话（UIA 只读）+ 本地规则结论。挂在雷达能力下 ——
   // 接口是 /api/radar/chat，插件关掉时它就是个 404 按钮。
   // 用「分析」而不是「读屏」：后者会让用户以为在截图，而这条链路只读 UIA 控件树。
@@ -4159,7 +4247,10 @@ const ACT_RUN = {
   "song.find": () => setLayer("songs"),
   "sfx.play": () => setLayer("tray"),
   "bgm.toggle": () => { setLayer("tray"); void toggleBgm(); },
-  "radar.open": () => setLayer("radar"),
+  // 这一行现在回答的是「怎么回」，点开就得看见那几条候选 —— 雷达层只有
+  // 「该回了 / 等了多久」，看完还是不知道发什么。「该不该回」的判断细节
+  // 留在 ⋯ 抽屉里那行（radarRow → openRadar），两个入口各干一件事。
+  "radar.open": () => { setLayer("ana"); void analyzeChat(); },
   // 先开层（拉取期间显示「正在读当前会话…」），再打后端的 /api/radar/chat。
   "analyze.open": () => { setLayer("ana"); void analyzeChat(); },
   // 主窗口是 hash 路由（/#/autopilot），主进程负责 show/focus + 改 hash。
@@ -4457,7 +4548,9 @@ function recBtn(row) {
   // data-idx 指向 obsState.hits 的下标：提案对象带 params，塞不进 DOM 属性，
   // 而把它序列化进属性又会被引号/长度坑到（中文 + 书名号）。下标是最小的那根线。
   const idx = (typeof row.idx === "number") ? ` data-idx="${row.idx}"` : "";
-  const hint = row.hint ? `<span class="rh">${esc(row.hint)}</span>` : "";
+  const hint = row.hint
+    ? `<span class="rh${row.hintCand ? " cand" : ""}">${esc(row.hint)}</span>`
+    : "";
   const title = row.title || label;
   return `<button type="button" class="${cls}" data-act="${esc(id)}"${pid}${idx} title="${esc(title)}">`
     + actIcon(row.icon || id) + `<span class="rl">${esc(label)}</span>${hint}</button>`;
@@ -4512,16 +4605,24 @@ function refreshRecs() {
   } else {
     // ② 上下文推荐
     for (const r of rankActions(ctx)) {
+      // 「怎么回」这一行：有草稿就把第一条摆到行尾，点一下直接填进输入框。
+      // 「可以回了」只回答了该不该，没有一个字是用户能发出去的 —— 这一行
+      // 改成回答「怎么回」，判断结论退回它该在的位置（点开后的雷达层）。
+      const isRadar = r.id === "radar.open";
+      const cand = isRadar && candFresh() ? candRows[0] : "";
       rows.push({
         id: r.id,
         label: labelFor(r.id, ctx),
-        hint: r.hint,
+        hint: cand ? clipCand(cand) : (isRadar && candPending ? "在想…" : r.hint),
+        hintCand: !!cand,
         hot: r.id === "proposal.confirm",
-        warn: r.id === "radar.open" && ctx.radar === "now",
+        warn: isRadar && ctx.radar === "now",
         pid: r.id === "proposal.confirm" && assistProps[0] ? assistProps[0].id : "",
         title: r.id === "proposal.confirm" && assistProps[0]
           ? "点一下执行：" + (assistProps[0].detail || assistProps[0].title || "")
-          : labelFor(r.id, ctx),
+          : (isRadar
+            ? (cand ? "点一下就用「" + cand + "」，点开看全部" : "读当前会话，给几条能直接发的话")
+            : labelFor(r.id, ctx)),
       });
     }
     // ★ 固定入口（**不是推荐**）：托管永远排在第 4 条，位置不随信号变。
