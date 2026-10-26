@@ -24,6 +24,7 @@ FastAPI**（CLI、桌面角标、测试都能直接用）。本模块只做三�
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -124,7 +125,7 @@ def chat(limit: int = 20):
 
 
 @router.get("/replies")
-def replies(limit: int = 14, last_side: str = ""):
+def replies(limit: int = 14, last_side: str = "", avoid: str = ""):
     """读当前会话 → 本地 Qwen3-VL-4B（llama-server）给 2-3 条可直接发的回复。
 
     为什么单独一个端点、不和 /chat 合并：/chat 是 50ms 的 UIA 只读，
@@ -133,6 +134,10 @@ def replies(limit: int = 14, last_side: str = ""):
 
     `last_side` 由前端从 /chat 的 signals 带过来（left/right）。不给也行：
     模型只按最后一条像不像提问来写，给了则能避免「催用户回自己刚发的话」。
+
+    `avoid` 是「换一批」带回来的上一批：JSON 数组（也可以退化成 `|` 分隔）。
+    不给就是第一次要，给了就要求换角度 —— 以前这个参数不存在，那个按钮
+    只是原样再问一次，temperature 0.4 下多半给出几乎一样的句子。
     """
     from chat_read import read_chat  # 惰性：不点按钮不碰 UIA
     from reply_advisor import suggest
@@ -144,8 +149,27 @@ def replies(limit: int = 14, last_side: str = ""):
     if not snap.get("ok"):
         return snap
     side = last_side if last_side in ("left", "right") else None
-    out = suggest(snap.get("messages") or [], snap.get("chat") or "", side)
+    out = suggest(snap.get("messages") or [], snap.get("chat") or "", side,
+                  avoid=_parse_avoid(avoid))
     return {"ok": True, "chat": snap.get("chat"), **out}
+
+
+def _parse_avoid(raw: str) -> list[str] | None:
+    """把 `avoid` 查询参数解成列表。**故意两种格式都收**：前端拼 JSON 最省事，
+    但手工 curl 调试时 `?avoid=666|收到` 更好打。解不出来就当没给 ——
+    这个参数只影响措辞，不该让整个接口 400。"""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    items: list[str] = []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            items = [str(x) for x in parsed]
+    except Exception:  # noqa: BLE001 —— 不是 JSON 就走分隔符那条路
+        items = raw.split("|")
+    items = [x.strip()[:30] for x in items if x and x.strip()]
+    return items[:6] or None
 
 
 #: 每个会话里用户**亲手给过**的检索词。

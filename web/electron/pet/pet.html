@@ -3661,6 +3661,10 @@ let anaBusy = false;
 let anaLast = null;
 //: 只认最后一次回复请求 —— 连点「重新分析 / 换一批」时，旧响应不许覆盖新的。
 let anaReplySeq = 0;
+//: 上一批候选。「换一批」把这几条带回去当 avoid —— 否则只是原样再问一遍，
+//: temperature 0.4 下多半给出几乎一样的句子（2026-10-27 实测第一批三条
+//: 全是「接接接」的变体，按「换一批」也还是那三个字）。
+let anaLastReplies = [];
 
 /** 拉一次 /chat 并渲染。失败按人话写进 #anaNote，不改已有结论卡。 */
 async function analyzeChat() {
@@ -3738,6 +3742,7 @@ function renderAnalysis(j, autoReply = true) {
 /** 清空草稿块（分析失败 / 重新分析前调用）。 */
 function clearReplies() {
   anaReplySeq++;
+  anaLastReplies = [];   // 上下文换了，上一批不再是「同一道题的另一个答案」
   if (anaRepliesEl) anaRepliesEl.innerHTML = "";
   if (anaReplyNoteEl) { anaReplyNoteEl.textContent = ""; anaReplyNoteEl.className = ""; }
   // 攻略块跟着一起清：换了一段上下文，上一轮搜到的东西就不再对应现在这句了。
@@ -3748,18 +3753,27 @@ function clearReplies() {
  * 本地 Qwen3-VL-4B 生成「怎么回」。走 `/api/radar/replies`：
  * 后端读 UIA → 拼提示词 → llama-server（懒加载 + 空闲自杀）→ 严格校验 JSON。
  * 模型没起来时后端已降级成模板，这里只把 engine/note 说出来（有草稿就先给草稿）。
+ *
+ * `redo=true` 是「换一批」按下的：把上一批作为 avoid 发回去，后端会要求换角度，
+ * 出口处再挡一次同义改写。**不传 avoid 的话这个按钮等于没做** —— 同一份提示词
+ * 再问一次，模型只会把刚才那三条重说一遍。
  */
-async function suggestReplies(j) {
+async function suggestReplies(j, redo) {
   // 与 analyzeChat 同一门控：能力关掉时后端没有 /api/radar/*。
   if (!CAP.radar) return;
   const seq = ++anaReplySeq;
   if (anaRepliesEl) anaRepliesEl.innerHTML = "";
   if (anaReplyNoteEl) {
-    anaReplyNoteEl.textContent = "本地模型在想怎么回…（首次要拉起模型+视觉权重，约 20 秒；之后 1~2 秒，看图 1~7 秒）";
+    anaReplyNoteEl.textContent = redo
+      ? "换一批…"
+      : "本地模型在想怎么回…（首次要拉起模型+视觉权重，约 20 秒；之后 1~2 秒，看图 1~7 秒）";
     anaReplyNoteEl.className = "";
   }
   const side = (j && j.signals && j.signals.last_side) || "";
-  const qs = "?limit=14" + (side === "left" || side === "right" ? "&last_side=" + side : "");
+  const av = redo && anaLastReplies.length ? anaLastReplies.slice(0, 6) : [];
+  const qs = "?limit=14"
+    + (side === "left" || side === "right" ? "&last_side=" + side : "")
+    + (av.length ? "&avoid=" + encodeURIComponent(JSON.stringify(av)) : "");
   try {
     const r = await fetch(RADAR_BASE + "/replies" + qs, { cache: "no-store" });
     if (!r.ok) throw new Error("HTTP " + r.status);
@@ -3783,6 +3797,8 @@ function renderReplies(j) {
     : [];
   // 分析层拿到的这份候选，主面板也有一份同样的用途（那一行的行尾 + 点一下就用）。
   if (ok) applyCand(j);
+  // 记住这一批：下次按「换一批」要把它带回去当 avoid。
+  if (ok) anaLastReplies = rows.slice();
   if (anaRepliesEl) {
     anaRepliesEl.innerHTML = rows.map(
       (t, i) => `<button type="button" class="rchip" data-i="${i}"`
@@ -4064,7 +4080,11 @@ if (anaRepliesEl) anaRepliesEl.addEventListener("click", (e) => {
   sayEl.focus();
   setLayer("");
 });
-if (anaReplyBtnEl) anaReplyBtnEl.addEventListener("click", () => { void suggestReplies(anaLast || {}); });
+if (anaReplyBtnEl) anaReplyBtnEl.addEventListener("click", () => {
+  // 已经有候选 = 这一下是「换一批」，要带上上一批；没有 = 第一次要，
+  // 别把一个空 avoid 发出去（后端会当成「换一批」写提示词，白多一句废话）。
+  void suggestReplies(anaLast || {}, anaLastReplies.length > 0);
+});
 // 查攻略：搜一次摆在那儿，资料不进群；点「照这个写一条」才让模型按它压一句。
 /**
  * 展开攻略块并立刻搜一次。

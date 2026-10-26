@@ -82,6 +82,14 @@ CHAT_TIMEOUT = 90.0
 #: 生成参数：2-3 条短句，别让它写小作文。
 MAX_TOKENS = 220
 TEMPERATURE = 0.4
+#: 「换一批」用的温度。**必须比 TEMPERATURE 高**：0.4 下用户按了换一批，
+#: 模型会原样再吐一遍刚才那三条 —— 2026-10-27 实测有一批逐字相同
+#: （「哪个号接的 / 菠萝号还是丸子号？/ 我这边没触发过」），被 avoid 全挡掉之后
+#: 只好退回模板，于是用户拿到「在的怎么了」。
+#: 取 0.85 而不是 1.0：同一段真实聊天（3864 群，最后一句「接糖果是哪个？？？」）
+#: 三个温度各跑一次 —— 0.85 给出三个不同角度；1.0 直接跑题（「这游戏不是无尽冬日吧」，
+#: 而群名就写着无尽冬日）；1.2 又缩回三个问句，和 0.4 一个毛病。
+REDO_TEMPERATURE = 0.85
 
 #: 一次喂给模型的最大消息条数（去掉时间行后）。20 条肉眼够判断语境，
 #: prompt 也只有 ~300 token —— 再长对 4B 只会更慢更糊涂。
@@ -840,6 +848,95 @@ def _norm_text(s: str) -> str:
     return re.sub(r"[\s，。！？、,.!?~～…\-—\"'“”‘’（）()【】\[\]@]", "", s or "")
 
 
+#: 输出侧要清掉的标点。用户本人 474 条发言里 88% 完全不带标点（叹号 0%、
+#: 句号 2%、逗号 9%），可 prompt 里那条规则模型经常不听 —— 2026-10-27 用真实
+#: 3864 群采样，第一批原样给出「接接接接接，别停」。
+#: **改比删划算**：句子本身是好的，只是多了个逗号，删掉等于白丢一条候选。
+_SPLIT_PUNCT_RE = re.compile(r"[，,、；;。！!…~～：:]")
+#: 句子里已经有这些词，问号就是多余的（「你吃了吗？」→「你吃了吗」）。
+#: 反过来「真的？」去掉问号会变成陈述句，意思变了 —— 那种情况保留。
+_Q_WORD_RE = re.compile(r"吗|呢|嘛|啥|哪|几|怎么|什么|多少|是不是|有没有")
+
+
+def tidy_reply(text: str) -> str:
+    """把候选修成「用户真会打出来的样子」：清标点、压空格、去引号。
+
+    只改**形式**、不改一个字的**内容**，所以它放在 `drop_reason` 之前当清洗，
+    不当过滤 —— 删掉一条是丢信息，去掉一个逗号不是。
+    """
+    t = str(text or "").strip().strip('"“”\'‘’').strip()
+    if not t:
+        return ""
+    has_q_word = bool(_Q_WORD_RE.search(t))
+    t = _SPLIT_PUNCT_RE.sub(" ", t)
+    # ASCII 句点单独处理：别把「3.5亿」拆成「3 5亿」。
+    t = re.sub(r"(?<![\d.])\.(?![\d])", " ", t)
+    # 问号：句子里已有疑问词就删（语义没丢），没有就留一个（否则变陈述句）。
+    t = re.sub(r"[？?]+", "" if has_q_word else "？", t)
+    t = re.sub(r"[ \t]+", " ", t).strip()
+    return t
+
+
+_ASK_END_RE = re.compile(r"(?:吗|呢|嘛|啥|几|多少|怎么|什么)$")
+
+
+def _is_ask(text: str) -> bool:
+    """这句是不是在问（问号、疑问词收尾、或带「哪」）。
+
+    只用来判「上一批是不是全在问」，不参与任何拦截 —— 判错了最多让提示词
+    多一句「别再问」，代价是零。所以宁可宽一点。
+    """
+    t = tidy_reply(text)
+    return bool(t) and bool(re.search(r"[?？]", t) or _ASK_END_RE.search(t) or "哪" in t)
+
+
+#: 同一个字占到整句的这个比例，就算复读退化。
+#: 用比例而不是绝对长度：「接接接接接别停」71% 是同一个字，仍然不是人话；
+#: 而「好好好那我先睡了」只有 3/9，是正常的语气叠字，不该拦。
+_DEGEN_RATIO = 0.5
+
+
+def degenerate(text: str) -> bool:
+    """整句是同一个字连着刷 —— 模型退化，不是人话。
+
+    2026-10-27 用真实 3864 群连采 6 批，第一批原样给出
+    「接接接 / 接接接接 / 接接接接接，别停」：三条都是同一个字刷屏（还带逗号），
+    点哪条都一样，三条并排摆着一眼就是坏的。而当时**六条出口规则一条都没命中**
+    —— 退化检测是空白格。
+    """
+    t = _norm_text(text)
+    # 纯数字整句（666 / 23333）是他真实的附和方式，不能当退化。
+    if len(t) < 3 or t.isdigit():
+        return False
+    # 整句笑声交给 `looks_like_offstyle` —— 那一条的归因更准（「用户从不说的套话」），
+    # 归成「复读退化」会让人以为是模型坏了，而其实是风格不合。
+    if re.fullmatch(r"[哈呵嘿嘻]+", t):
+        return False
+    best = 0
+    i = 0
+    while i < len(t):
+        j = i
+        while j + 1 < len(t) and t[j + 1] == t[i]:
+            j += 1
+        if j - i + 1 > best:
+            best = j - i + 1
+        i = j + 1
+    return best >= 3 and best / len(t) >= _DEGEN_RATIO
+
+
+def same_idea(a: str, b: str) -> bool:
+    """两条候选是不是「同一句话换了个说法」。
+
+    用字符集合的 Jaccard：「接接接」和「接接接接」交集/并集 = 1.0。
+    阈值 0.75 故意偏严 —— 判重复的代价是整批重问（白等 2 秒），
+    宁可按「不一样」放过，也别把两个不同角度误判成重复。
+    """
+    sa, sb = set(_norm_text(a)), set(_norm_text(b))
+    if not sa or not sb:
+        return False
+    return len(sa & sb) / len(sa | sb) >= 0.75
+
+
 def looks_like_promise(text: str) -> bool:
     """这句是不是在**替用户**答应/承诺（含「收到红包谢谢」这种张冠李戴）。"""
     return bool(_COMMIT_RE.search(text or ""))
@@ -958,6 +1055,11 @@ _SELF_WHERE_RE = re.compile(
     # 「刚到家」「到家了」—— 省略主语的坐标自述。中文里这就是在回答「你在哪」，
     # 2026-10-26 全量评测 r3 实测「刚到家」躲过了上面所有规则，和「我在家呢」同罪。
     r"|^(?:刚|才|已经|也|就|快)?到(?:" + _WHERE_NOUN + r")(?:了|呢)?$"
+    # 「刚下电梯」—— ③ 只收了 下楼/上楼，竖向移动换个载体就漏。2026-10-27 评测
+    # 问地点 r2 实测：三条候选是「刚下电梯 / 你等我会儿」，前一条替用户报了坐标，
+    # 而整段记录里用户一个字都没说。**必须整句锚定**（^...$）：不锚定的话
+    # 「你上楼了吗」这种问对方的句子会被误杀。
+    r"|^(?:刚|才|已经|也|就|快)?(?:下|上|出|进)(?:楼|电梯|车|地铁|门)(?:了|呢)?$"
 )
 _WHERE_NOUN_RE = re.compile(_WHERE_NOUN)
 
@@ -1060,6 +1162,10 @@ def drop_reason(reply: str, messages: list[dict] | None = None) -> str:
 
     顺序就是短路的顺序（先便宜的、后需要上下文的），和原来的推导式一致。
     """
+    # 放最前面：它最便宜（纯字符串），也最确定 —— 一串「接接接接接」不管在什么
+    # 语境下都不是能发出去的话，归因成别的规则反而会带偏排查方向。
+    if degenerate(reply):
+        return "复读退化"
     if looks_like_promise(reply):
         # 通知语境下的裸「收到」是「我知道了」，不是「替你答应」——
         # 2026-10-26 真机实测：班群 @所有人 晚签通知，唯一正确的回复被这条规则吃掉，
@@ -1638,6 +1744,7 @@ def _ask_json(
     max_tokens: int | None = None,
     image_b64: str | None = None,
     timeout: float = CHAT_TIMEOUT,
+    temperature: float | None = None,
 ) -> tuple[dict | None, str]:
     """要一段 JSON：第一次不合格就低温重来一次，并把**不合格的原文**带出来。
 
@@ -1645,11 +1752,14 @@ def _ask_json(
     就是），而一旦失败整条建议退化成模板 —— 用户点「怎么回」收到「666」。
     重试只在失败时发生，平均下来每次请求多花不到 0.05 次推理，正常路径零延迟。
 
+    `temperature` 透传给 `_chat`（None = 用默认 0.4）。只有「换一批」会给一个
+    更高的值：同一份提示词、同一个温度，模型会原样重说一遍，那这个按钮就没意义。
+
     返回值第二项是坏掉的原文，成功时为空串。以前这个信息直接丢掉，于是那次失败
     只留下「模型输出没通过校验」七个字，查不出模型到底坏在哪。
     """
     kw = {"system": system, "max_tokens": max_tokens, "image_b64": image_b64}
-    content = _chat(port, prompt, timeout, **kw)
+    content = _chat(port, prompt, timeout, temperature=temperature, **kw)
     parsed = parse_reply_json(content)
     if parsed is not None:
         return parsed, ""
@@ -1667,39 +1777,130 @@ def _ask_json(
 
 
 def _judge_replies(
-    raw_replies: list[str], messages: list[dict]
+    raw_replies: list[str], messages: list[dict], avoid: list[str] | None = None
 ) -> tuple[list[dict], list[dict]]:
-    """逐条判定候选：留 / 拆 / 删。返回 (逐条留档, 拆分记录)。
+    """逐条判定候选：洗 / 留 / 拆 / 删。返回 (逐条留档, 拆分记录)。
 
     抽出来是因为 `suggest()` 和 `suggest_from_digest()` 各有一份，迟早漂。判据只有
-    `drop_reason` 一个来源；这里多做一件**拆**的事：「行，几点去拿？」整条删掉太浪费，
-    后半句是问句，可以单独发（见 `salvage_question`）。
+    `drop_reason` 一个来源；这里多做两件事：
+
+    - **洗**：`tidy_reply` 先清标点（模型老是不听话，但句子本身是好的，
+      删掉等于白丢一条候选）；
+    - **拆**：「行，几点去拿？」整条删掉太浪费，后半句是问句，可以单独发
+      （见 `salvage_question`）。
+
+    `avoid` 是「换一批」带回来的上一批，用来挡同义改写 —— 归因写「和上一批重复」，
+    用户能看懂为什么这条没出现。
+
+    ⚠️ **判定必须看原文，清洗只能放在判定之后**。`_COMMIT_RE` 这类句式规则是靠
+    标点断句的（「行，几点去拿？」里的逗号就是断点），先 `tidy_reply` 会把逗号
+    变成空格、句末问号抹掉，于是「替你答应」整条不再命中 —— 2026-10-27 改这一版时
+    就是这么把 3 个测试打红的，而且方向是**变松**（该拦的没拦），最危险的那种。
     """
     judged: list[dict] = []
     salvaged: list[dict] = []
     seen: set[str] = set()
-    for r in raw_replies:
-        reason = drop_reason(r, messages)
-        if not reason:
-            if r not in seen:
-                seen.add(r)
-                judged.append({"text": r, "reason": ""})
+    for raw in raw_replies:
+        src = str(raw or "")
+        reason = drop_reason(src, messages)
+        if not reason and avoid and any(same_idea(src, a) for a in avoid):
+            reason = "和上一批重复"
+        fixed = salvage_question(src) if reason == "替你答应" else None
+        if fixed:
+            text = tidy_reply(fixed)
+            if text and text not in seen:
+                seen.add(text)
+                salvaged.append({"from": src, "to": text})
+                judged.append({"text": text, "reason": ""})
+                continue
+            # 拆出来洗完没内容、或和另一条撞车 —— 按原样记成被删。
+            judged.append({"text": tidy_reply(src) or src, "reason": reason})
             continue
-        fixed = salvage_question(r) if reason == "替你答应" else None
-        if fixed and fixed not in seen:
-            seen.add(fixed)
-            salvaged.append({"from": r, "to": fixed})
-            judged.append({"text": fixed, "reason": ""})
+        text = tidy_reply(src)
+        if not text:
+            # 洗完什么都没了（整条只有标点）—— 没有内容，也就没有可发的东西。
             continue
-        # 拆不出来、或拆完和另一条候选撞车 —— 都按原样记成被删。
-        judged.append({"text": r, "reason": reason})
+        if reason:
+            judged.append({"text": text, "reason": reason})
+        elif text in seen:
+            # 洗完才发现两条一样（「几点去拿？」和「几点去拿」）：只留一条。
+            continue
+        else:
+            seen.add(text)
+            judged.append({"text": text, "reason": ""})
     return judged, salvaged
 
 
-def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) -> dict:
+def _batch_needs_redo(judged: list[dict], kept: list[str]) -> bool:
+    """这一批是不是「看着像三条、其实是一张牌」，值得换一次重来。
+
+    两类会被判为不合格：
+
+    - **整批退化**：留下的为零，且删的理由**全是**「复读退化」。只看这一种原因 ——
+      如果删的理由是「替你答应」「复读记录」，那是不合规而不是退化，
+      重问一遍多半还是同一类错，白等 2 秒。
+    - **整批一个意思**：留下的两条以上，但两两都 `same_idea`。实测
+      「火男当车头 / 火男谢尔盖 / 火男输出高」就是这种 —— 三条都在说火男，
+      用户看到的是「只有一条可选」。
+    """
+    if not judged:
+        return False
+    if not kept:
+        return all(d["reason"] == "复读退化" for d in judged)
+    if len(kept) >= 2:
+        for i in range(len(kept)):
+            for j in range(i + 1, len(kept)):
+                if not same_idea(kept[i], kept[j]):
+                    return False
+        return True
+    return False
+
+
+#: 整批不合格时追加的那句。不提「刚才」以外的东西：模型看不到自己上一次的输出，
+#: 只说「三条是同一句话」它就能换角度，说细节反而会被抄进新候选。
+_REDO_TAIL = (
+    "\n\n刚才给的那三条不行：三条是同一个意思（甚至是同一个字反复打）。"
+    "重写三条，**必须是三个不同角度**：一条直接答对方问的那件事，"
+    "一条把问题问回去 / 说「我看看」，一条只接话茬。不要拿一条去改写另外两条。"
+)
+
+
+def _avoid_tail(avoid: list[str]) -> str:
+    """「换一批」带回来的上一批，写进提示词让模型真的换思路。"""
+    lines = "\n".join(f"- {str(t)[:30]}" for t in avoid[:6])
+    tail = (
+        "\n\n用户按了「换一批」，下面这些**已经给过、他没要**：\n"
+        f"{lines}\n"
+        "换一个思路，不要同义改写（换主语、换词序也还是同一句）："
+        "原来在答就改成问一句，原来在接梗就改成给个实话，或者换一个完全不同的说法。"
+    )
+    # 实测（2026-10-27 真实 3864 群）：三条**全是问句**时，光说「换角度」模型还是
+    # 换着法子问 —— 「接糖果在哪领的」→「在哪领的呀」/「我看看在哪领」，相似度 0.5。
+    # 但只说「别再问」更糟：它转头编答案（「点活动图标进去」「活动页面里有」），
+    # 那是这个群明天就会被人打脸的话。所以这句必须**同时给出安全出口**。
+    if len(avoid) >= 2 and all(_is_ask(t) for t in avoid):
+        tail += (
+            "\n这三条**全是在问**，这次别再问了。"
+            "但也不许编 —— 不知道就明说不清楚、没注意、我看看，一样能发。"
+        )
+    return tail
+
+
+def suggest(
+    messages: list[dict],
+    chat: str = "",
+    last_side: str | None = None,
+    *,
+    avoid: list[str] | None = None,
+) -> dict:
     """读最近消息 → 2-3 条可直接发的回复。永远返回可渲染的 dict，不抛异常。
 
     engine=local 表示真模型给的；engine=rule 是降级模板（note 里写原因）。
+
+    `avoid` 是「换一批」带回来的上一批候选：写进提示词让模型换思路，出口处
+    再挡一次同义改写（`_judge_replies` 里判「和上一批重复」）。
+    这一步以前是空的 —— 面板上那个「换一批」只是原样再问一次，temperature 0.4
+    下多半给出几乎一样的句子，用户按两次就再也不想按了。
     """
     start = time.perf_counter()
     # 前端可能不传 last_side（/replies 的注释里写着「不给也行」），所以自己再推一次：
@@ -1752,13 +1953,31 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
             "replies": _rule_replies(messages, last_side),
             "note": _n(_side_warn(messages), why_not),
         }
+    # 提到 try 外面：except 那条路直接 return，但静态检查和以后的重构都更容易看懂。
+    _judged: list[dict] = []
+    salvaged: list[dict] = []
     try:
         port = _ensure_server()
         # 最近有图片/视频才截图（多 400~800 token + ~200ms）；没有就纯文本。
         image = chat_snapshot_b64() if _needs_look(messages) else None
-        parsed, raw_bad = _ask_json(
-            port, build_prompt(messages, chat, last_side), image_b64=image
-        )
+        prompt = build_prompt(messages, chat, last_side)
+        if avoid:
+            prompt += _avoid_tail(avoid)
+        # 换一批从第一发就升温：0.4 下它会照着 avoid 里那几条的措辞再写一遍。
+        temp = REDO_TEMPERATURE if avoid else None
+        parsed, raw_bad = _ask_json(port, prompt, image_b64=image, temperature=temp)
+        # 判一次，好在**摆给用户之前**就知道这批能不能用：三条一模一样的
+        # 「接接接」不该先渲染再被删成 0 条（那时已经退回模板了）。
+        if parsed is not None:
+            _judged, salvaged = _judge_replies(parsed["replies"], messages, avoid)
+            if _batch_needs_redo(_judged, [d["text"] for d in _judged if not d["reason"]]):
+                redo, raw_redo = _ask_json(
+                    port, prompt + _REDO_TAIL, image_b64=image, temperature=REDO_TEMPERATURE
+                )
+                if redo is not None:
+                    parsed, raw_bad = redo, raw_redo
+                    _judged, salvaged = _judge_replies(parsed["replies"], messages, avoid)
+                # redo 也失败（解析不了）就留着第一次的 results —— 至少还有东西可看。
     except Exception as exc:  # noqa: BLE001 —— 本地推理失败一律降级
         return {
             "engine": "rule",
@@ -1788,7 +2007,10 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
         }
     # 逐条留档：删了什么、为什么删。没有这个，note 里的「有 1 条在替你答应」
     # 就只是一个数字 —— 2026-10-26 评测里 7/24 轮踩到，却查不出模型在编什么。
-    _judged, salvaged = _judge_replies(raw_replies, messages)
+    # 上面已经判过一次（要判断整批合不合格），别重复判 —— 重复判不会有不同结果，
+    # 但会白跑一次 `tidy_reply`，更重要的是两份结果将来会漂。
+    if not _judged:
+        _judged, salvaged = _judge_replies(raw_replies, messages, avoid)
     replies = [d["text"] for d in _judged if not d["reason"]]
     dropped = [d for d in _judged if d["reason"]]
     note = ""
@@ -1811,8 +2033,15 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
                 "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
             }
         # 全被删了 —— 宁可退回模板，也不能摆出「点了就替他答应」的选项
-        replies = _rule_replies(messages, last_side)
-        note = f"模型那几条不能用（{_drop_why(dropped)}），已换成安全的模板"
+        if avoid and dropped and all(d["reason"] == "和上一批重复" for d in dropped):
+            # 「换一批」但模型没想出新的（0.4 温度下它会逐字重说，实测有过一次
+            # 三条一字不差）。这时退回模板更糟 —— 用户要的是「别的说法」，
+            # 结果收到「在的怎么了」。原样还回去，并且说清楚为什么。
+            replies = [t for t in avoid if str(t).strip()][:3]
+            note = "这次没想出新的（跟刚才那批重复），先用刚才那几条"
+        else:
+            replies = _rule_replies(messages, last_side)
+            note = f"模型那几条不能用（{_drop_why(dropped)}），已换成安全的模板"
     elif dropped:
         # 措辞只报**真实命中的规则**。原来一律写「在替你答应」，可删除原因也可能是
         # 复述群里的原话、或用了用户从不说的「哈哈/收到」—— 报错原因会让人照着
@@ -1823,7 +2052,9 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
         # 所以删到只剩 1 条时，从模板补一条**能直接答**的（模板走的是识别问句那条路，
         # 不掺承诺）。`last_side == "right"` 时不补：那时模板是「等对方回就行」，
         # 当成候选发出去很怪。
-        if len(replies) < 2 and last_side != "right":
+        # 「换一批」时也不补：模板就那么几句，补进来的「在的怎么了」等于告诉用户
+        # 「换不出来」—— 2026-10-27 实测这一格变成「菠萝和丸子号都有吗 / 在的怎么了」。
+        if len(replies) < 2 and last_side != "right" and not avoid:
             for cand in _rule_replies(messages, last_side):
                 if cand and cand not in replies:
                     replies = [cand, *replies]

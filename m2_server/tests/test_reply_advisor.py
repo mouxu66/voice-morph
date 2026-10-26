@@ -335,8 +335,8 @@ def test_radar_replies_passes_side_and_reads_chat(monkeypatch):
     )
     seen = {}
 
-    def fake_suggest(msgs, chat, side):
-        seen.update(msgs=msgs, chat=chat, side=side)
+    def fake_suggest(msgs, chat, side, avoid=None):
+        seen.update(msgs=msgs, chat=chat, side=side, avoid=avoid)
         return {"engine": "local", "replies": ["哈哈"], "why": "他想聊"}
 
     monkeypatch.setattr(ra, "suggest", fake_suggest)
@@ -345,6 +345,8 @@ def test_radar_replies_passes_side_and_reads_chat(monkeypatch):
     assert out["replies"] == ["哈哈"]
     assert seen["side"] == "left"
     assert seen["chat"] == "117"
+    # 不给 avoid 就是第一次要：别传个空列表进去，那会被当成「换一批」写提示词。
+    assert seen["avoid"] is None
 
 
 def test_radar_replies_ignores_unknown_side(monkeypatch):
@@ -355,7 +357,7 @@ def test_radar_replies_ignores_unknown_side(monkeypatch):
     seen = {}
     monkeypatch.setattr(
         ra, "suggest",
-        lambda msgs, chat, side: seen.update(side=side) or {"engine": "rule", "replies": ["收到"]},
+        lambda msgs, chat, side, avoid=None: seen.update(side=side) or {"engine": "rule", "replies": ["收到"]},
     )
     radar_api.replies(limit=14, last_side="up")
     assert seen["side"] is None
@@ -1556,10 +1558,12 @@ def test_bare_cheng_counts_as_promise():
 def test_judge_replies_salvages_and_dedupes():
     got, salvaged = ra._judge_replies(["行，几点？", "几点？", "666"], [])
     # 拆分结果和另一条候选撞车时只留一条，不许出现两个「几点？」
-    assert got == [{"text": "666", "reason": ""}, {"text": "几点？", "reason": ""}] or \
-        got == [{"text": "几点？", "reason": ""}, {"text": "666", "reason": ""}]
+    # 2026-10-27 起问号会被 `tidy_reply` 去掉（句子里已有「几」，问号是多余的，
+    # 用户 88% 的发言不带标点），所以这里比对的是洗完的样子。
+    assert got == [{"text": "666", "reason": ""}, {"text": "几点", "reason": ""}] or \
+        got == [{"text": "几点", "reason": ""}, {"text": "666", "reason": ""}]
     assert len([d for d in got if not d["reason"]]) == 2
-    assert salvaged == [{"from": "行，几点？", "to": "几点？"}]
+    assert salvaged == [{"from": "行，几点？", "to": "几点"}]
 
 
 def test_suggest_exposes_salvaged(monkeypatch):
@@ -1567,8 +1571,8 @@ def test_suggest_exposes_salvaged(monkeypatch):
     monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
     monkeypatch.setattr(ra, "_chat", lambda *a, **k: '{"replies":["行，几点去拿？","666","要几份"]}')
     out = ra.suggest([{"kind": "text", "text": "帮我带一份"}], "3864", "left")
-    assert out["replies"] == ["几点去拿？", "666", "要几份"]
-    assert out["salvaged"] == [{"from": "行，几点去拿？", "to": "几点去拿？"}]
+    assert out["replies"] == ["几点去拿", "666", "要几份"]
+    assert out["salvaged"] == [{"from": "行，几点去拿？", "to": "几点去拿"}]
     assert out["dropped"] == []
 
 
@@ -1668,6 +1672,8 @@ WHERE_MSGS = [
 @pytest.mark.parametrize("text", [
     "我在家呢", "我在小区门口", "我也到楼下了", "我也快到了", "我在门口",
     "我也在楼下", "我还没动呢", "在家", "在楼下", "我刚到家",
+    # 2026-10-27 评测「问地点」r2：竖向移动换个载体就漏（③ 只收了 下楼/上楼）
+    "刚下电梯", "刚出电梯", "刚进电梯", "才下车",
 ])
 def test_fabricated_where_is_dropped(text):
     assert ra.fabricates_where(text, WHERE_MSGS) is True
@@ -1675,6 +1681,8 @@ def test_fabricated_where_is_dropped(text):
 
 
 @pytest.mark.parametrize("text", [
+    "你上楼了吗",     # 问对方，不是报自己的坐标（新加的整句锚定要能挡住这句）
+    "电梯里信号不好吗",
     "到哪了",        # 问对方，不是报自己的坐标
     "哪个门",        # 问
     "在楼下吗",      # 疑问语气，问对方在不在楼下
@@ -1915,3 +1923,146 @@ def test_digest_query_uses_picked_question(monkeypatch):
     radar_api.digest(q="", chat="", limit=4)
     assert "打熊" in got["q"]
     assert "在线等" not in got["q"]
+
+
+# ---------------------------------------------------------------- 输出侧：洗标点 / 退化 / 同义
+#
+# 2026-10-27 用真实 3864 群连采 6 批，第一批原样摆出
+#   「接接接 / 接接接接 / 接接接接接，别停」
+# —— 三条同一个字刷屏、还带个逗号，点哪条都一样。当时六条出口规则一条都没命中。
+# 这一组守三件事：标点要洗掉、退化要拦住、整批一个意思要能识别出来重问。
+
+@pytest.mark.parametrize("text, expect", [
+    ("接接接接接，别停", "接接接接接 别停"),   # 逗号换空格，字一个不丢
+    ("行，几点去拿？", "行 几点去拿"),         # 句里已有「几」，问号是多余的
+    ("真的？", "真的？"),                     # 没有疑问词，问号留着（否则变陈述句）
+    ("666", "666"),
+    ("别急 等下就到", "别急 等下就到"),
+    ("打3.5亿", "打3.5亿"),                   # 小数点不能被当成句点拆开
+    ("  ", ""),
+])
+def test_tidy_reply_only_touches_form(text, expect):
+    assert ra.tidy_reply(text) == expect
+
+
+@pytest.mark.parametrize("text", [
+    "接接接", "接接接接", "接接接接接别停", "别别别别别", "好好好好好",
+])
+def test_degenerate_catches_char_repetition(text):
+    assert ra.degenerate(text) is True
+    assert ra.drop_reason(text) == "复读退化"
+
+
+@pytest.mark.parametrize("text", [
+    "666",          # 纯数字是他真实的附和方式（开头词第一名，20 次）
+    "23333",
+    "哈哈哈",        # 整句笑声交给「用户从不说的套话」，归因更准
+    "好好好那我先睡了",   # 3/9，正常语气叠字
+    "别急慢慢来",
+    "接到了吗",
+    "接了接了",      # 自然的重复，不是退化
+])
+def test_degenerate_leaves_normal_speech_alone(text):
+    assert ra.degenerate(text) is False
+
+
+@pytest.mark.parametrize("a, b, expect", [
+    ("接接接", "接接接接", True),
+    ("火男当车头", "火男输出高", False),   # 同一话题但不同说法，不算重复
+    ("接多接点", "接接接", False),
+    ("666", "666", True),
+])
+def test_same_idea(a, b, expect):
+    assert ra.same_idea(a, b) is expect
+
+
+def test_batch_needs_redo_only_for_degenerate_or_cloned():
+    """只有「整批退化」和「整批一个意思」才值得重问 —— 别的删法重问也是白问。"""
+    deg = [{"text": "接接接", "reason": "复读退化"}, {"text": "接接接接", "reason": "复读退化"}]
+    assert ra._batch_needs_redo(deg, []) is True
+    # 删的理由是「替你答应」，重问一遍多半还是同一类错，白等 2 秒
+    promise = [{"text": "行我马上去", "reason": "替你答应"}]
+    assert ra._batch_needs_redo(promise, []) is False
+    same = [{"text": "火男当车头", "reason": ""}, {"text": "火男当车头吧", "reason": ""}]
+    assert ra._batch_needs_redo(same, ["火男当车头", "火男当车头吧"]) is True
+    diff = [{"text": "666", "reason": ""}, {"text": "别急慢慢来", "reason": ""}]
+    assert ra._batch_needs_redo(diff, ["666", "别急慢慢来"]) is False
+
+
+def test_judge_drops_repeat_of_last_batch():
+    """「换一批」带回来的上一批：同义改写要挡掉，并给出能看懂的理由。"""
+    got, _ = ra._judge_replies(["666", "接多接点"], [], avoid=["666"])
+    assert {"text": "666", "reason": "和上一批重复"} in got
+    assert {"text": "接多接点", "reason": ""} in got
+
+
+def test_suggest_writes_avoid_into_prompt(monkeypatch):
+    seen = {}
+
+    def fake_chat(port, prompt, *a, **kw):
+        seen["prompt"] = prompt
+        return '{"replies":["666","别急","接到了吗"]}'
+
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    monkeypatch.setattr(ra, "_needs_look", lambda *a, **k: False)
+    monkeypatch.setattr(ra, "_realtime_busy", lambda: "")
+    monkeypatch.setattr(ra, "_chat", fake_chat)
+    ra.suggest([{"side": "left", "kind": "text", "text": "别等了 越等越烧心"}],
+               "3864", "left", avoid=["接接接", "那必须多接"])
+    assert "换一批" in seen["prompt"]
+    assert "接接接" in seen["prompt"]
+
+
+def test_suggest_redoes_a_degenerate_batch(monkeypatch):
+    """整批退化不能原样摆给用户，也不能就此退回模板 —— 追加一句「换角度」重问。"""
+    payloads = iter([
+        '{"replies":["接接接","接接接接","接接接接接"]}',
+        '{"replies":["666","接到了吗","别急慢慢来"]}',
+    ])
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    monkeypatch.setattr(ra, "_needs_look", lambda *a, **k: False)
+    monkeypatch.setattr(ra, "_realtime_busy", lambda: "")
+    monkeypatch.setattr(ra, "_chat", lambda *a, **k: next(payloads))
+    out = ra.suggest([{"side": "left", "kind": "text", "text": "别等了 越等越烧心"}], "3864", "left")
+    assert out["replies"] == ["666", "接到了吗", "别急慢慢来"]
+    assert out["dropped"] == []
+
+
+def test_avoid_tail_bans_questions_when_the_whole_last_batch_asked():
+    """上一批三条全在问，光说「换角度」它只会换着法子继续问（实测相似度 0.5）。"""
+    tail = ra._avoid_tail(["在哪领的呀", "群里发的吗", "我看看在哪领"])
+    assert "别再问" in tail
+    # 上一批不是问句时不能加这句：该问的时候不让问，等于逼模型编
+    assert "别再问" not in ra._avoid_tail(["666", "别急慢慢来"])
+
+
+def test_avoid_tail_tells_it_how_to_admit_ignorance():
+    """「别再问」单独出现会逼出编造 —— 实测它转头写「点活动图标进去」。
+    所以这句必须同时给出安全出口，否则宁可不加。"""
+    tail = ra._avoid_tail(["在哪领的呀", "群里发的吗", "我看看在哪领"])
+    assert "不许编" in tail
+    assert "不清楚" in tail
+
+
+def test_parse_avoid_takes_json_or_pipe():
+    assert radar_api._parse_avoid('["666","别急"]') == ["666", "别急"]
+    assert radar_api._parse_avoid("666|别急") == ["666", "别急"]
+    assert radar_api._parse_avoid("") is None
+    assert radar_api._parse_avoid("[]") is None
+    assert radar_api._parse_avoid('{"a":1}') is None
+
+
+def test_radar_replies_passes_avoid_through(monkeypatch):
+    monkeypatch.setattr(
+        chat_read, "read_chat",
+        lambda limit=20: {"ok": True, "chat": "117", "messages": []},
+    )
+    seen = {}
+    monkeypatch.setattr(
+        ra, "suggest",
+        lambda msgs, chat, side, avoid=None: seen.update(avoid=avoid) or {"engine": "local", "replies": ["666"]},
+    )
+    radar_api.replies(limit=14, avoid='["666","别急"]')
+    assert seen["avoid"] == ["666", "别急"]
