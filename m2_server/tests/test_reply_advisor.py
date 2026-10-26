@@ -1357,3 +1357,115 @@ def test_non_agreement_is_not_promise(text):
 def test_drop_promises_removes_bare_agreement(monkeypatch):
     got = ra.drop_promises(["行，楼下哪家？", "哪家？", "要几份"], [])
     assert got == ["哪家？", "要几份"]
+
+
+# ---------------------------------------------------------------- 被删候选要能归因
+#
+# 2026-10-26：`drop_promises` 原来是一个大推导式，跑完只剩「删了几条」这个数字，
+# 评测里 24 轮有 7 轮踩到，却完全查不出模型在编什么。抽出 `drop_reason` 后
+# `suggest()` 的返回值多了 `dropped`（原文 + 命中规则）。
+
+
+@pytest.mark.parametrize("text,reason", [
+    ("行，楼下哪家？", "替你答应"),
+    ("收到", "替你答应"),
+    ("发你了", "假称已经做了"),
+    ("[动画表情]", "微信占位符"),
+    ("哈哈哈", "用户从不说的套话"),
+    ("666", ""),
+    ("哪家店", ""),
+])
+def test_drop_reason_names_the_rule(text, reason):
+    assert ra.drop_reason(text) == reason
+
+
+def test_drop_reason_reports_echo_with_messages():
+    """复述别人的话要靠上下文，所以要传 messages —— 这也是它和纯字符串判定的分界。"""
+    msgs = [{"side": "left", "kind": "text", "text": "我控号都给驻防了"}]
+    assert ra.drop_reason("我控号都给了驻防", msgs) == "复述聊天记录里的话"
+
+
+def test_drop_promises_matches_drop_reason():
+    """两个入口必须同源。分开写两份迟早会漂。"""
+    cands = ["行", "666", "发你了", "[奸笑]", "哈哈哈", "哪家"]
+    keep = ra.drop_promises(cands, [])
+    assert keep == [c for c in cands if not ra.drop_reason(c, [])]
+
+
+def test_suggest_reports_dropped_candidates(monkeypatch):
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    monkeypatch.setattr(
+        ra, "_chat",
+        lambda *a, **k: '{"replies":["我帮你买一瓶","上次那家","哪家店"]}',
+    )
+    out = ra.suggest([{"kind": "text", "text": "帮我买瓶水"}], "117", "left")
+    assert out["dropped"] == [{"text": "我帮你买一瓶", "reason": "替你答应"}]
+
+
+def test_suggest_note_names_the_real_reason(monkeypatch):
+    """note 不能一律写「在替你答应」—— 删掉的原因可能是复述、套话。"""
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    monkeypatch.setattr(ra, "_chat", lambda *a, **k: '{"replies":["666","哈哈哈","哪家"]}')
+    out = ra.suggest([{"kind": "text", "text": "帮我买瓶水"}], "117", "left")
+    assert "用户从不说的套话" in out["note"]
+    assert "替你答应" not in out["note"]
+
+
+# ---------------------------------------------------------------- 语音：读不到内容要说出来
+#
+# 语音在 prompt 里只有 `[语音 8 秒]` 这个占位符，内容是拿不到的；但用户本人在
+# 微信里听得到。2026-10-26 评测实测：只给一条 8 秒语音时模型输出 ['在的','能']
+# —— 它在瞎猜语音里问了什么，而面板上没有任何提示说明这一点。
+
+
+@pytest.mark.parametrize("messages,expect", [
+    ([{"side": "left", "kind": "voice", "seconds": 8, "text": ""}], True),
+    ([{"side": "left", "kind": "text", "text": "今晚打不打"},
+      {"side": "left", "kind": "voice", "seconds": 5, "text": ""}], False),
+    ([{"side": "left", "kind": "text", "text": "今晚打不打"},
+      {"side": "right", "kind": "voice", "seconds": 5, "text": ""}], False),
+    ([{"side": "left", "kind": "text", "text": "在不在"}], False),
+    ([], False),
+])
+def test_voice_only_tail(messages, expect):
+    assert ra._voice_only_tail(messages) is expect
+
+
+def test_suggest_warns_when_only_a_voice_clip(monkeypatch):
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    monkeypatch.setattr(ra, "_chat", lambda *a, **k: '{"replies":["在","你说"]}')
+    out = ra.suggest([{"side": "left", "kind": "voice", "seconds": 8, "text": ""}], "3864")
+    assert "读不到" in out["note"]
+
+
+def test_suggest_silent_about_voice_when_text_precedes(monkeypatch):
+    """前面有文字时不要提示 —— 那些内容足够写一句接话，再喊「听不到」就是狼来了。"""
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    monkeypatch.setattr(ra, "_chat", lambda *a, **k: '{"replies":["八点","九点"]}')
+    out = ra.suggest([
+        {"side": "left", "kind": "text", "text": "今晚几点集合"},
+        {"side": "left", "kind": "voice", "seconds": 5, "text": ""},
+    ], "3864")
+    assert "读不到" not in out["note"]
+
+
+# ---------------------------------------------------------------- 方括号里的占位标签
+#
+# 旧规则把所有 `[xxx]` 一律当合法表情名放行。但微信里没有叫「动画表情」「图片」的
+# 表情 —— 那只是占位标签包了层方括号，点发出去对方看到的就是一串字。
+# 2026-10-26 评测的表情包场景里模型确实写过 `[动画表情]`。
+
+
+@pytest.mark.parametrize("text", ["[动画表情]", "[图片]", "[语音]", "[表情]", "[链接]"])
+def test_bracketed_placeholder_tags_are_dropped(text):
+    assert ra.is_placeholder(text), text
+
+
+@pytest.mark.parametrize("text", ["[奸笑]", "[捂脸]", "[旺柴]", "[得意]", "[偷笑]"])
+def test_bracketed_real_emoji_still_survive(text):
+    """这两组必须分开：真表情名发出去会转成表情，占位标签不会。"""
+    assert not ra.is_placeholder(text), text

@@ -740,8 +740,13 @@ def is_placeholder(text: str) -> bool:
     t = (text or "").strip()
     if not t:
         return True
-    if re.fullmatch(r"\[[^\]]{1,6}\]", t):  # 合法表情名
-        return False
+    m = re.fullmatch(r"\[([^\]]{1,6})\]", t)
+    if m:
+        # `[奸笑]`「[捂脸]」是**合法**微信表情名，发出去会转成表情，必须留。
+        # 但 `[动画表情]`「[图片]」只是把占位标签包了层方括号 —— 微信里并没有叫
+        # 「动画表情」的表情，点发出去对方看到的就是一串字。2026-10-26 评测里
+        # 模型确实写过 `[动画表情]`（表情包场景），旧规则一律放行。
+        return m.group(1) in _PLACEHOLDER
     first = t.split()[0] if t.split() else t
     return first in _PLACEHOLDER or t in _PLACEHOLDER
 
@@ -857,22 +862,46 @@ def repeats_self(reply: str, messages: list[dict]) -> bool:
     return False
 
 
+def drop_reason(reply: str, messages: list[dict] | None = None) -> str:
+    """这条候选为什么会被 `drop_promises` 删掉。返回空串 = 不会被删。
+
+    **为什么要把判定单独抽出来**：`drop_promises` 原来是一个大推导式，跑完只剩
+    「删了几条」这个数字（note 里那句「有 1 条在替你答应」），**删掉的是哪句、
+    哪条规则命中的，全部丢失**。2026-10-26 跑评测，24 轮里 7 轮有候选被删，
+    但完全不知道模型到底在编什么，也就没法判断该改 prompt 还是该补规则。
+    这里把判定摊开，`drop_promises` 反过来调它 —— 只有一份判据，不会漂。
+
+    顺序就是短路的顺序（先便宜的、后需要上下文的），和原来的推导式一致。
+    """
+    if looks_like_promise(reply):
+        return "替你答应"
+    if claims_done(reply):
+        return "假称已经做了"
+    if is_placeholder(reply):
+        return "微信占位符"
+    if looks_like_offstyle(reply):
+        return "用户从不说的套话"
+    if messages:
+        if echoes_context(reply, messages):
+            return "复述聊天记录里的话"
+        if repeats_self(reply, messages):
+            return "复读用户自己刚说的"
+    return ""
+
+
 def drop_promises(replies: list[str], messages: list[dict] | None = None) -> list[str]:
     """去掉替用户点头、复述别人、复读自己、裸占位符、以及用户从不说的套话。空 = 调用方决定怎么降级。"""
-    out = [
-        r
-        for r in replies
-        if not looks_like_promise(r)
-        and not claims_done(r)
-        and not is_placeholder(r)
-        and not looks_like_offstyle(r)
-    ]
-    if messages:
-        out = [
-            r for r in out
-            if not echoes_context(r, messages) and not repeats_self(r, messages)
-        ]
-    return out
+    return [r for r in replies if not drop_reason(r, messages)]
+
+
+def _drop_why(dropped: list[dict]) -> str:
+    """把若干条 `{"text","reason"}` 的原因去重，拼成给人看的一句话。"""
+    seen: list[str] = []
+    for d in dropped:
+        why = d.get("reason") or ""
+        if why and why not in seen:
+            seen.append(why)
+    return "、".join(seen)
 
 
 def parse_one_json(text: str) -> dict | None:
@@ -1019,6 +1048,13 @@ def _side_warn(messages: list[dict] | None) -> str:
 def _n(*parts: str) -> str:
     """拼 note：只留非空段，用「·」连。前端把 note 当一行显示。"""
     return " · ".join(str(p) for p in parts if p)
+
+
+def _voice_warn(messages: list[dict]) -> str:
+    """note 里那句「语音听不到」的提示（不需要提示时返回空串）。"""
+    if not _voice_only_tail(messages):
+        return ""
+    return "对方发的是语音，内容我读不到 —— 你听完再说一句更准"
 #: 没有正文的消息。`media` 的 text 就是「图片」两个字，拿它当"对方说的话"
 #: 会判出奇怪的意图（「对方在要图片」）。
 _BARE_MEDIA = ("图片", "视频", "动画表情", "文件", "语音")
@@ -1053,6 +1089,28 @@ def _recent_other(messages: list[dict], keep: int = 2) -> list[str]:
             break
     out.reverse()
     return out
+
+
+def _voice_only_tail(messages: list[dict]) -> bool:
+    """最后一条是**对方发的语音**，而且前面没有可用的实质内容。
+
+    语音在 prompt 里只有 `[语音 8 秒]` 这个占位符（`_line()`），内容是拿不到的。
+    但用户本人在微信里听得到 —— 这是**产品读不到、用户读得到**的一种信息差，
+    和「只有你能答」是同一类。不说清楚，用户会以为模型听懂了那条语音。
+
+    2026-10-26 评测实测：只给一条 8 秒语音时，模型输出 `['在的','能']` /
+    `['能','在']` —— 它在瞎猜语音里问了什么，而面板上没有任何提示说明这一点。
+    """
+    msgs = list(messages or [])
+    if not msgs:
+        return False
+    last = msgs[-1] or {}
+    if (last.get("kind") or "") != "voice":
+        return False
+    if last.get("side") == "right":      # 这条是用户自己发的语音
+        return False
+    # 前面还有别的话时不当「只听得到语音」—— 那些内容足够写一句接话了
+    return not _recent_other(msgs)
 
 
 def classify_intent(messages: list[dict], replies: list[str] | None = None) -> dict:
@@ -1334,17 +1392,25 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
             "model": MODEL_LABEL,
             "replies": [],
             "why": parsed["why"],
-            "note": _n(_side_warn(messages), parsed["why"] or "模型认为这条不用回"),
+            "note": _n(_side_warn(messages), _voice_warn(messages),
+                       parsed["why"] or "模型认为这条不用回"),
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
         }
-    replies = drop_promises(raw_replies, messages)
+    # 逐条留档：删了什么、为什么删。没有这个，note 里的「有 1 条在替你答应」
+    # 就只是一个数字 —— 2026-10-26 评测里 7/24 轮踩到，却查不出模型在编什么。
+    _judged = [{"text": r, "reason": drop_reason(r, messages)} for r in raw_replies]
+    replies = [d["text"] for d in _judged if not d["reason"]]
+    dropped = [d for d in _judged if d["reason"]]
     note = ""
     if not replies:
-        # 三条都在替用户点头 —— 宁可退回模板，也不能摆出「点了就替他答应」的选项
+        # 全被删了 —— 宁可退回模板，也不能摆出「点了就替他答应」的选项
         replies = _rule_replies(messages, last_side)
-        note = "模型那几条都在替你答应，已换成安全的模板"
-    elif len(replies) < len(raw_replies):
-        note = f"有 {len(raw_replies) - len(replies)} 条在替你答应，已去掉"
+        note = f"模型那几条不能用（{_drop_why(dropped)}），已换成安全的模板"
+    elif dropped:
+        # 措辞只报**真实命中的规则**。原来一律写「在替你答应」，可删除原因也可能是
+        # 复述群里的原话、或用了用户从不说的「哈哈/收到」—— 报错原因会让人照着
+        # 错误方向改 prompt（2026-10-26 抽 drop_reason 时才看出这一点）。
+        note = f"有 {len(dropped)} 条已去掉（{_drop_why(dropped)}）"
         # 只删不补会留下「全是接梗」的残局：2026-10-26 评测实测一轮给出
         # `['666', '[奸笑]']` —— 对方在让带东西，这两条一个都没回答问题。
         # 所以删到只剩 1 条时，从模板补一条**能直接答**的（模板走的是识别问句那条路，
@@ -1373,7 +1439,10 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
         "model": MODEL_LABEL,
         "replies": replies,
         "why": parsed["why"],
-        "note": _n(_side_warn(messages), note),
+        "note": _n(_side_warn(messages), _voice_warn(messages), note),
+        # 诊断用：被删掉的候选原文 + 命中哪条规则。前端不读它也不影响渲染；
+        # 评测 `tools/eval_reply_quality.py` 靠它回答「模型到底在编什么」。
+        "dropped": dropped,
         "intent": tier["intent"],
         "gap": tier["gap"],
         "asked": tier["asked"],
@@ -1543,10 +1612,17 @@ def suggest_from_digest(
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
         }
     advice = clean_advice(parsed.get("advice"))
-    replies = drop_promises(parsed["replies"], messages)
+    _judged = [{"text": r, "reason": drop_reason(r, messages)} for r in parsed["replies"]]
+    replies = [d["text"] for d in _judged if not d["reason"]]
+    dropped = [d for d in _judged if d["reason"]]
     # 抄标题是最常见的失败形态：搜索结果的标题被整句搬过来当回复
     # （「无尽冬日英雄搭配攻略」），长度和语体都跟群聊对不上。
     titles = {str(it.get("title") or "") for it in items}
+    for r in list(replies):
+        if len(r) > 30:
+            dropped.append({"text": r, "reason": "超过 30 字（像在念稿）"})
+        elif r in titles:
+            dropped.append({"text": r, "reason": "整句抄了搜索结果标题"})
     replies = [r for r in replies if len(r) <= 30 and r not in titles]
     return {
         "engine": "local",
@@ -1554,6 +1630,7 @@ def suggest_from_digest(
         "replies": replies,
         "advice": advice,
         "why": parsed["why"],
+        "dropped": dropped,
         "note": "" if (replies or advice) else "模型没写出能用的，自己说一句更稳",
         "intent": "need_info",
         "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),

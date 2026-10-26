@@ -105,6 +105,14 @@ CASES: list[dict] = [
         "why": "可接梗，别写小作文",
     },
     {
+        "name": "只有一条语音",
+        "messages": [{"side": "left", "kind": "voice", "seconds": 8, "text": ""}],
+        # 不判内容：这条链路本来就拿不到内容，候选只能是「在」「听到了」这类应答词。
+        # 要守的是**别让用户以为模型听懂了** —— note 必须把「读不到」说出来。
+        "expect_note": "读不到",
+        "why": "语音只有 [语音 8 秒] 占位符，内容拿不到，但用户本人在微信里听得到",
+    },
+    {
         "name": "表情包连发",
         "messages": [
             {"side": "left", "kind": "media", "text": "动画表情"},
@@ -115,12 +123,14 @@ CASES: list[dict] = [
         "why": "表情包连发，最多接个梗",
     },
     {
-        "name": "语音读不到内容",
+        "name": "语音+问听得到",
         "messages": [
             {"side": "left", "kind": "voice", "seconds": 8, "text": ""},
             {"side": "left", "kind": "text", "text": "听得到吗"},
         ],
-        "must_any": ["听", "能", "嗯", "在", "收到"],
+        # 「你说」「啥事」「咋了」也是合格回答 —— 用户听到「听得到吗」直接让对方说，
+        # 字面上没有「听」字，但语义上就是「我听得见，你说」（2026-10-26 r2 实测）。
+        "must_any": ["听", "能", "嗯", "在", "收到", "你说", "啥事", "咋了", "什么"],
         "must_not": ["语音里说的", "你刚才说", "你说的那个"],
         "why": "读不到语音内容时不许编内容",
     },
@@ -168,14 +178,21 @@ def _run_case(ra, case: dict) -> dict:
         fails.append(f"有回复超过 {case['max_len']} 字 → {reps}")
     if case.get("max_replies") and len(reps) > case["max_replies"]:
         fails.append(f"replies {len(reps)} 条 > {case['max_replies']}")
-    # 标点**不算失败**、只计数：纯文本链路用的 `_SYSTEM` 并没有「不带标点」这条
-    # （只有看图的 `_ADVICE_TAIL` 写了）。把它当 FAIL 会把风格差异伪装成红线问题，
-    # 反而盖住真正该拦的「替你答应」。要收紧再改 prompt，然后在这里改成 fails。
+    # 标点**不算失败**、只计数：`_SYSTEM` 第 144 行本来就要求「几乎不打标点」，
+    # 而 2026-10-26 实测纯文本链路 4/58 条带标点（7%）、比用户本人的 12% 还低，
+    # 说明这条约束模型是照做的；把它当 FAIL 只会把风格抖动伪装成红线问题。
+    # 图链路那 3/9 条是 `3~10 字` 与「要说清活动名+门槛」在打架，不是标点问题。
     for group in case.get("advice_must") or []:
         blob = " ".join(adv)
         if not any(k in blob for k in group):
             fails.append(f"advice 里没有 {group} 任一词 → {adv}")
 
+    dropped = out.get("dropped") or []
+    note = out.get("note") or ""
+    # 有些场景的正确行为不是「说什么」，而是「说清楚自己不知道」——
+    # 比如对方只发了一条语音（语音在 prompt 里只有 `[语音 8 秒]` 占位符）。
+    if case.get("expect_note") and case["expect_note"] not in note:
+        fails.append(f"note 里缺 {case['expect_note']!r} → {note!r}")
     return {
         "case": case["name"],
         "ok": not fails,
@@ -184,8 +201,11 @@ def _run_case(ra, case: dict) -> dict:
         "engine": out.get("engine"),
         "replies": reps,
         "advice": adv,
-        "note": out.get("note") or "",
-        "punished": "替你答应" in (out.get("note") or ""),
+        "note": note,
+        # 直接从 `dropped` 读，不再靠 note 文案猜 —— 那句话 2026-10-26 起会写真实
+        # 命中的规则（可能是「复述聊天记录里的话」而不是「替你答应」），猜就会漏报。
+        "dropped": dropped,
+        "punished": bool(dropped),
         "punct": sum(1 for r in reps if PUNCT.search(r)),
     }
 
@@ -252,9 +272,23 @@ def main() -> int:
               f"{f'  被过滤 {filtered} 次' if filtered else ''}{flag}")
     print("-" * 66)
     print(f"  总计 {passed}/{total} 通过 | local {local}/{total} | 标点 {punct} 条 "
-          f"| 「替你答应」被过滤 {punished} 次 | 空回复 {empty} 次")
+          f"| 候选被过滤 {punished} 轮 | 空回复 {empty} 次")
     avg_dt = sum(r["dt"] for r in all_rows) / total
     print(f"  均耗时 {avg_dt:.1f}s")
+
+    # 被删掉的候选原文：没有这段，「候选被过滤 N 轮」只是个数字，
+    # 没法判断该改 prompt（模型总在编）还是该补规则（模型没错、判据太严）。
+    dropped_all = [(r["case"], d) for r in all_rows for d in r.get("dropped") or []]
+    if dropped_all:
+        print("\n  被删掉的候选（模型原本要发的话）：")
+        for case_name, d in dropped_all[:10]:
+            print(f"    [{case_name}] {d['text']!r}  ← {d['reason']}")
+        if len(dropped_all) > 10:
+            print(f"    …… 另有 {len(dropped_all) - 10} 条")
+        by_reason: dict[str, int] = {}
+        for _c, d in dropped_all:
+            by_reason[d["reason"]] = by_reason.get(d["reason"], 0) + 1
+        print("    按原因：" + "；".join(f"{k} {v} 条" for k, v in by_reason.items()))
 
     if args.json_out:
         Path(args.json_out).write_text(
