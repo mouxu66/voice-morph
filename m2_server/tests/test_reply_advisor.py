@@ -1469,3 +1469,137 @@ def test_bracketed_placeholder_tags_are_dropped(text):
 def test_bracketed_real_emoji_still_survive(text):
     """这两组必须分开：真表情名发出去会转成表情，占位标签不会。"""
     assert not ra.is_placeholder(text), text
+
+
+# ---------------------------------------------------------------- 「答应 + 问细节」拆开用
+#
+# 2026-10-26 真机 6 轮实测：「被求助」场景模型 6/6 轮都写「行，几点去拿？」这类，
+# 整条删掉后只剩 ['666', '[奸笑]']，三条全删光时还退回模板。而被删的那半句
+# 「几点去拿？」本身可以发 —— 问句永远不构成承诺。
+
+@pytest.mark.parametrize("text,expect", [
+    ("行，几点去拿？", "几点去拿？"),
+    ("行，买啥？", "买啥？"),
+    ("好，你几点要", "你几点要"),
+    ("成，放哪？", "放哪？"),          # 「成」原来不在答应词表里，整句漏检
+    ("好的，在哪给", "在哪给"),
+])
+def test_salvage_question_keeps_the_question(text, expect):
+    assert ra.salvage_question(text) == expect
+
+
+@pytest.mark.parametrize("text", [
+    "行，我马上去",     # 拆出来还是承诺
+    "行，那我买两份",    # 替用户做决定，且不是问句
+    "好的👌",          # 没有逗号，不是这个形状
+    "行，",            # 拆完空的
+    "哪家店",          # 本来就没答应词
+    "666",
+])
+def test_salvage_question_refuses_non_questions(text):
+    assert ra.salvage_question(text) is None
+
+
+def test_bare_cheng_counts_as_promise():
+    """「成」是最短的北方口语答应词，2026-10-26 实测漏了「成，放哪？」。"""
+    assert ra.looks_like_promise("成，放哪？") is True
+    assert ra.looks_like_promise("成") is True
+
+
+def test_judge_replies_salvages_and_dedupes():
+    got, salvaged = ra._judge_replies(["行，几点？", "几点？", "666"], [])
+    # 拆分结果和另一条候选撞车时只留一条，不许出现两个「几点？」
+    assert got == [{"text": "666", "reason": ""}, {"text": "几点？", "reason": ""}] or \
+        got == [{"text": "几点？", "reason": ""}, {"text": "666", "reason": ""}]
+    assert len([d for d in got if not d["reason"]]) == 2
+    assert salvaged == [{"from": "行，几点？", "to": "几点？"}]
+
+
+def test_suggest_exposes_salvaged(monkeypatch):
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    monkeypatch.setattr(ra, "_chat", lambda *a, **k: '{"replies":["行，几点去拿？","666","要几份"]}')
+    out = ra.suggest([{"kind": "text", "text": "帮我带一份"}], "3864", "left")
+    assert out["replies"] == ["几点去拿？", "666", "要几份"]
+    assert out["salvaged"] == [{"from": "行，几点去拿？", "to": "几点去拿？"}]
+    assert out["dropped"] == []
+
+
+# ---------------------------------------------------------------- 兜底模板要给能发的
+#
+# 用户刚被求助（「帮我带一份呗」），模型挂了退回模板，旧逻辑落到 ack 分支给
+# 「666 / [奸笑]」—— 人家求你带份饭，面板回一句 666（2026-10-26 真机 r4）。
+
+def test_rule_replies_asks_detail_when_asked_to_fetch():
+    msgs = [{"side": "left", "kind": "text", "text": "你回来帮我带一份呗"},
+            {"side": "left", "kind": "text", "text": "就楼下那家"}]
+    assert ra._rule_replies(msgs, "left") == ["要啥", "啥时候要"]
+
+
+def test_rule_replies_keeps_ack_for_small_talk():
+    assert ra._rule_replies([{"side": "left", "kind": "text", "text": "今天好累"}], "left") == [
+        "666", "[奸笑]",
+    ]
+
+
+# ---------------------------------------------------------------- 解析失败要留证据、要重试
+#
+# 2026-10-26 评测 `问地点` r3 一次解析失败 → 整条退化成模板，而返回值里只留下
+# 「模型输出没通过校验」七个字，模型到底写了什么完全丢了。同一个坑：失败没有
+# 留档，就只能靠猜。
+
+def _fake_chat(seq, calls):
+    def f(port, prompt, timeout, **kw):
+        calls.append({"prompt": prompt, "kw": kw})
+        item = seq[min(len(calls) - 1, len(seq) - 1)]
+        if isinstance(item, Exception):
+            raise item
+        return item
+    return f
+
+
+def test_ask_json_retries_once_at_zero_temperature(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ra, "_chat", _fake_chat(["这不是 JSON", '{"replies":["哪家"]}'], calls))
+    parsed, raw_bad = ra._ask_json(1234, "prompt")
+    assert parsed and parsed["replies"] == ["哪家"]
+    assert raw_bad == ""                       # 重试成功就没什么可留档的
+    assert len(calls) == 2
+    assert calls[1]["kw"].get("temperature") == 0.0
+    assert calls[1]["prompt"].startswith("prompt") and ra.RETRY_TAIL.strip() in calls[1]["prompt"]
+
+
+def test_ask_json_returns_the_broken_output(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ra, "_chat", _fake_chat(["第一次坏", "第二次也坏"], calls))
+    parsed, raw_bad = ra._ask_json(1234, "prompt")
+    assert parsed is None
+    assert raw_bad == "第二次也坏"              # 留最后一手的原文
+    assert len(calls) == 2
+
+
+def test_ask_json_does_not_retry_on_success(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ra, "_chat", _fake_chat(['{"replies":["好"]}'], calls))
+    parsed, _ = ra._ask_json(1234, "prompt")
+    assert parsed and parsed["replies"] == ["好"]
+    assert len(calls) == 1                     # 正常路径一点延迟都不加
+
+
+def test_ask_json_keeps_first_failure_when_retry_raises(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ra, "_chat", _fake_chat(["坏掉的输出", TimeoutError("超时")], calls))
+    parsed, raw_bad = ra._ask_json(1234, "prompt")
+    assert parsed is None
+    assert raw_bad == "坏掉的输出"              # 重试报错不该盖掉第一次的事实
+
+
+def test_suggest_surfaces_raw_when_both_attempts_fail(monkeypatch):
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    calls = []
+    monkeypatch.setattr(ra, "_chat", _fake_chat(["不是json", "还不是json"], calls))
+    out = ra.suggest([{"kind": "text", "text": "在哪"}], "3864", "left")
+    assert out["engine"] == "rule"
+    assert "没通过校验" in out["note"]
+    assert out["raw"] == "还不是json"

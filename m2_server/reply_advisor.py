@@ -719,11 +719,41 @@ _COMMIT_RE = re.compile(
     #    而这些正是"替用户答应"最直接的样子 —— 红线漏得最彻底。
     #    拆两支是为了不误伤：「好热」「行不行」「可以吗」不能被当成答应，
     #    所以短答应词后面必须紧跟标点/语气词或到结尾。
-    r"|^(?:好的|好嘞|行吧|行啊|可以啊|没问题|收到)"
+    r"|^(?:好的|好嘞|行吧|行啊|可以啊|没问题|收到|成)"
     # 「嗯」故意不算：它更多是「在听/知道了」的状态词，实测把它算承诺会误删
     # 「嗯嗯在听」这类正常应答（2026-10-26 语音场景 2/2 轮被误删）。
-    r"|^(?:好|行|可以)\s*(?:$|[，,。！!呀啊吧~～…])"
+    # 「成」是 2026-10-26 实测补上的：模型写「成，放哪？」「成，我这就去」，
+    # 原来只有一个字不在词表里，整句漏过 —— 而它是最短、最常见的北方口语答应词。
+    r"|^(?:好|行|可以|成)\s*(?:$|[，,。！!呀啊吧~～…])"
 )
+
+#: 「答应词 + 逗号」打头。只说这个形状能拆 —— 拆完还得看剩下的半句是什么。
+_AGREE_HEAD_RE = re.compile(
+    r"^(?:好的|好嘞|好呀|好啊|好|行吧|行啊|行|可以啊|可以的|可以|没问题|收到|成)[，,、]\s*"
+)
+
+
+def salvage_question(text: str) -> str | None:
+    """把「答应 + 问细节」拆出那句问话；不是这个形状就返回 None。
+
+    为什么值得做（2026-10-26 真机 6 轮实测）：「被求助」场景模型 **6/6 轮**都写
+    「行，几点去拿？」「行，买啥？」这类，被 `drop_reason` 整条删掉后只剩
+    `['666', '[奸笑]']`，或者三条全删光退回模板 —— 而删掉的那半句
+    「几点去拿？」本身完全可以发：**问句永远不构成承诺**。
+
+    只在残留部分是**问句**时放行，防止借着拆分塞回承诺：
+    「行，我马上去」拆出「我马上去」还是承诺（`drop_reason` 拦住）；
+    「行，那我买两份」拆出来是替用户做决定，不含问句，也不放行。
+    """
+    m = _AGREE_HEAD_RE.match(text or "")
+    if not m:
+        return None
+    rest = (text[m.end() :] or "").strip()
+    if not rest or not _ASK_RE.search(rest):
+        return None
+    if drop_reason(rest):
+        return None
+    return rest
 
 #: 微信自己用来占位的伪文本。模型偶尔把它当正文输出 —— 2026-10-25 实测 #27
 #: 直接给了「动画表情」四个字，用户点「发送」就真的在群里发出这四个字。
@@ -1169,6 +1199,14 @@ def classify_intent(messages: list[dict], replies: list[str] | None = None) -> d
     return {"intent": "direct", "gap": "", "asked": asked, "can_search": False, "block": False}
 
 
+#: 对方在**委托**（帮他带/买/拿/打），不是在闲聊。
+#: 这条只影响兜底模板：模型正常时走不到这里，但模型挂了正好撞上「帮我带一份」的话，
+#: 落到「666」就特别刺眼（2026-10-26 真机实测 r4）。
+_REQUEST_RE = re.compile(
+    r"(帮我|帮忙|麻烦你|回来.{0,3}带|顺手|捎|带一[份个下]|买一[份个下]|拿一[份个下]|取一[份个下])"
+)
+
+
 def _rule_replies(messages: list[dict], last_side: str | None = None) -> list[str]:
     """模型不在时的兜底。只求「能直接点着发」，不假装懂语境。
 
@@ -1191,6 +1229,11 @@ def _rule_replies(messages: list[dict], last_side: str | None = None) -> list[st
 
         if is_question(last):
             return ["在的怎么了", "刚看到 你说"]
+        # 对方在**委托**（帮他带/买/拿），不是在闲聊。这种时候落到「666」最刺眼 ——
+        # 人家刚求你带份饭，面板回一句「666」（2026-10-26 真机实测踩到，让带东西 r4）。
+        # 问细节永远是安全的：不含承诺，也不知道要带什么，不会答错。
+        if any(_REQUEST_RE.search(t) for t in texts[-2:]):
+            return ["要啥", "啥时候要"]
     return ["666", "[奸笑]"]
 
 
@@ -1304,7 +1347,77 @@ def _chat(
     return content
 
 
+#: 解析失败后重试时追加的一句。只在**已经失败**的请求上加，96% 的请求看不到它。
+RETRY_TAIL = (
+    "\n\n（上一次输出不是合法 JSON，没法解析。这次只输出一个 JSON 对象，"
+    "不要解释、不要 ``` 围栏、不要分点。）"
+)
+
+
+def _ask_json(
+    port: int,
+    prompt: str,
+    *,
+    system: str | None = None,
+    max_tokens: int | None = None,
+    image_b64: str | None = None,
+    timeout: float = CHAT_TIMEOUT,
+) -> tuple[dict | None, str]:
+    """要一段 JSON：第一次不合格就低温重来一次，并把**不合格的原文**带出来。
+
+    为什么值得多花一次推理：实测解析失败率约 1/27（2026-10-26 评测 `问地点` r3
+    就是），而一旦失败整条建议退化成模板 —— 用户点「怎么回」收到「666」。
+    重试只在失败时发生，平均下来每次请求多花不到 0.05 次推理，正常路径零延迟。
+
+    返回值第二项是坏掉的原文，成功时为空串。以前这个信息直接丢掉，于是那次失败
+    只留下「模型输出没通过校验」七个字，查不出模型到底坏在哪。
+    """
+    kw = {"system": system, "max_tokens": max_tokens, "image_b64": image_b64}
+    content = _chat(port, prompt, timeout, **kw)
+    parsed = parse_reply_json(content)
+    if parsed is not None:
+        return parsed, ""
+    try:
+        retry = _chat(port, prompt + RETRY_TAIL, timeout, temperature=0.0, **kw)
+    except Exception:  # noqa: BLE001 —— 重试失败不该盖掉「第一次就不合格」这个事实
+        return None, content
+    parsed = parse_reply_json(retry)
+    if parsed is not None:
+        return parsed, ""
+    return None, retry
+
+
 # ------------------------------------------------------------------ 对外入口
+
+
+def _judge_replies(
+    raw_replies: list[str], messages: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """逐条判定候选：留 / 拆 / 删。返回 (逐条留档, 拆分记录)。
+
+    抽出来是因为 `suggest()` 和 `suggest_from_digest()` 各有一份，迟早漂。判据只有
+    `drop_reason` 一个来源；这里多做一件**拆**的事：「行，几点去拿？」整条删掉太浪费，
+    后半句是问句，可以单独发（见 `salvage_question`）。
+    """
+    judged: list[dict] = []
+    salvaged: list[dict] = []
+    seen: set[str] = set()
+    for r in raw_replies:
+        reason = drop_reason(r, messages)
+        if not reason:
+            if r not in seen:
+                seen.add(r)
+                judged.append({"text": r, "reason": ""})
+            continue
+        fixed = salvage_question(r) if reason == "替你答应" else None
+        if fixed and fixed not in seen:
+            seen.add(fixed)
+            salvaged.append({"from": r, "to": fixed})
+            judged.append({"text": fixed, "reason": ""})
+            continue
+        # 拆不出来、或拆完和另一条候选撞车 —— 都按原样记成被删。
+        judged.append({"text": r, "reason": reason})
+    return judged, salvaged
 
 
 def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) -> dict:
@@ -1367,8 +1480,8 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
         port = _ensure_server()
         # 最近有图片/视频才截图（多 400~800 token + ~200ms）；没有就纯文本。
         image = chat_snapshot_b64() if _needs_look(messages) else None
-        content = _chat(
-            port, build_prompt(messages, chat, last_side), CHAT_TIMEOUT, image_b64=image
+        parsed, raw_bad = _ask_json(
+            port, build_prompt(messages, chat, last_side), image_b64=image
         )
     except Exception as exc:  # noqa: BLE001 —— 本地推理失败一律降级
         return {
@@ -1376,12 +1489,13 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
             "replies": _rule_replies(messages, last_side),
             "note": _n(_side_warn(messages), f"本地模型没跑起来：{exc}"),
         }
-    parsed = parse_reply_json(content)
     if parsed is None:
         return {
             "engine": "rule",
             "replies": _rule_replies(messages, last_side),
             "note": _n(_side_warn(messages), "模型输出没通过校验，先给模板建议"),
+            # 诊断用：坏掉的原文（截断）。前端不读；评测把它打出来，下次失败才有的查。
+            "raw": (raw_bad or "")[:400],
         }
     raw_replies = parsed["replies"]
     if not raw_replies:
@@ -1398,7 +1512,7 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
         }
     # 逐条留档：删了什么、为什么删。没有这个，note 里的「有 1 条在替你答应」
     # 就只是一个数字 —— 2026-10-26 评测里 7/24 轮踩到，却查不出模型在编什么。
-    _judged = [{"text": r, "reason": drop_reason(r, messages)} for r in raw_replies]
+    _judged, salvaged = _judge_replies(raw_replies, messages)
     replies = [d["text"] for d in _judged if not d["reason"]]
     dropped = [d for d in _judged if d["reason"]]
     note = ""
@@ -1443,6 +1557,8 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
         # 诊断用：被删掉的候选原文 + 命中哪条规则。前端不读它也不影响渲染；
         # 评测 `tools/eval_reply_quality.py` 靠它回答「模型到底在编什么」。
         "dropped": dropped,
+        # 诊断用：从「答应 + 问细节」里拆出来的半句（原文 → 实际发出去的样子）。
+        "salvaged": salvaged,
         "intent": tier["intent"],
         "gap": tier["gap"],
         "asked": tier["asked"],
@@ -1590,13 +1706,13 @@ def suggest_from_digest(
                 "\n\n【群里那张图】用户刚点了「看图」，图附在下面。"
                 "它是这个群这一周真正要过的安排，先把上面的日期/活动名/数量读准，再看资料。"
             )
-        content = _chat(
+        parsed, raw_bad = _ask_json(
             port,
             prompt,
-            VISION_TIMEOUT if img_b64 else CHAT_TIMEOUT,
             system=_SYSTEM + _ADVICE_TAIL,
             max_tokens=ADVICE_MAX_TOKENS if img_b64 or items else 110,
             image_b64=img_b64,
+            timeout=VISION_TIMEOUT if img_b64 else CHAT_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001 —— 与 suggest 一致：失败一律降级，不抛
         return {
@@ -1604,15 +1720,16 @@ def suggest_from_digest(
             "intent": "need_info",
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
         }
-    parsed = parse_reply_json(content)
     if parsed is None:
         return {
             "engine": "rule", "replies": [], "advice": [], "note": "模型输出没通过校验",
+            # 诊断用：坏掉的原文（截断）。大图场景一次 20s，失败时更需要能查。
+            "raw": (raw_bad or "")[:400],
             "intent": "need_info",
             "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
         }
     advice = clean_advice(parsed.get("advice"))
-    _judged = [{"text": r, "reason": drop_reason(r, messages)} for r in parsed["replies"]]
+    _judged, salvaged = _judge_replies(parsed["replies"], messages)
     replies = [d["text"] for d in _judged if not d["reason"]]
     dropped = [d for d in _judged if d["reason"]]
     # 抄标题是最常见的失败形态：搜索结果的标题被整句搬过来当回复

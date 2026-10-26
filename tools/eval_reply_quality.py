@@ -206,6 +206,11 @@ def _run_case(ra, case: dict) -> dict:
         # 命中的规则（可能是「复述聊天记录里的话」而不是「替你答应」），猜就会漏报。
         "dropped": dropped,
         "punished": bool(dropped),
+        # 从「答应 + 问细节」里拆出来的半句。有它就说明模型又在写「行，几点去拿？」，
+        # 但这次拆完还能用，没有变成「全删光退回模板」。
+        "salvaged": out.get("salvaged") or [],
+        # 解析彻底失败时模型到底写了什么 —— 以前这条信息直接丢掉，失败无从追查。
+        "raw": out.get("raw") or "",
         "punct": sum(1 for r in reps if PUNCT.search(r)),
     }
 
@@ -257,6 +262,8 @@ def main() -> int:
     local = sum(1 for r in all_rows if r["engine"] == "local")
     punct = sum(r["punct"] for r in all_rows)
     punished = sum(1 for r in all_rows if r["punished"])
+    salvaged = sum(1 for r in all_rows if r["salvaged"])
+    failed_parse = sum(1 for r in all_rows if r["raw"])
     empty = sum(1 for r in all_rows if not r["replies"])
 
     print("\n" + "=" * 66)
@@ -273,8 +280,25 @@ def main() -> int:
     print("-" * 66)
     print(f"  总计 {passed}/{total} 通过 | local {local}/{total} | 标点 {punct} 条 "
           f"| 候选被过滤 {punished} 轮 | 空回复 {empty} 次")
+    print(f"  答应词拆分 {salvaged} 轮 | 解析彻底失败 {failed_parse} 轮")
     avg_dt = sum(r["dt"] for r in all_rows) / total
     print(f"  均耗时 {avg_dt:.1f}s")
+
+    # 解析彻底失败的原始输出：这条以前是黑色地带 —— 评测只报「没通过校验」，
+    # 模型写了什么完全不知道，也就没法判断该补修复逻辑还是改 prompt。
+    for r in all_rows:
+        if r["raw"]:
+            print(f"\n  [解析失败] {r['case']} r{r.get('round', '?')} 模型原文：")
+            print(f"    {r['raw']!r}")
+
+    # 被拆开的候选：「行，几点去拿？」→「几点去拿？」。看拆得对不对比看删除数更有用。
+    salvaged_all = [(r["case"], d) for r in all_rows for d in r.get("salvaged") or []]
+    if salvaged_all:
+        print("\n  被拆开复用的候选：")
+        for case_name, d in salvaged_all[:10]:
+            print(f"    [{case_name}] {d['from']!r} → {d['to']!r}")
+        if len(salvaged_all) > 10:
+            print(f"    …… 另有 {len(salvaged_all) - 10} 条")
 
     # 被删掉的候选原文：没有这段，「候选被过滤 N 轮」只是个数字，
     # 没法判断该改 prompt（模型总在编）还是该补规则（模型没错、判据太严）。
@@ -294,6 +318,7 @@ def main() -> int:
         Path(args.json_out).write_text(
             json.dumps({"summary": {"total": total, "passed": passed, "local": local,
                                     "punct": punct, "punished": punished, "empty": empty,
+                                    "salvaged": salvaged, "failed_parse": failed_parse,
                                     "engine": ra._find_exe()},
                         "rows": all_rows}, ensure_ascii=False, indent=1),
             encoding="utf-8")
