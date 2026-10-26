@@ -823,6 +823,73 @@ def looks_like_promise(text: str) -> bool:
     return bool(_COMMIT_RE.search(text or ""))
 
 
+#: 群里的「广播通知」语境。2026-10-26 真机实测（微信 4.1.15.13，2561 班群）：
+#: 班委发「@所有人 请在校的同学及时进行晚签」，这正是「收到」该出场的场景，
+#: 但 `_COMMIT_RE` 的裸答应词分支（`^收到`）把它判成「替你答应」删掉，
+#: 而模型模仿通知者口吻写的「@所有人 在校的别忘晚签」反而放行 —— 判反了。
+#:
+#: 差别只有一个：对方是在**请求用户做事**（回「收到」= 答应了那件事），
+#: 还是在**广播通知**（回「收到」= 我知道了）。前者拦，后者必须放。
+_NOTICE_RE = re.compile(
+    r"@所有人|通知|公告|提醒|务必|记得|截止|报名|签到|打卡|晚签"
+    r"|请[^，。！？]{0,8}(?:同学|大家|各位|及时|注意|于|在|尽快)"
+)
+
+#: 纯应答词：整句只有一个「收到/好的」，没带任何具体动作。
+#: 带动作的（「收到，我报名」）仍按承诺拦 —— 那句是真的替用户应下来了。
+_BARE_ACK_RE = re.compile(
+    r"^(?:好的|好嘞|好滴|好吧|行|行吧|行啊|可以|可以啊|没问题|收到|收到啦|收到收到"
+    r"|成|ok|OK|Ok|👌)[。！!～~，,\s]*$"
+)
+
+
+def bare_ack(text: str) -> bool:
+    """整句只是一个应答词（收到/好的），不含具体动作。"""
+    return bool(_BARE_ACK_RE.match((text or "").strip()))
+
+
+def is_notice_ctx(messages: list[dict] | None) -> bool:
+    """对方最近说的那句是**广播通知**，而不是在请求用户做事？
+
+    问句一律不算通知：「请我吃饭吗」里有个「请」，但那是请求，
+    回「收到」等于答应请客，必须继续按承诺拦。
+    """
+    if not messages:
+        return False
+    from chat_read import is_question
+
+    for m in reversed(messages):
+        if m.get("side") != "left":
+            continue
+        t = (m.get("text") or "").strip()
+        if not t:
+            continue
+        if is_question(t) or t.endswith(("?", "？")):
+            return False
+        return bool(_NOTICE_RE.search(t))
+    return False
+
+
+def repeats_notice(reply: str, messages: list[dict]) -> bool:
+    """模型把**别人的 @所有人 公告**又发了一遍（身份搞混成通知者）。
+
+    真机实测原句：对方「@所有人 请在校的同学及时进行晚签」→
+    候选「@所有人 在校的别忘晚签」「@所有人 晚签别拖」3 条全是二次广播。
+    用户点发就是在群里再喊一遍，比不回复更尴尬。
+
+    用户自己发过 @所有人（他是群主）时不算 —— 那是他的正常语气。
+    """
+    if "所有人" not in _norm_text(reply):
+        return False
+    for m in messages:
+        if m.get("side") == "right" and "所有人" in _norm_text(m.get("text") or ""):
+            return False
+    return any(
+        m.get("side") == "left" and "所有人" in _norm_text(m.get("text") or "")
+        for m in messages
+    )
+
+
 #: 「声称已经做了某件事」。和「承诺」是两回事：承诺是**将来**（我明天打），
 #: 这条是**完成态**（发你了 / 转你了）—— 用户根本没发过，点发就是一句假话。
 #: 2026-10-25 117 群实测：用户问「码发给我」、对方回了两个取餐码，模型给的候选是
@@ -972,7 +1039,12 @@ def drop_reason(reply: str, messages: list[dict] | None = None) -> str:
     顺序就是短路的顺序（先便宜的、后需要上下文的），和原来的推导式一致。
     """
     if looks_like_promise(reply):
-        return "替你答应"
+        # 通知语境下的裸「收到」是「我知道了」，不是「替你答应」——
+        # 2026-10-26 真机实测：班群 @所有人 晚签通知，唯一正确的回复被这条规则吃掉，
+        # 剩下全是复述公告的句子。豁免只给「整句只有一个应答词」，
+        # 「收到，我报名」这种带了动作的照旧拦。
+        if not (bare_ack(reply) and is_notice_ctx(messages)):
+            return "替你答应"
     if claims_done(reply):
         return "假称已经做了"
     # 和上面两条同一类（替用户说假话），但方向不同：许诺的是**将来**，这条是**现在**。
@@ -981,6 +1053,8 @@ def drop_reason(reply: str, messages: list[dict] | None = None) -> str:
         return "替你编了你在哪"
     if is_placeholder(reply):
         return "微信占位符"
+    if messages and repeats_notice(reply, messages):
+        return "复述对方通知"
     if looks_like_offstyle(reply):
         return "用户从不说的套话"
     if messages:
@@ -1097,7 +1171,10 @@ def _needs_look(messages: list[dict], window: int = 6) -> bool:
 #: 是**替用户声称做了一件没做的事** —— 点一下就真进群了。
 #: 所以命中的一律不摆「可直接点发」的候选，改成一句「只有你能给」。
 _WANT_THING_RE = re.compile(
-    r"(收款码|付款码|二维码|(?<![起号密打加编解])码|地址|链接|账号|密码|截图|原图)"
+    # 「扫」也排除：2026-10-26 真机实测，班群通知里「填表报名成功后记得扫码进群」
+    # 被判成「对方在要码」→ 整条消息被 block 掉，而它只是个通知，没有人在要任何东西。
+    r"(收款码|付款码|(?<![起号密打加编解扫])二维码|(?<![起号密打加编解扫])码"
+    r"|地址|链接|账号|密码|截图|原图)"
 )
 #: 「问用户自己的情况」—— 在不在、几点、打不打、号里有什么、几级。
 #: 答案只存在于用户脑子里；模型写的任何具体回答都是编的（已 3/3 复现）。
@@ -1246,6 +1323,21 @@ def classify_intent(messages: list[dict], replies: list[str] | None = None) -> d
             "asked": asked,
             "can_search": False,
             "block": True,
+        }
+    # 群通知/公告：没有一个「问题」需要回答，最实用的建议是「这条不用回」。
+    # 2026-10-26 真机实测（2561 班群 @所有人 晚签）：模型给的 3 条全是把公告
+    # 又广播一遍（「@所有人 在校的别忘晚签」），复述规则砍完就只剩 666 ——
+    # 对一条「请及时晚签」回 666，比什么都不给更糟。所以这里明确标 notice，
+    # 由 suggest 给一句「不用回」，而不是硬凑候选。
+    # 放在 _WANT_THING 之后：通知里真要东西（「把报名表发我」）仍按 need_you 拦。
+    if _NOTICE_RE.search(blob) and not _ASK_RE.search(blob):
+        return {
+            "intent": "notice",
+            "gap": "",
+            "asked": asked,
+            "can_search": False,
+            "block": False,
+            "quiet": True,
         }
     if _YOU_STATE_RE.search(blob):
         # 已经有一句纯表态（「行」「来」）就不用拦：表态不需要知道细节。
@@ -1599,6 +1691,23 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
     dropped = [d for d in _judged if d["reason"]]
     note = ""
     if not replies:
+        if pre.get("quiet"):
+            # 群通知语境 + 模型给的候选全被砍（实测就是「复述对方通知」）：
+            # 这时候退回模板只会给「666」「[奸笑]」—— 对「请及时晚签」回 666，
+            # 比安静地告诉用户「不用回」差得多。2026-10-26 真机实测原样。
+            return {
+                "engine": "local",
+                "model": MODEL_LABEL,
+                "replies": [],
+                "why": "",
+                "note": _n(_side_warn(messages), "群通知，这条不用特意回"),
+                "intent": "notice",
+                "gap": "",
+                "asked": pre["asked"],
+                "can_search": False,
+                "dropped": dropped,
+                "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
+            }
         # 全被删了 —— 宁可退回模板，也不能摆出「点了就替他答应」的选项
         replies = _rule_replies(messages, last_side)
         note = f"模型那几条不能用（{_drop_why(dropped)}），已换成安全的模板"

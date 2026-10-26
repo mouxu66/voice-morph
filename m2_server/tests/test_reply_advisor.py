@@ -1682,3 +1682,109 @@ def test_vertical_movement_is_also_a_promise(text):
     模型给「我马上下来」，旧动词表只有 来/到/上号/上线/过去，竖向移动全漏。
     """
     assert ra.looks_like_promise(text) is True
+
+
+# ------------------------------------------------------- 通知语境下的「收到」
+#
+# 2026-10-26 真机实测（微信 4.1.15.13，2561 人工智能班群）：
+#   班委：「@所有人 请在校的同学及时进行晚签」
+#   模型：「@所有人 在校的别忘晚签」「@所有人 晚签别拖」
+#   规则：「收到」被 _COMMIT_RE 的裸答应词分支判成「替你答应」删掉
+# 三件事同时错了：该放的放了、该拦的没拦。根因是**没区分请求和通知** ——
+# 对方求用户做事时「收到」= 答应了；对方广播通知时「收到」= 我知道了。
+
+NOTICE_MSGS = [
+    {"side": "left", "kind": "text", "text": "@所有人 请在校的同学及时进行晚签"},
+]
+ASK_MSGS = [
+    {"side": "left", "kind": "text", "text": "帮我带一份饭回来"},
+]
+
+
+def test_bare_ack_recognised():
+    assert ra.bare_ack("收到") is True
+    assert ra.bare_ack("好的。") is True
+    assert ra.bare_ack("收到，我报名") is False  # 带动作，不是裸应答
+    assert ra.bare_ack("666") is False
+
+
+def test_notice_ctx_detects_broadcast():
+    assert ra.is_notice_ctx(NOTICE_MSGS) is True
+    assert ra.is_notice_ctx(ASK_MSGS) is False
+    assert ra.is_notice_ctx([]) is False
+
+
+def test_notice_with_question_is_not_notice():
+    """「请我吃饭吗」有「请」但是请求，不能拿它给「收到」背书。"""
+    msgs = [{"side": "left", "kind": "text", "text": "请我吃饭吗"}]
+    assert ra.is_notice_ctx(msgs) is False
+    assert ra.drop_reason("收到", msgs) == "替你答应"
+
+
+def test_ack_is_allowed_under_notice():
+    """通知场景下「收到」是「我知道了」，不该按承诺删。
+
+    注意它仍会被 looks_like_offstyle 当成用户不说的套话 —— 这是**另一条规则**
+    在起作用（474 条真实发言里「收到」0 次），不该在这里重复判。
+    """
+    assert ra.looks_like_promise("收到") is True
+    assert ra.drop_reason("收到", NOTICE_MSGS) != "替你答应"
+
+
+def test_ack_still_dropped_under_request():
+    """请求场景下「收到」照旧按承诺删 —— 那句就是替用户答应了带饭。"""
+    assert ra.drop_reason("收到", ASK_MSGS) == "替你答应"
+
+
+def test_ack_with_action_still_dropped_under_notice():
+    """通知场景只豁免裸应答；「收到，我去报名」带了动作，仍是替用户应下。"""
+    assert ra.drop_reason("收到，我去报名", NOTICE_MSGS) == "替你答应"
+
+
+def test_repeats_notice_catches_rebroadcast():
+    """模型把 @所有人 公告又发一遍 = 二次广播，用户点发等于在群里再喊一次。"""
+    for text in ["@所有人 在校的别忘晚签", "@所有人 晚签别拖", "@所有人 在校同学记得晚签"]:
+        assert ra.repeats_notice(text, NOTICE_MSGS) is True
+        assert ra.drop_reason(text, NOTICE_MSGS) == "复述对方通知"
+
+
+def test_repeats_notice_allows_user_who_is_admin():
+    """用户自己发过 @所有人（他是群主）—— 那是他的正常语气，不算复述。"""
+    msgs = NOTICE_MSGS + [{"side": "right", "kind": "text", "text": "@所有人 今晚八点集合"}]
+    assert ra.repeats_notice("@所有人 明晚同一时间", msgs) is False
+
+
+def test_notice_intent_is_quiet():
+    """群通知标 notice：模型给的候选全被砍时，宁可不给，也别退到「666」。"""
+    r = ra.classify_intent(NOTICE_MSGS)
+    assert r["intent"] == "notice"
+    assert r["quiet"] is True
+
+
+def test_scan_qr_notice_does_not_block():
+    """「扫码进群」里的「码」不是有人要码。
+
+    2026-10-26 真机实测：志愿者招募通知里「填表报名成功后记得扫码进群」
+    被 _WANT_THING_RE 判成「对方在要码」→ 整条消息 block 掉，连模型都不跑。
+    """
+    msgs = [{"side": "left", "kind": "text",
+             "text": "志愿者招募通知 填表报名成功后记得扫码进群 招募人数 共20"}]
+    r = ra.classify_intent(msgs)
+    assert r["block"] is False
+
+
+def test_suggest_returns_quiet_when_all_candidates_repeated_notice(monkeypatch):
+    """实测原样：三条都在复述公告 → 返回空 replies + 一句话说明，不是 666。"""
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    monkeypatch.setattr(ra, "_needs_look", lambda *a: False)
+    monkeypatch.setattr(
+        ra, "_ask_json",
+        lambda *a, **k: ({"replies": ["@所有人 在校的别忘晚签", "@所有人 晚签别拖"],
+                          "why": "群通知", "should_reply": True}, ""),
+    )
+    out = ra.suggest(NOTICE_MSGS, "2561人工智能班群", "left")
+    assert out["replies"] == []
+    assert "不用特意回" in out["note"]
+    assert out["intent"] == "notice"
+    assert {d["reason"] for d in out["dropped"]} == {"复述对方通知"}
