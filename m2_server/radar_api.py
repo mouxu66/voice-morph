@@ -162,9 +162,11 @@ def digest(q: str = "", chat: str = "", limit: int = 4):
     150ms 就该出来。更重要的是这一步要**用户自己按** —— 原话是「我看着攻略，
     再让他做更多额外的事」；自动搜会把面板塞满，还没人看。
 
-    `q` 给了就用给的（前端可以改词再搜一次）；不给就从当前会话的最后一条对方
-    消息里剪一段当检索词。剪法是 `web_digest.build_query`，很保守 —— 搜狗对长句
-    直接返回 0 条，宁可短。
+    `q` 给了就用给的（前端可以改词再搜一次）；不给就从当前会话里挑**最像问题的
+    那条**对方消息当检索词。挑法是 `reply_advisor.pick_question` —— 不能取最后一条：
+    群里问完之后总跟着「在线等」，实测拿它搜回来的是《无尽冬日攻略详解大全》
+    这种泛泛的通关指南，而真正那句「打熊该上什么英雄」能搜到三条对口的打熊阵容。
+    剪法是 `web_digest.build_query`，很保守 —— 搜狗对长句直接返回 0 条，宁可短。
     """
     from web_digest import build_query, search, useful_frag
 
@@ -175,17 +177,22 @@ def digest(q: str = "", chat: str = "", limit: int = 4):
     if not q or not used_chat:
         try:
             from chat_read import read_chat  # 惰性：不点按钮不碰 UIA
+            from reply_advisor import pick_question
 
             snap = read_chat(limit=10)
             msgs = snap.get("messages") or []
             used_chat = used_chat or (snap.get("chat") or "")
             if not q:
-                for m in reversed(msgs):
-                    if (m.get("kind") or "text") != "text" or m.get("side") != "left":
-                        continue
-                    frag = str(m.get("text") or "").strip()
-                    if frag:
-                        break
+                frag = pick_question(msgs, span=6)
+                if not frag:
+                    # 挑不出来（对方只在起哄/发表情）就退回最后一条，让 build_query
+                    # 自己去判断这段词够不够格 —— 它宁可返回空也不猜一个。
+                    for m in reversed(msgs):
+                        if (m.get("kind") or "text") != "text" or m.get("side") != "left":
+                            continue
+                        frag = str(m.get("text") or "").strip()
+                        if frag:
+                            break
         except Exception:  # noqa: BLE001 —— 读不到微信也能搜，只是只剩群名
             pass
     if not q:

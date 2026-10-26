@@ -3716,6 +3716,11 @@ function renderReplies(j) {
   if (anaSearchBtnEl) anaSearchBtnEl.classList.toggle("hot", !!(ok && j.can_search));
   // 换了上下文，上一轮的检索结果就不再对应当前这句了。
   if (ok && j.intent !== "need_info") clearDigest();
+  // 判成攻略类时后端**已经自己搜过**（suggest 里自动检索），结果随这次响应一起回来。
+  // 直接填进攻略块：按钮亮着、点开就看，不用再等一次 2~3 秒的检索。
+  if (ok && j.digest && Array.isArray(j.digest.items) && j.digest.items.length) {
+    renderDigest(j.digest);
+  }
   // 草稿出来之后收掉原始消息列表与要点：面板 300px 是死预算。
   // 「怎么回」比「刚才那几条原话」更该占这块地方 —— 而模型给的 why 一行
   // 已经把要点里真正有用的那部分（对方在问 / 在等你）说出来了。
@@ -3991,9 +3996,11 @@ function openDigestView() {
   if (anaListEl) anaListEl.hidden = true;
 }
 
-/** 展开并立刻搜一次（「搜攻略」按钮走这条）。 */
+/** 展开攻略块。后端判成攻略类时已经搜过一次，所以通常**不用再发请求**。 */
 function openDigest() {
   openDigestView();
+  // 有现成结果就直接摆出来（后端随 suggest 一起回来的）；想换词改输入框回车。
+  if (anaDigestLast) return;
   void fetchDigest();
 }
 

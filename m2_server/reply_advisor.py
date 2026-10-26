@@ -491,11 +491,33 @@ atexit.register(shutdown)
 
 # ------------------------------------------------------------------ 提示词与解析
 
+#: 微信 4.1.15.13 的引用消息读出来是两段拼在一起：
+#:     不是 是竞技场匹配的
+#:     引用 阿沁 的消息 : 这次的国战？
+#: 第二段是**别人的旧话**。不剥掉会同时污染三处，2026-10-26 在真实 3864 群实测到：
+#:   ① prompt —— 模型把引用里的旧问题当成对方刚说的
+#:   ② `_recent_other` 的 blob —— 引用里带「？」（「这次的国战？」）就判成 direct
+#:   ③ 检索词 —— `pick_question` 挑中了一整段带换行的引用块当 query
+_QUOTE_CUT = "\n引用"
+
+
+def _strip_quote(text: str) -> str:
+    """去掉引用块，只留本人这一句。"""
+    t = str(text or "").strip()
+    cut = t.find(_QUOTE_CUT)
+    if cut > 0:
+        return t[:cut].strip()
+    if cut == 0 or t.startswith("引用"):
+        # 引用在前、正文在后：正文是最后一行；整条只有引用 → 没有正文可说
+        lines = [x.strip() for x in t.splitlines() if x.strip()]
+        return lines[-1] if len(lines) > 1 else ""
+    return t
+
 
 def _line_of(m: dict) -> str:
     """一条消息压成一行。语音/图片走占位符，时间行由调用方丢掉。"""
     kind = (m or {}).get("kind") or "text"
-    text = str((m or {}).get("text") or "").strip()
+    text = _strip_quote(str((m or {}).get("text") or ""))
     if kind == "voice":
         return f"[语音 {m.get('seconds', '?')} 秒]"
     if kind == "media":
@@ -1193,7 +1215,11 @@ _YOU_STATE_RE = re.compile(
 #: 这就是用户说的「我看着攻略，再让他做更多额外的事」。
 _KNOW_RE = re.compile(
     r"(攻略|阵容|搭配|配比|怎么玩|怎么打|怎么过|怎么升|值得|排行|强度|天赋|加点"
-    r"|几级解锁|兑换码|专武)"
+    r"|几级解锁|兑换码|专武"
+    # 2026-10-26 真机实测漏的：「打熊该上什么英雄」一个词都不命中，判成 ack。
+    # 只收「什么英雄 / 哪个英雄 / 上谁 / 用谁」这类**在选择**的说法 —— 光收「英雄」
+    # 会把「这英雄真强」也判成 need_info，而 need_info 是要清空候选的，代价太高。
+    r"|什么英雄|哪个英雄|上什么英雄|上谁|用谁|配队|编队|兵种|科技树|升级顺序|活动奖励)"
 )
 #: 纯表态：不含任何具体安排，答错了也不会替用户许下什么。
 _STANCE_RE = re.compile(
@@ -1258,7 +1284,7 @@ def _recent_other(messages: list[dict], keep: int = 2) -> list[str]:
             continue
         if (m or {}).get("side") == "right":
             break                       # 最后一条是自己发的：对方没说话，没什么可判
-        text = str((m or {}).get("text") or "").strip()
+        text = _strip_quote(str((m or {}).get("text") or ""))
         if not text or text in _BARE_MEDIA or text.startswith("[") or _LAUGH_RE.match(text):
             continue
         if len(text) < 2:
@@ -1268,6 +1294,53 @@ def _recent_other(messages: list[dict], keep: int = 2) -> list[str]:
             break
     out.reverse()
     return out
+
+
+#: 群里用来催、占位、刷存在感的收尾话。它们几乎总在最后一条，但**一个字都搜不出东西**。
+#: 2026-10-26 实测：拿「在线等」当检索词 → `无尽冬日 在线等 攻略`，搜回来
+#: 《无尽冬日攻略详解大全》这种泛泛的通关指南，跟「打熊上什么英雄」毫无关系；
+#: 换成真正那句问题 → `无尽冬日 打熊该上什么英雄 攻略`，三条全是打熊阵容，
+#: 摘要里直接写着「火男比谢尔盖打熊伤害更高」。
+_FILLER_RE = re.compile(r"^(在线等|有人吗|在吗|急|求|救命|蹲|等|等等|\d{1,3})$")
+
+
+def pick_question(messages: list[dict], span: int = 4) -> str:
+    """最近几条对方消息里，最像「一件要查的事」的那条。没有就返回空串。
+
+    为什么不直接取最后一条：群里的问句后面永远跟着「在线等」「我现在T5就俩」，
+    `_recent_other(keep=2)` 又只装得下两句 —— 「打熊该上什么英雄」就这样同时
+    造成三个错：① 被挤出判断范围 → `classify_intent` 判成 ack；
+    ② `asked` 取成「在线等」；③ 检索词也取成「在线等」。一个根因，三处症状。
+
+    打分而不是"第一个带问号的"：群里也常有人问「你吃了吗」这种不需要查的，
+    光看问号会把检索词带偏。命中知识词才算数（阈值 4 保证至少有一个有效信号）。
+    """
+    cands: list[str] = []
+    for m in reversed(messages or []):
+        if len(cands) >= span:
+            break
+        if (m or {}).get("side") == "right":
+            break                       # 最后一条是自己发的：对方没在问
+        if (m.get("kind") or "text") != "text":
+            continue
+        text = _strip_quote(str((m or {}).get("text") or ""))
+        if len(text) < 3 or text.startswith("[") or text in _BARE_MEDIA:
+            continue
+        cands.append(text)
+
+    best, best_score = "", 0.0
+    for text in cands:
+        score = 0.0
+        if _KNOW_RE.search(text):
+            score += 3
+        if _ASK_RE.search(text):
+            score += 2
+        if _FILLER_RE.match(text):
+            score -= 3
+        score += min(len(text), 12) / 4
+        if score > best_score:
+            best, best_score = text, score
+    return best if best_score >= 4 else ""
 
 
 def _voice_only_tail(messages: list[dict]) -> bool:
@@ -1306,11 +1379,15 @@ def classify_intent(messages: list[dict], replies: list[str] | None = None) -> d
     「发你了」上是**确信**的，why 里写的是「对方要收款码，给个明确回应」。
     判据必须是能从文本上复核的规则，判错了能指着某一行改。
     """
-    asked = ""
     near = _recent_other(messages)
     blob = " ".join(near)
-    if near:
-        asked = near[-1]
+    # 真正那句问题常常被「在线等」挤出 keep=2 的范围（「打熊该上什么英雄」就是），
+    # 所以单独再挑一次，补进判断范围。near 仍是 ack/direct 的底子 —— 它代表
+    # 「对方最近在说什么」，只扩到「有没有一件要查的事」这一层。
+    picked = pick_question(messages)
+    asked = picked or (near[-1] if near else "")
+    if picked and picked not in near:
+        blob = picked + " " + blob
     if not blob:
         return {"intent": "ack", "gap": "", "asked": asked, "can_search": False, "block": False}
     thing = _WANT_THING_RE.search(blob)
@@ -1375,6 +1452,31 @@ _REQUEST_RE = re.compile(
 #: 被 `fabricates_where` 全拦掉之后，如果兜底落到「666」，等于一句都没回答。
 #: 问一句在哪既不含坐标也不含承诺，是这条路上唯一安全的答案。
 _WHERE_ASK_RE = re.compile(r"在哪|到楼下了|到哪了|在楼下|到门口了|到了没|到哪呢")
+
+
+#: 判成 `need_info`（攻略/数值/排行）时，要不要**真的自己搜一次**。
+#:
+#: 这一档原本不给正文（9B 没有公共知识，给了就是编），出路全靠用户手点「搜攻略」。
+#: 自动搜把这一步补上：搜到就照着资料写，搜不到才退回那句「点查攻略」。
+#: 代价是这条路从 1.5s 变成 3~5s（检索 2~3s + 热态生成 1.1s），所以留了开关。
+#: 关掉用 `VM_REPLY_AUTO_SEARCH=0`。
+_AUTO_SEARCH = (os.environ.get("VM_REPLY_AUTO_SEARCH") or "1").strip().lower() not in (
+    "0", "false", "off", "no",
+)
+
+
+def _auto_digest(messages: list[dict], chat: str) -> dict | None:
+    """自己去搜一次。没搜到 / 搜挂了 / 词拼不出来都返回 None（调用方退回原话）。"""
+    try:
+        from web_digest import build_query, search
+
+        q = build_query(chat, None, pick_question(messages, span=6))
+        if not q:
+            return None
+        out = search(q, limit=4, timeout=5.0)
+    except Exception:  # noqa: BLE001 —— 搜不到不是错误，只是没有额外信息
+        return None
+    return out if out.get("ok") and out.get("items") else None
 
 
 def _rule_replies(messages: list[dict], last_side: str | None = None) -> list[str]:
@@ -1735,10 +1837,53 @@ def suggest(messages: list[dict], chat: str = "", last_side: str | None = None) 
         note = "这条只有你自己能答，没给候选" + (" · " + note if note else "")
         replies = []
     elif tier["intent"] == "need_info":
-        # 公共知识（攻略/数值/排行）模型同样没有 —— 给了就是编。
-        # 这里不给正文，把出路放到 `can_search` 上：搜到之后再让它照着写一句。
-        note = "这条得查一下 —— 点「查攻略」，搜到再让我写" + (" · " + note if note else "")
+        # 公共知识（攻略/数值/排行）模型同样没有 —— 给了就是编，所以先清空。
+        # 但清空之后不能就这么把面板丢给用户（原来只留一句「点查攻略」）：
+        # 判成 need_info 的这一刻，检索词已经在手上（就是 `asked` 那句），
+        # 直接搜一次、照着资料重写，这条链路才闭环。
         replies = []
+        doc = _auto_digest(messages, chat) if _AUTO_SEARCH else None
+        if doc:
+            sub = suggest_from_digest(messages, doc, chat, last_side)
+            items = doc.get("items") or []
+            return {
+                "engine": sub.get("engine", "local"),
+                "model": MODEL_LABEL,
+                "replies": sub.get("replies") or [],
+                # 攻略要点：给用户自己看的，不进群，所以可以比 replies 长。
+                "advice": sub.get("advice") or [],
+                "why": sub.get("why", ""),
+                "note": _n(
+                    _side_warn(messages),
+                    _voice_warn(messages),
+                    sub.get("note") or "",
+                    f"自己去查了「{doc.get('q')}」，{len(items)} 条结果",
+                    note,
+                ),
+                "dropped": dropped + list(sub.get("dropped") or []),
+                "salvaged": salvaged,
+                "intent": tier["intent"],
+                "gap": tier["gap"],
+                "asked": tier["asked"],
+                "can_search": tier["can_search"],
+                # 来源摆出来，用户才知道这句话是从哪来的 —— 模型写错时能一眼对回去。
+                "sources": [
+                    {"title": str(it.get("title") or ""), "url": str(it.get("url") or "")}
+                    for it in items[:3]
+                ],
+                # 整份结果一起给前端：面板上「搜攻略」那块直接填好、不用再点一次
+                # （点开就看，省掉重复的 2~3 秒检索）。
+                "digest": {
+                    "ok": True,
+                    "q": doc.get("q") or "",
+                    "items": items,
+                    "hint": doc.get("hint") or "",
+                    "elapsed_ms": doc.get("elapsed_ms") or 0,
+                },
+                "searched": doc.get("q") or "",
+                "elapsed_ms": round((time.perf_counter() - start) * 1000, 1),
+            }
+        note = "这条得查一下 —— 点「查攻略」，搜到再让我写" + (" · " + note if note else "")
     return {
         "engine": "local",
         "model": MODEL_LABEL,

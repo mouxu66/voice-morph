@@ -1069,14 +1069,61 @@ def test_suggest_does_not_run_model_when_asking_for_things(monkeypatch):
 
 
 def test_suggest_clears_replies_when_public_knowledge(monkeypatch):
-    """攻略类问题：模型给了候选也要清掉 —— 那几条里的数字都是编的。"""
+    """攻略类问题：模型给了候选也要清掉 —— 那几条里的数字都是编的。
+
+    自动搜**没搜到**时才落到这句「点查攻略」（下面还有一条测搜到的）。
+    """
     _fake_model(monkeypatch,
                 '{"should_reply":true,"why":"对方在问阵容",'
                 '"replies":["茉莉先练","赫克托毕业盾","我看看"]}')
+    monkeypatch.setattr(ra, "_auto_digest", lambda *a, **kw: None)
     out = ra.suggest(_ctx("无尽冬日阵容怎么配"), chat="3864")
     assert out["replies"] == []
     assert out["intent"] == "need_info"
     assert out["can_search"] is True
+    assert "查攻略" in out["note"]
+
+
+def test_need_info_searches_by_itself(monkeypatch):
+    """判成攻略类就自己去搜，搜到照着资料写 —— 用户不用再点一次。
+
+    2026-10-26 用户问「有人问问题它能上网搜攻略吗」。实测手动点「搜攻略」时
+    检索词取的是最后一条（「在线等」），搜回一屏通用攻略。要成立得三件事同时对：
+    取词（`pick_question`）、自己发起、搜完回填候选。
+    """
+    _fake_model(monkeypatch,
+                '{"should_reply":true,"why":"在问阵容","replies":["茉莉先练"]}')
+    digest = {
+        "ok": True, "q": "无尽冬日 打熊该上什么英雄 攻略", "weak": False, "note": "",
+        "items": [{"title": "无尽冬日七代英雄打熊阵容推荐", "url": "https://example.invalid/1",
+                   "snippet": "车头：三个英雄都有攻击属性"}],
+    }
+    monkeypatch.setattr(ra, "_auto_digest", lambda *a, **kw: digest)
+    monkeypatch.setattr(ra, "suggest_from_digest", lambda *a, **kw: {
+        "engine": "local", "replies": ["火男打熊伤害高"],
+        "advice": ["车头放三个攻击属性的英雄"], "why": "照资料写的",
+        "dropped": [], "note": "",
+    })
+    out = ra.suggest(_ctx("打熊该上什么英雄", "在线等"), chat="无尽冬日3864区ALL天地联盟")
+    assert out["intent"] == "need_info"
+    assert out["replies"] == ["火男打熊伤害高"]      # 不再是空面板
+    assert out["advice"] == ["车头放三个攻击属性的英雄"]
+    assert out["searched"].startswith("无尽冬日")
+    assert out["sources"][0]["title"].startswith("无尽冬日七代")
+
+
+def test_auto_search_can_be_switched_off(monkeypatch):
+    """`VM_REPLY_AUTO_SEARCH=0` 时退回老行为：不搜、只提示点「查攻略」。"""
+    _fake_model(monkeypatch,
+                '{"should_reply":true,"why":"在问阵容","replies":["茉莉先练"]}')
+    monkeypatch.setattr(ra, "_AUTO_SEARCH", False)
+
+    def boom(*a, **kw):
+        raise AssertionError("关掉自动搜就不该发请求")
+
+    monkeypatch.setattr(ra, "_auto_digest", boom)
+    out = ra.suggest(_ctx("打熊该上什么英雄"), chat="3864")
+    assert out["replies"] == []
     assert "查攻略" in out["note"]
 
 
@@ -1788,3 +1835,83 @@ def test_suggest_returns_quiet_when_all_candidates_repeated_notice(monkeypatch):
     assert "不用特意回" in out["note"]
     assert out["intent"] == "notice"
     assert {d["reason"] for d in out["dropped"]} == {"复述对方通知"}
+
+
+# ------------------------------------------------------------ 检索词取哪一句
+#
+# 2026-10-26 用户问「有人问问题它能上网搜攻略吗」，查下来发现三个症状一个根因：
+# 群里问完总跟「在线等」「我现在T5就俩」，而 `_recent_other(keep=2)` 只装两句 ——
+# 真正那句「打熊该上什么英雄」被挤出判断范围，于是
+#   ① classify_intent 判成 ack（can_search=False，按钮不亮）
+#   ② asked 取成「在线等」
+#   ③ 手动点「搜攻略」时检索词也取成「在线等」
+# 实测 ③ 搜回来的是《无尽冬日攻略详解大全》这类泛泛通关指南；换回真正那句问题，
+# 三条结果全是打熊阵容，摘要里就写着「火男比谢尔盖打熊伤害更高」。
+
+BEAR_MSGS = [
+    {"side": "left", "kind": "text", "text": "打熊该上什么英雄"},
+    {"side": "left", "kind": "text", "text": "我现在T5就俩"},
+    {"side": "left", "kind": "text", "text": "在线等"},
+]
+
+
+def test_pick_question_skips_filler_tail():
+    assert ra.pick_question(BEAR_MSGS) == "打熊该上什么英雄"
+
+
+def test_pick_question_empty_when_only_chatter():
+    """没有要查的事就不挑 —— 挑错了会把检索词带偏，还不如不搜。"""
+    assert ra.pick_question([{"side": "left", "kind": "text", "text": "芜湖！"}]) == ""
+    assert ra.pick_question([{"side": "left", "kind": "text", "text": "在线等"}]) == ""
+
+
+def test_pick_question_ignores_casual_question():
+    """「你吃了吗」有问号但没有知识诉求，不能当检索词。"""
+    assert ra.pick_question([{"side": "left", "kind": "text", "text": "你吃了吗"}]) == ""
+
+
+def test_pick_question_stops_at_own_message():
+    """最后一条是自己发的：对方没在问，不要往前翻旧账。"""
+    msgs = BEAR_MSGS + [{"side": "right", "kind": "text", "text": "我看看"}]
+    assert ra.pick_question(msgs) == ""
+
+
+def test_bear_question_is_searchable():
+    """「打熊该上什么英雄」必须判成 need_info —— 这是 can_search 亮起来的唯一来源。"""
+    r = ra.classify_intent(BEAR_MSGS)
+    assert r["intent"] == "need_info"
+    assert r["can_search"] is True
+    assert r["asked"] == "打熊该上什么英雄"
+
+
+def test_plain_hero_talk_is_not_need_info():
+    """「这英雄真强」是在评论，不是在选择 —— 判成 need_info 会把候选清空。"""
+    r = ra.classify_intent([{"side": "left", "kind": "text", "text": "这英雄真强"}])
+    assert r["can_search"] is False
+
+
+def test_digest_query_uses_picked_question(monkeypatch):
+    """radar_api 取词也得走 pick_question，否则手动点「搜攻略」照样搜错。"""
+    import radar_api
+
+    monkeypatch.setattr(
+        "chat_read.read_chat",
+        lambda limit=10: {"ok": True, "chat": "无尽冬日3864区ALL天地联盟",
+                          "messages": BEAR_MSGS},
+    )
+    got = {}
+
+    class _Out(dict):
+        pass
+
+    def fake_search(q, limit=4):
+        got["q"] = q
+        return {"ok": True, "q": q, "items": [], "weak": False,
+                "note": "", "elapsed_ms": 1}
+
+    import web_digest
+
+    monkeypatch.setattr(web_digest, "search", fake_search)
+    radar_api.digest(q="", chat="", limit=4)
+    assert "打熊" in got["q"]
+    assert "在线等" not in got["q"]
