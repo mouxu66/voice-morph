@@ -1603,3 +1603,82 @@ def test_suggest_surfaces_raw_when_both_attempts_fail(monkeypatch):
     assert out["engine"] == "rule"
     assert "没通过校验" in out["note"]
     assert out["raw"] == "还不是json"
+
+
+# ---------------------------------------------------------------- 不许编用户在哪
+#
+# 2026-10-26 把评测判据从「含『在』就算过」收紧之后，问地点 12 轮里的编造全部暴露：
+# 「我在家呢」（对方刚说「我到楼下了」，直接矛盾）、「我也到楼下了」「我也快到了」
+# 「我在门口」「我也在楼下」「我还没动呢」—— 用户点一下发出去，就是替自己报了
+# 一个不存在的位置。这类事实只有用户自己知道（或他自己刚说过），模型没有任何来源。
+
+WHERE_MSGS = [
+    {"side": "left", "kind": "text", "text": "你们现在在哪呢"},
+    {"side": "left", "kind": "text", "text": "我到楼下了"},
+]
+
+
+@pytest.mark.parametrize("text", [
+    "我在家呢", "我在小区门口", "我也到楼下了", "我也快到了", "我在门口",
+    "我也在楼下", "我还没动呢", "在家", "在楼下", "我刚到家",
+])
+def test_fabricated_where_is_dropped(text):
+    assert ra.fabricates_where(text, WHERE_MSGS) is True
+    assert ra.drop_reason(text, WHERE_MSGS) == "替你编了你在哪"
+
+
+@pytest.mark.parametrize("text", [
+    "到哪了",        # 问对方，不是报自己的坐标
+    "哪个门",        # 问
+    "在楼下吗",      # 疑问语气，问对方在不在楼下
+    "你在哪",        # 问对方
+    "666", "[奸笑]", "我靠",
+])
+def test_where_question_is_not_a_claim(text):
+    assert ra.fabricates_where(text, WHERE_MSGS) is False
+
+
+def test_where_claim_allowed_when_user_said_it():
+    """用户自己刚说过「我到楼下了」，再提一次不算编 —— 复用的是他自己的话。"""
+    msgs = WHERE_MSGS + [{"side": "right", "kind": "text", "text": "我到楼下了"}]
+    assert ra.fabricates_where("我也在楼下", msgs) is False
+
+
+def test_other_side_location_does_not_license_user_location():
+    """对方说的「我到楼下了」是**对方的**坐标，不能拿来给用户背书 ——
+    「我也到楼下了」正是这么造出来的。"""
+    assert ra.fabricates_where("我也到楼下了", WHERE_MSGS) is True
+
+
+def test_where_claim_without_context_is_dropped():
+    """没有上下文就没有依据，一律拦：宁可少一条候选，也不让用户点发一句假话。"""
+    assert ra.fabricates_where("我在家呢") is True
+
+
+def test_suggest_replaces_invented_location_with_a_question(monkeypatch):
+    """三条候选全在编位置时不能落到「666」—— 换成问一句在哪。
+
+    只加规则不加模板的后果实测过：堵住编造之后，这一格会变成「666 + [奸笑]」，
+    对方问「你们在哪」收到一句「666」，等于没回答。
+    """
+    monkeypatch.setattr(ra, "available", lambda: (True, ""))
+    monkeypatch.setattr(ra, "_ensure_server", lambda: 1234)
+    monkeypatch.setattr(
+        ra, "_chat",
+        lambda *a, **k: '{"replies":["我在家呢","我也到楼下了","我在门口"]}',
+    )
+    out = ra.suggest(WHERE_MSGS, "3864", "left")
+    assert out["replies"] == ["到哪了", "哪个门"]
+    assert "替你编了你在哪" in out["note"]
+
+
+@pytest.mark.parametrize("text", [
+    "我马上下来", "我马上就下来", "我这就下去", "我立刻上去", "马上出门",
+])
+def test_vertical_movement_is_also_a_promise(text):
+    """「我马上下来」和「我马上到」是同一类承诺。
+
+    2026-10-26 收紧「问地点」评测后冒出来的：对方说「我到楼下了」，
+    模型给「我马上下来」，旧动词表只有 来/到/上号/上线/过去，竖向移动全漏。
+    """
+    assert ra.looks_like_promise(text) is True
