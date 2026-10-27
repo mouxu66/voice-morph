@@ -42,7 +42,24 @@ const OUT_DIR = path.join(ROOT, "outputs", "pet-preview");
 const SCENES = ["idle-dark", "idle-light", "typed-dark", "picked-dark", "rec-dark",
                 "tray-dark", "trayplay-dark", "drawer-dark", "busy-dark", "offline-dark",
                 "live-dark", "qwen-dark", "think-dark", "guide-dark", "holdwarn-dark",
-                "songs-dark", "analysis-dark", "digest-dark", "look-dark"];
+                "songs-dark", "analysis-dark", "digest-dark", "look-dark",
+                "bigreply-dark", "tools-dark"];
+
+/**
+ * 「怎么回」大面板的形态（424×466，窗口 440×640）。
+ *
+ * ⚠️ 这份名单必须与 pet.html 里那段
+ *    `["analysis","look","digest","bigreply"].forEach(k => LAYOUT_STATES[k].big = true)`
+ *    **完全一致** —— test-pet-panel-layout 有一条静态断言盯着它们（读了 pet.html 比对），
+ *    漏一个的表现是：某个大形态被塞进 220×480 的窗里量，于是"必然溢出"→ 门禁一片红，
+ *    或者更糟：没人量它，466px 的预算悄悄烂掉。
+ */
+const BIG_STATES = new Set(["analysis", "look", "digest", "bigreply"]);
+
+/** 某个形态该在多大的窗里量。 */
+function windowFor(state) {
+  return BIG_STATES.has(state) ? { w: 440, h: 640 } : { w: 220, h: 480 };
+}
 
 /** 找 Playwright 缓存里的 chromium-headless-shell。找不到返回 null（调用方负责报错/跳过）。 */
 function findChrome() {
@@ -232,6 +249,11 @@ const SCENE_STATE = {
   digest: "digest",
   // 看图结果态（2026-10-25）：要点 + 一条来源 + 「写一句」，最挤的形态。
   look: "look",
+  // 大面板的「薄内容」态（2026-10-27）：一行消息 + 一条候选都没有。
+  // `analysis` 证明装得下，这一态证明**不会塌**（flex 分配算错时两栏会被压成 0）。
+  bigreply: "bigreply",
+  // 工具行展开（2026-10-27）：点歌 / 音效 / 托管 三个入口横排。
+  tools: "tools",
   // 以下都是「空草稿 + 一段状态」：形态本身不变，变的是状态行/气泡。
   offline: "idle", live: "idle", qwen: "idle", think: "idle", guide: "idle",
   // 预检告警要配一段草稿：这条告警只有「真的要发」时才有意义。
@@ -349,6 +371,9 @@ function measureScript(state) {
 window.addEventListener("load", function () {
   var SCEN = ${JSON.stringify(state)};
   var SWEEP = !!(SCEN && SCEN.sweep === true);   // 预算扫描模式：把每个形态 × 两种气泡量一遍
+  // 大面板那一轮（440×640）。形态自己带 .big 标记（见 pet.html 的 LAYOUT_STATES），
+  // 两轮各量各的 —— 424×466 的面板塞进 220×480 的窗里必然"溢出"，那不是 bug。
+  var BIGPASS = !!(SCEN && SCEN.big === true);
   showPanel();
   setTimeout(function () {
     Promise.resolve()
@@ -496,6 +521,22 @@ window.addEventListener("load", function () {
     panelClientH: panel.clientHeight,
     blocks: blockList(panel.children, "")
       .concat(blockList(draftChildren(), "draft/")),   // 装填区的直接子块，带 draft/ 前缀（见上面注释）
+    // 大面板（怎么回工作台）的两栏：#anaBody 是**嵌套**块，blockList 只量 panel 的直接子块，
+    // 量不到它。而它恰恰是最该被守的那个 —— 父容器少了确定高度时 flex:1 算出 0，
+    // 面板看着「没溢出」，实际上两栏被压成一条线。所以单独把这一组高度也报出来。
+    panes: (function () {
+      var ids = ["analysisLayer", "anaBody", "anaMsgs", "anaReply", "anaReplies"];
+      var out = {};
+      ids.forEach(function (id) {
+        var el = document.getElementById(id);
+        out[id] = el ? Math.round(el.getBoundingClientRect().height) : null;
+      });
+      var dg = document.getElementById("anaDigest");
+      // 攻略/看图是**整屏视图**，这时 #anaBody 故意是 0 —— 两栏的断言要跳过它，
+      // 否则「正确让位」会被当成「两栏被压扁」。
+      out.digestOpen = !!(dg && !dg.hidden);
+      return out;
+    })(),
     // 哪个分层开着（"" | "tray" | "drawer"）与哪个形态 —— 报告里要能对上号，
     // 否则一堆 sweep:xxx 的数字看不出是「托盘」还是「抽屉」。
     layer: panelLayer,
@@ -549,7 +590,14 @@ window.addEventListener("load", function () {
       };
     })(),
     // 形态名与全部形态（布尔扫描与静态检查都靠它，替代旧版从 tabRow 里抠 data-tab）
+    // ⚠️ 这里是**全部**形态，不是这一轮量到的那些：大面板与小面板分两轮量，
+    // 门禁自己按 .big 归属去比（拿全部去比会把另一半误报成"漏扫"）。
     states: Object.keys(window.__petLayoutStates || {}),
+    // 这一轮实际量到的形态（= 按 .big 过滤后的结果）。门禁的"覆盖了所有形态"用它。
+    statesSwept: Object.keys(window.__petLayoutStates || {}).filter(function (k) {
+      var s = window.__petLayoutStates[k];
+      return !!(s && s.big) === BIGPASS;
+    }),
     paneIds: paneIds(),
     };
   };
@@ -565,7 +613,16 @@ window.addEventListener("load", function () {
     setBubbleVisible(false);
     // 停表：tick 每 1s 会改药丸/气泡/状态行，扫描一轮要跨好几秒 —— 不停表就量不到同一帧。
     window.__petFreeze();
-    var states = Object.keys(window.__petLayoutStates || {});
+    var states = Object.keys(window.__petLayoutStates || {}).filter(function (k) {
+      var s = window.__petLayoutStates[k];
+      // 按 .big 标记分两轮：小窗量小的、大窗量大的。混在一起量，两边的「溢出」
+      // 都只是量错了窗口，不是真问题 —— 那会把门禁变成噪音，然后被人关掉。
+      return !!(s && s.big) === BIGPASS;
+    });
+    if (!states.length) {
+      console.log("SWEEP-DONE 0 形态（这一轮没有可量的：" + (BIGPASS ? "大面板" : "小面板") + "）");
+      return;
+    }
     var phase = 0;   // 0 = 无气泡，1 = 大头气泡（最挤：气泡吃掉 82px，还要加让位）
     var si = 0;
     var next = function () {
@@ -654,7 +711,8 @@ function freezeStyle() {
   return `<style>*,*::before,*::after{animation:none !important;transition:none !important}</style>`;
 }
 
-function buildPage(scene, mode, keepAnim) {
+function buildPage(scene, mode, keepAnim, opts) {
+  const o = opts || {};
   // 场景名必须严格是 <state>-<theme>。加这条校验是因为真踩过：
   // 取名叫 `qwen-idle-dark`，split("-") 得到 state="qwen"、theme="idle" →
   // theme 判不出 "dark" → forceDark() 不生效 → 静默出成亮色图，
@@ -677,7 +735,7 @@ function buildPage(scene, mode, keepAnim) {
   // 状态传对象而不是字符串，页面里所有 `SCEN === "xxx"` 分支自然全不命中 ——
   // 不用为它另写一套 setup。
   const tail = mode === "measure" ? measureScript(state)
-    : mode === "sweep" ? measureScript({ sweep: true })
+    : mode === "sweep" ? measureScript({ sweep: true, big: !!o.big })
     : postScript(state);
   html = html.replace("</body>", tail + "\n</body>");
   return html;
@@ -727,12 +785,15 @@ function runScene(scene, opts) {
   const chrome = opts.chrome || findChrome();
   const tmp = opts.tmp || fs.mkdtempSync(path.join(os.tmpdir(), "pet-preview-"));
   const file = path.join(tmp, "pet-" + scene + ".html");
-  fs.writeFileSync(file, buildPage(scene, mode, !!opts.keepAnim), "utf-8");
+  fs.writeFileSync(file, buildPage(scene, mode, !!opts.keepAnim, { big: !!opts.big }), "utf-8");
   const png = opts.pngDir === null ? path.join(tmp, "_" + scene + ".png")
                                    : path.join(opts.pngDir || OUT_DIR, "panel-" + scene + ".png");
   if (fs.existsSync(png)) fs.rmSync(png);
   // 每次给独立 profile 目录：同一个 user-data-dir 被并发/连续复用会让 Chromium 抢锁失败
   const profile = path.join(tmp, "profile-" + scene);
+  // 窗口尺寸可覆盖：大面板（440×640）要与 pet.cjs 的 PET_BIG 一致，否则量到的是
+  // 一个现实中不存在的尺寸 —— 那种「绿了但没用」的预算基线比没有更糟。
+  const win = opts.windowSize || { w: 220, h: 480 };
   const args = [
     "--no-sandbox",              // 本机沙箱里 Chromium 再开自己的沙箱会起不来
     "--disable-gpu",
@@ -741,7 +802,7 @@ function runScene(scene, opts) {
     "--hide-scrollbars",
     "--allow-file-access-from-files",
     "--force-device-scale-factor=2",
-    "--window-size=220,480",
+    "--window-size=" + win.w + "," + win.h,
     "--virtual-time-budget=6000",
     "--enable-logging=stderr",
     "--log-level=0",
@@ -773,7 +834,13 @@ function measureScenes(scenes, opts) {
   const out = {};
   try {
     for (const s of scenes) {
-      const r = runScene(s, { mode: "measure", chrome, tmp, pngDir: null, keepAnim: (opts || {}).keepAnim });
+      // 窗口按形态自己挑：大面板形态必须量在 440×640 里，否则量到的是个
+      // 现实中不存在的尺寸（424 宽的面板塞在 220 的窗里），那种"绿"比红更糟。
+      const state = String(s).split("-")[0];
+      const r = runScene(s, {
+        mode: "measure", chrome, tmp, pngDir: null, keepAnim: (opts || {}).keepAnim,
+        windowSize: windowFor(state),
+      });
       out[s] = r.json;
     }
   } finally {
@@ -787,9 +854,13 @@ function measureScenes(scenes, opts) {
  * 供 `test-pet-panel-layout.cjs` 使用 —— 覆盖不靠手写场景清单，靠 DOM 里真实存在的页签。
  */
 function measureSweep(opts) {
+  const o = opts || {};
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pet-sweep-"));
   try {
-    return runScene("sweep-dark", { mode: "sweep", tmp, pngDir: null, keepAnim: (opts || {}).keepAnim });
+    return runScene("sweep-dark", {
+      mode: "sweep", tmp, pngDir: null, keepAnim: !!o.keepAnim,
+      big: !!o.big, windowSize: o.windowSize,
+    });
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -833,7 +904,12 @@ function main() {
 
   let ok = 0;
   for (const scene of list) {
-    const r = runScene(scene, { mode: measure ? "measure" : "shot", chrome, tmp, keepAnim });
+    // 截图也要按形态挑窗口：否则大面板会被拍成「424 宽的面板塞在 220 的窗里，右边全裁掉」,
+    // 而那张图看起来像渲染坏了。
+    const r = runScene(scene, {
+      mode: measure ? "measure" : "shot", chrome, tmp, keepAnim,
+      windowSize: windowFor(String(scene).split("-")[0]),
+    });
     if (r.ok) {
       ok += 1;
       if (measure) console.log("  " + scene + "  " + JSON.stringify(r.json));
@@ -850,6 +926,6 @@ function main() {
 }
 
 module.exports = { findChrome, measureScenes, measureSweep, runScene, extractMeasureJson, buildPage,
-                   SCENES, ROOT, PET_DIR, OUT_DIR };
+                   SCENES, BIG_STATES, windowFor, ROOT, PET_DIR, OUT_DIR };
 
 if (require.main === module) main();

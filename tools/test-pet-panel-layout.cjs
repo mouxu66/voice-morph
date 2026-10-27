@@ -139,6 +139,21 @@ function statesInHtml() {
   return [...block.matchAll(/^ {2}([A-Za-z_$][\w$]*)\s*:\s*\(\)/gm)].map((m) => m[1]);
 }
 
+/**
+ * 从 pet.html 里读「哪些形态是大面板」。
+ *
+ * 页面里那段的写法是：`["analysis","look","digest","bigreply"].forEach(k => LAYOUT_STATES[k].big = true)`。
+ * 它是唯一真相源 —— 这里不另抄一份清单（抄了必然有一天两份不一致，而门禁看不见多出来的那份）。
+ * 但要跟 pet-panel-preview 的 BIG_STATES 比一次：那边决定窗口尺寸，两边不一致时
+ * 大形态会被量在 220×480 的窗里，于是"必然溢出" → 门禁一片红（或者没人量 → 预算烂掉）。
+ */
+function bigStatesInHtml() {
+  const html = fs.readFileSync(PET_HTML, "utf-8");
+  const m = html.match(/\[\s*((?:"[^"]+"\s*,?\s*)+)\]\.forEach\(\s*\(\s*k\s*\)\s*=>\s*\{?\s*if\s*\(LAYOUT_STATES\[k\]\)\s*LAYOUT_STATES\[k\]\.big\s*=\s*true/);
+  if (!m) return [];
+  return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+}
+
 function readBudget() {
   if (!fs.existsSync(BUDGET_FILE)) return null;
   try {
@@ -148,15 +163,18 @@ function readBudget() {
   }
 }
 
-function writeBudget(keys, tol) {
+function writeBudget(keys, tol, bigKeys) {
   const payload = {
     _note:
       "桌宠面板纵向预算基线（自动生成）。更新：node tools/test-pet-panel-layout.cjs " +
       "（设 VM_PET_BUDGET_UPDATE=1，会打印一份「这次吃了多少」的成本表）。" +
       "reserve = capacity - need；门禁要求 reserve 只能变多（容差 tolerance_px）。" +
-      "reserve 为负 = 该状态底部已被切（已知不足，见 docs/交接-AI必读.md）。",
+      "reserve 为负 = 该状态底部已被切（已知不足，见 docs/交接-AI必读.md）。" +
+      "keys = 小面板（220×480，面板 max-height 300）；big_keys = 大面板「怎么回」工作台" +
+      "（440×640，面板固定 466 高）。两套分开是因为它们的窗口尺寸不同，混在一起比会得出假数字。",
     tolerance_px: tol,
     keys,
+    ...(bigKeys ? { big_keys: bigKeys } : {}),
   };
   fs.writeFileSync(BUDGET_FILE, JSON.stringify(payload, null, 2) + "\n", "utf-8");
 }
@@ -176,6 +194,21 @@ check("预算基线文件存在且可解析", () => {
 });
 
 const baseKeys = (budget && budget.keys) || {};
+const baseBigKeys = (budget && budget.big_keys) || {};
+const bigStates = new Set(bigStatesInHtml());
+
+// ---- 静态 1.5：大面板形态名单与量测工具必须一致 ----
+// 页面里给形态打了 .big 标记（决定它属于哪一轮），preview 里另有一份 BIG_STATES
+// （决定窗口尺寸）。两份不一致时：大形态被量在 220 窗里 → "必然溢出" → 门禁一片红；
+// 或者反过来没人量它 → 466px 预算悄悄烂掉，被切掉的是最底下的发送按钮。
+check("大面板形态名单：pet.html 与 pet-panel-preview 一致", () => {
+  assert.ok(bigStates.size > 0, "pet.html 里读不到 .big 标记（LAYOUT_STATES 那段的写法变了？）");
+  const a = [...bigStates].sort();
+  const b = [...preview.BIG_STATES].sort();
+  assert.deepStrictEqual(a, b,
+    "两处不一致：pet.html = " + JSON.stringify(a) + "，preview = " + JSON.stringify(b) +
+    "\n       改一处就要改另一处（前者决定形态归属，后者决定量测窗口尺寸）。");
+});
 
 // ---- 静态 2：每个面板形态都必须有预算基线（新加的形态不能没有余量台账）----
 check("每个面板形态（LAYOUT_STATES 里的 key）都有预算基线", () => {
@@ -183,9 +216,11 @@ check("每个面板形态（LAYOUT_STATES 里的 key）都有预算基线", () =
   assert.ok(states.length >= 3, "LAYOUT_STATES 里只读到 " + states.length + " 个形态 —— 抽取正则失效了？");
   const missing = [];
   for (const t of states) {
+    // 大面板去 big_keys 里找：它们量在 440×640，跟小面板不是同一个坐标系
+    const pool = bigStates.has(t) ? baseBigKeys : baseKeys;
     for (const ph of ["bubble0", "bubble1"]) {
       const k = "sweep:" + t + ":" + ph;
-      if (!(k in baseKeys)) missing.push(k);
+      if (!(k in pool)) missing.push(k + (bigStates.has(t) ? "（大面板）" : ""));
     }
   }
   assert.deepStrictEqual(missing, [],
@@ -198,7 +233,8 @@ check("每个面板形态（LAYOUT_STATES 里的 key）都有预算基线", () =
 check("基线里的控件的真在 pet.html 里（防死条目）", () => {
   const html = fs.readFileSync(PET_HTML, "utf-8");
   const dead = [];
-  for (const [key, entry] of Object.entries(baseKeys)) {
+  const allKeys = { ...baseKeys, ...baseBigKeys };
+  for (const [key, entry] of Object.entries(allKeys)) {
     for (const id of Object.keys(entry.blocks || {})) {
       if (!/^[A-Za-z][\w-]*$/.test(id)) continue;      // 没有 id 的块用 className 记的，跳过
       if (!html.includes('id="' + id + '"')) dead.push(key + " → #" + id);
@@ -284,7 +320,7 @@ if (!STATIC_ONLY) {
 for (const entry of sweep.all) record(entry);
 
 if (sweep.all.length) {
-  const states = sweep.all[0].states || [];
+  const states = sweep.all[0].statesSwept || [];
   check("预算扫描覆盖了所有面板形态（每态 × 2 种气泡）", () => {
     const want = [];
     for (const t of states) want.push("sweep:" + t + ":bubble0", "sweep:" + t + ":bubble1");
@@ -330,6 +366,82 @@ for (const [key, m] of Object.entries(measured)) {
 if (knownCuts.length) {
   console.log("  ⚠  已知溢出（基线里就记着的负数余量，不拦新改动，但别让它变差）：");
   knownCuts.forEach((c) => console.log("      " + c));
+}
+
+// ---------------------------------------------------------------------------
+// 大面板「怎么回」工作台（440×640）
+// ---------------------------------------------------------------------------
+// 为什么要单独一轮而不是塞进上面那轮：面板在大模式下是 424×466，窗口 440×640；
+// 塞进 220×480 的窗里量，它必然"溢出"——那不是 bug，是量错了窗。两轮各量各的，
+// 数据也分开记（big_keys），免得 220 的余量和 440 的余量被拿去互相比较。
+//
+// 大面板和预算扫描的形态（analysis / look / digest / bigreply）走的是同一条 ana 层，
+// 所以它们的"让位"逻辑（攻略盖掉两栏）也一并在这一轮里被量到。
+if (!STATIC_ONLY) {
+  console.log("--- 大面板扫描（440×640，两栏工作台）");
+  const bigSweep = preview.measureSweep({ big: true, windowSize: { w: 440, h: 640 } });
+  check("大面板扫描能渲染并回传量测数据", () => {
+    assert.ok(bigSweep.all.length > 0,
+      "一条 MEASURE 都没拿到（大面板那一轮没跑起来）\n" + String(bigSweep.err || "").split("\n").slice(-6).join("\n"));
+  });
+  const bigMeasured = {};
+  for (const entry of bigSweep.all) {
+    bigMeasured[entry.scen] = {
+      need: entry.budget.scrollH,
+      capacity: entry.budget.capacity,
+      reserve: entry.budget.reserve,
+      blocks: Object.fromEntries((entry.blocks || []).map((b) => [b.id, b.h])),
+      panes: entry.panes || {},
+      state: entry.state,
+      layer: entry.layer,
+    };
+  }
+
+  // 跑到的形态必须正好是打了 .big 标记的那些 —— 多一个少一个都说明两轮分错了。
+  check("大面板扫描覆盖了所有 .big 形态（且不多量）", () => {
+    const got = new Set(Object.values(bigMeasured).map((m) => m.state));
+    const want = [...bigStates];
+    assert.deepStrictEqual([...got].sort(), want.sort(),
+      "量到的形态 " + JSON.stringify([...got].sort()) + " ≠ 标记的 " + JSON.stringify(want.sort()));
+  });
+
+  for (const [key, m] of Object.entries(bigMeasured)) {
+    // ① 不许被切：底部被切的第一个受害者是发送按钮 —— 那正是「选一条直接发」的落点。
+    check(key + "（大面板）：底部没有被切", () => {
+      assert.ok(m.reserve >= 0,
+        "内容需要 " + m.need + "px，布局只给 " + m.capacity + "px —— 底部被切 " +
+        Math.abs(m.reserve) + "px。最占地方的块：" +
+        Object.entries(m.blocks).sort((a, b) => b[1] - a[1]).slice(0, 3)
+          .map(([id, h]) => id + "=" + h + "px").join("、"));
+    });
+    // ② 两栏必须真的分到空间：flex 分配时算错（父容器没有确定高度）会得到 0，
+    //    那时的表现是「面板看着是空的」而不是「溢出」——只看 ① 是发现不了的。
+    //    ⚠️ 攻略/看图是整屏视图，#anaBody 故意是 0（两栏让位），这两态跳过。
+    if (m.panes && !m.panes.digestOpen) {
+      check(key + "（大面板）：两栏分到了空间（不是被压成 0）", () => {
+        const body = m.panes.anaBody || 0;
+        const msgs = m.panes.anaMsgs || 0;
+        assert.ok(body >= 120,
+          "#anaBody 只有 " + body + "px —— 两栏被压扁了。多半是 #panel.big 少了确定高度" +
+          "（或 max-height:300px 没解除），导致 flex:1 没东西可分配。panes=" + JSON.stringify(m.panes));
+        assert.ok(msgs >= 60,
+          "左栏（谁在说）只有 " + msgs + "px —— 有候选时消息列表被藏了？" +
+          "那条「让位」规则只在小的 204px 面板里成立，大面板里两栏必须并存。panes=" + JSON.stringify(m.panes));
+      });
+    }
+    // ③ 余量基线：只认变多（和上面那轮同一条规矩，只是坐标系不同）
+    const base = baseBigKeys[key];
+    if (base) {
+      check(key + "（大面板）：余量没有变少（" + base.reserve + "px → " + m.reserve + "px）", () => {
+        assert.ok(m.reserve >= base.reserve - TOL,
+          "余量 " + base.reserve + " → " + m.reserve + "px（少了 " + (base.reserve - m.reserve) + "px）。" +
+          "大面板高 466 是死的，吃掉它的块：" +
+          Object.entries(m.blocks).sort((a, b) => b[1] - a[1]).slice(0, 4)
+            .map(([id, h]) => id + "=" + h + "px").join("、"));
+      });
+    }
+  }
+  global.__bigMeasured = bigMeasured;
 }
 
 // ---- 场景模式：既有的那几条不变量（让位/不裁字/不透明/角色不挪）----
@@ -405,12 +517,20 @@ if (scenes.length) {
   }
 
   // 6) 各场景的角色位置必须一致 —— 面板让位不该把角色顶走
-  const tops = scenes.map((s) => got[s] && got[s].petTop).filter((v) => typeof v === "number");
-  if (tops.length > 1) {
+  //    ⚠️ 比的是**距离窗口底边的高度**，不是绝对 petTop：大面板形态量在 640 高的窗里，
+  //    绝对坐标天然比 480 窗里的多 160。拿绝对值比会把「两套窗口」误报成「角色被顶走」
+  //    （2026-10-27 加第二套窗口时踩过：analysis=480 vs idle=320，看着像 bug，其实是对的）。
+  const gapOf = (s) => {
+    const m = got[s];
+    if (!m || typeof m.petTop !== "number" || !m.win) return null;
+    return Math.round(m.win.h - m.petTop);
+  };
+  const gaps = scenes.map(gapOf).filter((v) => typeof v === "number");
+  if (gaps.length > 1) {
     check("各场景角色位置一致（让位只动面板，不该顶走角色）", () => {
-      const uniq = [...new Set(tops)];
-      assert.strictEqual(uniq.length, 1, "各场景 petTop 不一致：" +
-        scenes.map((s) => s + "=" + (got[s] && got[s].petTop)).join(", "));
+      const uniq = [...new Set(gaps)];
+      assert.strictEqual(uniq.length, 1, "各场景「角色底边到窗口底」不一致：" +
+        scenes.map((s) => s + "=" + gapOf(s)).join(", "));
     });
   }
 }
@@ -451,7 +571,15 @@ if (UPDATE) {
   for (const [key, m] of Object.entries(measured)) {
     keys[key] = { need: m.need, capacity: m.capacity, reserve: m.reserve, blocks: m.blocks };
   }
-  console.log("--- 更新基线：" + path.relative(ROOT, BUDGET_FILE) + "（" + Object.keys(keys).length + " 个 key）");
+  // 大面板那一轮单独一份：它们的窗口是 440×640，跟小面板的 220×480 不是同一个坐标系，
+  // 混进同一个 keys 里下一次比对就会得出假差值。
+  const bigMeasured = global.__bigMeasured || {};
+  const bigKeys = {};
+  for (const [key, m] of Object.entries(bigMeasured)) {
+    bigKeys[key] = { need: m.need, capacity: m.capacity, reserve: m.reserve, blocks: m.blocks };
+  }
+  console.log("--- 更新基线：" + path.relative(ROOT, BUDGET_FILE) + "（" + Object.keys(keys).length + " 个小面板 key" +
+    (Object.keys(bigKeys).length ? " + " + Object.keys(bigKeys).length + " 个大面板 key" : "") + "）");
   for (const r of rows) {
     if (r.delta !== null && r.delta !== 0) {
       const m = measured[r.key];
@@ -460,7 +588,7 @@ if (UPDATE) {
         (baseKeys[r.key].need !== m.need ? "" : "（高度没变，变的是布局能给的高）"));
     }
   }
-  writeBudget(keys, TOL);
+  writeBudget(keys, TOL, bigKeys);
   console.log("    已写入。这个文件要跟着代码一起提交 —— 它就是「预算」的凭据。");
 }
 

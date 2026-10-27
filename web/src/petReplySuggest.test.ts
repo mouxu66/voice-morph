@@ -50,6 +50,16 @@ type ReplyPayload = {
 
 type FakeResponse = { ok: boolean; json: () => Promise<ReplyPayload> }
 
+/** 「看图」按钮的类名开关（`classList.toggle("hot", …)`）。 */
+function fakeClassList() {
+  return {
+    hot: false,
+    toggle(name: string, on: boolean) {
+      if (name === 'hot') this.hot = !!on
+    },
+  }
+}
+
 /** 把草稿块用到的真实函数装进沙箱；fetch 由用例注入，不真发请求。 */
 function loadReplyPanel(fetchImpl: (url: string) => Promise<FakeResponse>) {
   const dom = {
@@ -59,11 +69,23 @@ function loadReplyPanel(fetchImpl: (url: string) => Promise<FakeResponse>) {
     list: fakeEl(),
     title: fakeEl(),
     suggest: fakeEl(),
+    // ↓ 2026-10-27 补齐：这几条在真实页面里是常驻 DOM / 并行模块，
+    //   不声明的话 renderAnalysis 第一行就 ReferenceError，测试会「假通过」
+    //   （异常被 suggestReplies 的 catch 吞成一行提示，断言只看 hidden 就看不出来）。
+    digest: fakeEl(),
+    card: fakeEl(),
+    reply: fakeEl(),
+    searchBtn: { classList: fakeClassList() },
   }
   const env = { cap: true }
   const body = `
     let anaReplySeq = 0;
     let anaLast = null;
+    let anaLastReplies = [];
+    // 主面板那一行有没有「15s 内的现成草稿」——沙箱里恒为 0，逼它走真请求那条路。
+    let candRows = [];
+    let candAt = 0;
+    const applied = [];
     const CAP = { radar: env.cap };
     const RADAR_BASE = "/api/radar";
     const anaRepliesEl = dom.replies;
@@ -73,7 +95,17 @@ function loadReplyPanel(fetchImpl: (url: string) => Promise<FakeResponse>) {
     const anaTitleEl = dom.title;
     const anaSuggestEl = dom.suggest;
     const anaNoteEl = dom.note;
+    const anaDigestEl = dom.digest;
+    const anaCardEl = dom.card;
+    const anaReplyEl = dom.reply;
+    const anaSearchBtnEl = dom.searchBtn;
     const ANA_KIND_LABEL = { media: "图片/文件", system: "系统" };
+    /** 草稿同时要喂给主面板那一行（#replyCard 的行尾 + 点一下就用）。这里只记调用。 */
+    function applyCand(j) { applied.push(j); }
+    /** 认名提示 / 攻略块：各有一套独立用例，这里只要不炸。 */
+    function anaMarkNamesHint() {}
+    function clearDigest() {}
+    function renderDigest() {}
     ${extractFn('esc')}
     ${extractFn('clearReplies')}
     ${extractFn('renderReplies')}
@@ -85,6 +117,7 @@ function loadReplyPanel(fetchImpl: (url: string) => Promise<FakeResponse>) {
       render: renderAnalysis,
       clear: clearReplies,
       dom,
+      applied: () => applied,
       setCap: (v) => { CAP.radar = v },
       last: () => anaLast,
     };
@@ -94,6 +127,8 @@ function loadReplyPanel(fetchImpl: (url: string) => Promise<FakeResponse>) {
     render: (j: Record<string, unknown>, autoReply?: boolean) => void
     clear: () => void
     dom: typeof dom
+    /** applyCand 收到的每一份响应：证明草稿也喂给了主面板那一行 */
+    applied: () => ReplyPayload[]
     setCap: (v: boolean) => void
     last: () => Record<string, unknown> | null
   }
@@ -251,6 +286,21 @@ describe('怎么回：渲染', () => {
   })
 })
 
+describe('怎么回：草稿同时喂给主面板那一行', () => {
+  it('拿到草稿就交给 applyCand（不然主卡永远只会说「读当前会话」）', async () => {
+    const api = loadReplyPanel(async () => okResponse(OK))
+    await api.suggest({})
+    expect(api.applied()).toHaveLength(1)
+    expect(api.applied()[0].replies).toEqual(OK.replies)
+  })
+
+  it('★ 后端说失败时不交（残次品会在主卡上变成一句假话）', async () => {
+    const api = loadReplyPanel(async () => okResponse({ ok: false, error: '读不到微信窗口' }))
+    await api.suggest({})
+    expect(api.applied()).toHaveLength(0)
+  })
+})
+
 describe('怎么回：点一下就填进输入框', () => {
   // 抠出真实的事件委托块（注释 → 「换一批」那行之前），在沙箱里跑。
   const a = html.indexOf('// 草稿点一下就填进')
@@ -294,9 +344,11 @@ describe('怎么回：点一下就填进输入框', () => {
     expect(calls.layer).toBe('ana')
   })
 
-  it('「换一批」用的是上一轮的分析结果（含 last_side）', () => {
+  it('「换一批」用的是上一轮的分析结果（含 last_side），且把上一批当 avoid 带回去', () => {
     expect(html).toContain('anaReplyBtnEl.addEventListener("click"')
-    expect(html).toContain('suggestReplies(anaLast || {})')
+    // 只传 anaLast、不带 `anaLastReplies.length > 0` 的话，这个按钮等于没做：
+    // 同一份提示词再问一次，模型只会把刚才那三条重说一遍。（两个参数缺一不可）
+    expect(html).toContain('suggestReplies(anaLast || {}, anaLastReplies.length > 0)')
   })
 })
 

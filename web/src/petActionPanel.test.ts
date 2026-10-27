@@ -78,34 +78,68 @@ const base = (over: Ctx = {}): Ctx => ({
   pending: 0, pendingTitle: '', cap: { ...ALL_CAP }, freq: {}, max: 3, ...over,
 })
 
-describe('建议面板：空态必须给得出来', () => {
-  it('什么都没有时也要有三条兜底（空面板会让人以为坏了）', () => {
-    const rows = api.rankActions(base())
-    expect(rows.map((r) => r.id)).toEqual(['song.find', 'sfx.play', 'analyze.open'])
+describe('建议面板：只报「此刻正在发生的事」', () => {
+  it('★ 没有任何信号 → 返回空数组，推荐区整块不占高度', () => {
+    // 2026-10-27 撤掉了兜底池（点歌 30 / 音效 26 / 分析聊天 24 / 该不该回 22）。
+    // 它存在的唯一理由是「空面板会让人以为坏了」—— 现在面板不空：
+    // 怎么回是一块整宽主卡（#replyCard），点歌·音效·托管在底部工具行（#toolRow），
+    // 变声是状态条上的药丸。于是池子只剩下一个作用：把真正的信号挤到后面去。
+    expect(api.rankActions(base())).toEqual([])
   })
 
-  it('★ 兜底里的「分析聊天」是用户 2026-10-23 点名要的那个按钮', () => {
-    // 原话：「有个按钮能自动分析，就是点它就能自动分析。」
-    // 它必须在空面板的前三条里，而且打字搜「分析」也要搜得到 ——
-    // 否则用户只能靠猜「这个功能藏在哪」。
-    expect(api.labelFor('analyze.open', {})).toBe('分析聊天')
-    expect(api.matchActions('分析', base()).map((r) => r.id)).toContain('analyze.open')
+  it('★ 空是空数组，不是 undefined —— 调用方一律 rows.length 判空', () => {
+    expect(Array.isArray(api.rankActions(base()))).toBe(true)
   })
 
-  it('★ 能力关掉的动作不能出现在兜底里（点了就是 404）', () => {
-    const rows = api.rankActions(base({ cap: { ...ALL_CAP, radar: false, fx: false } }))
-    const ids = rows.map((r) => r.id)
-    expect(ids).not.toContain('radar.open')
-    expect(ids).not.toContain('analyze.open')
-    expect(ids).not.toContain('song.find')
-    // 还能剩什么就显示什么，但不能因此变成空数组
-    expect(ids.length).toBeGreaterThan(0)
+  it('有信号时只出信号，一个兜底项都不掺', () => {
+    const ids = api.rankActions(base({ bgm: true, max: 99 })).map((r) => r.id)
+    expect(ids).toEqual(['bgm.toggle'])
   })
 
   it('★ 搜索专用动作（发语音 / 试听）不进推荐池 —— 主按钮已经承担了它们', () => {
     const ids = api.rankActions(base({ max: 99 })).map((r) => r.id)
     expect(ids).not.toContain('draft.send')
     expect(ids).not.toContain('draft.preview')
+  })
+})
+
+describe('建议面板：被「一等入口」接管的动作不再进推荐池', () => {
+  // 每一个都有一个**常驻**控件在管，推荐位里再出现一次就是重复：
+  //   怎么回 / 分析聊天 → #replyCard（整宽主卡）
+  //   点歌 / 音效 / 托管 → #toolRow（底部工具行）
+  //   开变声            → #pill（状态条药丸）
+  // searchOnly 的语义因此从「主按钮已经承担了它们」扩成「已经有一等入口」。
+  it.each([
+    ['radar.open', '怎么回'],
+    ['analyze.open', '分析聊天'],
+    ['song.find', '点歌'],
+    ['sfx.play', '音效'],
+    ['autopilot.open', '托管'],
+    ['live.toggle', '开变声'],
+  ])('%s（%s）带 searchOnly', (id) => {
+    const m = api.ACT_META.find((x) => x.id === id)
+    expect(m?.searchOnly).toBe(true)
+  })
+
+  it('★ 但它们必须**搜得到** —— 老用户记的是功能名，不是新藏法', () => {
+    expect(api.matchActions('歌', base()).map((r) => r.id)).toContain('song.find')
+    expect(api.matchActions('音效', base()).map((r) => r.id)).toContain('sfx.play')
+    expect(api.matchActions('托管', base()).map((r) => r.id)).toContain('autopilot.open')
+    expect(api.matchActions('分析', base()).map((r) => r.id)).toContain('analyze.open')
+    // 「该不该回」是 2026-10-24 那版的说法，现在字面上叫「怎么回」，两个词都得能搜到
+    expect(api.matchActions('该不该', base()).map((r) => r.id)).toContain('radar.open')
+  })
+
+  it('★ searchOnly 不等于绕过能力门 —— 能力关掉照样搜不到', () => {
+    const ids = api.matchActions('歌', base({ cap: { ...ALL_CAP, fx: false } })).map((r) => r.id)
+    expect(ids).not.toContain('song.find')
+  })
+
+  it('★ 使用频率不能把一等入口重新顶回推荐池', () => {
+    // bumpFreq 还在（它给真正进池的动作加分），但满分 15 也压不过 searchOnly 那道门
+    const ids = api.rankActions(base({ max: 99, freq: { 'sfx.play': 100 } })).map((r) => r.id)
+    expect(ids).not.toContain('sfx.play')
+    expect(ids).toEqual([])
   })
 })
 
@@ -116,26 +150,24 @@ describe('建议面板：上下文信号', () => {
     expect(api.labelFor('proposal.confirm', { pendingTitle: '发《晴天》' })).toBe('确认 发《晴天》')
   })
 
-  it('★ 两个信号同时在：提案盖过雷达（已经解析好的事比「该回了」更具体）', () => {
-    const rows = api.rankActions(base({ pending: 1, pendingTitle: 'X', radar: 'now' }))
+  it('★ 两个信号同时在：提案盖过放歌（已经解析好的事比"正在发生的事"更该处理）', () => {
+    const rows = api.rankActions(base({ pending: 1, pendingTitle: 'X', bgm: true }))
     expect(rows[0].id).toBe('proposal.confirm')
-    expect(rows[1]).toMatchObject({ id: 'radar.open', hint: '对方在等' })
+    expect(rows[1]).toMatchObject({ id: 'bgm.toggle', hint: '正在放' })
   })
 
-  it('雷达 now / soon 的理由不同（now 才值得打断）', () => {
-    expect(api.rankActions(base({ radar: 'now' }))[0]).toMatchObject({ id: 'radar.open', hint: '对方在等' })
-    const soon = api.rankActions(base({ radar: 'soon' }))
-    expect(soon[0]).toMatchObject({ id: 'radar.open', hint: '可以回了' })
-    expect(soon[0].score).toBeLessThan(api.rankActions(base({ radar: 'now' }))[0].score)
-  })
-
-  it('★ 这一行回答的是「怎么回」，不是「该不该回」', () => {
+  it('★ 「该回了」不再造推荐行 —— 它现在是主卡上的一个字（#replyCard）', () => {
     // 2026-10-26 用户原话：「这个该不该回怎么没把它变成推荐我怎么回呢？」
-    // 判断本身没有一个字是用户能发出去的 —— 所以标题从「该不该回」改成「怎么回」，
-    // 行尾在拿到草稿后显示那句能直接发的话（渲染层覆盖，见 refreshRecs）。
+    // 那一版的做法是把它做成推荐行、行尾挂第一条草稿。2026-10-27 再进一步：
+    // 判断结论（该回了 / 可以回了）写在主卡标题旁，草稿整句写在副行 ——
+    // 它不需要跟别的东西挤三个位置，所以不再进 rankActions。
+    expect(api.rankActions(base({ radar: 'now' }))).toEqual([])
+    expect(api.rankActions(base({ radar: 'soon' }))).toEqual([])
+  })
+
+  it('「怎么回」这个词仍然挂在雷达动作上（labelFor 与 kw 都不许丢）', () => {
     expect(api.labelFor('radar.open', {})).toBe('怎么回')
     const meta = api.ACT_META.find((m) => m.id === 'radar.open')!
-    // 两个词都得能搜到：老用户记的是「该不该回」，新语义是「怎么回」。
     expect(meta.kw).toContain('怎么回')
     expect(meta.kw).toContain('该不该')
   })
@@ -147,33 +179,15 @@ describe('建议面板：上下文信号', () => {
     expect(api.labelFor('bgm.toggle', { bgm: false })).toBe('放歌')
   })
 
-  it('没开变声时「开变声」在池子里，但排在兜底三项之后', () => {
-    const ids = api.rankActions(base({ max: 99 })).map((r) => r.id)
-    expect(ids).toContain('live.toggle')
-    expect(ids.indexOf('live.toggle')).toBeGreaterThan(ids.indexOf('radar.open'))
-  })
-
   it('★ 输入框有字时推荐区让给搜索结果（返回空数组，不是 undefined）', () => {
-    const rows = api.rankActions(base({ query: '晴天', text: '晴天' }))
+    const rows = api.rankActions(base({ query: '晴天', text: '晴天', bgm: true }))
     expect(rows).toEqual([])
   })
 
-  it('★ 使用频率能把「开变声」顶进前三条（这就是「不用每次打字」的那一半）', () => {
-    const cold = api.rankActions(base()).map((r) => r.id)
-    expect(cold).not.toContain('live.toggle')
-    // 18 底分 + 5 次 × 3 = 33 > sfx.play 的 26 / analyze.open 的 24
-    const warm = api.rankActions(base({ freq: { 'live.toggle': 5 } })).map((r) => r.id)
-    expect(warm).toContain('live.toggle')
-  })
-
-  it('频率加成封顶 15（用 100 次也不会盖过「该回了」）', () => {
-    const rows = api.rankActions(base({ radar: 'now', freq: { 'sfx.play': 100 } }))
-    expect(rows[0].id).toBe('radar.open')
-  })
-
   it('最多返回 max 条', () => {
-    expect(api.rankActions(base({ max: 2 }))).toHaveLength(2)
-    expect(api.rankActions(base({ max: 1 }))).toHaveLength(1)
+    const both = { pending: 1, pendingTitle: 'X', bgm: true }
+    expect(api.rankActions(base({ ...both, max: 2 }))).toHaveLength(2)
+    expect(api.rankActions(base({ ...both, max: 1 }))).toHaveLength(1)
   })
 })
 

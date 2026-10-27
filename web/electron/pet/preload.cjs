@@ -3,6 +3,14 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("pet", {
   setIgnoreMouse: (v) => ipcRenderer.send("pet:ignore-mouse", !!v),
+  // 换身材：「怎么回」大面板需要 440×640 才装得下两栏，桌宠本体只需要 220×480。
+  // 主进程负责锚定右下角并夹回工作区（见 pet.cjs setPetBig / pet-geometry.cjs）。
+  setBig: (on) => ipcRenderer.send("pet:panel-big", !!on),
+  onBigChange: (cb) => {
+    const handler = (_e, v) => cb(!!v);
+    ipcRenderer.on("pet:big-changed", handler);
+    return () => ipcRenderer.removeListener("pet:big-changed", handler);
+  },
   // 手动拖拽：渲染器报告按下/移动，主进程用光标屏幕坐标挪窗口
   dragStart: () => ipcRenderer.send("pet:drag-start"),
   dragMove: () => ipcRenderer.send("pet:drag-move"),

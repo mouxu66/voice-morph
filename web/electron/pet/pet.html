@@ -239,6 +239,119 @@
     background: rgb(var(--c-border-2) / 0.7); border-radius: 999px;
   }
 
+  /* ══ 大面板（2026-10-27）：「怎么回」工作台 ═══════════════════════════════
+     这一版改的是**主次**，不是又加了个功能。改版前面板上并排着四个一样大的入口
+     （怎么回 / 点歌 / 音效 / 托管），用户看不出哪个是重点；而「我不知道该说什么」
+     才是真正卡住人的那件事 —— 另外三个都是"我已经知道要做什么，只是去点一下"。
+     所以：怎么回独占一块整宽卡，点进去是 440×640 的两栏工作台；那三个收进底部
+     一条窄的工具行。
+
+     尺寸账（窗口 440×640）：
+       可用宽 = 440 − #root 左右各 8 = 424
+       可用高 = 640 − #root 上下留白 18 − 角色 150 − 面板下边距 6 ≈ 466
+     ⚠️ 大模式下 #root 必须改成 align-items: flex-end：桌宠是**居中**排的，
+     窗口向左长 220px 而角色仍居中 → 它会在屏幕上横跳 110px。贴住右边缘，
+     主进程那边再把窗口整体向右上锚定，两条合起来桌宠才原地不动。 */
+  #root.panel-big { align-items: flex-end; }
+  #panel.big {
+    width: 424px;
+    /* 高度写死而不是 max-height：里面的两栏要 flex:1 分剩余空间，容器必须有一个
+       确定的高度可供分配，否则 flex:1 算出来是 0，#anaBody 会被压成一条线。 */
+    height: 466px;
+    /* ⚠️ 必须显式解除 #panel 的 max-height:300px —— 它只被 #panel 那条规则设过，
+       不解除的话 466 会被钳回 300，而 flex 子项仍按 466 去分 → 每块都被压扁。
+       （2026-10-27 实测：phead / draft / fireRow 各 268px，整块面板像被拉伸了一样。） */
+    max-height: none;
+    /* display 由 syncPanelDisplay() 写成 inline flex；方向必须在 CSS 里定，
+       否则 flex 默认是 row，所有子块会横排。 */
+    flex-direction: column;    padding: 12px 14px;
+    overflow: hidden;
+    /* 大面板的东西是**读**的，不是扫一眼就点：13px 起，比小面板的 12px 宽一档 */
+    font: 13px/1.45 var(--font-body);
+  }
+  /* 大模式下这几块由两栏工作台接管，不再占纵向 */
+  #panel.big #replyCard { display: none; }
+  #panel.big #recs { display: none; }
+
+  /* ★ 大面板的**阅读顺序**：工作台在上，草稿与发送在下。
+     DOM 顺序是「输入框 → 主按钮 → 各分层」（小面板的直觉：先写再发，分层弹出来盖住中间）。
+     大面板里那样读起来是「输入框 / 按住说话 / 然后才是怎么回」—— 主按钮被夹在工作台
+     前面，而这一版的全部意义是「先看清楚再决定发什么」。flex 的 order 直接重排，
+     不动 DOM：DOM 一改，小面板的 Tab 顺序和所有已量的高度全都得跟着重算。 */
+  #panel.big #phead { order: 0; }
+  #panel.big #analysisLayer { order: 1; }
+  #panel.big #draft { order: 2; }
+  #panel.big #fireRow { order: 3; }
+  #panel.big #status { order: 4; }
+
+  /* —— 怎么回：小面板上的主入口（整宽卡，不是并排的 chip）—— */
+  #replyCard {
+    display: block; box-sizing: border-box; width: 100%;
+    margin: 0 0 6px; padding: 7px 8px 6px;
+    border-radius: 11px;
+    border: 1px solid rgb(var(--c-accent) / 0.42);
+    background:
+      linear-gradient(180deg, rgb(var(--c-accent) / 0.13), rgb(var(--c-accent) / 0.04));
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  #replyCard:hover, #replyCard:focus-visible {
+    border-color: rgb(var(--c-accent) / 0.75);
+    background: linear-gradient(180deg, rgb(var(--c-accent) / 0.2), rgb(var(--c-accent) / 0.06));
+    outline: none;
+  }
+  #rcTop { display: flex; align-items: baseline; gap: 5px; }
+  #rcTitle { flex: 0 0 auto; font-size: 12px; font-weight: 700; color: rgb(var(--c-t-100)); }
+  /* 结论（该回了 / 可以回了 / 再看看）：它不是标题的一部分，是一句**判断**，
+     所以靠右、小一号、按状态换色 —— 和雷达层里的 verdict 同源（lastRadarAction）。 */
+  #rcVerdict {
+    flex: 0 0 auto; font-size: 9px; color: rgb(var(--c-t-500));
+  }
+  #rcVerdict.now { color: rgb(var(--c-ok)); font-weight: 650; }
+  #rcGo { flex: 0 0 auto; margin-left: auto; font-size: 9px; color: rgb(var(--c-accent-h)); }
+  #rcSub {
+    margin-top: 2px; font-size: 10px; line-height: 1.35; color: rgb(var(--c-t-400));
+    /* 只会是「一句能直接发的话」或一句用法 —— 都可能长，压到两行封顶 */
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  /* 有现成草稿时那句候选换成强调色：它是可以直接发的，不是提示 */
+  #rcSub.cand { color: rgb(var(--c-t-200)); }
+
+  /* —— 工具行：点歌 / 音效 / 托管 ——
+     它们原来占着建议区的推荐位（和「怎么回」一样大）。区别在于：推荐位是"此刻该做什么"，
+     需要被提醒；工具是"我想用某个东西"，只需要被找到。所以收成一条 20px 的窄行。
+     ⚠️ 常驻不折叠成图标：托管曾经被塞进抽屉，2026-10-24 的报障就是「找不到入口」。 */
+  #toolRow { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+  #panel #toolToggle {
+    flex: 0 0 auto; height: auto; padding: 1px 2px;
+    border: 0; background: transparent; box-shadow: none;
+    font-size: 9px; color: rgb(var(--c-t-500));
+  }
+  #panel #toolToggle:hover { color: rgb(var(--c-accent-h)); }
+  #panel #toolToggle[aria-expanded="true"] { color: rgb(var(--c-accent-h)); }
+  #toolToggle .tw { display: inline-block; width: 8px; transition: transform .15s; }
+  #toolToggle[aria-expanded="true"] .tw { transform: rotate(90deg); }
+  #toolHint { font-size: 9px; color: rgb(var(--c-t-500) / 0.8); }
+  #toolBox { display: flex; gap: 4px; margin-top: 3px; }
+  #toolBox[hidden] { display: none; }
+  /* 进任何一层都收起工具行：分层是「此刻要做的那件事」，工具行是「平时在哪儿找东西」。
+     两者同屏的唯一结果是把 300px 的预算再切一刀（2026-10-27 实测 tray 从 141 涨到 156，
+     底部「放歌」被切）。大面板里也收 —— 正在挑回复时不点歌。
+     主卡同理：进了分层，当前这一层就是全部内容（那条「怎么回」的入口在层级外面，
+     收着它才腾得出 61px 给托盘/抽屉）。 */
+  #panel.has-tray #toolRow, #panel.has-drawer #toolRow,
+  #panel.has-songs #toolRow, #panel.has-radar #toolRow,
+  #panel.has-ana #toolRow { display: none; }
+  #panel.has-tray #replyCard, #panel.has-drawer #replyCard,
+  #panel.has-songs #replyCard, #panel.has-radar #replyCard { display: none; }
+  #panel #toolBox button {
+    flex: 1 1 0; height: auto; padding: 4px 0; border-radius: 8px;
+    font-size: 10px; color: rgb(var(--c-t-300));
+    border: 1px solid rgb(var(--c-border) / 0.9);
+    background: rgb(var(--c-surface-2) / 0.5);
+  }
+  #panel #toolBox button:hover { border-color: rgb(var(--c-accent) / 0.6); }
+
   /* —— 状态条（2026-10-23）：药丸 + 当前音色 + 两个入口 ——
      改版前这一行是「药丸 + 音色 + 推理耗时」，下面紧跟 4 个页签。现在页签没了，
      省下的高度换成了两个 26px 入口（♪ 声音 / ⋯ 更多）—— 常驻可点从 13 个降到 5 个
@@ -903,6 +1016,73 @@
   #panel.has-ana #fireRow,
   #panel.has-ana #gesture,
   #panel.has-ana #fxPicks { display: none; }
+
+  /* ══ 大面板（440×640）里这一层是两栏工作台 ═══════════════════════════════
+     小面板里「收起草稿与主按钮」是对的：204px 宽、300px 高，读消息和发消息只能二选一。
+     大面板里就**不能收**了 —— 选一条候选之后紧接着就是"发出去"，把主按钮藏起来等于
+     逼用户退出去再发一次。所以大模式下 #draft / #fireRow 是常驻的，占底部 77px。
+
+     高度账（面板 466 高 − 上下 padding 24 = 442）：
+       phead 26+6 | anaHead 22 | anaCard ~56 | anaBody flex | draft 33 | fireRow 44
+       → anaBody 拿剩余 ~240，两栏各自内滚，整块永远不撑破窗口。 */
+  #panel.big #analysisLayer {
+    flex: 1 1 auto; min-height: 0;
+    display: flex; flex-direction: column;
+    margin-top: 2px;
+  }
+  #panel.big.has-ana #draft { display: block; }
+  #panel.big.has-ana #fireRow { display: flex; }
+  #panel.big #draft { margin-top: 6px; }
+  #panel.big #anaBody {
+    flex: 1 1 auto; min-height: 0;
+    display: grid; grid-template-columns: minmax(0, 1fr) 246px;
+    grid-template-rows: minmax(0, 1fr); gap: 10px;
+    margin-top: 8px;
+  }
+  /* 左栏：谁在说。小面板里它只有 84px（一屏 3 条），大面板里给满剩余高度并内滚。 */
+  #panel.big #anaMsgs {
+    max-height: none; margin-top: 0; overflow-y: auto; gap: 3px;
+    padding-right: 2px;
+  }
+  /* ★ 大面板里消息列表**不参与让位**。小面板那条规则（有草稿就收掉原话，300px 只放得下
+     一件事）在 424×466 里是反的：左栏「谁在说」和右栏「怎么回」并排存在的全部意义，
+     就是一边看上下文一边挑句子。用 [hidden] 覆盖而不是在 JS 里判 panelBig ——
+     renderReplies 是在 setLayer("ana") 之前跑的，那一刻还不知道自己会变大。 */
+  #panel.big #anaMsgs[hidden] { display: grid; }
+  /* 右栏：怎么回。上行是标题，中间是候选（内滚），底部是提示行。 */
+  #panel.big #anaReply {
+    margin: 0; padding: 0 0 0 12px;
+    border-top: 0; border-left: 1px solid rgb(var(--c-border) / 0.7);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  #panel.big #anaReplies { flex: 1 1 auto; min-height: 0; overflow-y: auto; gap: 6px; }
+  /* 候选是这一版的主角：小面板里 10px 的小行，大面板里给到 12.5px / 两行高。
+     点它是「少打字」——这块的点击密度比任何别的控件都该高。 */
+  #panel.big #anaReplies .rchip { padding: 8px 10px; border-radius: 10px; font-size: 12.5px; line-height: 1.45; }
+  #panel.big #anaCard { margin-top: 6px; padding: 10px 11px 9px; border-radius: 12px; }
+  #panel.big #anaTitle { font-size: 13px; }
+  #panel.big #anaSuggest { font-size: 11.5px; margin-top: 3px; }
+  #panel.big #anaList li { font-size: 11px; }
+  #panel.big #anaList { gap: 3px; margin-top: 6px; }
+  #panel.big .amsg { font-size: 11.5px; gap: 6px; }
+  #panel.big .amsg .who { max-width: 60px; font-size: 10px; }
+  #panel.big .amsg .k { font-size: 10px; }
+  #panel.big .amsg.time { font-size: 9.5px; }
+  #panel.big #anaReplyNote, #panel.big #anaNote { font-size: 10px; }
+  /* 攻略 / 看图：大面板里它是**整屏视图**（跟小面板里一样，只是地方大了）。
+     `:has()` 在这里是必需的 —— #anaDigest 的显隐由四处 JS 各写一次（openDigest /
+     openLook / closeDigest / renderAnalysis 重启），再挂一个 .digest-on 类就是第五处，
+     迟早会漏。Electron 32 = Chromium 128，:has 可用。
+     万一将来降版到不支持：退化成两栏里塞一个 120px 的滚动块，难看但不会切掉内容。 */
+  #panel.big #analysisLayer:has(#anaDigest:not([hidden])) #anaBody { display: none; }
+  #panel.big #anaDigest {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-top: 8px;
+  }
+  #panel.big #anaDigestQ { height: 26px; font-size: 12px; }
+  #panel.big .dcard .dt { font-size: 12.5px; }
+  #panel.big .dcard .ds { font-size: 11px; }
+  #panel.big #anaDigestAdvice .adv { font-size: 11.5px; }
+
   #analysisLayer[hidden] { display: none; }
   #analysisLayer { margin-top: 3px; }
   #anaHead { display: flex; align-items: center; gap: 4px; }
@@ -1231,6 +1411,14 @@
      那时收起的不再是「最近发送」（它已经在抽屉里），而是**提示行与音效片**
      （它们都是可以稍后再看的辅助信息）。 */
   #root.compact #panel #gesture { display: none; }
+  /* ★ 气泡在屏时收起「怎么回」主卡（2026-10-27）。
+     实测：气泡起来后可用高只有 220，而主面板现在是 phead 26 + replyCard 61 +
+     draft 33 + fireRow 44 + toolRow 15 = 179，offline 还带一条 23px 的状态行 ——
+     底部被切 25px，切掉的正是主按钮的下沿。
+     收掉主卡（-61）之后 reserve 回到 +36。
+     这不是"藏功能"：气泡在屏意味着桌宠正在说一句话（导览 / 出错 / 正在听），
+     此刻在读那句话的人不会同时挑回复；气泡一收，主卡立刻回来。 */
+  #root.compact #panel #replyCard { display: none; }
   #root.compact #panel .field { margin-bottom: 4px; }
   #root.compact #panel #fxGrid { max-height: 40px; }
   /* 气泡在屏时收起音色 chip：头部这一行只有 184px，而药丸在「RVC 变声中」「后端离线」
@@ -1398,6 +1586,22 @@
       </button>
     </div>
 
+    <!-- ── 怎么回：面板的主入口（2026-10-27）────────────────────────────────
+         改版前它是建议区里的一格 chip，和「点歌 / 音效 / 托管」并排 —— 四个一样大，
+         用户看不出哪个是重点。现在独占一块整宽卡，标题是**结论**，副行是**一句能
+         直接发的话**（还没有草稿时才是用法说明）。
+         点进去换身材：220×480 → 440×640，两栏工作台（左：谁在说；右：三条候选），
+         底下还留着草稿与发送 —— 选一条就能当场发，不用来回切。 -->
+    <div id="replyCard" role="button" tabindex="0"
+         title="读当前会话，给几条能直接发出去的话（会换成大面板）">
+      <div id="rcTop">
+        <span id="rcTitle">怎么回</span>
+        <span id="rcVerdict"></span>
+        <span id="rcGo">打开 ›</span>
+      </div>
+      <div id="rcSub">读当前会话，给几条能直接发出去的话</div>
+    </div>
+
     <!-- ── 装填区：一条草稿 ──────────────────────────────────────────────────
          类型由**内容**决定，不由页签决定：
            空         → 输入框等打字（主按钮 = 按住说话）
@@ -1486,6 +1690,23 @@
          旧版它是「按住」页里的 #holdPre，只在那一页可见；现在跟着主按钮走 ——
          因为按住就是这个按钮的默认动作，"微信没开"必须在按下**之前**说。 -->
     <div id="gesture" aria-live="polite">按住说，松手就发</div>
+
+    <!-- ── 工具行：点歌 / 音效 / 托管（2026-10-27 从建议区挪下来）────────────
+         这三样以前占着建议区的推荐位，和「怎么回」一样大。区别在于：推荐位回答的是
+         「此刻该做什么」，需要被提醒；工具回答的是「我想用某个东西」，只需要被找到。
+         收成一条常驻窄行，点开才展开三个入口 —— 平时一个像素都不抢。
+         ⚠️ 不许再收进「⋯」抽屉：托管被藏进抽屉时（2026-10-24）报障原话是「找不到入口」。 -->
+    <div id="toolRow">
+      <button type="button" id="toolToggle" aria-expanded="false" aria-controls="toolBox"
+              title="点歌 / 音效 / 托管"><span class="tw">▸</span> 工具</button>
+      <span id="toolHint">点歌 · 音效 · 托管</span>
+    </div>
+    <div id="toolBox" hidden>
+      <button type="button" data-tool="song.find" title="搜抖音热榜 / B站榜，点一首实时放">点歌</button>
+      <button type="button" data-tool="sfx.play" title="音效声板：点一格现场播，点 ＋ 混进这条语音">音效</button>
+      <button type="button" data-tool="autopilot.open"
+              title="打开主界面的「全局托管」：授权后自动回白名单会话（默认关，可急停）">托管</button>
+    </div>
 
     <!-- ── 声音托盘：音效 + 放歌 ────────────────────────────────────────────
          两个都是「此刻送进虚拟声卡」的东西，所以放同一个托盘；发送链路留在主按钮。
@@ -1585,8 +1806,11 @@
          结论与文案的唯一真相源在 m2_server/chat_read.py，这里不造判断。 -->
     <div id="analysisLayer" hidden>
       <div id="anaHead">
-        <button type="button" id="anaBack" title="返回">‹</button>
-        <span class="st">分析聊天</span>
+        <button type="button" id="anaBack" title="收起大面板，回到小面板">‹</button>
+        <!-- 标题就是功能名。2026-10-27 之前这里写「分析聊天」，因为它是从建议区的
+             一格 chip 点进来的二级层；现在它就是面板本身（大面板只有这一件事），
+             标题得写用户要的那件事：怎么回。 -->
+        <span class="st">怎么回</span>
         <!-- 认人：昵称条是像素，UIA 里根本没有发送方（见 chat_radar/names.py）。
              点它 = 把这一屏的昵称条拼成一张图让视觉模型读一次（约 3 秒、占 6G 显存）。
              **不自动做**：会和实时变声抢显卡，所以必须是一次点击。 -->
@@ -1599,23 +1823,29 @@
         <div id="anaSuggest"></div>
         <ul id="anaList" hidden></ul>
       </div>
-      <div id="anaMsgs" role="list" hidden></div>
-      <!-- 怎么回：本地 Qwen3-VL-4B（llama-server）给的草稿。点一条 = 填进输入框，
-           然后退回主面板 —— 用户要的不是「建议」，是「少打字」。 -->
-      <div id="anaReply">
-        <div id="anaReplyHead">
-          <span class="st">怎么回</span>
-          <!-- 搜攻略的入口：跟「换一批」同一行，不多占高度。点开才展开下面那块 ——
-               面板 300px 是死预算，一个「可能用不上」的输入框不该常驻。 -->
-          <!-- 看图的入口：专门对付群里发的那张攻略表 —— 缩略图只有 418×270，
-               字全糊，光靠截图聊天区读不出来（2026-10-25 实测两个模型都读不了）。
-               点它会双击放大那张图再读，会抢一下焦点，所以不自动做。 -->
-          <button type="button" id="anaLookBtn" title="放大读群里那张图（要点只给你看，不进群）">看图</button>
-          <button type="button" id="anaSearchBtn" title="去网上查一下（结果只给你看，不进群）">搜攻略</button>
-          <button type="button" id="anaReplyBtn" title="让本地模型再想一批">换一批</button>
+      <!-- 大面板的两栏（2026-10-27）：左「谁在说」，右「怎么回」。
+           小面板里这两块是上下叠的（一个 84px 的消息列表 + 一组候选），因为 204px 宽
+           放不下并排；到了 424px 才拆成两栏 —— 读消息和挑候选是**同时**要做的两件事，
+           叠着放就得来回滚。 -->
+      <div id="anaBody">
+        <div id="anaMsgs" role="list" hidden></div>
+        <!-- 怎么回：本地 Qwen3-VL-4B（llama-server）给的草稿。点一条 = 填进输入框，
+             然后退回主面板 —— 用户要的不是「建议」，是「少打字」。 -->
+        <div id="anaReply">
+          <div id="anaReplyHead">
+            <span class="st">怎么回</span>
+            <!-- 搜攻略的入口：跟「换一批」同一行，不多占高度。点开才展开下面那块 ——
+                 面板 300px 是死预算，一个「可能用不上」的输入框不该常驻。 -->
+            <!-- 看图的入口：专门对付群里发的那张攻略表 —— 缩略图只有 418×270，
+                 字全糊，光靠截图聊天区读不出来（2026-10-25 实测两个模型都读不了）。
+                 点它会双击放大那张图再读，会抢一下焦点，所以不自动做。 -->
+            <button type="button" id="anaLookBtn" title="放大读群里那张图（要点只给你看，不进群）">看图</button>
+            <button type="button" id="anaSearchBtn" title="去网上查一下（结果只给你看，不进群）">搜攻略</button>
+            <button type="button" id="anaReplyBtn" title="让本地模型再想一批">换一批</button>
+          </div>
+          <div id="anaReplies" role="list"></div>
+          <div id="anaReplyNote" aria-live="polite"></div>
         </div>
-        <div id="anaReplies" role="list"></div>
-        <div id="anaReplyNote" aria-live="polite"></div>
       </div>
       <!-- 查攻略：对方在问机制/数值/排行时，这些东西记录里没有、模型也没有。
            搜一次摆在这儿给**你看**，你一眼就知道该说什么；点「照这个写一条」
@@ -2327,6 +2557,14 @@ const moreBtn = document.getElementById("moreBtn");
 const voiceBtn = document.getElementById("voiceBtn");
 // 建议区（#recs）：主面板上唯一随上下文变的东西
 const recsEl = document.getElementById("recs");
+// 「怎么回」主入口卡（2026-10-27）：面板上唯一一块整宽卡，点它换身材进工作台
+const replyCardEl = document.getElementById("replyCard");
+const rcVerdictEl = document.getElementById("rcVerdict");
+const rcSubEl = document.getElementById("rcSub");
+// 工具行：点歌 / 音效 / 托管（原来占着建议区的推荐位）
+const toolToggleEl = document.getElementById("toolToggle");
+const toolBoxEl = document.getElementById("toolBox");
+const toolHintEl = document.getElementById("toolHint");
 // 装填区：录音中的波形块（替代输入框）
 const recBoxEl = document.getElementById("recBox");
 // 状态条（#phead）：药丸(pillEl/pillText)在文件上半段已取到，这里补两个只读 chip
@@ -2556,7 +2794,7 @@ async function pickEngine(next) {
  */
 function showPanel() {
   panelOpen = true;
-  panel.style.display = "block";
+  syncPanelDisplay();
   refreshPanel();   // 每次浮现刷新：音色下拉 + 最近发送 + 主按钮文案
   // 面板一出现就该有「怎么回」的内容。雷达慢轮询是常驻的，verdict 早在面板
   // 没开时就变成「该回了」，那次边沿已经过去 —— 这里补一次（30s 冷却在
@@ -2786,6 +3024,38 @@ function esc(s) {
 // 为什么不分得更细（比如音效一个入口、放歌又一个）：那又会退化成页签 ——
 // 用户得先想「这个声音属于哪一类」，而他要的只是「放个声」。
 let panelLayer = "";           // "" | "tray" | "drawer" | "songs" | "radar" | "ana"
+/** 当前是不是「怎么回」大面板（窗口 440×640）。只由 setPanelBig 写。 */
+let panelBig = false;
+
+/**
+ * 面板的 display 写在一个地方：大模式是 flex column（两栏要分剩余高度），小模式是 block。
+ * 散着写就会出现「加了 big 类，但别处那句 style.display='none' 还压在上面」——
+ * 这个文件以前在 [hidden] 上踩过三次同类问题（flex 容器会盖掉 UA 的 display:none）。
+ */
+function syncPanelDisplay() {
+  if (!panel) return;
+  panel.style.display = !panelOpen ? "none" : (panelBig ? "flex" : "block");
+}
+
+/**
+ * 换身材：面板尺寸 + 通知主进程改窗口。**只由 setLayer 调**（它是唯一知道当前在哪一层的地方）。
+ *
+ * 为什么必须两边一起变：窗口尺寸只有主进程能改，而「该不该大」只有渲染层知道。
+ * 只变 CSS → 424px 的面板挤在 220px 窗口里，右边整块被切掉（候选全看不见）；
+ * 只变窗口 → 空出一大片透明区域，点击穿透判据也会跟着错。
+ *
+ * 主进程负责锚定右下角并夹回工作区（见 pet-geometry.cjs —— 那里有单测，因为
+ * 锚错了桌宠会窜出屏幕，而这条路径在沙箱里起不了 GUI，只能靠纯函数守）。
+ */
+function setPanelBig(on) {
+  const want = !!on;
+  if (want === panelBig) return;
+  panelBig = want;
+  if (panel) panel.classList.toggle("big", panelBig);
+  if (rootEl) rootEl.classList.toggle("panel-big", panelBig);
+  syncPanelDisplay();
+  if (window.pet && window.pet.setBig) window.pet.setBig(panelBig);
+}
 
 /** 切换分层。next 为 "" 时全部收起。 */
 function setLayer(next) {
@@ -2830,6 +3100,9 @@ function setLayer(next) {
   // 雷达层：打开立刻抓一帧并启动快轮询，关掉换回慢轮询（只养入口上的小绿点）。
   if (panelLayer === "radar") void radarTick(true);
   radarSetPolling();
+  // ★ 只有「怎么回」（ana）是大面板：它要两栏 + 底部留着的草稿与发送。
+  //   其余每一层都是小身材 —— 托盘 141px、抽屉 147px 在 466px 的大窗里会显得空。
+  setPanelBig(panelLayer === "ana");
   refreshFire();
   // 进任何一层都重排一次建议区：分层打开后可用空间变了（CSS 的 has-* 会收起别处的行），
   // 但那三条推荐仍然要跟着最新上下文走（比如刚点开抽屉换了引擎）。
@@ -3931,9 +4204,10 @@ function renderReplies(j) {
   if (ok && j.digest && Array.isArray(j.digest.items) && j.digest.items.length) {
     renderDigest(j.digest);
   }
-  // 草稿出来之后收掉原始消息列表与要点：面板 300px 是死预算。
-  // 「怎么回」比「刚才那几条原话」更该占这块地方 —— 而模型给的 why 一行
-  // 已经把要点里真正有用的那部分（对方在问 / 在等你）说出来了。
+  // 草稿出来之后收掉原始消息列表与要点：**小的 204px 面板里**才成立（300px 是死预算）。
+  // 大面板里由 CSS 覆盖回来（见 #panel.big #anaMsgs[hidden]）——
+  // 不在 JS 里判 panelBig：这个函数在 setLayer("ana") **之前**就被调用了，
+  // 那一刻 panelBig 还是 false，判了也白判。（2026-10-27 petlayout 抓到过。）
   if (rows.length) {
     if (anaMsgsEl) anaMsgsEl.hidden = true;
     if (anaListEl) anaListEl.hidden = true;
@@ -4252,6 +4526,64 @@ function anaApplyNames(people) {
 
 if (anaBackEl) anaBackEl.addEventListener("click", () => setLayer(""));
 if (anaRefreshEl) anaRefreshEl.addEventListener("click", () => { void analyzeChat(); });
+
+// ---------------- 「怎么回」主卡 + 工具行（2026-10-27）----------------
+/**
+ * 打开工作台：换身材 + 进 ana 层 + 立刻读一遍会话。
+ *
+ * 顺序不能反：先 setLayer（它负责把面板切成 424 宽的 flex 布局并把窗口叫大），
+ * 再 analyzeChat（渲染消息与候选）。反过来会出现「内容按 204 宽折好行，然后面板才变宽」
+ * ——消息里的省略号不会再展开，那一眼看起来像读不全。
+ */
+function openReplyDesk() {
+  if (!CAP.radar) return;
+  setLayer("ana");
+  // 已经有新鲜结果就不重读：读 UIA 要遍历控件树，切回来一次就重读一次会明显卡。
+  if (!anaBusy) void analyzeChat();
+}
+if (replyCardEl) {
+  replyCardEl.addEventListener("click", openReplyDesk);
+  // role=button 的键盘等价：Enter / Space 都要能开（别只在鼠标上可用）
+  replyCardEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openReplyDesk(); }
+  });
+}
+
+/** 工具行：点歌 / 音效 / 托管。展开态是 aria-expanded，不是 CSS 钩子 —— 无障碍读得到。 */
+function setToolsOpen(open) {
+  if (!toolToggleEl || !toolBoxEl) return;
+  toolToggleEl.setAttribute("aria-expanded", open ? "true" : "false");
+  toolBoxEl.hidden = !open;
+  if (toolHintEl) toolHintEl.hidden = open;
+}
+
+/**
+ * 按能力收掉工具行里用不了的那颗。
+ *
+ * 「托管」跳的是主窗口的 /autopilot 页：微信能力关掉时那一页没有后端路由，
+ * 点下去就是 404 —— 留着它等于在面板上摆一个坏按钮。
+ * 剩下的两颗（点歌/音效）只看本机后端，不受这条能力位管。
+ */
+function syncToolCaps(cap) {
+  if (!toolBoxEl) return;
+  const b = toolBoxEl.querySelector('[data-tool="autopilot.open"]');
+  if (b) b.hidden = !!(cap && cap.wechat === false);
+}
+if (toolToggleEl) {
+  toolToggleEl.addEventListener("click", () => {
+    setToolsOpen(toolToggleEl.getAttribute("aria-expanded") !== "true");
+  });
+}
+if (toolBoxEl) {
+  toolBoxEl.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-tool]");
+    if (!b) return;
+    // 点完就收：工具行是"去开某个东西"的跳板，不是常驻菜单。
+    // 不收的话，从 songs 层返回会看到它还开着，像没关干净。
+    setToolsOpen(false);
+    runAction(b.dataset.tool);
+  });
+}
 // 认人是**重动作**（3 秒 + 6G 显存），所以不挂在任何刷新路径上，只能点。
 if (anaNamesEl) anaNamesEl.addEventListener("click", () => { void readNames(); });
 // 草稿点一下就填进 #say 并退回主面板：这里不是「选中」，是「就用这句」。
@@ -4407,26 +4739,34 @@ function refreshPanel() {
  * `kw` 是搜索词：中英文都放，用户可能打「歌」也可能打「music」。
  */
 const ACT_META = [
-  { id: "song.find", label: "点歌", hint: "搜 B 站", cap: "fx",
+  // ⚠️ 2026-10-27 起 song.find / sfx.play / autopilot.open 都带 searchOnly：
+  //    它们有**常驻的专属入口**（底部的工具行），不再参与推荐排序。
+  //    searchOnly 的语义因此从「主按钮已经承担了它们」扩成「已经有一等入口」——
+  //    draft.send 是主按钮，这三个是工具行。留在表里是为了**搜得到**：
+  //    输入框打「歌」「音效」「托管」仍然要有候选，那是另一条路，不是推荐。
+  { id: "song.find", label: "点歌", hint: "搜 B 站", cap: "fx", searchOnly: true,
     kw: "歌 音乐 点歌 发歌 搜歌 放歌 来一首 song music" },
-  { id: "sfx.play", label: "音效", hint: "声板", cap: "fx",
+  { id: "sfx.play", label: "音效", hint: "声板", cap: "fx", searchOnly: true,
     kw: "音效 声板 特效 掌声 笑声 sfx soundboard" },
   { id: "bgm.toggle", label: "放歌", hint: "", cap: "fx",
     kw: "放歌 垫歌 背景音乐 停歌 bgm music" },
-  { id: "radar.open", label: "怎么回", hint: "看一眼", cap: "radar",
+  // 「怎么回」：2026-10-27 起它是面板上的**主卡**（#replyCard），不再是一格 chip。
+  // 留 searchOnly 只为「打『该不该回』还找得到」—— 老用户记的是那个词。
+  { id: "radar.open", label: "怎么回", hint: "看一眼", cap: "radar", searchOnly: true,
     kw: "雷达 该回 该不该 怎么回 回复 建议 微信 等多久 回不回 radar" },
   // 「分析聊天」：读当前会话（UIA 只读）+ 本地规则结论。挂在雷达能力下 ——
   // 接口是 /api/radar/chat，插件关掉时它就是个 404 按钮。
   // 用「分析」而不是「读屏」：后者会让用户以为在截图，而这条链路只读 UIA 控件树。
-  { id: "analyze.open", label: "分析聊天", hint: "读当前会话", cap: "radar",
+  { id: "analyze.open", label: "分析聊天", hint: "读当前会话", cap: "radar", searchOnly: true,
     kw: "分析 聊天 分析聊天 总结 未读 谁找我 读消息 analyze" },
   // 「托管」：打开主界面的 /autopilot（全局托管：授权后自动回白名单会话）。
-  // ⚠️ 它**故意不进** rankActions 的兜底池 —— 兜底池只有 3 个位置、按「此刻该做什么」
-  // 排序，被雷达/放歌/提案任一信号挤掉就等于用户又找不到（2026-10-24 的报障就是
-  // 「找不到入口」）。它由 refreshRecs 固定追加为第 4 条，位置永远不变。
-  { id: "autopilot.open", label: "托管", hint: "自动回", cap: "wechat",
+  // ⚠️ 它**故意不进** rankActions —— 2026-10-27 起它的常驻入口是工具行。
+  //    历史：先是固定第 4 条（2026-10-24 报障「找不到入口」），再是工具行；
+  //    两次的理由同一条 —— 它必须有一个**不变的位置**，不能靠推荐排序去挤。
+  { id: "autopilot.open", label: "托管", hint: "自动回", cap: "wechat", searchOnly: true,
     kw: "托管 自动回复 自动回 全局 挂机 代回 autopilot" },
-  { id: "live.toggle", label: "开变声", hint: "", cap: "live",
+  // 变声开关同理：药丸（#pill）是它的一等入口，推荐位里再出现一次就是重复。
+  { id: "live.toggle", label: "开变声", hint: "", cap: "live", searchOnly: true,
     kw: "变声 开关 实时 rvc 千问 live voice" },
   { id: "voice.pick", label: "换音色", hint: "", cap: "",
     kw: "音色 声音 换音 选音色 voice" },
@@ -4453,9 +4793,10 @@ const ACT_RUN = {
   // 这一行现在回答的是「怎么回」，点开就得看见那几条候选 —— 雷达层只有
   // 「该回了 / 等了多久」，看完还是不知道发什么。「该不该回」的判断细节
   // 留在 ⋯ 抽屉里那行（radarRow → openRadar），两个入口各干一件事。
-  "radar.open": () => { setLayer("ana"); void analyzeChat(); },
+  // 2026-10-27：统一走 openReplyDesk()（它会换身材进大面板），不再手抄两行。
+  "radar.open": () => openReplyDesk(),
   // 先开层（拉取期间显示「正在读当前会话…」），再打后端的 /api/radar/chat。
-  "analyze.open": () => { setLayer("ana"); void analyzeChat(); },
+  "analyze.open": () => openReplyDesk(),
   // 主窗口是 hash 路由（/#/autopilot），主进程负责 show/focus + 改 hash。
   // window.pet 可能不存在（浏览器里单开 pet.html 做布局量测），所以必须带兜底。
   "autopilot.open": () => {
@@ -4535,18 +4876,17 @@ function rankActions(ctx) {
 
   // ── 信号 ──
   if (Number(c.pending) > 0) put("proposal.confirm", 100, "待确认");
-  if (c.radar === "now") put("radar.open", 92, "对方在等");
-  else if (c.radar === "soon") put("radar.open", 62, "可以回了");
   if (c.bgm) put("bgm.toggle", 88, "正在放");
 
-  // ── 兜底池（信号只改排序，不清空）──
-  put("song.find", 30, "搜 B 站");
-  put("sfx.play", 26, "声板");
-  put("analyze.open", 24, "读当前会话");
-  put("radar.open", 22, "看一眼");
-  if (c.live !== true) put("live.toggle", 18, "没开");
-
-  // ── 输入框有字：这一区让给搜索结果（见 refreshRecs）──
+  // ── 2026-10-27：兜底池撤掉 ──────────────────────────────────────────────
+  // 这里原来无条件塞四条（点歌 30 / 音效 26 / 分析聊天 24 / 该不该回 22）+
+  // 「没开变声」时再塞一条。它们存在的唯一理由是**「空面板会让人以为坏了」**。
+  // 现在面板不再空：怎么回是一块整宽主卡，点歌/音效/托管在底部工具行，变声是药丸。
+  // 于是那个池子的作用只剩一个 —— 把「此刻真有事」的信号（提案待确认、正在放歌）
+  // 挤到后面去。所以整个池子删掉，返回值变成**纯信号**：没有信号就是空数组，
+  // refreshRecs 那边 `final.length===0` 会把整块收起来，一个像素都不占。
+  //
+  // 输入框有字：这一区让给搜索结果（见 refreshRecs）。
   // 返回空数组而不是 undefined：调用方一律 `rows.length` 判空，少一种形状少一个 bug。
   if (String(c.query || "").trim()) return [];
 
@@ -4762,12 +5102,20 @@ function recBtn(row) {
 /**
  * 重画建议区。三种形态，**同一个 DOM**（所以高度只有一处预算）：
  *   ① 输入框有字 → 搜索结果：后端解析出的提案在前，本地动作在后（最多 3 条）
- *   ② 输入框空   → `rankActions` 的前 3 条 + 固定第 4 条「托管」
+ *   ② 输入框空   → `rankActions` 的前 3 条（**只剩信号**：提案待确认 / 正在放歌）
  *   ③ 一条都没有 → 整块 hidden（不占高度）
+ *
+ * 「怎么回」不在两种形态里 —— 它是常驻主卡（#replyCard，在 #phead 下面），
+ * 不看上下文也该在；「点歌 / 音效 / 托管」也不在 —— 它们收进了底部工具行（#toolRow）。
+ * 这一块只回答「此刻正在发生什么，要不要现在动手」。
  */
 function refreshRecs() {
-  if (!recsEl) return;
+  // 主卡先刷：它是面板上唯一**常驻**的内容，而推荐区经常是空的（没有信号就收起）。
+  renderReplyCard();
   const ctx = panelCtx();
+  // 工具行的显隐也跟着能力走 —— 它不在推荐区里，但同样是「点了会打后端」的入口。
+  syncToolCaps(ctx.cap);
+  if (!recsEl) return;
   const rows = [];
 
   if (ctx.query) {
@@ -4806,44 +5154,29 @@ function refreshRecs() {
       });
     }
   } else {
-    // ② 上下文推荐
+    // ② 上下文推荐：**只剩信号**（提案待确认 / 正在放歌）。
+    //    「怎么回」不在这份名单里了 —— 它是常驻主卡（#replyCard），不看上下文也该在。
     for (const r of rankActions(ctx)) {
-      // 「怎么回」这一行：有草稿就把第一条摆到行尾，点一下直接填进输入框。
-      // 「可以回了」只回答了该不该，没有一个字是用户能发出去的 —— 这一行
-      // 改成回答「怎么回」，判断结论退回它该在的位置（点开后的雷达层）。
-      const isRadar = r.id === "radar.open";
-      const cand = isRadar && candFresh() ? candRows[0] : "";
       rows.push({
         id: r.id,
         label: labelFor(r.id, ctx),
-        hint: cand ? clipCand(cand) : (isRadar && candPending ? "在想…" : r.hint),
-        hintCand: !!cand,
+        hint: r.hint,
         hot: r.id === "proposal.confirm",
-        warn: isRadar && ctx.radar === "now",
         pid: r.id === "proposal.confirm" && assistProps[0] ? assistProps[0].id : "",
         title: r.id === "proposal.confirm" && assistProps[0]
           ? "点一下执行：" + (assistProps[0].detail || assistProps[0].title || "")
-          : (isRadar
-            ? (cand ? "点一下就用「" + cand + "」，点开看全部" : "读当前会话，给几条能直接发的话")
-            : labelFor(r.id, ctx)),
+          : labelFor(r.id, ctx),
       });
     }
-    // ★ 固定入口（**不是推荐**）：托管永远排在第 4 条，位置不随信号变。
-    //   为什么不做成推荐项：兜底池只有 3 个位置且按「此刻该做什么」排序，
-    //   「该回了 / 正在放歌 / 有提案」任一信号都能把它挤掉 —— 而它恰恰是
-    //   「我第一次用，不知道去哪开」时唯一的入口。2026-10-24 的报障就是找不到它。
-    //   搜索框里打「托管」也搜得到（ACT_META 的 kw），两条路都通。
-    if (ctx.cap.wechat !== false) {
-      rows.push({
-        id: "autopilot.open", label: labelFor("autopilot.open", ctx), hint: "设置",
-        title: "打开主界面的「全局托管」：授权后自动回白名单会话（默认关，可急停）",
-      });
-    }
+    // ★ 固定入口（**不是推荐**）：托管。
+    //   2026-10-27 起它搬到了底部的工具行（#toolRow），所以这里不再追加。
+    //   位置不变这条规矩没变 —— 只是从"永远第 4 条 chip"换成了"工具行里的一个常驻按钮"，
+    //   后者更明确：它现在写着名字，而不是一格要靠猜的「托管」。
   }
 
-  // 推荐区 4 条（3 条随上下文 + 1 条固定入口）；搜索区仍是 3 条 —— 打字时
-  // 用户要的是「哪个功能对得上」，不是被一个固定项占掉一格。
-  const final = rows.slice(0, ctx.query ? 3 : 4);
+  // 推荐区最多 3 条（搜索区也是 3 条）：2026-10-27 之后不再有「第 4 条固定入口」，
+  // 托管搬进工具行，那块位置还给了内容。
+  const final = rows.slice(0, 3);
   if (!final.length) {
     recsEl.innerHTML = "";
     recsEl.hidden = true;
@@ -4851,6 +5184,30 @@ function refreshRecs() {
   }
   recsEl.innerHTML = final.map(recBtn).join("");
   recsEl.hidden = false;
+}
+
+/**
+ * 「怎么回」主卡：标题写结论，副行写**一句能直接发出去的话**。
+ *
+ * 这一块和雷达层、分析层同源（lastRadar / candRows），前端不造判断 —— 拿不到草稿
+ * 就老实写用法，绝不编一句。和 chat_read.py 那条规矩一致：判断只有一个真相源。
+ */
+function renderReplyCard() {
+  if (!rcVerdictEl || !rcSubEl) return;
+  const act = lastRadarAction();
+  const label = act === "now" ? "该回了" : act === "soon" ? "可以回了"
+    : act === "wait" ? "再等等" : act === "none" ? "不用回" : "";
+  rcVerdictEl.textContent = label;
+  rcVerdictEl.className = act === "now" ? "now" : "";
+  const cand = candFresh() ? String(candRows[0] || "").trim() : "";
+  if (cand) {
+    // 有草稿就整句显示（这里宽，不用 clipCand 那套 9 字截断）
+    rcSubEl.textContent = cand;
+    rcSubEl.classList.add("cand");
+  } else {
+    rcSubEl.textContent = candPending ? "正在读当前会话…" : "读当前会话，给几条能直接发出去的话";
+    rcSubEl.classList.remove("cand");
+  }
 }
 
 /** 全局点击委托：建议区 + 抽屉里的全量功能网格共用 `data-act`。 */
@@ -5778,6 +6135,14 @@ function resetLayoutState() {
   if (anaListEl) { anaListEl.innerHTML = ""; anaListEl.hidden = true; }
   if (anaMsgsEl) { anaMsgsEl.innerHTML = ""; anaMsgsEl.hidden = true; }
   if (anaNoteEl) { anaNoteEl.textContent = ""; anaNoteEl.className = ""; }
+  // 攻略 / 看图会在整层里盖掉卡片、消息与候选（见 openDigest / openLook）。
+  // 这三块不复位就会漏到下一个形态：扫描顺序里 digest 正好排在 bigreply 前面，
+  // 漏了的话 bigreply 量到的是「攻略还开着」的假高度。
+  if (anaDigestEl) anaDigestEl.hidden = true;
+  if (anaCardEl) anaCardEl.hidden = false;
+  if (anaReplyEl) anaReplyEl.hidden = false;
+  // 工具行也复位：它是小面板新增的一态，漏了会让后面每一态都多 30px。
+  setToolsOpen(false);
   anaBusy = false;
   // 草稿是异步来的跨形态状态：不清空会让下一个形态量到上一态的按钮。
   clearReplies();
@@ -5964,11 +6329,36 @@ const LAYOUT_STATES = {
     if (anaMsgsEl) anaMsgsEl.hidden = true;
     if (anaListEl) anaListEl.hidden = true;
   },
+
+  // 大面板的「薄内容」形态：一行消息、一条候选都没有（模型还在想）。
+  // 为什么要单独一态：`analysis` 是**最挤**的，证明装得下；这一态证明**不会塌**。
+  // 大面板靠 flex 分配高度，内容少了以后两栏会不会缩成 0、发送按钮会不会被顶出窗口 ——
+  // 这种失败和「被切」长得完全不一样，只看挤的那一态是发现不了的。
+  bigreply: () => {
+    LAYOUT_STATES.analysis();
+    renderAnalysis({
+      ok: true, chat: "117",
+      analysis: { headline: "117 · 1 条可见消息", highlights: [],
+                  suggest: { action: "wait", label: "再等等" } },
+      messages: [{ kind: "text", text: "在吗", side: "left", speaker: 1 }],
+    }, false);
+    renderReplies({ ok: true, engine: "local", replies: [], why: "" });
+    if (anaReplyNoteEl) anaReplyNoteEl.textContent = "正在想…（本地模型冷启动要十几秒）";
+    setLayer("ana");
+  },
+  // 工具行展开：三个入口横排（点歌 / 音效 / 托管）。这是小面板新增的最矮形态。
+  tools: () => { setToolsOpen(true); },
   // 更多抽屉：音色 + 引擎 + 直出 + 历史（抽屉打开时提示行与音效片收起，见 CSS）。
-  drawer: () => setLayer("drawer"),
-  // 合成中：主按钮转圈（busy 会把图标换成 spinner，尺寸不同）。
+  drawer: () => setLayer("drawer"),  // 合成中：主按钮转圈（busy 会把图标换成 spinner，尺寸不同）。
   busy: () => setBusy(sendBtn, true),
 };
+// 大面板形态打标记：pet-panel-preview 的预算扫描按它分两轮
+// （220×480 的窗只量小的，440×640 的窗只量大的）。
+// 忘了标记的两种表现都很糟：要么大形态在 220 窗里"必然溢出"→ 门禁全红一片；
+// 要么没人量大的 → 466px 的预算悄悄烂掉，最后是被切掉半截的发送按钮。
+["analysis", "look", "digest", "bigreply"].forEach((k) => {
+  if (LAYOUT_STATES[k]) LAYOUT_STATES[k].big = true;
+});
 // 门禁从 window 上读（页面脚本与外部分析脚本的唯一契约）。别改名 ——
 // tools/test-pet-panel-layout.cjs 的静态检查拿它当「形态是否登记」的真相源。
 window.__petLayoutStates = LAYOUT_STATES;

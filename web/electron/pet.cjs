@@ -18,6 +18,7 @@ const http = require("http");
 const backend = require("./backend.cjs");
 const { BACKEND_PORT } = backend;
 const { PERF_GAME, shouldShowPet, parseLiveStatus } = require("./pet-visibility.cjs");
+const petGeometry = require("./pet-geometry.cjs");
 
 // 加载 pet 资源（2026-09-12 语义随生产加载路径修复而变）：
 //   开发（源码版）：可命中 D:\变声 源码 pet 目录，改源码重开即生效；
@@ -27,6 +28,23 @@ const _projectPetDir = path.join(backend.resolveProjectRoot(), "web", "electron"
 const PET_DIR = fs.existsSync(path.join(_projectPetDir, "pet.html")) ? _projectPetDir : path.join(__dirname, "pet");
 const PET_PREF_FILE = path.join(app.getPath("userData"), "pet.json");
 const PET_PREF_VERSION = 3;   // v3：桌宠默认常驻（v1/v2 默认「仅变声时」，很多人从没见过它）
+
+/**
+ * 桌宠窗的两副身材（2026-10-27）。
+ *
+ * 小：220×480 —— 桌宠本来的家。面板 204 宽、最高 300，只够「按住说话 + 一两条建议」。
+ * 大：440×640 —— 「怎么回」工作台。两栏（左：谁在说；右：三条能直接发出去的话），
+ *      底下还留着草稿与发送，选一条就能当场发。
+ *
+ * 为什么不做成第二个窗口（像 sfx-window 那样）：那个窗是 focusable:false 的**非激活**窗，
+ * 因为点声板时不能把前台从微信抢走；而「怎么回」要打字、要读候选，必须可聚焦。
+ * 两个可聚焦窗互相抢焦点只会更糟。所以是**同一个窗换身材**，不是新开一个。
+ *
+ * 几何计算在 pet-geometry.cjs（纯函数，可单测）—— 锚点算错的表现是「点了按钮桌宠窜出屏幕」，
+ * 那是用户眼里的 bug，代码里却一行报错都没有，所以它必须能被断言。
+ */
+const PET_SMALL = petGeometry.SMALL;
+const PET_BIG = petGeometry.BIG;
 // 桌宠「录当前声音→挖掘音色」的单次内录时长（菜单文案与动作模块共用）
 const CAPTURE_SECONDS = 15;
 let petWin = null;
@@ -38,6 +56,11 @@ let petLastGuide = null;    // 最近一次导览内容，供右键「再讲一�
 let petReady = false;       // pet.html 是否已加载完（加载完成前导览先排队）
 let petPendingGuide = null; // 加载完成前收到的导览请求
 let petRunning = false;     // 最近一次轮询到的级联/实时变声运行态
+let petBig = false;         // 当前是不是「怎么回」大面板
+let petRestore = null;      // 放大前的 rect（精确还原用，不用 PET_SMALL 反推 —— 用户可能拖过）
+// 程序改尺寸的**冷却窗口**，不是布尔量：Windows 上 moved 是异步派发的，
+// setBounds() 返回时事件还没来。用 finally 立刻复位的话，那一下照样会被当成用户拖动存盘。
+let petSizingUntil = 0;
 let petPerfProfile = "";    // 最近一次轮询到的性能档；"game" 时桌宠一律退场
 
 function getPetWin() {
@@ -198,12 +221,44 @@ function petVisible() {
 // 主窗口关闭即退出（桌宠不独立驻留）：销毁桌宠让 window-all-closed 生效
 function destroyPet() {
   if (petWin) { petWin.destroy(); petWin = null; }
+  petBig = false;
+  petRestore = null;
+  petSizingUntil = 0;
+}
+
+/**
+ * 换身材：「怎么回」大面板 ⇄ 桌宠小面板。锚定**右下角**。
+ *
+ * 为什么锚右下：桌宠常驻在屏幕右下角，人是从它的位置点进去的。按左上原点放大，
+ * 它会整体往右下窜 220×160 —— 点一下按钮宠物飞了，比面板没长大更糟。
+ *
+ * 越界就夹回工作区：桌宠被拖到左边缘时，向左上长会把面板顶出屏幕。这种情况宁可
+ * 让桌宠挪几像素，也不能让面板一半在屏幕外（那一半正是候选回复）。
+ *
+ * 幂等：重复请求同一个身材直接返回，不重算 —— 渲染层在 setLayer 里会重复调它。
+ */
+function setPetBig(on) {
+  if (!petWin) return;
+  const want = !!on;
+  if (want === petBig) return;
+  const cur = petWin.getBounds();
+  const { workArea } = screen.getDisplayMatching(cur);
+  // saved 只在缩回时用；放大时现取当前 rect 存起来。
+  const saved = want ? null : petRestore;
+  const next = petGeometry.nextBounds(cur, want ? "big" : "small", { saved, workArea });
+  if (want) petRestore = cur; else petRestore = null;
+  petBig = want;
+  petSizingUntil = Date.now() + 400;
+  petWin.setBounds(next);
+  if (petWin.webContents && !petWin.webContents.isDestroyed()) {
+    petWin.webContents.send("pet:big-changed", petBig);
+  }
 }
 
 function createPetWindow(actions = {}) {
   petPref = loadPetPref();
   const { workArea } = screen.getPrimaryDisplay();
-  const width = 220, height = 480;
+  const width = PET_SMALL.width, height = PET_SMALL.height;
   const x = Number.isFinite(petPref.x) ? petPref.x : workArea.x + workArea.width - width - 24;
   const y = Number.isFinite(petPref.y) ? petPref.y : workArea.y + workArea.height - height - 8;
   petWin = new BrowserWindow({
@@ -252,7 +307,9 @@ function createPetWindow(actions = {}) {
 
   // 记忆拖动后的位置（手动拖拽结束/窗口被挪动时触发）
   petWin.on("moved", () => {
-    if (!petWin) return;
+    // 换身材时也会触发 moved（setBounds 是程序化移动）。那一下的坐标是「大窗的左上角」，
+    // 存进 petPref 就把桌宠的位置记忆污染成放大后的坐标 —— 下次启动它会偏出去 220px。
+    if (!petWin || Date.now() < petSizingUntil) return;
     const [px, py] = petWin.getPosition();
     petPref.x = px; petPref.y = py;
     savePetPref();
@@ -285,6 +342,11 @@ function createPetWindow(actions = {}) {
     if (petWin && e.sender === petWin.webContents) {
       petWin.setIgnoreMouseEvents(v, { forward: true });
     }
+  });
+
+  // 「怎么回」大面板：同一个窗换身材（理由见 PET_BIG 那段注释）。
+  ipcMain.on("pet:panel-big", (e, on) => {
+    if (petWin && e.sender === petWin.webContents) setPetBig(!!on);
   });
 
   // 快捷面板：单击角色发最近合成 / 文字合成后发送 / 实时变声开关（动作由注入对象提供）
