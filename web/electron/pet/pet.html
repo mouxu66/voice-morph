@@ -907,9 +907,25 @@
   #analysisLayer { margin-top: 3px; }
   #anaHead { display: flex; align-items: center; gap: 4px; }
   #anaHead .st { font-size: 11px; font-weight: 650; color: rgb(var(--c-t-300)); }
+  /* 「认人」：让视觉模型读一遍群昵称（UIA 读不到发送方，见 chat_radar/names.py）。
+     长得像状态字（9px 灰）但可点，和「重新分析」同一副长相、挤在同一行 ——
+     面板 300px 一秒只放得下一件事，不另起一行。
+     `margin-left: auto` 只能有一个：两个都写会把「认人」推到中间去。 */
+  #panel #anaNames {
+    flex: 0 0 auto; margin-left: auto; height: auto; padding: 1px 2px;
+    border: 0; background: transparent; box-shadow: none;
+    font-size: 9px; color: rgb(var(--c-t-500));
+  }
+  #panel #anaNames:hover { color: rgb(var(--c-accent-h)); }
+  /* 认人要 2~3 秒（拉起视觉模型）：读的时候把按钮按死，免得连点排队。 */
+  #panel #anaNames[disabled] { color: rgb(var(--c-t-500) / 0.45); cursor: default; }
+  #panel #anaNames[disabled]:hover { color: rgb(var(--c-t-500) / 0.45); }
+  /* 有发言人、却一个名字都没认出来 → 亮起来。这不是装饰：用户看到一排「群友1/2/3」
+     时，唯一的下一步就是点它；认过之后就该安静下去（不然它会一直招人点）。 */
+  #panel #anaNames.hot { color: rgb(var(--c-accent-h)); font-weight: 650; }
   /* 「重新分析」：长得像状态字（9px 灰）但可点；压掉 button:not(.primary) 的 flex:1。 */
   #panel #anaRefresh {
-    flex: 0 0 auto; margin-left: auto; height: auto; padding: 1px 2px;
+    flex: 0 0 auto; height: auto; padding: 1px 2px;
     border: 0; background: transparent; box-shadow: none;
     font-size: 9px; color: rgb(var(--c-t-500));
   }
@@ -944,6 +960,16 @@
   }
   #anaMsgs[hidden] { display: none; }
   #panel .amsg { display: flex; align-items: baseline; gap: 5px; font-size: 9.5px; line-height: 1.38; }
+  /* 谁说的：昵称条是**像素**（UIA 拿不到发送方），所以这一格可能先是「群友3」、
+     认完才变真名。宽度只给上限不给定值 —— 短名字（「我」）不该被撑出 34px 的空洞；
+     长昵称截断成省略号，因为这里只用来分辨「换人了没有」，不是用来读全名。 */
+  #panel .amsg .who {
+    flex: 0 0 auto; max-width: 34px;
+    font-size: 8.5px; color: rgb(var(--c-t-400));
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* 「我」用强调色：右侧本来就没有昵称条，这一个是断言（不是猜），值得分开看。 */
+  #panel .amsg .who.me { color: rgb(var(--c-accent-h)); }
   #panel .amsg .k { flex: 0 0 auto; font-size: 8.5px; color: rgb(var(--c-t-500)); }
   #panel .amsg .t {
     flex: 1 1 auto; min-width: 0; color: rgb(var(--c-t-300));
@@ -1561,6 +1587,10 @@
       <div id="anaHead">
         <button type="button" id="anaBack" title="返回">‹</button>
         <span class="st">分析聊天</span>
+        <!-- 认人：昵称条是像素，UIA 里根本没有发送方（见 chat_radar/names.py）。
+             点它 = 把这一屏的昵称条拼成一张图让视觉模型读一次（约 3 秒、占 6G 显存）。
+             **不自动做**：会和实时变声抢显卡，所以必须是一次点击。 -->
+        <button type="button" id="anaNames" title="让视觉模型读一遍群里谁是谁（约 3 秒，占 6G 显存）">认人</button>
         <!-- 换会话 / 刚来了新消息：点它重读一遍（不自动轮询 —— 读 UIA 是用户主动动作） -->
         <button type="button" id="anaRefresh" title="重新读一遍当前会话">重新分析</button>
       </div>
@@ -2338,6 +2368,7 @@ const radarLiveEl = document.getElementById("radarLive");
 const analysisLayerEl = document.getElementById("analysisLayer");
 const anaBackEl = document.getElementById("anaBack");
 const anaRefreshEl = document.getElementById("anaRefresh");
+const anaNamesEl = document.getElementById("anaNames");
 const anaTitleEl = document.getElementById("anaTitle");
 const anaSuggestEl = document.getElementById("anaSuggest");
 const anaListEl = document.getElementById("anaList");
@@ -3657,6 +3688,9 @@ function resetRadar() {
  */
 const ANA_KIND_LABEL = { media: "图片/文件", system: "系统" };
 let anaBusy = false;
+//: 「认人」在跑（2~3s + 6G 显存）。单独一个标志，不复用 anaBusy ——
+//: 两者会互相等待，共用一个标志会让「认完自动重读」这一步被自己拦掉。
+let anaNamesBusy = false;
 //: 最近一次 /chat 的响应（「换一批」要拿它的 signals.last_side）。
 let anaLast = null;
 //: 只认最后一次回复请求 —— 连点「重新分析 / 换一批」时，旧响应不许覆盖新的。
@@ -3693,6 +3727,77 @@ async function analyzeChat() {
   }
 }
 
+/**
+ * 「认人」：`POST /api/radar/names` → 视觉模型读一遍昵称 → 贴回**屏上已有的**消息行。
+ *
+ * 为什么不并进「重新分析」：这一步要 2.7s 并占 6G 显存，会和实时变声抢卡
+ * （`chat_read.read_names` 的 docstring 就是为此写的）；「重新分析」仍然只走
+ * UIA（~150ms）。两者代价差一个数量级，合成一个按钮就等于每次重读都拉模型。
+ *
+ * 降级要点：认不出名字**不是错误**（单聊没有昵称条、群友整段发表情、视觉权重没装）。
+ * 后端这时给 `ok:true, learned:0, note`，这里把 note 原样说出来但不涂红 ——
+ * 红字只留给「真的坏了」。
+ */
+async function readNames() {
+  if (!CAP.radar || anaNamesBusy) return;
+  anaNamesBusy = true;
+  if (anaNamesEl) anaNamesEl.disabled = true;
+  if (anaNoteEl) {
+    anaNoteEl.textContent = "认人中…（拉起视觉模型约 3 秒，占 6G 显存）";
+    anaNoteEl.className = "";
+  }
+  try {
+    const r = await fetch(RADAR_BASE + "/names", { method: "POST", cache: "no-store" });
+    if (!r.ok) {
+      if (anaNoteEl) {
+        anaNoteEl.textContent = r.status === 404
+          ? "雷达插件没开：主界面 → 桌面 → 插件里打开「微信状态雷达」"
+          : "认人拉不到（HTTP " + r.status + "）";
+        anaNoteEl.className = "err";
+      }
+      return;
+    }
+    const j = await r.json();
+    if (!j || !j.ok) {
+      if (anaNoteEl) {
+        anaNoteEl.textContent = (j && j.error) || "认不出名字";
+        anaNoteEl.className = "err";
+      }
+      return;
+    }
+    const got = Number(j.learned) || 0;
+    if (!got) {
+      if (anaNoteEl) {
+        anaNoteEl.textContent = j.note || "没有新昵称可读（单聊不显示昵称条）";
+        anaNoteEl.className = "";
+      }
+      return;
+    }
+    // 认人的这几秒里用户点了别的群：`speaker` id 是各自会话里重新编的，
+    // 按 id 硬贴会把 A 的名字安到 B 头上 —— 这种情况只能整份重读。
+    if (!anaLast || (j.chat && anaLast.chat && j.chat !== anaLast.chat)) {
+      await analyzeChat();
+      if (anaNoteEl && !anaNoteEl.classList.contains("err")) {
+        anaNoteEl.textContent = "认出 " + got + " 个名字（会话换过，已重读）";
+        anaNoteEl.className = "";
+      }
+      return;
+    }
+    const n = anaApplyNames(j.people);
+    if (anaNoteEl) {
+      anaNoteEl.textContent = n
+        ? ("认出 " + got + " 个名字")
+        : ("读出 " + got + " 个名字，但没对上这屏消息（点「重新分析」）");
+      anaNoteEl.className = "";
+    }
+  } catch {
+    if (anaNoteEl) { anaNoteEl.textContent = "后端没连上"; anaNoteEl.className = "err"; }
+  } finally {
+    anaNamesBusy = false;
+    if (anaNamesEl) anaNamesEl.disabled = false;
+  }
+}
+
 /** 把 /chat 的响应画出来。`ok:false` 时保留卡片结构、只说读不到的原因。
  *  `autoReply=false` 只给预览/量测用：形态样本直接塞草稿，不去拉起模型。 */
 function renderAnalysis(j, autoReply = true) {
@@ -3717,11 +3822,12 @@ function renderAnalysis(j, autoReply = true) {
     anaListEl.innerHTML = rows.map((t) => `<li>${esc(t)}</li>`).join("");
     anaListEl.hidden = !rows.length;
   }
+  const msgs = (ok && Array.isArray(j.messages)) ? j.messages : [];
   if (anaMsgsEl) {
-    const msgs = (ok && Array.isArray(j.messages)) ? j.messages : [];
     anaMsgsEl.innerHTML = msgs.map(anaMsgRow).join("");
     anaMsgsEl.hidden = !msgs.length;
   }
+  anaMarkNamesHint(msgs);
   if (anaNoteEl) {
     // 雷达结论是锦上添花：拿不到时后端带 verdict_note，消息分析照常给 —— 说出来即可。
     anaNoteEl.textContent = ok ? (j.verdict_note || "") : ((j && j.error) || "分析不可用");
@@ -4060,17 +4166,94 @@ async function writeFromDigest() {
 }
 
 /** 单条消息行。时间行单独一种样式；其余带一个短类型标签（长文本省略）。
- *  语音不贴标签：正文本身就是「语音 4"秒」，再贴一个「语音」会读成「语音 语音 4"秒」。 */
+ *  语音不贴标签：正文本身就是「语音 4"秒」，再贴一个「语音」会读成「语音 语音 4"秒」。
+ *
+ *  第一格是**谁说的**（`anaWho`）：后端每条消息都带 `speaker`（像素指纹 id），
+ *  所以「这个群有几个人在说话」不用等模型就有答案。 */
 function anaMsgRow(m) {
   const kind = (m && m.kind) || "text";
   const text = String((m && m.text) || "");
   if (kind === "time") return `<span class="amsg time">${esc(text)}</span>`;
   const k = kind === "voice" ? "" : (ANA_KIND_LABEL[kind] || "·");
-  return `<span class="amsg">${k ? `<span class="k">${esc(k)}</span>` : ""}<span class="t">${esc(text)}</span></span>`;
+  const w = anaWho(m);
+  const who = w ? `<span class="who${w.me ? " me" : ""}">${esc(w.text)}</span>` : "";
+  return `<span class="amsg">${who}${k ? `<span class="k">${esc(k)}</span>` : ""}<span class="t">${esc(text)}</span></span>`;
+}
+
+/**
+ * 消息行第一格：这条谁说的。四种来源，按「确定性」排：
+ *
+ *   1. `side === "right"` → 「我」。右侧本来就没有昵称条（`chat_read.label_speakers`
+ *      直接跳过），所以这不是猜；
+ *   2. `name` → 视觉模型读出来的真昵称（点过「认人」之后才有）；
+ *   3. `speaker`（指纹 id）→ 「群友3」。后端**刻意**对没读过的名字留空串
+ *      （`parse_messages` 不写占位符），这里用 id 造一个会话内稳定的别名 ——
+ *      同一个人连发三条能看出是同一个人，这就是「几个人在说话」的答案；
+ *   4. 都没有（id=0：认不出的条带 / 单聊左侧）→ 不出这一格。
+ *
+ * 为什么不是「?」：问号表示不出来「是同一个人还在说」，而「群友3」表示得出来。
+ */
+function anaWho(m) {
+  if (!m) return null;
+  if (m.side === "right") return { text: "我", me: true };
+  const name = String(m.name || "").trim();
+  if (name) return { text: name };
+  const sid = Number(m.speaker) || 0;
+  if (sid) return { text: "群友" + sid };
+  return null;
+}
+
+/**
+ * 「认人」按钮的提示态：屏上有发言人、却**一个名字都没认出来** → 亮起来。
+ *
+ * 为什么要有这个态：一排「群友1/2/3」摆在那儿，用户唯一的下一步就是点「认人」，
+ * 而它默认是一枚 9px 的灰字，很容易被当成状态标签。认过之后立刻熄灭 ——
+ * 常亮的按钮等于没有信号，只会一直招人点（一次 3 秒 + 6G 显存）。
+ */
+function anaMarkNamesHint(msgs) {
+  if (!anaNamesEl) return;
+  const list = msgs || [];
+  const hasSpeaker = list.some((m) => Number(m && m.speaker) > 0);
+  const hasName = list.some((m) => String((m && m.name) || "").trim());
+  anaNamesEl.classList.toggle("hot", hasSpeaker && !hasName);
+}
+
+/**
+ * 把 `/names` 读到的昵称贴回**已经画在屏上**的消息行，不重新读 UIA。
+ *
+ * 为什么不直接再拉一次 `/chat`：这一趟只为换掉名字，而 `/chat` 要重走一遍 UIA
+ * 遍历（~50ms + 一次窗口抓图），还会顺手触发「怎么回」再问一遍模型。名字在
+ * `/names` 的响应里就带着（`people: [{id,name,n}]`），按 `speaker` id 回填即可。
+ *
+ * 唯一的风险是**会话被换掉**：`/names` 与屏上这份快照不是同一个会话时，
+ * id 是各自会话里重新编的，硬贴会把 A 的名字安到 B 头上 —— 所以调用方先比
+ * `chat` 标题，不一致就走重读。
+ */
+function anaApplyNames(people) {
+  if (!anaLast || !Array.isArray(people) || !people.length) return 0;
+  const byId = new Map();
+  for (const p of people) {
+    const sid = Number(p && p.id) || 0;
+    const nm = String((p && p.name) || "").trim();
+    if (sid && nm) byId.set(sid, nm);
+  }
+  let touched = 0;
+  for (const m of anaLast.messages || []) {
+    const nm = byId.get(Number(m.speaker) || 0);
+    if (nm && m.name !== nm) {
+      m.name = nm;
+      touched += 1;
+    }
+  }
+  if (touched && anaMsgsEl) anaMsgsEl.innerHTML = (anaLast.messages || []).map(anaMsgRow).join("");
+  if (touched) anaMarkNamesHint(anaLast.messages);
+  return touched;
 }
 
 if (anaBackEl) anaBackEl.addEventListener("click", () => setLayer(""));
 if (anaRefreshEl) anaRefreshEl.addEventListener("click", () => { void analyzeChat(); });
+// 认人是**重动作**（3 秒 + 6G 显存），所以不挂在任何刷新路径上，只能点。
+if (anaNamesEl) anaNamesEl.addEventListener("click", () => { void readNames(); });
 // 草稿点一下就填进 #say 并退回主面板：这里不是「选中」，是「就用这句」。
 if (anaRepliesEl) anaRepliesEl.addEventListener("click", (e) => {
   const btn = e.target && e.target.closest ? e.target.closest(".rchip") : null;
@@ -5705,13 +5888,15 @@ const LAYOUT_STATES = {
       },
       messages: [
         { kind: "time", text: "23:03" },
-        { kind: "text", text: "@瑜清 红包领一" },
-        { kind: "text", text: "收到" },
+        // 三种真实形状各摆一条：认过名的（真昵称）/ 自己发的（「我」）/ 只认出
+        // 指纹的（「群友2」）。少摆一种，那一格就是白量的 —— 门禁看不见形状。
+        { kind: "text", text: "@瑜清 红包领一", side: "left", speaker: 1, name: "红姜、" },
+        { kind: "text", text: "收到", side: "right" },
         { kind: "time", text: "23:15" },
-        { kind: "voice", text: '语音 4"秒' },
-        { kind: "text", text: "啥东西" },
+        { kind: "voice", text: '语音 4"秒', side: "left", speaker: 2 },
+        { kind: "text", text: "啥东西", side: "left", speaker: 1, name: "红姜、" },
         { kind: "time", text: "23:21" },
-        { kind: "media", text: "图片" },
+        { kind: "media", text: "图片", side: "left", speaker: 2 },
       ],
     }, false);
     // 草稿块单独塞样本：`autoReply=false` 已经拦掉了真模型（量测绝不能拉 4B），

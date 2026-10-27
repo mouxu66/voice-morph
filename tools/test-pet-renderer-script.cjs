@@ -274,13 +274,16 @@ let precheckStub = null;
 // 失败形态由用例自己塞 chatStub —— 微信没开时按钮不能静默，这条最常被漏。
 const CHAT_OK = {
   ok: true, chat: "117", raw_n: 9, sessions: [],
+  // speaker/name/side 是面板消息行第一格「谁说的」的三个来源（2026-10-27）：
+  // speaker=1 已认名、speaker=2 只有指纹、side=right 是「我」。三种都摆一条，
+  // 少一种就等于没验那一格。
   messages: [
     { kind: "time", text: "23:03" },
-    { kind: "text", text: "@瑜清 红包领一" },
+    { kind: "text", text: "@瑜清 红包领一", side: "left", speaker: 1 },
     { kind: "time", text: "23:15" },
-    { kind: "voice", text: '语音 4"秒', seconds: 4 },
-    { kind: "text", text: "啥东西" },
-    { kind: "media", text: "图片" },
+    { kind: "voice", text: '语音 4"秒', seconds: 4, side: "left", speaker: 2 },
+    { kind: "text", text: "啥东西", side: "right" },
+    { kind: "media", text: "图片", side: "left", speaker: 1 },
   ],
   analysis: {
     headline: "117 · 5 条可见消息 · 其他会话 2 条未读",
@@ -299,6 +302,14 @@ const REPLIES_OK = {
   why: "对方发了语音和图片，想回应互动",
 };
 let repliesStub = null;
+// 「认人」桩（2026-10-27）：POST /api/radar/names 的形状由 m2_server/chat_read.read_names
+// 决定（ok / chat / learned / people / note）。这里**只认出一位**（另一位的 name 留空），
+// 因为真机就是分批的：一批里漏一条不该把那一行抹掉，只该继续显示「群友2」。
+const NAMES_OK = {
+  ok: true, chat: "117", learned: 1,
+  people: [{ id: 1, name: "红姜、", n: 3 }, { id: 2, name: "", n: 1 }],
+};
+let namesStub = null;
 // 歌单桩（2026-10-22 放歌页）：接口只读，但**失败形态**也是契约的一部分 ——
 // 「后端比面板旧」（404）与「后端没起来」要说不同的话，且都只能说在页内。
 let bgmItems = [];
@@ -315,6 +326,13 @@ global.fetch = async (url, opts) => {
     return { ok: false, status: 503, json: async () => ({}) };
   }
   // 启停请求（桌宠直连后端）：一律回 ok，状态由上面的开关决定
+  // ⚠️ 「认人」必须排在它**前面**：那个兜底分支只回 {ok:true}，会把 learned/people
+  //    的形状吃掉，于是「认出几个名字」永远测不出来（而且面板会一直显示没认到）。
+  if (u.includes("/api/radar/names")) {
+    if (typeof namesStub === "function") return namesStub();
+    if (namesStub) return namesStub;
+    return { ok: true, status: 200, json: async () => ({ ...NAMES_OK }) };
+  }
   if (method === "POST") return { ok: true, status: 200, json: async () => ({ ok: true }) };
   if (u.includes("/api/cascade/status")) {
     // 要带上 stage/last_text/queued_s：只回 {running:true} 会落进 render() 的 default
@@ -338,7 +356,9 @@ global.fetch = async (url, opts) => {
   if (u.includes("/api/radar/chat")) {
     if (typeof chatStub === "function") return chatStub();
     if (chatStub) return chatStub;
-    return { ok: true, status: 200, json: async () => ({ ...CHAT_OK }) };
+    // 深拷贝：`anaApplyNames` 会把认到的名字**写回**这份快照。浅拷贝会让 CHAT_OK
+    // 被改脏 —— 后面的用例再拿到它时已经不是「没认过名」的形态了。
+    return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(CHAT_OK)) };
   }
   if (u.includes("/api/radar/replies")) {
     if (typeof repliesStub === "function") return repliesStub();
@@ -397,7 +417,13 @@ const EXPORT_HOOK = "\n;globalThis.__petFns = { setState, setEngine, playGuide, 
   // 面板常驻（2026-10-23 用户要求「不能关闭」）：panelOpen 是唯一观测点 ——
   // 旧版的 getPanelTimer 随自动收起一起删掉了，谁把它加回来谁就在推翻常驻。
   + " getPanelOpen: function () { return panelOpen; },"
-  + " getAnaBusy: function () { return anaBusy; } };\n";
+  + " getAnaBusy: function () { return anaBusy; },"
+  // 认人（2026-10-27）：按钮的落点。`staleCand` 是**只给测试用的时间旅行** ——
+  // analysis 层有一个「15 秒内复用主面板那份草稿」的缓存，缓存新鲜时它根本不去打
+  // /replies，于是「拉不到要说在草稿块里」这条用例永远走不到失败分支（实测已红）。
+  + " readNames, anaWho, anaMsgRow, anaApplyNames,"
+  + " getAnaNamesBusy: function () { return anaNamesBusy; },"
+  + " staleCand: function () { candAt = 0; candRows = []; } };\n";
 let thrown = null;
 try {
   (0, eval)(code + EXPORT_HOOK);
@@ -1154,6 +1180,37 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       assert.strictEqual(els.anaMsgs.hidden, true, "草稿出来了但消息列表还占着高度");
     });
 
+    // ---------- 谁说的（2026-10-27）----------
+    //
+    // 用户原话：「面板根本没读 speaker，后端能算出 3 个人在说话，前端一个都不显示。」
+    // 判据只有一条：**每个名字都有出处**，不许造。
+    //   side=right → 「我」（右侧本来没有昵称条，这是断言不是猜）
+    //   有 name    → 真昵称（认人之后才有）
+    //   只有 id    → 「群友N」（指纹分组，模型还没读过名字）
+    //   都没有     → 不出这一格（单聊左侧 / 认不出的条带）
+    check("消息行第一格是「谁说的」：我 / 真名 / 群友N 三种都在", () => {
+      const html = String(els.anaMsgs.innerHTML);
+      assert.match(html, /class="who me">我</, "自己发的那条没标「我」：" + html);
+      assert.match(html, /class="who">群友1</, "只有指纹没有名字的那位没显示「群友1」");
+      assert.match(html, /class="who">群友2</, "第二位没显示「群友2」");
+    });
+
+    check("anaWho 不给不出来的东西编名字", () => {
+      const f = petFns.anaWho;
+      assert.deepStrictEqual(f({ side: "right", speaker: 0, name: "别人的名字" }),
+        { text: "我", me: true }, "自己发的消息被安上了别人的昵称");
+      assert.strictEqual(f({ side: "left", speaker: 0 }), null, "id=0 却给出了名字");
+      assert.strictEqual(f({ side: "left", speaker: 7 }).text, "群友7");
+      assert.strictEqual(f({ side: "left", speaker: 7, name: "  红姜、 " }).text, "红姜、",
+        "昵称两边的空白没清掉");
+      assert.strictEqual(f(null), null, "null 输入不该炸");
+    });
+
+    check("「认人」在有发言人却没名字时亮起（一排「群友N」时它是唯一出路）", () => {
+      assert.strictEqual(els.anaNames.classList.contains("hot"), true,
+        "满屏「群友1/2/3」却没点亮「认人」—— 用户不知道下一步该点哪儿");
+    });
+
     // ---------- 怎么回（2026-10-24）：本地 4B 的草稿 ----------
     //
     // 用户原话：「我就是想分析他的聊天记录，指导我怎么回。」
@@ -1180,6 +1237,10 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
     });
 
     repliesStub = { ok: false, status: 503, json: async () => ({}) };
+    // 先把「15 秒内复用主面板那批草稿」的缓存作废：缓存新鲜时 renderAnalysis 走
+    // `renderReplies({replies: candRows, engine:"cache"})`，**根本不去打 /replies**，
+    // 这条用例测的就不再是失败分支了（2026-10-27 实测它一直是红的，正是这个原因）。
+    petFns.staleCand();
     await petFns.analyzeChat();
     await flush();
     check("怎么回失败：拉不到要说在草稿块里，不能顶掉已经出来的结论", () => {
@@ -1190,6 +1251,61 @@ const flush = () => new Promise((r) => setTimeout(r, 20));
       assert.match(String(els.anaTitle.textContent), /117/, "回复失败把结论也带走了");
     });
     repliesStub = null;
+
+    // ---------- 认人（2026-10-27）：昵称条是像素，只能让视觉模型读 ----------
+    //
+    // 用户原话：「先让几个人在说话显示出来，再接昵称。」
+    // 契约三条，少一条这个按钮就是白做的：
+    //   ① 只在**点击**时打 POST /radar/names（一次 3 秒 + 6G 显存，绝不能扒在刷新路径上）；
+    //   ② 认完把名字贴回**屏上已有的行**，不重读 UIA（/chat 不许被再打一次 ——
+    //      那既要遍历 UIA 又会顺手把「怎么回」再问一遍模型）；
+    //   ③ 认不出不是错误：learned:0 只说原因、不涂红。
+    const namesHits = () => fetchCalls.filter((c) => c.url.includes("/api/radar/names"));
+    const chatHits = () => fetchCalls.filter((c) => c.url.includes("/api/radar/chat"));
+    const clickNames = (els.anaNames._on.click || [])[0];
+
+    check("认人：按钮挂了 click，且没点之前一次都不许打", () => {
+      assert.ok(clickNames, "「认人」按钮没挂 click —— 点了等于没点");
+      assert.strictEqual(namesHits().length, 0, "还没点就已经打过 /api/radar/names 了");
+    });
+
+    const chatBeforeNames = chatHits().length;
+    clickNames();
+    await flush();
+    check("认人成功：名字贴回屏上的消息行，且没有重读一遍 UIA", () => {
+      assert.strictEqual(namesHits().length, 1, "点了一下却打了 " + namesHits().length + " 次");
+      assert.strictEqual(namesHits()[0].method, "POST",
+        "认人会拉起模型，必须是 POST（GET 允许被浏览器/代理预取 = 白跑一次模型）");
+      const html = String(els.anaMsgs.innerHTML);
+      assert.match(html, /class="who">红姜、</, "认到的真昵称没贴回消息行：" + html);
+      assert.match(html, /class="who">群友2</, "这一批没认出来的那位被抹掉了 —— 该继续显示群友2");
+      assert.strictEqual(chatHits().length, chatBeforeNames,
+        "为了换名字又重读了一遍 UIA（应该按 speaker id 贴回）");
+      assert.match(String(els.anaNote.textContent), /认出 1 个名字/);
+      assert.strictEqual(els.anaNote.className, "", "认人成功不该标红");
+      assert.strictEqual(els.anaNames.classList.contains("hot"), false,
+        "认出名字后「认人」还亮着 —— 常亮的按钮等于没有信号");
+    });
+
+    namesStub = { ok: false, status: 500, json: async () => ({}) };
+    clickNames();
+    await flush();
+    check("认人失败：说在人话提示行里，不顶掉已经出来的结论", () => {
+      assert.match(String(els.anaNote.textContent), /HTTP 500/);
+      assert.strictEqual(els.anaNote.className, "err");
+      assert.match(String(els.anaTitle.textContent), /117/, "认人失败把结论也带走了");
+    });
+
+    namesStub = { ok: true, status: 200,
+      json: async () => ({ ok: true, chat: "117", learned: 0, note: "这个会话没有昵称条" }) };
+    clickNames();
+    await flush();
+    check("认不出名字不是错误：learned:0 只说原因、不涂红", () => {
+      assert.match(String(els.anaNote.textContent), /没有昵称条/);
+      assert.strictEqual(els.anaNote.className, "", "认不出名字被标成了错误");
+      assert.strictEqual(petFns.getAnaNamesBusy(), false, "跑完没把 busy 放下 —— 按钮会永久按死");
+    });
+    namesStub = null;
 
     els.anaTitle.textContent = "上一轮的结论";
     els.anaMsgs.innerHTML = "<span>上一轮的结论</span>";

@@ -124,6 +124,44 @@ def chat(limit: int = 20):
     return snap
 
 
+#: 认名的串行锁。**Lock 而不是 RLock**：这一路不重入自己。
+#: 为什么需要：一次认名要拉起视觉模型并占 6G 显存（实测 2.7s/批），
+#: 双击按钮或两个窗口同时点，就会排队两次一模一样的模型调用。
+_NAMES_LOCK = threading.Lock()
+
+
+@router.post("/names")
+def names(timeout: float = 90.0):
+    """读一遍群昵称：像素指纹分组 → Ornith 视觉 → 回填缓存。
+
+    为什么要单独一个端点、而且必须是 POST
+    --------------------------------------
+    ① 它**不是只读**：会拉起视觉模型（占 6G 显存）、写进程内缓存。放轮询里会和
+       实时变声抢显卡 —— 所以只能由用户点「认人」触发（前端那个按钮就是这个）。
+    ② POST 而不是 GET：GET 允许浏览器/代理随意预取和重试，「预取一次 = 跑一次模型」
+       的代价不能这么花；POST 天然挡掉这一类。
+
+    和 `/chat` 的分工：`/chat` 的每条消息已经带 `speaker`（像素指纹 id，毫秒级），
+    但 `name` 要等这一步读过才有值。所以面板先显示「群友3」，认完变「张三」。
+
+    降级：认不出名字是**常态**（单聊没有昵称条、模型没权重、这个群全在发表情），
+    一律 200 + `ok:true` + `learned:0` + `note`，与 `/state` 同一约定；只有意外异常
+    才 `ok:false`（也不 500 —— 一个锦上添花的能力不该把面板打成错误页）。
+    """
+    # 上限钉死：调用方传 10000 会一直占着锁，后面的点击全部排队。
+    timeout = max(5.0, min(float(timeout), 180.0))
+    if not _NAMES_LOCK.acquire(blocking=False):
+        return {"ok": False, "busy": True, "error": "正在认人，等这一批读完"}
+    try:
+        from chat_read import read_names  # 惰性：不点「认人」就不碰 UIA / 模型
+
+        return read_names(timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 —— 认不出名字不该把接口打成 500
+        return {"ok": False, "error": f"认人失败：{exc}"}
+    finally:
+        _NAMES_LOCK.release()
+
+
 @router.get("/replies")
 def replies(limit: int = 14, last_side: str = "", avoid: str = ""):
     """读当前会话 → 本地 Qwen3-VL-4B（llama-server）给 2-3 条可直接发的回复。

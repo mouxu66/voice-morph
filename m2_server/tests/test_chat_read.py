@@ -177,6 +177,23 @@ def test_read_chat_degrades_to_error_not_exception(monkeypatch):
     assert snap == {"ok": False, "error": "读不到微信窗口"}
 
 
+def test_parse_messages_carries_speaker_id_and_name():
+    """面板消息行第一格「谁说的」直接吃这两个字段（`anaMsgRow`）。
+
+    两者的来历不同，别混：`speaker` 是像素指纹的 id（本地毫秒级，同一个人连发
+    多条拿到同一个 id），`name` 要等 `/names` 让视觉模型读过才有值。
+    **id 有、name 空 = 「还没读过」，不是「这个人叫空」** —— 所以空名字不写字段，
+    前端才能用 id 造一个「群友3」的临时别名，而不是显示一个空格。
+    """
+    rows = chat_read.parse_messages(
+        ["啥东西", "收到", "晚上吃啥"], speakers=["红姜、", "", ""], speaker_ids=[3, 4, 0]
+    )
+    assert [m.get("speaker") for m in rows] == [3, 4, None]
+    assert rows[0]["name"] == "红姜、"
+    assert "name" not in rows[1], "空名字不许写占位符（前端要能区分没读过）"
+    assert "speaker" not in rows[2], "id=0 表示这条认不出人，同样不该落字段"
+
+
 # ---------------------------------------------------------------- 谁说的（左右判定）
 # UIA 的 ListItem 只有正文、没有发送方（连子节点都没有），左右只能看气泡位置。
 # 这三个用例锁住判据本身，防止以后「顺手调阈值」把它调成瞎猜。

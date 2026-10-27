@@ -1,8 +1,8 @@
 """radar_api 单测：HTTP 壳的序列化与降级，不碰 GDI / 微信。
 
-chat_radar 包本身已有 33 个纯逻辑测试；这里只测薄壳的三件事——
+chat_radar 包本身已有 33 个纯逻辑测试；这里只测薄壳的四件事——
 ① Tick → JSON 的形状；② 观察失败（微信没开）必须是 200 + ok:false 而不是 500；
-③ 单例复用与 reset 的转发放大。全部用桩 Radar，不打真窗口。
+③ 单例复用与 reset 的转发放大；④ `/names` 的串行锁与降级。全部用桩，不打真窗口。
 """
 
 import sys
@@ -11,6 +11,8 @@ import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import chat_read  # noqa: E402
 
 import radar_api  # noqa: E402
 
@@ -199,3 +201,84 @@ def test_state_serializes_under_concurrent_callers():
     assert len(results) == 2
     assert all(r["ok"] for r in results)
     assert stub.tick_calls == 2
+
+
+# ---------------------------------------------------------------- /names（认人）
+# 这一路**不是只读**：会拉起视觉模型（实测 2.7s / 6G 显存）。所以壳的责任只有三条 ——
+# 转发、不 500、别让两次点击同时跑模型。三条都用桩验，绝不真读微信。
+
+
+def test_names_forwards_read_names_result(monkeypatch):
+    payload = {
+        "ok": True,
+        "chat": "117",
+        "learned": 2,
+        "people": [{"id": 1, "name": "红姜、", "n": 3}, {"id": 2, "name": "", "n": 1}],
+    }
+    monkeypatch.setattr(chat_read, "read_names", lambda timeout=90.0: dict(payload))
+    assert radar_api.names() == payload
+
+
+def test_names_failure_is_200_with_reason_not_500(monkeypatch):
+    """认不出名字是常态（单聊没昵称条 / 视觉权重没装 / 群友全发表情）：
+    不能把一个锦上添花的能力打成 500，面板会整块变成错误页。"""
+
+    def boom(timeout=90.0):
+        raise RuntimeError("抓不到微信窗口")
+
+    monkeypatch.setattr(chat_read, "read_names", boom)
+    out = radar_api.names()
+    assert out["ok"] is False
+    assert "抓不到微信窗口" in out["error"]
+
+
+def test_names_clamps_timeout(monkeypatch):
+    """调用方传 10000 会一直攥着锁，后面每次点击都排队 —— 上限钉死。"""
+    seen = {}
+
+    def spy(timeout=90.0):
+        seen["timeout"] = timeout
+        return {"ok": True, "learned": 0}
+
+    monkeypatch.setattr(chat_read, "read_names", spy)
+    radar_api.names(timeout=10000)
+    assert seen["timeout"] == 180.0
+    radar_api.names(timeout=0.1)
+    assert seen["timeout"] == 5.0
+
+
+def test_names_refuses_a_second_call_while_the_model_is_running(monkeypatch):
+    """双击按钮不该跑两遍模型（一次 2.7s + 6G 显存）：第二次直接 busy，不排队。"""
+    started = threading.Event()
+    release = threading.Event()
+    calls: list = []
+
+    def slow(timeout=90.0):
+        calls.append(1)
+        started.set()
+        release.wait(timeout=10)
+        return {"ok": True, "learned": 1}
+
+    monkeypatch.setattr(chat_read, "read_names", slow)
+    t = threading.Thread(target=radar_api.names, daemon=True)
+    t.start()
+    assert started.wait(timeout=5), "第一次调用没有跑起来"
+    try:
+        out = radar_api.names()
+        assert out["ok"] is False and out.get("busy") is True
+    finally:
+        release.set()
+        t.join(timeout=10)
+    assert calls == [1], "第二次点击不该再跑一次模型"
+
+
+def test_names_releases_the_lock_after_a_failure(monkeypatch):
+    """异常路径必须放锁：否则一次失败就把「认人」永久锁死，用户只能重启应用。"""
+
+    def boom(timeout=90.0):
+        raise RuntimeError("模型崩了")
+
+    monkeypatch.setattr(chat_read, "read_names", boom)
+    assert radar_api.names()["ok"] is False
+    monkeypatch.setattr(chat_read, "read_names", lambda timeout=90.0: {"ok": True, "learned": 0})
+    assert radar_api.names()["ok"] is True
