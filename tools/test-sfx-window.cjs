@@ -14,7 +14,7 @@
  * 沙箱里起不了真 Electron GUI（Chromium GPU 进程必崩），所以用 electron 桩 +
  * 一个**记录调用的假 BrowserWindow**：能断言「建窗时给了什么参数、之后调了哪些方法」。
  * 真实鼠标点下去会不会抢焦点**测不到**（CDP 的可信事件也不走 OS 激活路径），
- * 那一条只能真机验收（docs/真机验收清单-2026-09-21.md §K A1）。
+ * 那一条只能真机验收（docs/附录-可执行规程.md §K A1）。
  */
 "use strict";
 const assert = require("node:assert");

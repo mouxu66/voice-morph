@@ -528,7 +528,7 @@ def _print_third_party(rep: dict) -> None:
             print(f"\nℹ️  {p['id']} 可选（有 ImportError 兜底，声明与否都合法）：{p['optional_undeclared']}")
     print(
         "\n提示：`extras.python` 的**归属**是人工策展（哪个插件被关掉时该包可以省掉），\n"
-        "      本工具的门禁只要求「被某处声明」—— 见 `EXEMPT` 表与 `docs/插件化设计.md` §8.1 预设。"
+        "      本工具的门禁只要求「被某处声明」—— 见 `EXEMPT` 表与 `docs/交接-AI必读.md` §8.1 预设。"
     )
 
 

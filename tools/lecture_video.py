@@ -13,7 +13,7 @@
     并把它旁边那几种**不报错的错法**逐个前置拦掉：
 
       · **清单里少一个文件，ffmpeg 退出码仍是 0**（只在 stderr 报一句
-        `Error during demuxing`）—— 本项目实测踩过（见 `docs/犯错指南.md`
+        `Error during demuxing`）—— 本项目实测踩过（见 `docs/交接-AI必读.md`
         速查表）。所以帧文件必须在起 ffmpeg **之前**逐个 `exists()`，见 `precheck`。
       · **`-shortest` 与"会不会剪掉旁白"是同一件事的两面**：原脚本靠"尾帧
         duration +0.001 再把最后一帧重复一遍"绕过去，属于知其然。这里默认

@@ -20,7 +20,7 @@ import { formatDuration } from "@/lib/formatDuration"
 const POLL_MS = 2000
 /**
  * 微信语音的音频预算（秒）：单条 60s 硬上限，算式见
- * `docs/微信语音-长文分段发送方案.md` §2（PLAY_LEAD 0.35 + 音频 + TAIL 0.3 ≤ 60）。
+ * `docs/交接-AI必读.md` §2（PLAY_LEAD 0.35 + 音频 + TAIL 0.3 ≤ 60）。
  * 超预算的语音会被录成 60" 静音长条 —— 必须先截再发，与后端 `/cover/clip` 同一口径。
  */
 const WECHAT_AUDIO_BUDGET_S = 54

@@ -171,7 +171,7 @@ def convert(shift: int, src: Path, tgt: Path, work_dir: Path) -> Path:
     """跑一次 f0 版 inference.py，返回它在临时目录里产出的 wav。
 
     每次用独立临时目录：会话目录里躺着上一档时，「这次没产出」会被残留伪装成成功
-    （见 docs/在线扒歌-配置与边界.md 的同类坑）。
+    （见 docs/附录-可执行规程.md 的同类坑）。
     """
     tmp = work_dir / f"_tmp_shift{shift:02d}"
     tmp.mkdir(parents=True, exist_ok=True)

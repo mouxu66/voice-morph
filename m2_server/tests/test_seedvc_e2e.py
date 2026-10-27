@@ -1,6 +1,6 @@
 """Seed-VC HTTP 端到端：POST /api/seedvc/run → worker 线程 → GET /api/seedvc/status。
 
-盘点缺口（docs/待办盘点-2026-10-01.md §六）：此前只有「参数签名对账」与
+盘点缺口（docs/交接-AI必读.md §六）：此前只有「参数签名对账」与
 run_conversion/build_cmd 的纯函数单测，**没有一条从路由进去、走完 worker、
 再从 status 读出结果的完整链路**。「接线」错误（worker 少传一个旋钮、状态机
 没翻转、URL 拼错）恰好是单测拦不住的那类 —— 每一层单独看都是对的。

@@ -12,7 +12,7 @@
 #
 # 发版节奏（2026-09-14 定）：按大版本发，不随每次改动发。日常改动只 git push（客户端感知不到），
 # 本地自测用 `npm run build && npx electron-builder --dir` 出 win-unpacked 即可，**不碰版本号**。
-# 版本号只在真正发版这一步升，升多少由 -BumpLevel 决定（默认 patch）。详见 docs/release-sop.md「〇、发版节奏」。
+# 版本号只在真正发版这一步升，升多少由 -BumpLevel 决定（默认 patch）。详见 docs/附录-可执行规程.md「〇、发版节奏」。
 #
 # 与 build-and-publish.ps1 的关系：本脚本是面向发版的正式入口，多了前置检查、
 # 版本号一致性校验、清单校验（sha256 回读比对）、GitHub Release 发布、历史产物清理、
@@ -379,4 +379,4 @@ if ($Publish) {
 }
 
 Write-Host "`n[完成] 版本 $($pkgBefore.version) → $NewVersion" -ForegroundColor Green
-Write-Host "下一步：客户端启动后 12 秒静默检查 → 或「设置 → 应用 → 检查更新」验证。详见 docs/release-sop.md" -ForegroundColor Green
+Write-Host "下一步：客户端启动后 12 秒静默检查 → 或「设置 → 应用 → 检查更新」验证。详见 docs/附录-可执行规程.md" -ForegroundColor Green

@@ -82,7 +82,7 @@
 
 - **必须设 `CODEBUDDY_SAFE_DELETE_ENABLED=0`**：本机 safe-delete shim 会把
   `shutil.rmtree` 包装成「移回收站」，触发 bulk guard → `raise SystemExit(1)`，
-  表现为 pytest 随机挂几个、vite build 直接失败（见 `docs/犯错指南.md` §3.5）。
+  表现为 pytest 随机挂几个、vite build 直接失败（见 `docs/交接-AI必读.md` §9.5）。
 - **必须设 `VM_WARMUP=0`**：server.py 导入期会预热 TTS/RVC，测试里绝不能真起
   那个吃显存的子进程（conftest.py 用 setdefault 兜了一层，这里再钉死）。
 - **ruff 只用 `F,E9`**：默认规则集会掺进大量行宽/风格建议，噪音会让人开始无视
@@ -345,7 +345,7 @@ FAST_TESTS = [
     #   ② 草稿守卫失效 → 把用户打了一半的字冲掉；
     #   ③ 会话校验失效 → 消息发到错误的聊天窗口；
     #   ④ loopback/consent 双闸失效 → 同网段任何人可开托管，或没授权就开跑。
-    # 四条都只有「别人收到了什么」能发现，必须钉在提交那一刻。见 `docs/方案-全局托管.md`。
+    # 四条都只有「别人收到了什么」能发现，必须钉在提交那一刻。见 `docs/交接-AI必读.md`。
     "m2_server/tests/test_chat_autopilot.py",
     "m2_server/tests/test_wechat_text.py",
     "m2_server/tests/test_autopilot_api.py",
@@ -944,7 +944,7 @@ def _ensure_ci_venv(recreate: bool) -> tuple[Path | None, str, str]:
     """建/更新瘦 venv。返回（venv 里的解释器, 想要的版本, 实际用的版本）。
 
     用 `venv --clear` 实现重建：它删目录内容是 stdlib 行为，**不走 shutil.rmtree**
-    —— 本机的 safe-delete shim 会拦 rmtree（见 `docs/犯错指南.md` §3.5）。
+    —— 本机的 safe-delete shim 会拦 rmtree（见 `docs/交接-AI必读.md` §9.5）。
     """
     ci_text = _ci_workflow_text()
     want = _ci_python_version(ci_text)

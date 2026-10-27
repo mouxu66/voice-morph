@@ -26,7 +26,7 @@ CAM++ 同人 0.6486–0.8345、对参考音时长的敏感度约为自空间的 
 负例同样重要 —— 所以断言写成两半：① 必须出现正确尺子名，② 禁止出现那句错标原文。
 
 边界：只扫这次出问题的那批文件（工具源码 + 相关材料），不做全库扫描 ——
-`docs/音色体检三灯.md` / `docs/调研-SVC路线与嗓音客观指标-2026-09-28.md` 等文件里的
+`docs/交接-AI必读.md` / `docs/交接-AI必读.md` 等文件里的
 "CAM++" 指的是**真** `_sv_embed` 那条路，把它们一并禁掉就是假红。
 """
 
@@ -102,9 +102,9 @@ def test_clone_eval_runtime_notice_names_the_ruler():
 # 三、这次被写坏的那几份材料：错标不得残留
 # --------------------------------------------------------------------------
 STALE_DOCS = [
-    "docs/端到端实测-音色保存与录课视频.md",
-    "docs/大创申报-2026-10/减负pilot-s01-记录.md",
-    "docs/大创申报-2026-10/大创方案-v2.md",
+    "docs/附录-可执行规程.md",
+    "m2_server/tests/data/dachuang-2026-10/减负pilot-s01-记录.md",
+    "m2_server/tests/data/dachuang-2026-10/大创方案-v2.md",
 ]
 
 #: 档案**故意**引用错标原文（那是它的职责：留下"曾经怎么写"的证据），
@@ -138,7 +138,7 @@ def test_dual_gate_is_the_referenced_answer():
     """材料指向门禁时，必须指向**双门槛**那一份（自空间单尺不能当准入门槛）。"""
     gate = _text("tools/voice_dual_gate.py")
     assert "derive" in gate, "双门槛阈值推导函数不在了 —— 阈值退化成手填就必须重标"
-    text = _text("docs/大创申报-2026-10/大创方案-v2.md")
+    text = _text("m2_server/tests/data/dachuang-2026-10/大创方案-v2.md")
     assert "voice_dual_gate" in text, "方案文档没引用双门槛门禁"
 
 
@@ -158,7 +158,7 @@ _CAM_RE = re.compile(r"CAM\+\+")
 
 def test_no_naked_secs_in_new_docs():
     """更正过的材料里，裸 `SECS` 必须带尺子名。"""
-    rel = "docs/端到端实测-音色保存与录课视频.md"
+    rel = "docs/附录-可执行规程.md"
     for ln in _text(rel).splitlines():
         if "SECS" not in ln:
             continue
@@ -172,7 +172,7 @@ def test_secs_next_to_campplus_must_be_a_denial():
     不写这条，把标题改回 2026-10-11 之前那句「（CAM++ 声纹，SECS 余弦）」**守卫不会红** ——
     因为 CAM++ 在场。而那句恰恰是本次要禁的原文。见速查表第 134 条（反向守卫要测真实作用）。
     """
-    rel = "docs/端到端实测-音色保存与录课视频.md"
+    rel = "docs/附录-可执行规程.md"
     for ln in _text(rel).splitlines():
         if not (_SECS_RE.search(ln) and _CAM_RE.search(ln)):
             continue

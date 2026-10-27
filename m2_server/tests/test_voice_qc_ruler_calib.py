@@ -27,7 +27,7 @@ for _p in (_ROOT / "tools", _ROOT / "m2_server"):
 import pytest  # noqa: E402
 import voice_qc_ruler_calib as calib  # noqa: E402
 
-EVIDENCE_DIR = _ROOT / "docs/大创申报-2026-10/rvc-qc-判据标定"
+EVIDENCE_DIR = _ROOT / "m2_server/tests/data/dachuang-2026-10/rvc-qc-判据标定"
 
 
 # ---------------- 1. 配对标签：跟说话人，不跟路径 ----------------

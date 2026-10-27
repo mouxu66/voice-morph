@@ -155,7 +155,7 @@ function main() {
     if (!missing.length && !stale.length && !extra.length) console.log("  与源码逐字节一致 ✓");
     console.log(ok && (missing.length || extra.length) === 0
       ? "  RESULT: OK"
-      : ok ? "  RESULT: OK（仅白名单内差异）" : "  RESULT: FAIL —— 需重打 asar（见 docs/分发与打包说明.md §7.2.1）");
+      : ok ? "  RESULT: OK（仅白名单内差异）" : "  RESULT: FAIL —— 需重打 asar（见 docs/附录-可执行规程.md §7.2.1）");
   }
 
   fs.rmSync(tmp, { recursive: true, force: true });

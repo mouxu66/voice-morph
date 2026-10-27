@@ -71,7 +71,7 @@ SEEDVC_VENV_PY = cfg.ROOT / ".venv" / "Scripts" / "python.exe"
 
 #: 唱歌模式（f0 链路）预设 —— **A 档**：2026-09-27 用户盲听 A~E 五档后选定
 #: （A = 音色最高的一档；E 音高最准但音色最低，被排除）。
-#: 来源：`experiments/seedvc_shift_sweep.py` + `docs/翻唱歌声路线-实验快照-2026-09-28.md`。
+#: 来源：`experiments/seedvc_shift_sweep.py` + `docs/交接-AI必读.md`。
 #: ⚠️ 这几个旋钮任何一个掉了都**不会报错**，只会静默退化成念白/降质，所以集中在这里
 #: 由 `test_seedvc_f0.py` 钉死，别散到调用点。
 SINGING_PRESET: dict = {

@@ -32,7 +32,7 @@ from pathlib import Path
 # venv312 的 transformers 已被升到 5.x，而仓库内嵌的 Qwen3-TTS 锁的是 4.57.3
 # （其 pyproject.toml）。5.x 下 `@check_model_inputs()` 会 TypeError。
 # 这里把 4.57.3 用 --target 装在**仓库外**（不进 git，避免污染门禁），仅本脚本可见。
-# 重建命令见 docs/方言-四川重庆-2026-10-22.md §7。
+# 重建命令见 docs/交接-AI必读.md §10.4。
 _VENDOR_CANDIDATES = (
     Path(r"D:/tts_vendor/tf4573"),
     Path(__file__).resolve().parent / "_vendor_tf",

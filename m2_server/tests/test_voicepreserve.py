@@ -352,7 +352,7 @@ class TestReferences:
 class TestBatchReferenceSlicing:
     """★ 守的是**评测协议能不能落地**这件事。
 
-    `docs/嗓音保存评测协议.md` §3.1 把四档定义为「**同一段录音的前缀截取**」，
+    `docs/附录-可执行规程.md` §3.1 把四档定义为「**同一段录音的前缀截取**」，
     控制变量含"同一条 take"。若让用户录四次，四次是不同的 take ——
     自变量（时长）就被"这次录得好不好"混淆，RQ1 归因不成立。
     `add_reference_batch` 就是补这一步。
@@ -863,7 +863,7 @@ class TestApi:
 
         这比 400 更好：请求根本没进到业务代码。这里显式钉住它，
         免得哪天路由改成 `{pid:path}` 把这条防线悄悄拆掉
-        （`docs/犯错指南.md` 速查表第 71 条：`{sample_id:path}` 会先吃掉后面的路由）。
+        （`docs/交接-AI必读.md` 速查表第 71 条：`{sample_id:path}` 会先吃掉后面的路由）。
         """
         assert client.get("/api/preserve/profiles/..%2Fetc").status_code == 404
 

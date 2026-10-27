@@ -29,7 +29,7 @@ docstring 自己写得很清楚：
     python tools/bench_latency.py --profile balanced --log <path/to/realtime_gui.log>
 
     # 把结果落盘成可引用的报告
-    python tools/bench_latency.py --profile balanced --out docs/延迟基准报告.md
+    python tools/bench_latency.py --profile balanced --out docs/交接-AI必读.md
 
 设计约束
 --------

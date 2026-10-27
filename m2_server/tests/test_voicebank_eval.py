@@ -8,7 +8,7 @@
 
   1. **指标方向表**（`HIGHER_IS_BETTER`）：`spectral_tilt` 的「好」一侧是**数值更大**、
      `h1_h2` **越大越挤压**。方向写反 = 整份报告的结论反掉。
-     这与 `docs/音色体检三灯.md` §3.2/§3.3 同口径，也和 `test_voice_report.py`
+     这与 `docs/交接-AI必读.md` §8.1 同口径，也和 `test_voice_report.py`
      里那两条方向断言互为印证。
   2. **Spearman 的并列必须取平均秩**：主观听测是 MOS 五档，**天然大量并列**。
      直接给并列项编不同序号会让相关系数虚高 —— 而虚高的相关系数正好会支撑
@@ -623,14 +623,14 @@ class TestCorpusIsSingleSource:
         评测工具与产品两侧各自定义一份档位，一旦漂移（例如方案文档里曾写成含
         300s 的五档），"同一段录音切四档"的矩阵就会与产品实际能录出的档位不符，
         而**两边都不会报错** —— 只会得到一组对不上任何真实录音的结论。
-        文档 `docs/嗓音保存评测协议.md` §3.1 是同一口径。
+        文档 `docs/附录-可执行规程.md` §3.1 是同一口径。
         """
         import voicepreserve as vp
 
         assert ve.DURATION_LADDER == vp.REF_DURATIONS, (
             "评测工具的档位与产品侧不一致 —— 改档位必须三处同改："
             "m2_server/voicepreserve.py::REF_DURATIONS / "
-            "tools/voicebank_eval.py::DURATION_LADDER / docs/嗓音保存评测协议.md §3.1"
+            "tools/voicebank_eval.py::DURATION_LADDER / docs/附录-可执行规程.md §3.1"
         )
         assert ve.DURATION_LADDER == (3.0, 10.0, 30.0, 60.0)
 

@@ -126,7 +126,7 @@ class _PresetBody(BaseModel):
 
 @router.post("/plugins/preset")
 def apply_plugin_preset(body: _PresetBody):
-    """套用一个套餐预设（`docs/插件化设计.md` §8.1）。
+    """套用一个套餐预设（`docs/交接-AI必读.md` §8.1）。
 
     ★ 2026-10-15 起默认是**只增不减**（`strict=false`）：点模式不再没收用户手动
     开启的能力，想收窄必须显式传 `strict=true`（前端把它做成单独的「严格套用

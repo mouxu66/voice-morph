@@ -60,7 +60,7 @@ powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -Publish -Notes "�
 ```
 
 `-Publish` 会自动：建 tag `v<新版本>` → 建 Release（标记 latest）→ 上传 exe / blockmap / latest.json
-→ 实测 `/releases/latest/download/latest.json` 能不能拿到正确版本。完整参数与排错见 `docs/release-sop.md`。
+→ 实测 `/releases/latest/download/latest.json` 能不能拿到正确版本。完整参数与排错见 `docs/附录-可执行规程.md`。
 
 不用 `-Publish` 时仍走老路子：脚本打印「待上传文件」，你自己传到 `-BaseUrl` 指向的位置。
 
@@ -86,4 +86,4 @@ powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -Publish -Notes "�
 - ⚠️ 但发行物**含调用它的适配模块** `m2_server/seed_vc.py` —— 那是本项目自有的 MIT 代码，经
   子进程调用外部仓库的 `inference_v2.py`（`ab_chain.py` / `offline_vc.py` 也会用到它）。
   用户要用该链路须自行 clone Seed-VC、GPL 义务自负。该模块**尚未**登记进
-  `THIRD_PARTY_NOTICES.md`，评估挂在 `docs/ROADMAP.md` P1-2 的残余项里（2026-09-14 核实）。
+  `THIRD_PARTY_NOTICES.md`，评估挂在 `docs/交接-AI必读.md` P1-2 的残余项里（2026-09-14 核实）。

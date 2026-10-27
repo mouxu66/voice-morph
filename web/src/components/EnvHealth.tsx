@@ -116,7 +116,7 @@ export function EnvHealth({
 
   // 首选：后端的**完整诊断报告**（`GET /api/ai/context?format=md`，已脱敏）——
   // 它比本地拼的简版多出能力加载 / 音频链路 / 预热 / 上一条发送的 warning /
-  // 疑似错误日志，正是「这次为什么失败」要用的东西（见 docs/AI调试端点设计.md）。
+  // 疑似错误日志，正是「这次为什么失败」要用的东西（见 docs/交接-AI必读.md）。
   // 取不到时降级到本地简版，并**如实标注「简版」**—— 一句「已复制」把两种
   // 内容不同的东西说成同一件事，会让用户以为 AI 看到了完整现场。
   const prepareReportText = async (): Promise<{ text: string; mode: "full" | "brief" } | null> => {

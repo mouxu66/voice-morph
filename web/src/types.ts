@@ -179,7 +179,7 @@ export interface PluginCatalog {
   preset: string;
 }
 
-/** 套餐预设（`docs/插件化设计.md` §8.1）—— 不给用户一张裸插件表 */
+/** 套餐预设（`docs/交接-AI必读.md` §8.1）—— 不给用户一张裸插件表 */
 export interface PluginPreset {
   id: string;
   label: string;

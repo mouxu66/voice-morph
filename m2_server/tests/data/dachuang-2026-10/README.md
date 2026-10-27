@@ -15,10 +15,10 @@
 | 留在这里的东西 | 谁在读它 |
 |---|---|
 | `rvc-qc-判据标定/` | `m2_server/tests/test_voice_qc_ruler_calib.py:30`（`EVIDENCE_DIR`）、`m2_server/tests/test_voice_qc_emb_judgement.py:164`、`tools/voice_qc.py` |
-| `减负pilot-s01-记录.md`、`大创方案-v2.md` | `m2_server/tests/test_secs_ruler_labeling.py:106-107`（`STALE_DOCS`）、`:141`；`docs/README.md:36` |
-| `pilotC-公开语料证据/` | `tools/voice_dual_gate.py:46`（`EVIDENCE_DIR`，运行时真的会去读）、`m2_server/voicepreserve.py:1099`、`docs/嗓音保存评测协议.md:303-326`、`docs/音色体检三灯.md:40` |
-| `千问微调vsRVC-裁决/` | `docs/插件化设计.md:531`、`docs/product/research/m1f_千问微调vsRVC-声音克隆裁决_2026-10-14.md`（可重放原始分） |
-| `pilot-讲稿-10分钟.md` | `docs/减负实测协议.md:40` |
+| `减负pilot-s01-记录.md`、`大创方案-v2.md` | `m2_server/tests/test_secs_ruler_labeling.py:106-107`（`STALE_DOCS`）、`:141`；`docs/交接-AI必读.md:36` |
+| `pilotC-公开语料证据/` | `tools/voice_dual_gate.py:46`（`EVIDENCE_DIR`，运行时真的会去读）、`m2_server/voicepreserve.py:1099`、`docs/附录-可执行规程.md:303-326`、`docs/交接-AI必读.md:40` |
+| `千问微调vsRVC-裁决/` | `docs/交接-AI必读.md:531`、`docs/product/research/m1f_千问微调vsRVC-声音克隆裁决_2026-10-14.md`（可重放原始分） |
+| `pilot-讲稿-10分钟.md` | `docs/附录-可执行规程.md:40` |
 
 另外三份是**技术结论/执行卡**（没被代码引用，但内容是项目结论而非申报文案，故留下）：
 `AB对照-12分钟PPT微调-2026-10-12.md`、`RVC克隆-12分钟真人素材-2026-10-12.md`、

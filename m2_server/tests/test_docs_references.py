@@ -2,7 +2,7 @@
 
 ### 为什么需要
 
-2026-09-23 把 `docs/犯错指南.md`（**4511 行**）拆成
+2026-09-23 把 `docs/交接-AI必读.md`（**4511 行**）拆成
 `犯错指南.md`（门口，~300 行）+ `犯错档案-微信.md` + `犯错档案-工程.md`，
 同时删掉 24 份"结论已进提交/门禁/现役文档"的过程稿。
 
@@ -24,11 +24,12 @@
 | `docs/犯错X.md §N.M` 的 `N.M` 在那个文件里真有对应标题 | `test_section_refs_resolve` |
 | 仓库自有文件里 `docs/xxx.md` 形式的链接真存在（别指向已删的文档） | `test_no_dead_doc_links` |
 | 速查表的行号是 1..N 连续（**拆分前它有 10 组重复号**，"速查表第 42 条"有歧义，而 `AGENTS.md` 与微信方案都在引用行号） | `test_cheatsheet_rows_are_sequential` |
-| 门口不许再长回去（它涨到 4511 行才被拆） | `test_guide_stays_a_door` |
+| 门口不许再长回去（它涨到 4511 行才被拆，2026-10-27 合并后又到 1403 行） | `test_cheatsheet_has_a_ceiling` |
 """
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -38,13 +39,19 @@ _ROOT = Path(__file__).resolve().parents[2]
 _DOCS = _ROOT / "docs"
 
 #: 三份"犯错"文档 —— §编号在它们之间**不重号**（沿用拆分前的原值），所以引用带文件名才有意义。
-ERR_DOCS = ("犯错指南.md", "犯错档案-微信.md", "犯错档案-工程.md")
+#:
+#: 2026-10-27：`犯错指南.md` 并进了 `交接-AI必读.md`（§3.1–§3.6 顺移为 §9.1–§9.6），
+#: 所以这一组的第一个成员换了名字，**§编号仍然不与其他两份重号**。
+ERR_DOCS = ("交接-AI必读.md", "犯错档案-微信.md", "犯错档案-工程.md")
 
 #: `### 8.36 标题` / `### §8.36 标题` / `## 3.1 标题` 都算一条。
 _HEADING = re.compile(r"^#{2,4}\s+(?:§)?(\d+\.\d+[a-z]?)\s")
 
-#: `docs/犯错指南.md` §8.36` / ``docs\犯错档案-微信.md`` §2.28` 这类"带文件名的引用"。
-_REF = re.compile(r"犯错档案-(微信|工程)\.md`?\s*§\s?(\d+\.\d+[a-z]?)|犯错指南\.md`?\s*§\s?(\d+\.\d+[a-z]?)")
+#: `docs/交接-AI必读.md` §9.36` / ``docs\犯错档案-微信.md`` §2.28` 这类"带文件名的引用"。
+#: 三份文档名统一由 `ERR_DOCS` 派生 —— 以后再加一份，只改上面那行就行。
+_REF = re.compile(
+    r"(?:(犯错档案-(?:微信|工程))|(交接-AI必读))\.md`?\s*§\s?(\d+\.\d+[a-z]?)"
+)
 
 #: 仓库自有文件里的 `docs/xxx.md` 链接。
 #:
@@ -54,6 +61,19 @@ _REF = re.compile(r"犯错档案-(微信|工程)\.md`?\s*§\s?(\d+\.\d+[a-z]?)|�
 #: 假红（本仓当然没有那份文件）。判据改成"**前面不是 `//` 或 `:/`**"，
 #: 即只认相对路径式的 `docs/xxx.md`。
 _LINK = re.compile(r"(?<![\\/])docs[\\/]([A-Za-z0-9_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff.\-]*\.md)")
+
+#: 已打包进安装版 `app.asar` 的主进程文件里，注释中的文档引用**刻意冻结**（2026-10-27）。
+#:
+#: 为什么允许：改一个字节就会让已安装的 `app.asar` 报"陈旧"（`tools/audit_asar_freshness.cjs`
+#: 逐字节对账），而清掉它必须**重打打包并重新安装**整个应用 —— 为两行注释重装一次不成比例。
+#: 这两处指向的文档已并入 `docs/交接-AI必读.md`（§8.2 声板 / 附录 §1 发版）。
+#:
+#: 解锁方式：下一次发版重打（`npm run electron:build`）时顺手把这两行改成新档名，
+#: 然后把本表清空。**表不能长期留着** —— 下面有断言要求它恰好命中两条，命中变少就会红。
+FROZEN_DOC_REFS = {
+    ("web/electron/sfx-window.cjs", "特效声板设计.md"),
+    ("web/electron/updater.cjs", "release-sop.md"),
+}
 
 _SCAN_SUFFIXES = (".py", ".md", ".ps1", ".cjs", ".js", ".ts", ".tsx", ".yml", ".yaml")
 
@@ -71,6 +91,7 @@ _SCAN_ROOTS = (
     "m2_server",
     "tools",
     "scripts",
+    "tts_trial",
     "web/src",
     "web/electron",
     ".github",
@@ -83,7 +104,11 @@ _SKIP = (
     "node_modules",
     ".venv",
     "_ref",
-    "tts_trial",
+    # tts_trial 本体要扫（2026-10-27 教训：它整个被跳过，于是 `docs/大创申报-2026-10/` 搬走后
+    # `test_qwen_vs_rvc_verdict.py` 里那条路径没人发现，一直到全量 pytest 才炸），
+    # 但它下面拖着自带 venv 与上游 vendored 仓库，这两个必须继续排掉。
+    "tts_trial/venv312",
+    "tts_trial/MeanVC2",
     "mobile",
     "htmlcov",
     ".git",
@@ -116,16 +141,29 @@ def _all_repo_files():
         seen: set[str] = set()
 
         def _walk(root: Path, rel_base: str) -> None:
-            for p in root.rglob("*"):
-                rel = f"{rel_base}/{p.relative_to(root).as_posix()}" if rel_base else p.relative_to(root).as_posix()
-                if rel in seen or not p.is_file():
-                    continue
-                seen.add(rel)
-                if any(x in rel for x in _SKIP):
-                    continue
-                by_name.setdefault(p.name, []).append(rel)
-                if p.suffix in _SCAN_SUFFIXES and p.stat().st_size <= _MAX_BYTES:
-                    scannable.append((rel, p))
+            # 用 os.walk **就地剪枝**，不要 `root.rglob("*")`：`tts_trial` 自带
+            # venv312（8.5G）+ MeanVC2（3.1G）共 6 万个条目，走进去再靠 `_SKIP` 过滤
+            # = 每个文件都要 stat 一次，实测 21s；剪枝后 2s。
+            for dirpath, dirnames, filenames in os.walk(root):
+                d = Path(dirpath)
+                sub = d.relative_to(root).as_posix()
+                rel_dir = rel_base if sub == "." else (f"{rel_base}/{sub}" if rel_base else sub)
+                dirnames[:] = [
+                    n
+                    for n in dirnames
+                    if not any(x in (f"{rel_dir}/{n}" if rel_dir else n) for x in _SKIP)
+                ]
+                for fn in filenames:
+                    p = d / fn
+                    rel = f"{rel_dir}/{fn}" if rel_dir else fn
+                    if rel in seen or not p.is_file():
+                        continue
+                    seen.add(rel)
+                    if any(x in rel for x in _SKIP):
+                        continue
+                    by_name.setdefault(p.name, []).append(rel)
+                    if p.suffix in _SCAN_SUFFIXES and p.stat().st_size <= _MAX_BYTES:
+                        scannable.append((rel, p))
 
         for item in _SCAN_ROOTS:
             root = _ROOT / item
@@ -153,18 +191,28 @@ def _repo_files():
 
 
 def test_the_three_error_docs_exist_and_are_split():
-    """拆分本身也是断言：三份都在，`犯错指南.md` **不含** §2.x/§8.x（那些在档案里）。
+    """拆分本身也是断言：三份都在，且**速查表只在交接里有**。
 
-    只断言"文件存在"是不够的 —— 把内容整块粘回指南、档案留个空壳，那样也"存在"。
+    只断言"文件存在"是不够的 —— 把 §9 整块粘回档案、档案留个空壳，那样也"存在"。
+
+    2026-10-27 合并后，"门口"变成 `交接-AI必读.md` §9：**速查表 + 六条铁律**在那儿；
+    单条事故的完整复盘在另两份（`§2.x`/`§5.x` 微信、`§3.x`/`§8.x` 工程）。
     """
     for name in ERR_DOCS:
         assert (_DOCS / name).is_file(), f"缺少 {name}"
-    guide = _sections(_DOCS / "犯错指南.md")
-    assert guide, "犯错指南.md 一条 §编号标题都没有？"
-    assert not {s for s in guide if s.split(".")[0] in ("2", "8")}, (
-        f"犯错指南.md 里混进了 §2.x/§8.x：{sorted(s for s in guide if s.split('.')[0] in ('2','8'))}"
-        " —— 那些属于两份档案"
-    )
+
+    guide_path = _DOCS / "交接-AI必读.md"
+    assert "## 9 铁律与速查表" in guide_path.read_text(encoding="utf-8"), "交接里没有 §9（门口那部分）？"
+    assert _sections(guide_path), "交接一条 §编号标题都没有？"
+
+    for name in ("犯错档案-微信.md", "犯错档案-工程.md"):
+        text = (_DOCS / name).read_text(encoding="utf-8")
+        assert "| 症状 | 根因 | 对策 |" not in text, (
+            f"{name} 里混进了速查表 —— 那是门口的（交接 §9.7），档案只放单条复盘"
+        )
+        assert not {s for s in _sections(_DOCS / name) if s.startswith("9.")}, (
+            f"{name} 里混进了 §9.x —— 铁律只在交接里"
+        )
 
 
 def test_section_refs_resolve():
@@ -182,8 +230,8 @@ def test_section_refs_resolve():
     for rel, path in _repo_files():
         for i, ln in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
             for m in _REF.finditer(ln):
-                key = f"犯错档案-{m.group(1)}.md" if m.group(1) else "犯错指南.md"
-                num = m.group(2) or m.group(3)
+                key = f"{m.group(1) or m.group(2)}.md"
+                num = m.group(3)
                 checked += 1
                 if num not in have[key]:
                     bad.append(f"{rel}:{i} → {key} §{num} 不存在（{ln.strip()[:80]}）")
@@ -193,22 +241,37 @@ def test_section_refs_resolve():
 
 
 def test_no_dead_doc_links():
-    """仓库自有文件里的 `docs/xxx.md` 必须真存在 —— 删文档时最容易留下一地死链。"""
+    """仓库自有文件里的 `docs/xxx.md` 必须真存在 —— 删文档时最容易留下一地死链。
+
+    例外只有 `FROZEN_DOC_REFS` 那两条（打包进 app.asar、改一个字就要重装应用）。
+    **例外必须恰好命中**：命中 0 条说明代码已经改过、表该清了；超过 2 条说明有人往表里加料。
+    """
     by_name, _ = _all_repo_files()
     existing = {p.name for p in (_DOCS.rglob("*.md"))}
     assert existing, "docs/ 下一份 md 都没有？"
     bad: list[str] = []
     checked = 0
+    frozen_hit: set[tuple[str, str]] = set()
     for rel, path in _repo_files():
         for i, ln in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
             for m in _LINK.finditer(ln):
                 checked += 1
                 # 同名文件只要在仓库里存在就算命中（不校验相对路径 —— 那是编辑器的职责，
                 # 这里守的是「删了文档却没改引用」这一类）。
-                if m.group(1) not in existing and m.group(1) not in by_name:
-                    bad.append(f"{rel}:{i} → docs/{m.group(1)}（不存在）")
+                if m.group(1) in existing or m.group(1) in by_name:
+                    continue
+                if (rel, m.group(1)) in FROZEN_DOC_REFS:
+                    frozen_hit.add((rel, m.group(1)))
+                    continue
+                bad.append(f"{rel}:{i} → docs/{m.group(1)}（不存在）")
     assert checked >= 20, f"只找到 {checked} 处 docs/ 链接 —— 扫描范围是不是被 _SKIP 吃掉了？"
     assert not bad, "指向已不存在的 docs 文档：\n  " + "\n  ".join(bad)
+    # 例外必须恰好命中两条：命中变少=代码已改，表该清；变多=有人往表里加料。
+    assert frozen_hit == FROZEN_DOC_REFS, (
+        f"豁免表与实际情况不符：命中 {sorted(frozen_hit)}，表里是 {sorted(FROZEN_DOC_REFS)}。\n"
+        "  少的那条说明主进程源码已经改名了 —— 去把 FROZEN_DOC_REFS 里对应行删掉；\n"
+        "  多的那条说明有人把新死链塞进了豁免表 —— 那应该改源码，不该改这张表。"
+    )
 
 
 def test_doc_link_scanner_bites_both_ways():
@@ -229,33 +292,55 @@ def test_doc_link_scanner_bites_both_ways():
     assert _LINK.search(r"见 docs\另也不存在.md")
 
 
+def _cheatsheet_rows() -> list[int]:
+    """`交接-AI必读.md` §9.7 那张表的行号列。
+
+    ⚠️ 必须**只取 9.7 这一段**：9.8 检查清单与 9.9 诊断命令里的表格也有 `| 1 |` 这种首列，
+    整篇扫会把它们算成"速查表第 1 条"，行号立刻不连续（2026-10-27 合并当天踩到）。
+    """
+    lines = (_DOCS / "交接-AI必读.md").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("### 9.7 "))
+    end = next((i for i, ln in enumerate(lines[start + 1 :], start + 1) if ln.startswith("#")), len(lines))
+    return [int(m.group(1)) for ln in lines[start:end] if (m := re.match(r"^\|\s*(\d+)\s*\|", ln))]
+
+
 def test_cheatsheet_rows_are_sequential():
     """速查表的行号必须 1..N 连续。
 
     2026-09-23 之前它有**10 组重复号**（两个 24、两个 42…两个 48），
-    而 `AGENTS.md`（"速查表第 27/32 条"）与 `docs/微信语音-长文分段发送方案.md`
+    而 `AGENTS.md`（"速查表第 27/32 条"）与 `docs/交接-AI必读.md`
     （一列行号）都在按行号引用 —— 有重号时"第 42 条"指向哪一条是**猜**。
+
+    2026-10-27：`犯错指南.md` 并进 `交接-AI必读.md` §9.7，**表本身逐字搬过来、编号没动**，
+    所以全仓"速查表第 N 条"的引用仍然成立。
     """
-    rows = [
-        int(m.group(1))
-        for ln in (_DOCS / "犯错指南.md").read_text(encoding="utf-8").splitlines()
-        if (m := re.match(r"^\|\s*(\d+)\s*\|", ln))
-    ]
+    rows = _cheatsheet_rows()
     assert rows, "速查表一行都没有？"
     assert rows == list(range(1, len(rows) + 1)), f"速查表行号不连续：{rows[:12]}…（共 {len(rows)} 行）"
 
 
-def test_guide_stays_a_door():
-    """`犯错指南.md` 是"动代码前读这一份"，所以给它一个上限。
+def test_cheatsheet_has_a_ceiling():
+    """「动代码前必读」那部分必须有上限。
 
-    它涨到 **4511 行**才被拆（2026-09-23），而"动代码前必读"的东西不该有 4511 行。
+    历史：`犯错指南.md` 涨到 **4511 行**才被拆（2026-09-23）；拆分后给它设了 900 行上限。
+    2026-10-27 它整份并进 `交接-AI必读.md`，**上限不能跟着丢** —— 合并最容易做的事
+    就是"什么都往里加"。
+
     设上限不是洁癖：**没有上限的"必读"文档，最终一定是没人读**。
     真踩了新坑请写进两份档案，或在这里加**一行**速查表。
     """
-    lines = (_DOCS / "犯错指南.md").read_text(encoding="utf-8").splitlines()
-    assert len(lines) <= 900, (
-        f"犯错指南.md 已经 {len(lines)} 行 —— 它是门口，不是档案。"
-        "完整复盘写 docs/犯错档案-微信.md 或 docs/犯错档案-工程.md，这里只留速查表那一行。"
+    rows = _cheatsheet_rows()
+    assert len(rows) <= 240, (
+        f"速查表已 {len(rows)} 条（上限 240）—— 它是门口，不是档案。"
+        "完整复盘写 docs/犯错档案-微信.md 或 docs/犯错档案-工程.md。"
+    )
+
+    text = (_DOCS / "交接-AI必读.md").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, ln in enumerate(text) if ln.startswith("## 9 "))
+    end = next((i for i, ln in enumerate(text[start + 1 :], start + 1) if re.match(r"^## \d", ln)), len(text))
+    assert end - start <= 560, (
+        f"§9「铁律与速查表」已 {end - start} 行（上限 560）—— 这是每次改动都要读的部分，"
+        "设计推导请写 §8，外部证据请写 §10。"
     )
 
 

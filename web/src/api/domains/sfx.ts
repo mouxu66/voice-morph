@@ -154,7 +154,7 @@ export async function bgmGain(gain: number): Promise<{ ok: boolean; gain: number
 
 /**
  * B 档「翻唱直发」：把一条会话产物截成 ≤54s 的一段（微信语音 60s 硬上限，
- * 音频预算 54s，见 `docs/微信语音-长文分段发送方案.md` §2）。端点属翻唱插件
+ * 音频预算 54s，见 `docs/交接-AI必读.md` §2）。端点属翻唱插件
  * （cover 路由），产物 `clip_<原名>.wav`，`seconds` 是实际截到的时长。
  */
 export async function coverClip(

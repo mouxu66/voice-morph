@@ -4,7 +4,7 @@
 背景：`transformers` 5.x 的 `ForCausalLMLoss` **内部**会做一次
 `labels[..., 1:]`（loss_utils.py:61-64）。而 sft_8gb.py 传的是
 `codec_0_labels[:, 1:]` —— 已经手移过一次。若二者叠加，模型被教成预测 **j+2**。
-（同一结论 2026-10-12 已在 QLoRA 路线上确认过，见 docs/犯错指南 #160 与
+（同一结论 2026-10-12 已在 QLoRA 路线上确认过，见 docs/交接-AI必读.md §9.7 第 160 条 与
  官方 issue #278/#371；此处针对**生产链路**复验。）
 
 做法：构造一个"正确答案已知"的序列，用真 `ForCausalLMLoss` 算两条路径的损失，

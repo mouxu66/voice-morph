@@ -17,12 +17,12 @@
         "kind": "app",
         "env": "VM_YTDLP",
         "label": "yt-dlp（搜歌用；与「翻唱」页共用同一个可执行文件）",
-        "doc": "docs/方案-会话助理.md"
+        "doc": "docs/交接-AI必读.md"
       },
       {
         "kind": "app",
         "label": "微信 PC 版（确认后才会被调用）",
-        "doc": "docs/犯错指南.md §8.x 微信相关条目"
+        "doc": "docs/交接-AI必读.md §8.x 微信相关条目"
       }
     ],
     "models": []

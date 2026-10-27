@@ -4,7 +4,7 @@
     同一节课，本人全程口播（A） vs 讲稿转旁白流程（B：平台用本人音色合成，
     本人只做少量开口补录），量「发声总时长 / 连续发声时长 / 发声占空比」
     下降多少 → 「减负 X%」是一个链路内就能测出的客观、可复现数字。
-    协议：`docs/减负实测协议.md`（设计、口径、红线都在那边，本文件只管测量）。
+    协议：`docs/附录-可执行规程.md`（设计、口径、红线都在那边，本文件只管测量）。
 
 用法
     # 单文件测量（也可多条一起）
@@ -310,7 +310,7 @@ def write_summary_md(rows: list[dict], md_path: str | Path) -> Path:
             f" | {_fmt_dur(sv['a_longest_continuous_s']) if sv else '—'}→"
             f"{_fmt_dur(sv['b_longest_continuous_s']) if sv else '—'}"
             f" | {'；'.join(r['flags']) or '—'} |")
-    lines += ["", "> 警戒行仅标记电平/缺件，测量值照实报；结论口径与红线见 docs/减负实测协议.md。"]
+    lines += ["", "> 警戒行仅标记电平/缺件，测量值照实报；结论口径与红线见 docs/附录-可执行规程.md。"]
     out.write_text("\n".join(lines), encoding="utf-8")
     return out
 
@@ -354,7 +354,7 @@ def print_compare(res: dict) -> None:
         print(f"  合成旁白（机器产出，不计发声）  {Path(res['synth']['file']).name}"
               f"  时长 {_fmt_dur(res['synth']['total_s'])}")
     sv = res["saving"]
-    print("减负对比（口径见 docs/减负实测协议.md）：")
+    print("减负对比（口径见 docs/附录-可执行规程.md）：")
     print(f"  发声总时长  {_fmt_dur(sv['a_phonation_s'])} → {_fmt_dur(sv['b_phonation_s'])}"
           f"  节省 {_fmt_dur(max(sv['saving_s'], 0.0))}"
           f"（{_pct(sv['saving_rate'])}）")

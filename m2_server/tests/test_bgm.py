@@ -1,4 +1,4 @@
-"""「边唱边说」三档后端单测（调研：`docs/调研-微信语音边唱边说-2026-10-13.md`）。
+"""「边唱边说」三档后端单测（调研：`docs/交接-AI必读.md`）。
 
 覆盖：
     A  `sfx_lib.mix_bgm` 垫底 DSP + `/api/soundboard/bgm/upload|premix`

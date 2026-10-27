@@ -135,7 +135,7 @@ def _git(*args: str) -> str:
 
     必须显式 `encoding="utf-8"`：`text=True` 会用**本机 locale**（本机是 GBK）解码，
     而 git 输出里的中文文件名是 UTF-8 → 直接 UnicodeDecodeError（2026-09-13 实测踩到，
-    同类坑见 docs/犯错指南.md）。errors="replace" 只求不炸，文件名里的乱码不影响判定。
+    同类坑见 docs/交接-AI必读.md）。errors="replace" 只求不炸，文件名里的乱码不影响判定。
     """
     return subprocess.run(
         ["git", *args], cwd=ROOT, capture_output=True, check=True,

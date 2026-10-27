@@ -14,7 +14,7 @@
  *   3. **具名导出** —— 页面没有 default export，导出名对不上就是白屏。
  *
  * 所以这里**读真实的 `plugin.json`**（不手写 fixture —— 手写 fixture 只会照抄我自己的
- * 假设，见 `docs/犯错指南.md` 里 `[object Object]` 那次），逐个把上面三样撞一遍。
+ * 假设，见 `docs/交接-AI必读.md` 里 `[object Object]` 那次），逐个把上面三样撞一遍。
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { resolve } from "node:path"

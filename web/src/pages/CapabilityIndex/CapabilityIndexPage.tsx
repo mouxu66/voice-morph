@@ -9,7 +9,7 @@ import { RemoteQrCard } from "./RemoteQrCard"
  *
  * 为什么需要它
  * ------------
- * 调研（`docs/调研-用户需求与界面精简-2026-09-25.md`）发现：侧栏很干净（7 项），
+ * 调研（`docs/交接-AI必读.md`）发现：侧栏很干净（7 项），
  * 但有 **10 个能力没有任何导航入口**，只能靠"碰巧滑到某个 tab"被发现。
  *
  * 按渐进式披露的理论，这些属于**第三层功能**（永不自动露出，靠用户自己发掘）——
@@ -21,7 +21,7 @@ import { RemoteQrCard } from "./RemoteQrCard"
  * 常驻侧栏只会把刚做完的降噪又还回去。
  *
  * 门控：每一项都过 `pluginVisible`。关掉的能力不该在这里显示成能点的链接
- * （否则点进去就是 404）—— 这是本仓的老坑，见 `docs/犯错指南.md` 速查表。
+ * （否则点进去就是 404）—— 这是本仓的老坑，见 `docs/交接-AI必读.md` 速查表。
  */
 export function CapabilityIndexRoute() {
   const { state } = usePluginCatalog()

@@ -144,7 +144,7 @@ def test_ci_fidelity_is_not_a_default_step(check):
     * `petlayout` = `tools/test-pet-panel-layout.cjs`（约 1.2s）：桌宠面板的**纵向预算
       门禁** —— 静态部分查"新功能页/新控件有没有登记预算"，外加一次 headless Chromium
       扫描（所有功能页 × 无气泡/大头气泡）实测余量。面板 300px 高是死的，新控件把底部
-      挤掉是**提交那一刻就该拦下**的形状（见 `docs/桌宠遥控器.md`）。
+      挤掉是**提交那一刻就该拦下**的形状（见 `docs/交接-AI必读.md`）。
       它从 `nodetest` 里摘了出来（`NODE_TESTS_OWNED_BY_OTHER_STEPS` 有登记）——
       因为 nodetest 不进 --fast，而这条必须进）。
 

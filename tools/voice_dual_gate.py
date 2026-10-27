@@ -17,7 +17,7 @@
 0.005** —— 阈值型门禁几乎没有分辨空间（要么全过、要么全挂）。CAM++ 是独立模型，
 分布铺得开，对参考音时长的敏感度约为自空间的 12 倍。
 
-证据：`docs/大创申报-2026-10/pilotC-公开语料证据/dual_embed/`（report.md /
+证据：`m2_server/tests/data/dachuang-2026-10/pilotC-公开语料证据/dual_embed/`（report.md /
 results.json / pairs.csv，含 144 对逐条分数）。
 
 阈值从实测分布推导（不是文献数字、不是手填）
@@ -43,7 +43,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 #: 证据目录（`pairs.csv` 就是标定数据本身，门禁的回归测试直接读它）。
-EVIDENCE_DIR = Path("docs/大创申报-2026-10/pilotC-公开语料证据/dual_embed")
+EVIDENCE_DIR = Path("m2_server/tests/data/dachuang-2026-10/pilotC-公开语料证据/dual_embed")
 
 #: 2026-10-11 pilotC 实测簇界（取值口径见上）。⚠️ 改这里必须同步改 `audit()` 的期望吗？
 #: 不用 —— `audit()` 每次从 pairs.csv 现算，这里的数字由

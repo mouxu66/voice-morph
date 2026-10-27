@@ -69,7 +69,7 @@ READER_NOTE = "README-听者.md"
 #: （`merge-listen` 认得的就是 `blind_id` + `mos`/`abx` 里至少一列。）
 SHEET_COLUMNS = ("blind_id", "mos", "note")
 
-#: 传给听者的评分表抬头 —— 口径与 `docs/减负实测协议.md` 那类量表保持一致：
+#: 传给听者的评分表抬头 —— 口径与 `docs/附录-可执行规程.md` 那类量表保持一致：
 #: 不写"像不像本人"（听者不知道本人是谁），只评**自然度**。
 MOS_ANCHORS = (
     "5 = 和真人说话没有区别",

@@ -86,7 +86,7 @@ def short_ref_warning(seconds: float | None) -> str | None:
     的主因（同人最低的 0.2659 就出自它）；时长越短，CAM++ 的声纹估计越不可靠。
 
     ⚠️ **只提示，不作废判定**：实测 4.2s 的参考在相对判据下仍能排中，结论只是更脆。
-    证据：`docs/大创申报-2026-10/rvc-qc-判据标定/`。
+    证据：`m2_server/tests/data/dachuang-2026-10/rvc-qc-判据标定/`。
     """
     if seconds is None or seconds >= MIN_REF_SECONDS:
         return None

@@ -22,8 +22,8 @@
 
 ```bash
 .venv/Scripts/python.exe m2_server/audition_score.py \
-  --jobs docs/大创申报-2026-10/千问微调vsRVC-裁决/jobs.json \
-  --out  docs/大创申报-2026-10/千问微调vsRVC-裁决/scores.json
+  --jobs m2_server/tests/data/dachuang-2026-10/千问微调vsRVC-裁决/jobs.json \
+  --out  m2_server/tests/data/dachuang-2026-10/千问微调vsRVC-裁决/scores.json
 ```
 
 （`jobs.json` 里引用的音频需先存在：`media/ft_work/ppt12/…`，由

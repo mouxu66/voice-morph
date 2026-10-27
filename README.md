@@ -8,7 +8,7 @@
 你的麦克风 ──▶ 本机 GPU 推理（RVC，端到端 p50 ≈ 300ms）──▶ 目标音色 ──▶ 微信 / 游戏 / 会议
 ```
 
-> 延迟口径（`docs/延迟基准报告.md`）：**端到端 = 分块缓冲 250ms + 单块推理 30ms + 驱动缓冲 ~20ms**，p50 ≈ 300ms、p95 ≈ 360ms；单块推理本身才是 p50 30ms —— 别把后者当端到端报。另注意 p99 会到 1.2s 量级（每 100 块里约一次卡壳），实时通话里决定体验的是它。
+> 延迟口径（`docs/交接-AI必读.md`）：**端到端 = 分块缓冲 250ms + 单块推理 30ms + 驱动缓冲 ~20ms**，p50 ≈ 300ms、p95 ≈ 360ms；单块推理本身才是 p50 30ms —— 别把后者当端到端报。另注意 p99 会到 1.2s 量级（每 100 块里约一次卡壳），实时通话里决定体验的是它。
 
 和「本地语音工作站」类工具（如 VoiceStudio）的区别一句话：**它们交付一个音频文件，我们交付一句已经发出去的话。**
 
@@ -24,7 +24,7 @@
 - **开麦说话**（实时变声）：RVC via 虚拟声卡 → 注入微信/游戏/Discord/OBS 的麦克风。
 - **打字让它说**（TTS）：输入文字 → 用你选的音色（含真声克隆）合成 → **一键发进微信**。
   - **歌声垫底**（2026-10-13）：把一首歌/伴奏垫进要发出去的语音条 → 微信上「边有歌声、边说话」。两条路：`POST /api/soundboard/bgm/premix` 离线预混出 `bgmmix_<原名>.wav`，或交声板 worker 的**独立垫底层**实时混（`bgm/start|stop|gain`）；翻唱入口按 `WECHAT_AUDIO_BUDGET_S = 54.0` 自动截短，给微信单条 60s 硬上限留发送余量。
-    ⚠️ 微信语音是 16kHz 人声优化编码，**会把音乐高频削掉**（听感发闷），只能靠混音策略缓解；依据 `docs/调研-微信语音边唱边说-2026-10-13.md`（结论：合成侧混轨，发送链路零改动）。
+    ⚠️ 微信语音是 16kHz 人声优化编码，**会把音乐高频削掉**（听感发闷），只能靠混音策略缓解；依据 `docs/交接-AI必读.md`（结论：合成侧混轨，发送链路零改动）。
 - **训练变声**（自建音色）：丢一段素材 → 自动切片质检、挑出干净片段 → 训练成你自己的音色。
 
 三端一体：**桌面端**（主力，Electron + React，自带 Python 推理后端）· **移动端**（Expo App，手机打字/遥控，PC 在局域网内推理并自动发到微信）· **Web 端**（同一套 React 前端，浏览器直连或由桌面壳托管）。
@@ -102,7 +102,7 @@
 │   ├── runtime.py        # 跨模块共享状态（流水线/挖掘/内录状态、路径常量）
 │   ├── plugin_manifest.py plugin_loader.py  # 能力清单真相源 + 容错装载（M/N 已加载那行）
 │   ├── system_api.py ai_api.py ai_actions_api.py ai_actions.py ai_audit.py voices_api.py raw_media_api.py pipeline_api.py clips_api.py
-│   │                     #   ↑ ai_api：AI 调试接口（只读快照 /api/ai/context，见 docs/AI调试端点设计.md）
+│   │                     #   ↑ ai_api：AI 调试接口（只读快照 /api/ai/context，见 docs/交接-AI必读.md）
 │   ├── tts_api.py mine_api.py capture_api.py ab_api.py ab_chain.py audio_api.py
 │   ├── media_api.py rvc_dataset_api.py market_api.py pet_market_api.py
 │   ├── cover_api.py ytdlp_api.py audition_api.py   # 翻唱（自动截 54s）/扒歌/试音间
@@ -244,7 +244,7 @@ http://<电脑局域网IP>:8000/remote.html?api_key=<VM_API_TOKEN>
 与 **实时变声遥控**（看延迟/设备/显存，启停变声、切音色、开关自我监听、强制还原声卡）。
 没设 `VM_API_TOKEN` 时可省掉 `?api_key=`（后端默认 LAN-only 放行）。
 改完页面要让它进到已安装的桌面端：`cd web && npm run ship`。
-详见 [`docs/手机遥控页.md`](docs/手机遥控页.md)。
+详见 [`docs/交接-AI必读.md`](docs/交接-AI必读.md)。
 
 ### 移动端（Expo，可选）
 
@@ -326,7 +326,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
 - **用户数据在 `%APPDATA%\voice-morph-desktop\` 下**：`outputs\`（音色市场、桌宠皮肤、能力开关 `plugins.json`、试听产物）
   与 `media\`（参考音、切片、素材）。安装目录只放代码 —— 换版本不会碰这两处（2026-09-21 起，
   更早的版本把 `outputs\` 写在安装目录里，会被更新连带替换；首次启动会自动迁移，见
-  `docs/分发与打包说明.md` §七）。
+  `docs/附录-可执行规程.md` §2）。
 
 可选能力各自独立，缺了不影响其它功能：
 
@@ -341,7 +341,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\setup_env.ps1
 > 每个能力声明自己占哪些 router、需要哪些「重可选依赖」（另外几个 GB 的 Python 包与模型）、
 > 对应的前端页面与侧边栏项、以及缺了会怎样。当前共 30 个能力（7 个核心 + 23 个可选），
 > 可用 `GET /api/plugins` 看实时状态（`ok` / `broken` / `disabled` 三态 + 开关结果 `enabled`）。
-> 改这里的表格前先看 `docs/插件化设计.md` —— 那份清单才是真相源，这张表是给人快速扫的。
+> 改这里的表格前先看 `docs/交接-AI必读.md` —— 那份清单才是真相源，这张表是给人快速扫的。
 >
 > ⚠️ **默认预设是 `standard`（标准＝变声本体），只启用 3 项可选能力**
 > （`sound.offline-vc` / `sound.rvc-live` / `sound.audition`，2026-09-23 拍板）。

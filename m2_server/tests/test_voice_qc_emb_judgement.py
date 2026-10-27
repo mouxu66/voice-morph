@@ -161,7 +161,7 @@ def test_evidence_reproduces_the_shipped_criterion(monkeypatch):
 
     import voice_qc_ruler_calib as calib
 
-    ev = _ROOT / "docs/大创申报-2026-10/rvc-qc-判据标定"
+    ev = _ROOT / "m2_server/tests/data/dachuang-2026-10/rvc-qc-判据标定"
     csv_path, json_path = ev / "pairs.csv", ev / "results.json"
     if not csv_path.exists() or not json_path.exists():
         pytest.skip(f"证据未入库：{ev}")

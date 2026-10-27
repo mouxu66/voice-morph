@@ -12,7 +12,7 @@ torch 2GB）+ demucs + qwen-tts。而用户可能只想换音色 —— 那 2GB 
 1. `outputs/plugins.json` 的 `disabled` 列表（用户在设置页关掉的能力）——
    **这是真相源**：关掉的能力，它的重包不该再装。
 2. 新机器还没有那个文件时，用 `-Preset` 给的起点（见 `plugin_manifest.PRESETS`，定义与
-   `docs/插件化设计.md` §8.1 一致）。
+   `docs/交接-AI必读.md` §8.1 一致）。
 3. `requires` 闭包：启用 A 就必须启用 A 依赖的 B（否则 A 起来也是 broken）。
 
 为什么用 Python 写而不是直接写在 PowerShell 里
@@ -40,7 +40,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 _M2 = ROOT / "m2_server"
 
-# 套餐预设**定义在 `plugin_manifest.PRESETS`**（`docs/插件化设计.md` §8.1 的表）。
+# 套餐预设**定义在 `plugin_manifest.PRESETS`**（`docs/交接-AI必读.md` §8.1 的表）。
 # 不放本模块：设置页要展示预设、开关接口要套用预设，三处不能各写一份。
 # 本模块每次调用时从 manifest 读，保证与后端永远一致。
 

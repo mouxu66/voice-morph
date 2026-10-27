@@ -1,4 +1,4 @@
-r"""`README.md` / `docs/ROADMAP.md` 里的**数字**必须与源码一致（2026-10-02）。
+r"""`README.md` / `docs/交接-AI必读.md` 里的**数字**必须与源码一致（2026-10-02）。
 
 ### 为什么需要
 
@@ -132,25 +132,30 @@ def test_readme_router_count_matches_manifest(truth):
         )
 
 
-def test_roadmap_does_not_claim_router_count(truth):
-    """ROADMAP 不该复述 router 数 —— 它是「强在哪」的规划稿，不是接口清单。
+def test_plan_section_does_not_claim_router_count(truth):
+    """「未完成清单」那一节不该复述 router 数 —— 它是规划，不是接口清单。
 
-    留这条是因为本次改正里发现 ROADMAP 确实有一处「插件总数 20 → 21」，
+    留这条是因为 2026-10-02 的改正里发现 `ROADMAP.md` 确实有一处「插件总数 20 → 21」，
     而它同期的 21 已经不是真的了。数字在规划稿里只会腐化。
 
-    只看**正文行**：本文件开头的说明段里就写了「能力数 / router 数 / 模块清单……
-    那些只属于 README」—— 那是在**解释**这条规则本身，不是复述数字。
+    2026-10-27：`ROADMAP.md` 已并入 `交接-AI必读.md` §6，**规则跟着搬** —— 盯 §6 那一段。
+    事实数字（§2 代码地图）不在此列：那是带日期的实测值，本来就该写下来。
+
+    只看**正文行**：这一节里的引用块（`> ` 开头）是在解释规则本身，不是复述数字。
     """
-    text = _read(_ROOT / "docs" / "ROADMAP.md")
+    text = _read(_ROOT / "docs" / "交接-AI必读.md")
+    lines = text.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("## 6 "))
+    end = next((i for i, ln in enumerate(lines[start + 1 :], start + 1) if ln.startswith("## ")), len(lines))
     offenders: list[str] = []
-    for i, ln in enumerate(text.splitlines(), 1):
+    for i, ln in enumerate(lines[start:end], start + 1):
         if ln.startswith("> "):
-            continue  # 说明段/引用块：本文件自己解释规则时会提到那些词
+            continue
         if re.search(r"(\d+)\s*个\s*router|router\s*数", ln):
-            offenders.append(f"ROADMAP.md:{i} → {ln.strip()[:70]}")
+            offenders.append(f"交接 §6:{i} → {ln.strip()[:70]}")
     assert not offenders, (
-        "ROADMAP.md 正文里有 router 数量表述 —— 接口清单属于 README，"
-        f"规划稿只写能力边界。当前实数是 {truth['routers_max']}（会漂移，别写进来）：\n  "
+        "「未完成清单」正文里有 router 数量表述 —— 接口清单属于 README，"
+        f"规划只写能力边界。当前实数是 {truth['routers_max']}（会漂移，别写进来）：\n  "
         + "\n  ".join(offenders)
     )
 

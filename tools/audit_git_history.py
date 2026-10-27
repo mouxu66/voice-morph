@@ -7,8 +7,8 @@
     一旦仓库转公开，任何人 `git log -p` 就能捞出来。
 
     本项目已经踩过一次：自签证书密码明文曾进过 `scripts/release.ps1` 与
-    `docs/release-sop.md`，工作区清干净了，历史里还在，最后靠 `git filter-repo`
-    重写才彻底解决（详见 `docs/开源前待办清单-2026-09-12.md` §3.1）。
+    `docs/附录-可执行规程.md`，工作区清干净了，历史里还在，最后靠 `git filter-repo`
+    重写才彻底解决（详见 `docs/交接-AI必读.md` §6.4）。
     本工具就是那次审计沉淀下来的，用来在**转公开前 / 加远端前**做最后一道检查。
 
 与 check_secrets.py 的分工：
@@ -488,7 +488,7 @@ def main() -> int:
     if len(need_edit) > 15:
         print(f"      … 另有 {len(need_edit) - 15} 个")
     print(f"  · 仅历史   {n_hist} 处 → 只有 git filter-repo 重写能清，"
-          f"见 docs/开源前待办清单-2026-09-12.md §3.1")
+          f"见 docs/交接-AI必读.md §6.4")
 
     if args.allow_history_only:
         # 非对称降级：凭据类不接受降级，HEAD 仍含的也不接受（见模块 docstring）

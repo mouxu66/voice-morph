@@ -2,7 +2,7 @@
 """★ 缺失格子的决定性判决：双修复 adapter 在【与训练一致的 4bit 底座】上推理。
 
 背景（为什么之前三轮"修复"都没打到点上，见 qlora_quant_config.py 顶部与
-docs/大创申报-2026-10/AB对照-12分钟PPT微调-2026-10-12.md）：
+m2_server/tests/data/dachuang-2026-10/AB对照-12分钟PPT微调-2026-10-12.md）：
   - adapter out_v2fix 是在【两个 bug 都修好】的脚本下训出来的（总参 1202.9M/1.599%，
     长路径 skip 名单 + prefill 对齐）；
   - 但判决脚本 ab_verdict.py 加载底座时【没传 quantization_config】= 纯 bf16，

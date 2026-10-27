@@ -3,14 +3,14 @@
 
 为什么要有这个文件（2026-10-14）
 --------------------------------
-`docs/product/research/m1f_千问微调vsRVC-声音克隆裁决_2026-10-14.md` 对外说了三件事：
+`docs/交接-AI必读.md` §5（「用千问微调做声音克隆」一行）对外说了三件事：
 
   ① RVC 的音色像度**逐句 3/3** 高于千问微调，且跨 seed 区间**不重叠**；
   ② 千问微调相对未微调的增益 **+0.0024**，落在它自己的波动内（等于没学到音色）；
   ③ 自然度（NatScore）这一轴**不可用** —— 真人参考音排在所有合成之下。
 
 这三条都写在**文档**里，而文档不会自己报错。所以这里把裁决**从
-`docs/大创申报-2026-10/千问微调vsRVC-裁决/scores.json` 重算一遍**：
+`m2_server/tests/data/dachuang-2026-10/千问微调vsRVC-裁决/scores.json` 重算一遍**：
 数字被重新生成/覆盖时，测试立刻红，而不是让文档悄悄过期。
 
 ⚠️ 这是「证据重放」，不是「重新测量」—— 它不跑模型、不 import torch，
@@ -24,8 +24,10 @@ import numpy as np
 import pytest
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+#: 2026-10-27：`docs/大创申报-2026-10/` 里能跑的东西搬成测试夹具 `m2_server/tests/data/dachuang-2026-10/`
+#:（申报材料本体另存 `_trash_大创-2026-10/`）—— 本文件是 4 个消费方之一，别改回 `docs/`。
 _EVIDENCE = os.path.join(
-    _ROOT, "docs", "大创申报-2026-10", "千问微调vsRVC-裁决", "scores.json"
+    _ROOT, "m2_server", "tests", "data", "dachuang-2026-10", "千问微调vsRVC-裁决", "scores.json"
 )
 
 

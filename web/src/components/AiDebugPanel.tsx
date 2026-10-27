@@ -6,7 +6,7 @@ import type { AiActionsCatalog, AiAuditEntry } from "@/api/client"
 /**
  * AI 调试面面板：动作目录 + AI 操作记录（第二期）。
  *
- * 两条设计口径（与 `docs/AI调试端点设计.md` 一致，改动前先读）：
+ * 两条设计口径（与 `docs/交接-AI必读.md` 一致，改动前先读）：
  *
  * 1. **拒绝也要说清为什么**：写能力没开时展示 `missing_gates` 逐条点名
  *    （缺哪个环境变量），而不是笼统一句「未启用」—— 用户照着就能开。

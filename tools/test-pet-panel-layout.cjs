@@ -154,7 +154,7 @@ function writeBudget(keys, tol) {
       "桌宠面板纵向预算基线（自动生成）。更新：node tools/test-pet-panel-layout.cjs " +
       "（设 VM_PET_BUDGET_UPDATE=1，会打印一份「这次吃了多少」的成本表）。" +
       "reserve = capacity - need；门禁要求 reserve 只能变多（容差 tolerance_px）。" +
-      "reserve 为负 = 该状态底部已被切（已知不足，见 docs/桌宠遥控器.md）。",
+      "reserve 为负 = 该状态底部已被切（已知不足，见 docs/交接-AI必读.md）。",
     tolerance_px: tol,
     keys,
   };

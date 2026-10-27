@@ -117,7 +117,7 @@ export async function diagnose(): Promise<DiagnoseInfo> {
  *
  * 为什么走它而不是前端自己把 `/diagnose` 拼一段文字：这份报告要能回答
  * 「这次为什么失败」（哪个能力没挂、音频链路缺什么、上一条发送有什么 warning），
- * 而 `/diagnose` 只答「装没装」。设计见 `docs/AI调试端点设计.md`。
+ * 而 `/diagnose` 只答「装没装」。设计见 `docs/交接-AI必读.md`。
  * 端点仅限本机访问；后端不可用时抛错，调用方自行降级（见 EnvHealth.copyReport）。
  */
 export async function getDiagnosticReport(): Promise<string> {

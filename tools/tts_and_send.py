@@ -84,7 +84,7 @@ def synth(text: str, ref: str, ref_text: str = "") -> Path:
     # ref_text 非空才走 ICL（音色+韵律一起学）；为空退化成 x-vector 纯声纹。
     # 对「TTS 之后再 RVC」的旧链路影响不大（音色由 RVC 决定），
     # 但对「音色和口音都靠参考音」的音色（如四川话零克隆）必须传，
-    # 否则语气和口音都会明显变淡 —— 见 docs/方言-四川重庆-2026-10-22.md §13。
+    # 否则语气和口音都会明显变淡 —— 见 docs/交接-AI必读.md §13。
     print(f"[TTS] 模式：{'ICL（含 ref_text）' if ref_text else 'x-vector（无 ref_text）'}")
     data = qwen3_tts.tts(text=text, ref_audio=ref, ref_text=ref_text, language="Chinese")
     out = OUTPUTS_DIR / f"tts_{int(time.time() * 1000)}.wav"
