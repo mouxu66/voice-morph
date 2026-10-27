@@ -82,7 +82,13 @@ def message_kind(name: str) -> str:
     return "text"
 
 
-def parse_messages(names: list[str], limit: int = 40, sides: list[str] | None = None) -> list[dict]:
+def parse_messages(
+    names: list[str],
+    limit: int = 40,
+    sides: list[str] | None = None,
+    speakers: list[str] | None = None,
+    speaker_ids: list[int] | None = None,
+) -> list[dict]:
     """UIA ListItem 名称 → 消息 dict，保留**末尾** limit 条（含时间行）。
 
     保留末尾而不是开头：用户在聊的永远是最近几条，往上翻要靠滚动（改微信状态），
@@ -91,9 +97,16 @@ def parse_messages(names: list[str], limit: int = 40, sides: list[str] | None = 
     `sides` 与 `names` **逐位对齐**（多一个是给不出 side 的降级路径）；给了就带上
     `side` 字段 —— 回复建议靠它区分「我」和「对方」，没有这个标记时模型会把群友
     之间的话也当成对自己说的（2026-10-24 评测里 9 组踩了 2 组）。
+
+    `speakers` 与 `names` 逐位对齐，是**群聊里的发言人昵称**（来自 `label_names`
+    的昵称条识别）。它和 `side` 是两个维度：`side` 只分「我 / 非我」，`speakers`
+    才分得清群友之间谁是谁。认不出的位置是空串，**不写占位符** —— 前端要能区分
+    「没识别出来」和「名字就叫未知」。
     """
     items: list[dict] = []
     pairs = list(zip(names, sides, strict=False)) if sides is not None and len(sides) == len(names) else None
+    spk = speakers if speakers is not None and len(speakers) == len(names) else None
+    spk_id = speaker_ids if speaker_ids is not None and len(speaker_ids) == len(names) else None
     for idx, raw in enumerate(names):
         name = (raw or "").strip()
         if not name:
@@ -107,6 +120,12 @@ def parse_messages(names: list[str], limit: int = 40, sides: list[str] | None = 
         side = pairs[idx][1] if pairs is not None else ""
         if side:
             item["side"] = side
+        sid = spk_id[idx] if spk_id is not None else 0
+        if sid:
+            item["speaker"] = sid
+        who = spk[idx] if spk is not None else ""
+        if who:
+            item["name"] = who
         items.append(item)
     if limit > 0:
         items = items[-limit:]
@@ -252,6 +271,156 @@ def label_sides(rows: list[dict], frame=None) -> list[str]:
     return out
 
 
+def _frame():
+    """抓一帧微信窗口（给 side 和 name 共用，避免同一次读图抓两遍像素）。"""
+    try:
+        from chat_radar import capture as cap
+
+        return cap.capture_frame()
+    except Exception:
+        return None
+
+
+def label_speakers(
+    rows: list[dict],
+    frame=None,
+    sides: list[str] | None = None,
+) -> tuple[list[int], list[str]]:
+    """给每条消息标「谁说的」—— 返回 `(speaker id, 昵称)`，与 rows 逐位对齐。
+
+    UIA 拿不到发送方（见 `_item_rows` 的说明），但每条消息的矩形顶部就是昵称行，
+    所以只能从像素读（`chat_radar.names`）。
+
+    **id 和名字来历不同，别混**：
+      - `id` 来自像素指纹，纯本地毫秒级，同一个人连发多条拿到同一个 id。
+        所以就算名字还没读出来，面板也能先显示「3 个人在说话」。
+      - `name` 来自视觉模型（`names.refresh`），2~3s 一批，可能还是空串。
+        空串表示「还没读过」，不是「这个人叫空」。
+
+    跳过两类，省时间也避免读错：
+      - 时间分隔行：那一行没有昵称，硬读会把 `12:06` 当成发言人；
+      - `side == "right"`：用户自己发的消息右侧没有昵称条。
+
+    几何按 DPI 比例缩放（窗口逻辑宽 vs 位图宽），不能写死像素 ——
+    125% 缩放下位图是 1.5 倍宽，写死的 dx 会切进头像。
+    """
+    if not rows:
+        return [], []
+    ids = [0] * len(rows)
+    names = [""] * len(rows)
+    try:
+        from chat_radar import names as nz
+    except Exception:
+        return ids, names
+    if frame is None:
+        frame = _frame()
+    if frame is None:
+        return ids, names
+
+    win, roi, img = frame.window, frame.roi, frame.image
+    scale = (img.shape[1] / win.width) if win.width else 1.0
+    oy = int(win.top * scale)  # 窗口顶在屏幕上的物理偏移（WindowInfo 是逻辑值）
+    dx = int(nz.NICK_DX * scale)
+    hh = int(nz.NICK_H * scale)
+    ww = int(nz.NICK_W * scale)
+    x0 = roi.left + dx
+    x1 = min(img.shape[1], x0 + ww)
+
+    bands: list = []
+    at: list[int] = []
+    for i, r in enumerate(rows):
+        text = (r.get("text") or "").strip()
+        if not text or _TIME_RE.match(text):
+            continue
+        if sides is not None and i < len(sides) and sides[i] == "right":
+            continue
+        try:
+            y0 = int(r["top"]) - oy
+            band = img[max(0, y0 - 1) : y0 + hh, x0:x1]
+        except Exception:
+            continue
+        if band.size:
+            bands.append(band)
+            at.append(i)
+
+    for k, (sid, name) in enumerate(nz.identify(bands)):
+        ids[at[k]] = sid
+        names[at[k]] = name
+    return ids, names
+
+
+def read_names(*, timeout: float = 90.0) -> dict:
+    """显式读一次昵称：拼图 → Ornith 视觉 → 回填缓存。
+
+    与 `read_chat` 分开是刻意的：`read_chat` 要快（面板刷新，~150ms），
+    而这一步要 2~3s 并且会占用 6G 显存。**只在用户主动点「总结/分析」时调**，
+    别放进任何自动刷新路径 —— 会和实时变声抢显存。
+    """
+    from chat_radar import names as nz
+
+    chat_ctrl, sessions, err = _locate_lists()
+    if err:
+        return {"ok": False, "error": err}
+    rows = _item_rows(chat_ctrl)
+    frame = _frame()
+    if frame is None:
+        return {"ok": False, "error": "抓不到微信窗口"}
+    sides = label_sides(rows, frame=frame)
+    bands = _bands_for(rows, frame, sides)
+    got, why = nz.refresh(bands, timeout=timeout)
+    out: dict = {
+        "ok": True,
+        "chat": _selected_chat(sessions) if sessions is not None else "",
+        "learned": got,
+        "people": _people(bands),
+    }
+    if why:
+        out["note"] = why
+    return out
+
+
+def _bands_for(rows: list[dict], frame, sides: list[str] | None = None) -> list:
+    """按与 `label_speakers` 相同的几何裁出昵称条（给 refresh 用）。"""
+    from chat_radar import names as nz
+
+    win, roi, img = frame.window, frame.roi, frame.image
+    scale = (img.shape[1] / win.width) if win.width else 1.0
+    oy = int(win.top * scale)
+    dx = int(nz.NICK_DX * scale)
+    hh = int(nz.NICK_H * scale)
+    x0 = roi.left + dx
+    x1 = min(img.shape[1], x0 + int(nz.NICK_W * scale))
+    out = []
+    for i, r in enumerate(rows):
+        text = (r.get("text") or "").strip()
+        if not text or _TIME_RE.match(text):
+            continue
+        if sides is not None and i < len(sides) and sides[i] == "right":
+            continue
+        try:
+            y0 = int(r["top"]) - oy
+            band = img[max(0, y0 - 1) : y0 + hh, x0:x1]
+        except Exception:
+            continue
+        if band.size:
+            out.append(band)
+    return out
+
+
+def _people(bands) -> list[dict]:
+    """当前会话里出现过的人（按说话条数降序）。"""
+    from chat_radar import names as nz
+
+    counts: dict[int, int] = {}
+    for sid, _name in nz.identify(bands):
+        if sid:
+            counts[sid] = counts.get(sid, 0) + 1
+    return [
+        {"id": sid, "name": nz.name_of(sid), "n": n}
+        for sid, n in sorted(counts.items(), key=lambda kv: -kv[1])
+    ]
+
+
 def _selected_chat(ctrl) -> str:
     """当前选中会话的标题。拿不到就返回空串（前端显示「当前会话」）。"""
     try:
@@ -377,17 +546,26 @@ def collect() -> tuple[list[str], list[str], str, str]:
 
 
 def collect_labeled() -> tuple[list[dict], list[str], str, str]:
-    """同 `collect()`，但每条消息带上「谁发的」（`side`）。
+    """同 `collect()`，但每条消息带上「谁发的」（`side`）和「谁」（`name`）。
 
     多出来的这一步只多抓一帧窗口像素（PrintWindow，不碰微信进程内存），
-    实测 ~120ms；拿不到就整批标 unknown —— 降级而不是报错。
+    实测 ~120ms；昵称条 OCR 走指纹缓存，冷启动一屏 ~0.1s。拿不到就整批标
+    unknown / 空串 —— 降级而不是报错。
+
+    `side` 和 `name` **共用同一帧**：分开抓会多一次 PrintWindow，而且两次之间
+    窗口可能滚动，行会对不齐。
     """
     chat, sessions, err = _locate_lists()
     if err:
         return [], [], "", err
     rows = _item_rows(chat)
-    sides = label_sides(rows)
-    msgs = [{"text": r["text"], "side": s} for r, s in zip(rows, sides, strict=False)]
+    frame = _frame()
+    sides = label_sides(rows, frame=frame)
+    sids, snames = label_speakers(rows, frame=frame, sides=sides)
+    msgs = [
+        {"text": r["text"], "side": s, "speaker": sid, "name": nm}
+        for r, s, sid, nm in zip(rows, sides, sids, snames, strict=False)
+    ]
     return (
         msgs,
         _item_names(sessions) if sessions is not None else [],
@@ -397,16 +575,24 @@ def collect_labeled() -> tuple[list[dict], list[str], str, str]:
 
 
 def read_chat(limit: int = 20) -> dict:
-    """当前会话快照：标题 + 最近消息（带「谁说的」）+ 会话列表（未读）。"""
+    """当前会话快照：标题 + 最近消息（带「谁说的」+ 发言人昵称）+ 会话列表（未读）。"""
     msgs, sess_names, chat, err = collect_labeled()
     if err:
         return {"ok": False, "error": err}
     names = [m["text"] for m in msgs]
     sides = [m["side"] for m in msgs]
+    speakers = [m.get("name") or "" for m in msgs]
+    sids = [int(m.get("speaker") or 0) for m in msgs]
     return {
         "ok": True,
         "chat": chat,
-        "messages": parse_messages(names, limit=min(max(limit, 5), 60), sides=sides),
+        "messages": parse_messages(
+            names,
+            limit=min(max(limit, 5), 60),
+            sides=sides,
+            speakers=speakers,
+            speaker_ids=sids,
+        ),
         "sessions": parse_sessions(sess_names),
         "raw_n": len(names),
     }
