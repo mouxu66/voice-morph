@@ -285,3 +285,90 @@ def test_purge_forgets_saved_memory(outputs, wav_bytes, monkeypatch):
 
     session_out.purge()
     assert session_out._SAVED == {}
+
+
+# ---------------- 按年龄清理（TTL） ----------------
+#
+# `purge()` 只管"进程结束"这一头；进程一直开着（本机实测 68 分钟以上、没人会天天重启
+# 桌面端）时，会话目录只增不减。截图（`vision_grab` 的预览窗图 2.0 MB/张）最怕这个：
+# 用户 2026-10-27 原话"随用随删就是一天内他就删掉"。
+
+
+def _age(p: Path, seconds: float) -> None:
+    """把 mtime 往回调 N 秒（模拟"几天前写的"）。"""
+    import os
+    import time
+
+    t = time.time() - seconds
+    os.utime(p, (t, t))
+
+
+def test_prune_expired_deletes_old_keeps_fresh(outputs, wav_bytes):
+    """★ 只删过期的，不碰刚写的 —— 错了就会删掉用户正要试听的那份。"""
+    old = _make_session_wav("tts_old.wav", wav_bytes)
+    fresh = _make_session_wav("tts_fresh.wav", wav_bytes)
+    _age(old, 30 * 3600)
+
+    assert session_out.prune_expired(24) == 1
+    assert not old.exists()
+    assert fresh.is_file()
+
+
+def test_prune_expired_recurses_and_drops_empty_dirs(outputs, wav_bytes):
+    """会话目录里有子目录（`cover/` 那类）—— 递归要到底，空掉的目录一并收走。"""
+    sub = session_out.ensure() / "cover"
+    sub.mkdir()
+    old = sub / "cover_old.wav"
+    old.write_bytes(wav_bytes)
+    _age(old, 26 * 3600)
+
+    assert session_out.prune_expired(24) == 2  # 旧文件 + 空下来的子目录
+    assert not sub.exists()
+
+
+def test_prune_expired_zero_disables(outputs, wav_bytes):
+    """`ttl<=0` = 关掉这条 TTL（只保留启动/退出时的清空）。"""
+    old = _make_session_wav("tts_keep.wav", wav_bytes)
+    _age(old, 100 * 3600)
+
+    assert session_out.prune_expired(0) == 0
+    assert old.is_file()
+
+
+def test_prune_expired_on_missing_dir_is_noop(outputs):
+    assert session_out.prune_expired(24) == 0
+
+
+def test_ttl_hours_reads_env_each_time(outputs, monkeypatch):
+    """TTL 走环境变量、每次现读（与 `cfg.OUTPUTS_DIR` 同一口径：不许早绑定）。"""
+    monkeypatch.setenv("VM_SESSION_TTL_HOURS", "6")
+    assert session_out.ttl_hours() == 6
+
+    monkeypatch.setenv("VM_SESSION_TTL_HOURS", "不是数字")
+    assert session_out.ttl_hours() == session_out.DEFAULT_TTL_HOURS
+
+    monkeypatch.delenv("VM_SESSION_TTL_HOURS")
+    assert session_out.ttl_hours() == session_out.DEFAULT_TTL_HOURS
+
+
+def test_new_path_sweeps_expired(outputs, wav_bytes, monkeypatch):
+    """写产物那一刻要顺手扫 —— 这是"一天内删掉"唯一能自动发生的时机。"""
+    old = _make_session_wav("tts_gone.wav", wav_bytes)
+    _age(old, 30 * 3600)
+    monkeypatch.setattr(session_out, "_LAST_PRUNE", 0.0)
+
+    session_out.new_path("tts")
+
+    assert not old.exists(), "新产物写下来了，过期的旧产物却还在"
+
+
+def test_maybe_prune_is_throttled(outputs, wav_bytes, monkeypatch):
+    """节流：间隔内不再遍历目录（否则每次写产物都要 iterdir 一遍）。"""
+    import time
+
+    old = _make_session_wav("tts_thr.wav", wav_bytes)
+    _age(old, 30 * 3600)
+    monkeypatch.setattr(session_out, "_LAST_PRUNE", time.time())
+
+    assert session_out.maybe_prune() == 0
+    assert old.is_file()

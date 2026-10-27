@@ -43,10 +43,20 @@ Python 的 `atexit` / shutdown 钩子跑不到。所以保障分三层，缺一�
     ② `uvicorn` 正常关停时也调一次（尽力而为，覆盖 Ctrl+C 与优雅停止）。
     ③ Electron `before-quit` 里发一次 purge 请求（`web/electron/main.cjs`），
        补上"退出那一刻"这一段；超时/失败都不阻塞退出。
+
+四层里 ① ② ③ 管的是"进程结束"，管不到"进程一直开着"：应用连开好几天（本机实测
+22:36 启动、68 分钟后仍在跑），会话目录里的东西只增不减。所以还有第 4 层 ——
+**按年龄扫**（`prune_expired()`，默认 24 小时，`VM_SESSION_TTL_HOURS` 可调、
+`<=0` 关掉；分配新产物时顺手扫一遍，`maybe_prune()` 节流到每小时最多一次）。
+最需要它的是截图这类一次几 MB 的产物（`vision_grab` 的预览窗图 2.0 MB/张），
+用户 2026-10-27 原话：
+
+    我想就是随用随删就是一天内他就删掉
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import threading
 import time
@@ -96,7 +106,12 @@ def derived_dir(src: Path | str) -> Path:
 
 
 def new_path(prefix: str, suffix: str = ".wav") -> Path:
-    """在会话目录里分配一个唯一文件名（沿用既有的 `前缀_毫秒时间戳` 口径）。"""
+    """在会话目录里分配一个唯一文件名（沿用既有的 `前缀_毫秒时间戳` 口径）。
+
+    顺手扫一遍过期产物（`maybe_prune`）：写产物是**唯一能保证每台机器都会走到**的
+    时机 —— 不起定时器、不开守护线程，只管住"下次写"与"下次开"这两个点。
+    """
+    maybe_prune()
     return ensure() / f"{prefix}_{int(time.time() * 1000)}{suffix}"
 
 
@@ -238,3 +253,77 @@ def purge() -> int:
     with _LOCK:
         _SAVED.clear()  # 文件都没了，"保存过"的记忆跟着失效
     return removed
+
+
+#: 会话产物的存活上限（小时）。超过它的旧产物会被 `prune_expired()` 扫掉。
+#: 为什么不是"退出即删就够了"：那三层只在**进程结束**时跑，而应用可能连开好几天。
+TTL_ENV = "VM_SESSION_TTL_HOURS"
+DEFAULT_TTL_HOURS = 24.0
+
+#: `maybe_prune()` 的最小间隔（秒）。`new_path` 是产物写入的热路径，不该每次都遍历目录。
+PRUNE_INTERVAL_S = 3600.0
+_LAST_PRUNE = 0.0
+
+
+def ttl_hours() -> float:
+    """当前 TTL（小时）。环境变量**每次现读**，与 `cfg.OUTPUTS_DIR` 同一口径（不许早绑定）。"""
+    raw = os.environ.get(TTL_ENV, "").strip()
+    if not raw:
+        return DEFAULT_TTL_HOURS
+    try:
+        return float(raw)
+    except ValueError:
+        return DEFAULT_TTL_HOURS
+
+
+def prune_expired(ttl: float | None = None, now: float | None = None) -> int:
+    """删掉会话目录里**超过 TTL 小时**的旧产物（递归），返回删掉的条目数。
+
+    ⚠️ 参数名不能叫 `ttl_hours` —— 那会遮蔽上面的同名函数（第一版真踩了：
+    `TypeError: 'NoneType' object is not callable`）。要默认值就传 `None`。
+
+    与 `purge()` 的分工：`purge()` 是"清空"（启动 / 关停 / Electron 退出前），本函数
+    是"按年龄清"（进程一直开着时）。删不掉的（`OSError`）跳过 —— 文件可能正被播放器
+    或模型读着，强删会打断用户正在听的东西，那就留给下一次。
+    """
+    ttl_h = ttl_hours() if ttl is None else ttl
+    if ttl_h <= 0:
+        return 0
+    d = session_dir()
+    if not d.is_dir():
+        return 0
+    cutoff = (time.time() if now is None else now) - ttl_h * 3600.0
+    entries = sorted(d.rglob("*"), key=lambda x: len(x.parts), reverse=True)
+    removed = 0
+    for p in entries:
+        if p.is_dir():
+            continue
+        try:
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+                removed += 1
+        except OSError:
+            continue
+    # 第二遍：被删空的子目录一并收走（`cover/` 那类）。空目录没有"丢掉内容"的风险，
+    # 所以不看年龄 —— 文件刚走，目录就该跟着走。
+    for p in (x for x in entries if x.is_dir()):
+        try:
+            if not any(p.iterdir()):
+                p.rmdir()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def maybe_prune() -> int:
+    """节流版：间隔内直接返回 0（不遍历目录）。返回**这次**真删掉的条目数。"""
+    global _LAST_PRUNE
+    if ttl_hours() <= 0:
+        return 0
+    now = time.time()
+    with _LOCK:
+        if now - _LAST_PRUNE < PRUNE_INTERVAL_S:
+            return 0
+        _LAST_PRUNE = now
+    return prune_expired(now=now)

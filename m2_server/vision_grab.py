@@ -11,6 +11,12 @@
 
 代价是**会抢焦点 1~2 秒并弹一下预览窗**。所以只在用户主动点「看图」时走这条路，
 不做成自动的 —— 自动抢焦点会打断正在打的字。
+
+产物落在**会话目录**（`session_out.new_path("wxshot", ".png")` → `outputs/.session/`）：
+随"启动清空 / 退出即删"消失，且超过 24 小时的旧产物会被 `session_out.prune_expired()`
+顺手扫掉。2026-10-27 之前它写 `outputs/eval-3864/shots/grabbed.png` —— 一个**不会
+被任何一层清到**的 eval 证据目录，而这张图一次就有 2.0 MB（用户原话：
+"随用随删就是一天内他就删掉"）。
 """
 
 from __future__ import annotations
@@ -19,8 +25,6 @@ import ctypes
 import ctypes.wintypes as wt
 import time
 from pathlib import Path
-
-OUT_DIR = Path(__file__).resolve().parent.parent / "outputs" / "eval-3864" / "shots"
 
 #: 双击后等预览窗出现的秒数。1.5s 是探针里跑通的值；
 #: 机器慢或图很大时可以加，但没有必要做成配置项 —— 这只是个等待上限。
@@ -95,6 +99,17 @@ def _biggest_left_block(frame):
     return max(cands, key=lambda x: x.height * x.width)
 
 
+def _press_esc() -> None:
+    """按下并松开 Esc（关掉**我们打开的那个**预览窗）。
+
+    单独成一个函数是为了能被测试替掉 —— 单测不该真往系统里发按键。
+    """
+    user32 = ctypes.windll.user32
+    user32.keybd_event(0x1B, 0, 0, 0)
+    time.sleep(0.05)
+    user32.keybd_event(0x1B, 0, 2, 0)
+
+
 def grab_biggest_image(out_path: str | Path | None = None) -> tuple[str | None, str]:
     """双击最大的那张图 → 截预览窗 → 关窗。返回 (图片路径, 人话说明)。
 
@@ -158,14 +173,17 @@ def grab_biggest_image(out_path: str | Path | None = None) -> tuple[str | None, 
         return None, f"截图失败：{type(exc).__name__}"
     finally:
         # 无论截没截到，都得把预览窗关掉 —— 它是被我们打开的。
-        ctypes.windll.user32.keybd_event(0x1B, 0, 0, 0)
-        time.sleep(0.05)
-        ctypes.windll.user32.keybd_event(0x1B, 0, 2, 0)
+        _press_esc()
         time.sleep(CLOSE_WAIT)
 
     if shot is None:
         return None, note or "截图失败"
-    out = Path(out_path) if out_path else OUT_DIR / "grabbed.png"
+    if out_path:
+        out = Path(out_path)
+    else:
+        import session_out  # 惰性：本模块的既有习惯（探测脚本里常被单独 import）
+
+        out = session_out.new_path("wxshot", ".png")
     out.parent.mkdir(parents=True, exist_ok=True)
     shot.convert("RGB").save(out, "PNG", optimize=True)
     w, h = shot.size
