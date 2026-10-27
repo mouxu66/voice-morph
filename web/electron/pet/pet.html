@@ -1049,7 +1049,8 @@
      就是一边看上下文一边挑句子。用 [hidden] 覆盖而不是在 JS 里判 panelBig ——
      renderReplies 是在 setLayer("ana") 之前跑的，那一刻还不知道自己会变大。 */
   #panel.big #anaMsgs[hidden] { display: grid; }
-  /* 右栏：怎么回。上行是标题，中间是候选（内滚），底部是提示行。 */
+  /* 右栏：候选。上行是栏名（顶栏已经在说「怎么回」，这里不能再说一次），
+     中间是候选列表（内滚），底部是提示行。 */
   #panel.big #anaReply {
     margin: 0; padding: 0 0 0 12px;
     border-top: 0; border-left: 1px solid rgb(var(--c-border) / 0.7);
@@ -1075,9 +1076,24 @@
      迟早会漏。Electron 32 = Chromium 128，:has 可用。
      万一将来降版到不支持：退化成两栏里塞一个 120px 的滚动块，难看但不会切掉内容。 */
   #panel.big #analysisLayer:has(#anaDigest:not([hidden])) #anaBody { display: none; }
-  #panel.big #anaDigest {
-    flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-top: 8px;
+  /* 攻略块在大面板里**自己填满**那块 315px：列表吃掉剩余高度（内滚），
+     「照这个写一条」钉在底边。否则内容到 55% 就停，下面那片空白看着像没加载完
+     （2026-10-27 评审第 1 条）。小面板行为不变：它 2 条封顶，也没有多余高度。 */
+  /* 必须挂 `:not([hidden])`：选择器里多了个 #panel.big 就压过了全局的
+     `#anaDigest[hidden] { display: none }`，攻略块会在三个形态里**都**显示出来
+     （2026-10-27 出图：analysis / bigreply 底部莫名多了搜索框和「照这个写一条」）。 */
+  #panel.big #anaDigest:not([hidden]) {
+    flex: 1 1 auto; min-height: 0; overflow: hidden; margin-top: 8px;
+    display: flex; flex-direction: column;
   }
+  /* `align-content: start` 是必需的：grid 的行默认会**抷满**容器高度，卡片于是被拉成
+     一块块空大的盒子（2026-10-27 出图就是这个相）；卡片应该自己高多少就多少，
+     剩下的空白留在列表底部，由 `margin-top: auto` 的按钮钉在底边。 */
+  #panel.big #anaDigestList { flex: 1 1 auto; min-height: 0; overflow-y: auto; gap: 6px; align-content: start; }
+  #panel.big #anaDigestWrite { margin-top: auto; flex: 0 0 auto; }
+  /* 卡片高度就按小面板的口径（标题 1 行 + 摘要 2 行）：大面板靠**多一条结果**填满，
+     不靠把每条拉高。拉高试过一次（dt 2 + ds 3）：3 条就顶穿了，第 3 张被
+     钉在底边的「照这个写一条」从中间截断（2026-10-27 出图）。 */
   #panel.big #anaDigestQ { height: 26px; font-size: 12px; }
   #panel.big .dcard .dt { font-size: 12.5px; }
   #panel.big .dcard .ds { font-size: 11px; }
@@ -1187,6 +1203,24 @@
   #panel #anaReplyBtn:hover { color: rgb(var(--c-accent-h)); }
   #anaReplies { margin-top: 4px; display: grid; gap: 3px; }
   #anaReplies:empty { display: none; }
+  /* 等模型时的三条无字骨架。**没有文字**是关键：带字的占位器会被当成真候选。
+     为什么需要它：首次「怎么回」要拉起模型 + 视觉权重（约 20 秒），右栏整片空着时
+     第一印象是「没加载出来」（2026-10-27 评审第 1 条）。 */
+  /* `.skel` 挂在容器上：等分的 flex 竖排，三条**一样高**、正好铺满右栏。
+     不这么做就会被 grid 的行高拉伸算错（2026-10-27 出图：三条被拉到 95px、
+     第三条从栏底切掉，看着像坏了 —— 比不出骨架还糟）。 */
+  #anaReplies.skel { display: flex; flex-direction: column; gap: 6px; }
+  #anaReplies.skel .rchip.skel {
+    flex: 1 1 0; min-height: 0; pointer-events: none;
+    background: rgb(var(--c-surface-2) / 0.4);
+    border-style: dashed; border-color: rgb(var(--c-border) / 0.55);
+    box-shadow: none;
+  }
+  /* 攻略在搜的那一下同理：空列表 + 一行「在搜…」看着像卡住了。 */
+  .dcard.skel {
+    pointer-events: none; min-height: 34px; background: transparent;
+    border-style: dashed; border-color: rgb(var(--c-border) / 0.55);
+  }
   #panel #anaReplies .rchip {
     width: 100%; height: auto; padding: 5px 7px; border-radius: 9px;
     border: 1px solid rgb(var(--c-border) / 0.9);
@@ -1823,7 +1857,7 @@
         <div id="anaSuggest"></div>
         <ul id="anaList" hidden></ul>
       </div>
-      <!-- 大面板的两栏（2026-10-27）：左「谁在说」，右「怎么回」。
+      <!-- 大面板的两栏（2026-10-27）：左「谁在说」，右「候选」。
            小面板里这两块是上下叠的（一个 84px 的消息列表 + 一组候选），因为 204px 宽
            放不下并排；到了 424px 才拆成两栏 —— 读消息和挑候选是**同时**要做的两件事，
            叠着放就得来回滚。 -->
@@ -1833,7 +1867,10 @@
              然后退回主面板 —— 用户要的不是「建议」，是「少打字」。 -->
         <div id="anaReply">
           <div id="anaReplyHead">
-            <span class="st">怎么回</span>
+            <!-- 右栏头不写「怎么回」：顶栏那句已经在说这个面板是什么，同一屏两次
+                 「怎么回」读起来像重复标题（2026-10-27 评审第 2 条）。左栏是证据、
+                 右栏是决定 —— 两侧各回答一个问题。 -->
+            <span class="st">候选</span>
             <!-- 搜攻略的入口：跟「换一批」同一行，不多占高度。点开才展开下面那块 ——
                  面板 300px 是死预算，一个「可能用不上」的输入框不该常驻。 -->
             <!-- 看图的入口：专门对付群里发的那张攻略表 —— 缩略图只有 418×270，
@@ -3960,6 +3997,12 @@ function resetRadar() {
  * 刻意只走像素投影。**读 UIA 是用户主动动作** —— 点按钮 / 点「重新分析」。
  */
 const ANA_KIND_LABEL = { media: "图片/文件", system: "系统" };
+//: 微信自己的**裸占位符**。正文就是这几个字时，类型标签说的是同一件事
+//: （「图片/文件 图片」）—— 不再贴，2026-10-27 评审第 3 条。语音不靠这个集合：
+//: 正文自带「语音 4″秒」，anaMsgRow 单独跳过它。
+const ANA_BARE_PLACEHOLDERS = new Set([
+  "图片", "动画表情", "视频", "文件", "位置", "语音", "链接", "小程序", "红包", "转账", "音乐",
+]);
 let anaBusy = false;
 //: 「认人」在跑（2~3s + 6G 显存）。单独一个标志，不复用 anaBusy ——
 //: 两者会互相等待，共用一个标志会让「认完自动重读」这一步被自己拦掉。
@@ -4141,7 +4184,7 @@ async function suggestReplies(j, redo) {
   // 与 analyzeChat 同一门控：能力关掉时后端没有 /api/radar/*。
   if (!CAP.radar) return;
   const seq = ++anaReplySeq;
-  if (anaRepliesEl) anaRepliesEl.innerHTML = "";
+  anaSkeleton();   // 空等 20 秒是一整片空白，先摆三条无字骨架
   if (anaReplyNoteEl) {
     anaReplyNoteEl.textContent = redo
       ? "换一批…"
@@ -4161,11 +4204,38 @@ async function suggestReplies(j, redo) {
     renderReplies(data);
   } catch (err) {
     if (seq !== anaReplySeq) return;
+    // 拉不到就把幽灵槽位收掉：留着三条虚线框 + 一行红字，比空着更像坏了。
+    if (anaRepliesEl) {
+      anaRepliesEl.classList.remove("skel");
+      anaRepliesEl.innerHTML = "";
+    }
     if (anaReplyNoteEl) {
       anaReplyNoteEl.textContent = "回复建议拉不到（" + ((err && err.message) || "后端没连上") + "）";
       anaReplyNoteEl.className = "err";
     }
   }
+}
+
+/**
+ * 等模型时右栏摆三条**无字**骨架。
+ *
+ * 为什么要有：首次「怎么回」要拉起本地模型 + 视觉权重（约 20 秒），这期间右栏是空的，
+ * 整块 315px 里只有一行「在想…」—— 用户看到的第一印象是「没加载出来/坏了」，
+ * 而不是「在跑」（2026-10-27 评审第 1 条）。骨架是空的：没有文字就不会被当成候选，
+ * 也不可点（CSS `pointer-events: none`）。
+ */
+function anaSkeleton(n = 3) {
+  if (!anaRepliesEl) return;
+  anaRepliesEl.classList.add("skel");   // 容器换成等分 flex，骨架才不会被拉伸
+  anaRepliesEl.innerHTML = Array.from({ length: n },
+    () => '<span class="rchip skel" aria-hidden="true"></span>').join("");
+}
+
+/** 攻略在搜时的两张空卡（同 anaSkeleton 的道理：空列表 + 一行「在搜…」像卡住了）。 */
+function anaDigestSkeleton(n = 2) {
+  if (!anaDigestListEl) return;
+  anaDigestListEl.innerHTML = Array.from({ length: n },
+    () => '<div class="dcard skel" aria-hidden="true"></div>').join("");
 }
 
 /** 画草稿按钮。一条都没有时保留提示行，但不留空块。 */
@@ -4179,6 +4249,7 @@ function renderReplies(j) {
   // 记住这一批：下次按「换一批」要把它带回去当 avoid。
   if (ok) anaLastReplies = rows.slice();
   if (anaRepliesEl) {
+    anaRepliesEl.classList.remove("skel");   // 真候选不参与骨架那套等分布局
     anaRepliesEl.innerHTML = rows.map(
       (t, i) => `<button type="button" class="rchip" data-i="${i}"`
         + ` title="点一下填进输入框">${esc(t)}</button>`
@@ -4245,7 +4316,7 @@ function clearDigest() {
 async function fetchDigest() {
   if (!CAP.radar) return;
   const seq = ++anaDigestSeq;
-  if (anaDigestListEl) anaDigestListEl.innerHTML = "";
+  anaDigestSkeleton();
   if (anaDigestWriteEl) anaDigestWriteEl.hidden = true;
   if (anaDigestNoteEl) {
     anaDigestNoteEl.textContent = "在搜…";
@@ -4253,8 +4324,11 @@ async function fetchDigest() {
   }
   // 输入框里写了就用它 —— 群名里抽不出游戏名时（「117」这种），自动拼的词一定不对。
   const typed = anaDigestQEl ? anaDigestQEl.value.trim() : "";
-  // 只要 2 条：面板高度是死预算，多出来的第 3、4 条会把卡片截断（见 #anaDigestList）。
-  const qs = "?limit=2" + (typed ? "&q=" + encodeURIComponent(typed) : "");
+  // 小面板只要 2 条：300px 是死预算，第 3、4 条会把卡片截断（2026-10-25 截图）。
+  // 大面板要 3 条 —— 正好把 315px 填满，且与**后端自动检索**（/replies 里带回
+  // 的那份 digest，radar_api 用 limit=3）同一个数：两条路径看到的条数一致。
+  const qs = "?limit=" + (panelBig ? 3 : 2)
+    + (typed ? "&q=" + encodeURIComponent(typed) : "");
   try {
     const r = await fetch(RADAR_BASE + "/digest" + qs, { cache: "no-store" });
     if (!r.ok) throw new Error("HTTP " + r.status);
@@ -4448,7 +4522,10 @@ function anaMsgRow(m) {
   const kind = (m && m.kind) || "text";
   const text = String((m && m.text) || "");
   if (kind === "time") return `<span class="amsg time">${esc(text)}</span>`;
-  const k = kind === "voice" ? "" : (ANA_KIND_LABEL[kind] || "·");
+  // 正文已经是微信的裸占位符（「图片」「视频」…）时不再贴类型标签：
+  // 「图片/文件 图片」等于把同一件事说两遍。
+  const bare = ANA_BARE_PLACEHOLDERS.has(text.trim());
+  const k = kind === "voice" || bare ? "" : (ANA_KIND_LABEL[kind] || "·");
   const w = anaWho(m);
   const who = w ? `<span class="who${w.me ? " me" : ""}">${esc(w.text)}</span>` : "";
   return `<span class="amsg">${who}${k ? `<span class="k">${esc(k)}</span>` : ""}<span class="t">${esc(text)}</span></span>`;
@@ -6319,8 +6396,11 @@ const LAYOUT_STATES = {
         { title: "无尽冬日七代英雄打熊阵容推荐什么-阵容推荐_3DM手游",
           snippet: "七代英雄里赫罗尼莫和茉莉的组合输出最高，配比建议按 3:3:4 分配兵种",
           source: "3DM手游", date: "2026-09-02" },
-        // 只摆两条 —— 前端 /digest?limit=2，条目数与真实运行时一致，
-        // 否则这一态量到的是「塞满 4 条」的假高度。
+        { title: "无尽冬日打熊阵容2026最新搭配思路与英雄站位",
+          snippet: "盾兵前置吃伤害，输出居后排，辅助位奶妈绑定火男，靠这个顺序能拉起 72% 的胜率",
+          source: "跑逑游戏网", date: "2026-10-12" },
+        // 摆三条 —— 前端在大面板里发 /digest?limit=3（小面板才是 2，后端自动检索也是 3），
+        // 条目数与真实运行一致，否则这一态量到的是假高度（2026-10-27）。
       ],
     });
     anaDigestEl.hidden = false;
@@ -6343,6 +6423,10 @@ const LAYOUT_STATES = {
       messages: [{ kind: "text", text: "在吗", side: "left", speaker: 1 }],
     }, false);
     renderReplies({ ok: true, engine: "local", replies: [], why: "" });
+    // 走产品自己的骨架函数：这一态要证明的就是「等模型时右栏不是一片空白」。
+    // 手摆文字只能证明「能放下」，证明不了「真跑起来长这样」（2026-10-27 踩到：
+    // 只改 CSS/JS 不改场景，出图里没有骨架，看着像没生效）。
+    anaSkeleton();
     if (anaReplyNoteEl) anaReplyNoteEl.textContent = "正在想…（本地模型冷启动要十几秒）";
     setLayer("ana");
   },
