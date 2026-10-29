@@ -294,15 +294,21 @@ def refresh(bands: list[np.ndarray], *, timeout: float = 90.0) -> tuple[int, str
 
     # 一次最多 SHEET_MAX 条：剩下的留到下一次刷新（不在这一趟硬塞）
     keys = list(todo)[:SHEET_MAX]
-    payload = _sheet([todo[k] for k in keys])
 
     try:
         import reply_advisor as ra
     except Exception as exc:  # noqa: BLE001
         return 0, f"视觉模型不可用：{exc}"
+    # 与实时变声互斥。`suggest()` / `suggest_one()` 早就让路了，认人这条路径
+    # 2026-10-29 之前漏了 —— 实时变声在跑时再拉 6.3GB，RVC 直接没余量（OOM 无声 +
+    # 声卡残留）。名字是锦上添花，不该为它把正在用的变声挤掉。
+    busy = ra._realtime_busy()
+    if busy:
+        return 0, busy
     ok, why = ra.vision_ready()
     if not ok:
         return 0, why
+    payload = _sheet([todo[k] for k in keys])
     try:
         port = ra._ensure_server()
         content = ra._chat(

@@ -147,11 +147,15 @@ def test_clean(raw, expect):
 class _FakeRA:
     """替身：不启 llama-server。"""
 
-    def __init__(self, content: str, ready=(True, "")):
+    def __init__(self, content: str, ready=(True, ""), busy=""):
         self.content = content
         self._ready = ready
+        self._busy = busy
         self.calls = 0
         self.last_b64 = ""
+
+    def _realtime_busy(self):
+        return self._busy
 
     def vision_ready(self):
         return self._ready
@@ -209,6 +213,21 @@ def test_refresh_skips_when_nothing_new(monkeypatch):
     got, why = nz.refresh([band("巴黎罗")])
     assert (got, why) == (0, "")
     assert fake.calls == 0
+
+
+def test_refresh_yields_to_realtime_voice_change(monkeypatch):
+    """实时变声在跑时不拉模型：9B + 视觉塔 ~6.3GB 会把 RVC 挤到 OOM。
+
+    这条守卫 2026-10-29 补的 —— `suggest()` / `suggest_one()` 都让路了，
+    认人这条路径当时漏了。所以这里要钉死「一次 `_chat` 都没发生」。
+    """
+    fake = _FakeRA('{"items":[{"n":1,"name":"巴黎罗"}]}', busy="实时变声正在运行（显存让它先占着）")
+    _patch(monkeypatch, fake)
+    got, why = nz.refresh([band("巴黎罗")])
+    assert got == 0
+    assert "实时变声" in why
+    assert fake.calls == 0
+    assert nz.names([band("巴黎罗")]) == [""]
 
 
 def test_refresh_reports_missing_vision_without_raising(monkeypatch):

@@ -220,6 +220,9 @@ cd web && npm run ship         # 构建 → 同步进安装目录 → 逐字节�
 **能力隔离**
 
 - [x] **回复模型与实时变声互斥** —— 两个方向都挡（`5e49f0d`）。9B + 视觉塔要 ~6.3GB，实时变声要求余量 >2GB，**这是硬约束不是优化**
+  - ⚠️ 2026-10-29 补：**认人**（`chat_radar/names.refresh`）当时漏了这道门 —— `suggest()` / `suggest_one()` 都查了 `_realtime_busy()`，只有它直接 `_ensure_server()`。实时变声在跑时点「认人」会再拉 6.3GB 把 RVC 挤到 OOM。
+    现已加守卫（`test_names.py::test_refresh_yields_to_realtime_voice_change` 钉住「一次 `_chat` 都不发生」）。
+    **新增任何拉起 llama-server 的路径，先查 `reply_advisor._realtime_busy()`。**
 
 ### 4.6 桌宠与遥控
 
