@@ -804,11 +804,66 @@ def is_question(text: str) -> bool:
     return bool(t) and bool(_Q_TAIL.search(t) or _Q_HEAD.match(t))
 
 
+#: 群聊聚合最多列几个人。面板纵向预算是死的（小面板 300px），摘要卡不能摊开。
+_PEOPLE_MAX = 3
+
+
+def _who_label(m: dict) -> str:
+    """和面板一致的「谁」：真名优先，认不出名字就是「群友N」。
+
+    后端与 `pet.html` 的 `anaWho` 必须统一格式 —— 同一屏里两处叫法不一样，
+    用户会以为是两个人。
+    """
+    nm = str(m.get("name") or "").strip()
+    if nm:
+        return nm
+    sid = int(m.get("speaker") or 0)
+    return f"群友{sid}" if sid else ""
+
+
+def _speaker_summary(bodies: list[dict]) -> list[dict]:
+    """按发言人聚合这一屏：每人条数 / 语音图片数 / 最后一句 / 是不是在问。
+
+    纯规则、零显存，把「N 条流水」压成「几个人在说」。只统计**非我**且指纹
+    认得出的发言（`speaker=0` 的不进聚合 —— 没有归属就不该编一个人出来）。
+    同名不同 id **不合并**：昵称是像素，宁可显示两行同名的「两个人」，
+    也不能把一个群里的两个人算成一个（`names.py` 的 `MATCH_IOU` 同一条原则）。
+    """
+    groups: dict[int, dict] = {}
+    for m in bodies:
+        sid = int(m.get("speaker") or 0)
+        if sid <= 0 or m.get("side") == "right":
+            continue
+        g = groups.setdefault(
+            sid,
+            {"id": sid, "name": "", "count": 0, "voice": 0, "media": 0, "last": "", "asks": False},
+        )
+        g["count"] += 1
+        if m.get("name"):
+            g["name"] = str(m["name"])  # 认人回填的名字是后到的，这里补上
+        kind = m.get("kind") or "text"
+        if kind == "voice":
+            g["voice"] += 1
+        elif kind == "media":
+            g["media"] += 1
+        elif kind == "text":
+            g["last"] = m.get("text") or ""
+            g["asks"] = is_question(g["last"])
+    rows = sorted(groups.values(), key=lambda g: (-g["count"], g["id"]))
+    for g in rows:
+        g["who"] = g["name"] or f"群友{g['id']}"
+    return rows
+
+
 def analyze(snap: dict, verdict: dict | None = None) -> dict:
     """本地规则分析：**只做能证实的判断**，不猜语义、不生成回复文案。
 
-    产出四样：headline（一句话概述）、highlights（值得看一眼的点）、
-    unread（哪些会话还有未读）、suggest（下一步该做什么，来自雷达结论 + 文本规则）。
+    产出五样：headline（一句话概述）、highlights（值得看一眼的点）、
+    people（按发言人聚合）、unread（哪些会话还有未读）、
+    suggest（下一步该做什么，来自雷达结论 + 文本规则）。
+
+    `people` 只在**群聊**里进 highlights（≥2 个认得出的发言人）：单聊把
+    「巴黎罗 说了 3 条」摆出来是废话，而群里这正是「谁在说/谁在问」的答案。
     """
     msgs = snap.get("messages") or []
     bodies = [m for m in msgs if m.get("kind") != "time"]
@@ -826,12 +881,34 @@ def analyze(snap: dict, verdict: dict | None = None) -> dict:
     ats = [m["text"] for m in texts if "@" in m["text"]]
     if ats:
         highlights.append("有人在会话里 @：" + ats[-1][:24])
-    if texts and is_question(texts[-1]["text"]):
-        highlights.append("最后一条像是提问：「" + texts[-1]["text"][:24] + "」")
-    if voices:
-        highlights.append(f"含 {len(voices)} 条语音（要点开听）")
-    if medias:
-        highlights.append(f"含 {len(medias)} 条图片/文件类消息")
+    people = _speaker_summary(bodies)
+    group = len(people) >= 2
+    last = texts[-1] if texts else None
+    if last and is_question(last["text"]) and not (group and _who_label(last)):
+        # 群里「谁问的」会写进那个人自己的那一行（排最前），这里不再重复一句。
+        highlights.append("最后一条像是提问：「" + last["text"][:24] + "」")
+    if group:
+        # 按人聚合：说话最多的两三个人各一行，「在问」的排最前 —— 那是你要处理的。
+        # 语音/图片数并进那一行，省掉原来的两条全局统计（面板高度不增）。
+        asked = [g for g in people if g["asks"]]
+        order = asked + [g for g in people if not g["asks"]]
+        for g in order[:_PEOPLE_MAX]:
+            bits = [f"{g['count']} 条"]
+            if g["voice"]:
+                bits.append(f"{g['voice']} 条语音")
+            if g["media"]:
+                bits.append(f"{g['media']} 张图")
+            line = f"{g['who']} 说了 " + "、".join(bits)
+            if g["asks"] and g["last"]:
+                line += f"，最后在问「{g['last'][:18]}」"
+            highlights.append(line)
+        if len(order) > _PEOPLE_MAX:
+            highlights[-1] += f"（另有 {len(order) - _PEOPLE_MAX} 人也在说）"
+    else:
+        if voices:
+            highlights.append(f"含 {len(voices)} 条语音（要点开听）")
+        if medias:
+            highlights.append(f"含 {len(medias)} 条图片/文件类消息")
     if cur_unread:
         highlights.append(f"当前会话还有 {cur_unread} 条未读（往下翻）")
     deep = int(snap.get("screens_read") or 0)
@@ -874,6 +951,7 @@ def analyze(snap: dict, verdict: dict | None = None) -> dict:
     return {
         "headline": " · ".join(parts),
         "highlights": highlights,
+        "people": people,
         "unread": sorted(unread, key=lambda s: -s["unread"])[:4],
         "unread_total": unread_total,
         "suggest": suggest,

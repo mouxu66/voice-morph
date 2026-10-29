@@ -200,6 +200,11 @@ cd web && npm run ship         # 构建 → 同步进安装目录 → 逐字节�
     （微信字号 / DPI 换过 → 宁可重认，也不能把 A 的名字安到 B 头上）；坏文件静默忽略。
     测试：`test_names.py::test_names_come_back_after_restart` / `test_store_corrupt_file_is_ignored`
     / `test_store_is_dropped_when_band_height_changes`
+  - ✅ 2026-10-29 **按人聚合**（`chat_read.analyze` 的 `people` + highlights，纯规则零显存）：
+    群里 ≥2 个认得出的发言人时，摘要卡改成一人一行 ——「老王 说了 2 条，最后在问「…」」
+    「群友3 说了 2 条、1 条语音」，在问的人排最前，最多 3 人，超出折进最后一行。
+    语音/图片数并进个人行，**不再单列**（面板 300px 高度不增）；单聊（只有 1 人）不聚合。
+    「谁」的格式与面板 `anaWho` 一致：真名优先，否则 `群友N`；同名不同 id **不合并**。
 
 **判断层（要不要回 / 怎么回）**
 

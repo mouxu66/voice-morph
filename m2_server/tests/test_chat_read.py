@@ -146,6 +146,40 @@ def test_analyze_without_verdict_falls_back_to_text_rules():
     assert out2["unread_total"] == 0
 
 
+def test_analyze_aggregates_group_by_speaker():
+    """群聊：把 N 条流水压成「谁在说 / 谁在问」，且「我」不算进去。"""
+    msgs = [
+        {"kind": "time", "text": "23:10"},
+        {"kind": "text", "text": "今晚开黑吗", "side": "left", "speaker": 3},
+        {"kind": "text", "text": "我来了", "side": "right", "speaker": 0},
+        {"kind": "text", "text": "等我一下", "side": "left", "speaker": 7, "name": "老王"},
+        {"kind": "voice", "text": '[语音] 6"', "side": "left", "speaker": 3, "seconds": 6.0},
+        {"kind": "text", "text": "你几点到？", "side": "left", "speaker": 7, "name": "老王"},
+    ]
+    out = chat_read.analyze(_snap(messages=msgs, sessions=[]), None)
+    people = out["people"]
+    assert [p["id"] for p in people] == [3, 7]  # 条数降序；同条数按 id
+    assert [p["who"] for p in people] == ["群友3", "老王"]
+    assert people[0]["count"] == 2 and people[0]["voice"] == 1
+    assert people[1]["asks"] is True
+    # 在问的人排最前，语音并进那一行；原来的全局「含 N 条语音」不再单列
+    assert out["highlights"][0].startswith("老王 说了 2 条")
+    assert "在问「你几点到？」" in out["highlights"][0]
+    assert any("群友3 说了 2 条、1 条语音" in h for h in out["highlights"])
+    assert not any("提问" in h for h in out["highlights"])
+
+
+def test_analyze_does_not_aggregate_single_chat():
+    """只有一个人说话（单聊）时不该出现「某某说了 N 条」这种废话。"""
+    msgs = [
+        {"kind": "text", "text": "在吗", "side": "left", "speaker": 3, "name": "巴黎罗"},
+        {"kind": "voice", "text": '[语音] 6"', "side": "left", "speaker": 3, "name": "巴黎罗"},
+    ]
+    out = chat_read.analyze(_snap(messages=msgs, sessions=[]), None)
+    assert len(out["people"]) == 1
+    assert all("说了" not in h for h in out["highlights"])
+
+
 # ---------------------------------------------------------------- 快照读取
 
 def _labeled(names, sides=None):
