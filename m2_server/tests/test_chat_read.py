@@ -169,6 +169,28 @@ def test_analyze_aggregates_group_by_speaker():
     assert not any("提问" in h for h in out["highlights"])
 
 
+def test_number_speakers_uses_session_ordinals():
+    """「群友N」是这一屏里的第几个人，而不是进程里的第几个指纹。"""
+    msgs = [
+        {"kind": "text", "text": "a", "side": "left", "speaker": 47},
+        {"kind": "text", "text": "b", "side": "right"},
+        {"kind": "text", "text": "c", "side": "left", "speaker": 9},
+        {"kind": "text", "text": "d", "side": "left", "speaker": 47},
+    ]
+    chat_read.number_speakers(msgs)
+    assert [m.get("speaker_no") for m in msgs] == [1, None, 2, 1]
+
+
+def test_analyze_uses_session_numbers_not_global_ids():
+    msgs = [
+        {"kind": "text", "text": "今晚开黑吗？", "side": "left", "speaker": 47, "speaker_no": 1},
+        {"kind": "text", "text": "我也来", "side": "left", "speaker": 91, "speaker_no": 2},
+    ]
+    out = chat_read.analyze(_snap(messages=msgs, sessions=[]), None)
+    assert [p["who"] for p in out["people"]] == ["群友1", "群友2"]
+    assert any("群友1 说了" in h for h in out["highlights"])
+
+
 def test_group_reply_signal_is_reassigned_to_the_asker():
     """雷达只看左右：A 问、B 插一句也会算成「对方连发」—— 别催用户回 B 那句。"""
     msgs = [

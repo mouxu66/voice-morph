@@ -4579,9 +4579,10 @@ function anaMsgRow(m) {
  *   1. `side === "right"` → 「我」。右侧本来就没有昵称条（`chat_read.label_speakers`
  *      直接跳过），所以这不是猜；
  *   2. `name` → 视觉模型读出来的真昵称（点过「认人」之后才有）；
- *   3. `speaker`（指纹 id）→ 「群友3」。后端**刻意**对没读过的名字留空串
- *      （`parse_messages` 不写占位符），这里用 id 造一个会话内稳定的别名 ——
- *      同一个人连发三条能看出是同一个人，这就是「几个人在说话」的答案；
+ *   3. `speaker_no`（**会话内**序号 1..n，后端 `number_speakers` 按首次出现顺序
+ *      编好）→ 「群友3」。指纹 id 是进程级自增，直接显示可能是「群友47」；
+ *      会话内序号才是用户能读的「第几个说话的人」。没有 `speaker_no` 时
+ *      （老快照 / 测试）回退到原始 `speaker` id，保证编号永远不为空；
  *   4. 都没有（id=0：认不出的条带 / 单聊左侧）→ 不出这一格。
  *
  * 为什么不是「?」：问号表示不出来「是同一个人还在说」，而「群友3」表示得出来。
@@ -4591,6 +4592,8 @@ function anaWho(m) {
   if (m.side === "right") return { text: "我", me: true };
   const name = String(m.name || "").trim();
   if (name) return { text: name };
+  const no = Number(m.speaker_no) || 0;
+  if (no) return { text: "群友" + no };
   const sid = Number(m.speaker) || 0;
   if (sid) return { text: "群友" + sid };
   return null;

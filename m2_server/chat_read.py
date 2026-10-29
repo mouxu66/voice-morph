@@ -782,16 +782,19 @@ def read_chat(limit: int = 20, screens: int = 0) -> dict:
     cap = min(max(limit, 5), 60)
     if scrolled:
         cap = min(max(limit, 12 * (scrolled + 1)), MAX_DEEP)
+    msgs = parse_messages(
+        names,
+        limit=cap,
+        sides=sides,
+        speakers=speakers,
+        speaker_ids=sids,
+    )
+    # 会话内编号（1..n）：指纹 id 是进程级的，直接摆出来可能是「群友47」。
+    number_speakers(msgs)
     return {
         "ok": True,
         "chat": chat,
-        "messages": parse_messages(
-            names,
-            limit=cap,
-            sides=sides,
-            speakers=speakers,
-            speaker_ids=sids,
-        ),
+        "messages": msgs,
         "sessions": parse_sessions(sess_names),
         "raw_n": len(names),
         "screens": screens,
@@ -811,14 +814,37 @@ _PEOPLE_MAX = 3
 def _who_label(m: dict) -> str:
     """和面板一致的「谁」：真名优先，认不出名字就是「群友N」。
 
-    后端与 `pet.html` 的 `anaWho` 必须统一格式 —— 同一屏里两处叫法不一样，
-    用户会以为是两个人。
+    N 优先用**会话内编号** `speaker_no`（见 `number_speakers`）—— 指纹 id 是
+    进程级自增，跑了半天之后新开一个群可能一上来就是「群友47」，用户没法把它
+    读成「第几个说话的人」。后端与 `pet.html` 的 `anaWho` 必须统一格式 ——
+    同一屏里两处叫法不一样，用户会以为是两个人。
     """
     nm = str(m.get("name") or "").strip()
     if nm:
         return nm
+    no = int(m.get("speaker_no") or 0)
+    if no:
+        return f"群友{no}"
     sid = int(m.get("speaker") or 0)
     return f"群友{sid}" if sid else ""
+
+
+def number_speakers(msgs: list[dict]) -> list[dict]:
+    """给这一屏的发言人编**会话内**序号 1..n（按首次出现顺序）。
+
+    指纹 id 是进程级自增（`names._NEXT`），跨会话/跨重启都不代表「第几个人」；
+    面板要的是「这一屏里第几个说话的人」。编号只用于显示，`speaker` id 保持原样
+    （认名回填、持久化都按 id 走）。
+    """
+    seen: dict[int, int] = {}
+    for m in msgs:
+        sid = int(m.get("speaker") or 0)
+        if sid <= 0 or m.get("side") == "right":
+            continue
+        if sid not in seen:
+            seen[sid] = len(seen) + 1
+        m["speaker_no"] = seen[sid]
+    return msgs
 
 
 def _speaker_summary(bodies: list[dict]) -> list[dict]:
@@ -836,7 +862,16 @@ def _speaker_summary(bodies: list[dict]) -> list[dict]:
             continue
         g = groups.setdefault(
             sid,
-            {"id": sid, "name": "", "count": 0, "voice": 0, "media": 0, "last": "", "asks": False},
+            {
+                "id": sid,
+                "no": int(m.get("speaker_no") or 0),
+                "name": "",
+                "count": 0,
+                "voice": 0,
+                "media": 0,
+                "last": "",
+                "asks": False,
+            },
         )
         g["count"] += 1
         if m.get("name"):
@@ -851,7 +886,7 @@ def _speaker_summary(bodies: list[dict]) -> list[dict]:
             g["asks"] = is_question(g["last"])
     rows = sorted(groups.values(), key=lambda g: (-g["count"], g["id"]))
     for g in rows:
-        g["who"] = g["name"] or f"群友{g['id']}"
+        g["who"] = g["name"] or (f"群友{g['no']}" if g["no"] else f"群友{g['id']}")
     return rows
 
 

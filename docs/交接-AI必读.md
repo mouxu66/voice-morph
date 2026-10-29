@@ -210,6 +210,11 @@ cd web && npm run ship         # 构建 → 同步进安装目录 → 逐字节�
     修正：群聊里最后一句若是**另一个人**接的、且不是问句也不是 @ 你 → 降为
     「这条不是问你（X 接了一句；问你的是 Y）」；反过来最后一句 **@ 你** → 即使雷达说
     「再等等」也改判「有人 @ 你」。只在 `group`（≥2 个认得出的发言人）时生效，单聊不动。
+  - ✅ 2026-10-29 **「群友N」改成会话内序号 1..n**（`chat_read.number_speakers`）：
+    指纹 id 是进程级自增（`names._NEXT`），跑半天后新开群可能一上来就是「群友47」；
+    现在按**这一屏里首次出现顺序**编号，前端 `anaWho` 优先读 `speaker_no`（无则回退 id）。
+    `speaker` id **不变**：认名回填、`chat_names.json` 持久化、聚合都按 id 走，编号只用于显示。
+    测试：`test_number_speakers_uses_session_ordinals` / `test_analyze_uses_session_numbers_not_global_ids`
 
 **判断层（要不要回 / 怎么回）**
 
