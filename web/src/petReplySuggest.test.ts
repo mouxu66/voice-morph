@@ -33,8 +33,28 @@ function extractFn(name: string): string {
   throw new Error(`${name} 花括号不配平`)
 }
 
+/** 极简 classList：真页面上 `anaRepliesEl.classList.add("skel")` / `.remove(...)` 都会走到。
+ *  以前的假元素没有它 —— `suggestReplies` 在骨架那一步就抛 TypeError，于是整个文件
+ *  的断言全部「红着但看不出原因」。 */
+function fakeClassList() {
+  const set = new Set<string>()
+  return {
+    hot: false,
+    add(n: string) { set.add(n) },
+    remove(n: string) { set.delete(n) },
+    contains(n: string) { return set.has(n) },
+    toggle(n: string, on?: boolean) {
+      const v = on === undefined ? !set.has(n) : !!on
+      if (v) set.add(n)
+      else set.delete(n)
+      if (n === 'hot') this.hot = v
+      return v
+    },
+  }
+}
+
 function fakeEl() {
-  return { innerHTML: '', textContent: '', className: '', hidden: false }
+  return { innerHTML: '', textContent: '', className: '', hidden: false, classList: fakeClassList() }
 }
 
 type ReplyPayload = {
@@ -49,16 +69,6 @@ type ReplyPayload = {
 }
 
 type FakeResponse = { ok: boolean; json: () => Promise<ReplyPayload> }
-
-/** 「看图」按钮的类名开关（`classList.toggle("hot", …)`）。 */
-function fakeClassList() {
-  return {
-    hot: false,
-    toggle(name: string, on: boolean) {
-      if (name === 'hot') this.hot = !!on
-    },
-  }
-}
 
 /** 把草稿块用到的真实函数装进沙箱；fetch 由用例注入，不真发请求。 */
 function loadReplyPanel(fetchImpl: (url: string) => Promise<FakeResponse>) {
@@ -82,6 +92,10 @@ function loadReplyPanel(fetchImpl: (url: string) => Promise<FakeResponse>) {
     let anaReplySeq = 0;
     let anaLast = null;
     let anaLastReplies = [];
+    // 读多少屏（面板头部那个范围选择器）。沙箱默认 0 = 只读当前屏。
+    let anaScreens = 0;
+    /** 骨架是纯视觉（三条无字占位），这里只要不炸；真实样式由面板布局用例管。 */
+    function anaSkeleton() { dom.replies.innerHTML = ""; }
     // 主面板那一行有没有「15s 内的现成草稿」——沙箱里恒为 0，逼它走真请求那条路。
     let candRows = [];
     let candAt = 0;
@@ -119,6 +133,7 @@ function loadReplyPanel(fetchImpl: (url: string) => Promise<FakeResponse>) {
       dom,
       applied: () => applied,
       setCap: (v) => { CAP.radar = v },
+      setScreens: (v) => { anaScreens = v },
       last: () => anaLast,
     };
   `
@@ -126,6 +141,8 @@ function loadReplyPanel(fetchImpl: (url: string) => Promise<FakeResponse>) {
     suggest: (j?: Record<string, unknown>) => Promise<void>
     render: (j: Record<string, unknown>, autoReply?: boolean) => void
     clear: () => void
+    /** 模拟用户在面板头部切了范围（0 / 2 / 4 屏） */
+    setScreens: (v: number) => void
     dom: typeof dom
     /** applyCand 收到的每一份响应：证明草稿也喂给了主面板那一行 */
     applied: () => ReplyPayload[]
@@ -154,14 +171,25 @@ function okResponse(payload: ReplyPayload): FakeResponse {
 }
 
 describe('怎么回：请求参数', () => {
-  it('默认只带 limit=14（没有信号就不猜最后一条是谁发的）', async () => {
+  it('默认只带 limit=14 与 screens=0（没有信号就不猜最后一条是谁发的）', async () => {
     const urls: string[] = []
     const api = loadReplyPanel(async (url) => {
       urls.push(url)
       return okResponse(OK)
     })
     await api.suggest({})
-    expect(urls).toEqual(['/api/radar/replies?limit=14'])
+    expect(urls).toEqual(['/api/radar/replies?limit=14&screens=0'])
+  })
+
+  it('用户选了范围就把 screens 原样带上（读多少由他决定）', async () => {
+    const urls: string[] = []
+    const api = loadReplyPanel(async (url) => {
+      urls.push(url)
+      return okResponse(OK)
+    })
+    api.setScreens(3)
+    await api.suggest({})
+    expect(urls[0]).toBe('/api/radar/replies?limit=14&screens=3')
   })
 
   it('雷达给了 left/right 才透传 last_side', async () => {
@@ -172,8 +200,8 @@ describe('怎么回：请求参数', () => {
     })
     await api.suggest({ signals: { last_side: 'left' } })
     await api.suggest({ signals: { last_side: 'right' } })
-    expect(urls[0]).toBe('/api/radar/replies?limit=14&last_side=left')
-    expect(urls[1]).toBe('/api/radar/replies?limit=14&last_side=right')
+    expect(urls[0]).toBe('/api/radar/replies?limit=14&screens=0&last_side=left')
+    expect(urls[1]).toBe('/api/radar/replies?limit=14&screens=0&last_side=right')
   })
 
   it('★ 非法 last_side 不透传（模型会把「最后一条」判反）', async () => {
@@ -183,7 +211,7 @@ describe('怎么回：请求参数', () => {
       return okResponse(OK)
     })
     await api.suggest({ signals: { last_side: 'middle' } })
-    expect(urls[0]).toBe('/api/radar/replies?limit=14')
+    expect(urls[0]).toBe('/api/radar/replies?limit=14&screens=0')
     expect(urls[0]).not.toContain('last_side')
   })
 
@@ -367,7 +395,7 @@ describe('怎么回：接在分析之后', () => {
       signals: { last_side: 'left' },
     })
     await new Promise((r) => setTimeout(r, 0))
-    expect(urls[0]).toBe('/api/radar/replies?limit=14&last_side=left')
+    expect(urls[0]).toBe('/api/radar/replies?limit=14&screens=0&last_side=left')
     expect(api.dom.replies.innerHTML).toContain('rchip')
 
     api.render({ ok: false, error: '读不到微信窗口' })

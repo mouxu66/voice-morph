@@ -533,7 +533,13 @@ def _line_of(m: dict) -> str:
     return text
 
 
-def build_prompt(messages: list[dict], chat: str = "", last_side: str | None = None) -> str:
+def build_prompt(
+    messages: list[dict],
+    chat: str = "",
+    last_side: str | None = None,
+    *,
+    feed: int = FEED_MESSAGES,
+) -> str:
     """拼用户消息。`last_side` 是雷达给的确定信号：right = 最后一条是我发的。
 
     ⚠️ 两种「标明谁说的」都试过，都回退了，别再改回去：
@@ -555,7 +561,9 @@ def build_prompt(messages: list[dict], chat: str = "", last_side: str | None = N
         if not text or ((m or {}).get("kind") or "text") in ("time", "system"):
             continue
         lines.append(_line_of(m))
-    lines = lines[-FEED_MESSAGES:]
+    # `feed` 由调用方给（面板上「近 25/45 条」那个范围）。封顶 30：4B 对更长的
+    # 流水账只会更慢，而且更容易把群友之间的话当成对自己说的。
+    lines = lines[-max(4, min(int(feed), 30)):]
 
     head = f"当前会话：{chat or '未知'}\n" if chat else ""
     if last_side == "right":
@@ -1892,6 +1900,7 @@ def suggest(
     last_side: str | None = None,
     *,
     avoid: list[str] | None = None,
+    feed: int = FEED_MESSAGES,
 ) -> dict:
     """读最近消息 → 2-3 条可直接发的回复。永远返回可渲染的 dict，不抛异常。
 
@@ -1960,7 +1969,7 @@ def suggest(
         port = _ensure_server()
         # 最近有图片/视频才截图（多 400~800 token + ~200ms）；没有就纯文本。
         image = chat_snapshot_b64() if _needs_look(messages) else None
-        prompt = build_prompt(messages, chat, last_side)
+        prompt = build_prompt(messages, chat, last_side, feed=feed)
         if avoid:
             prompt += _avoid_tail(avoid)
         # 换一批从第一发就升温：0.4 下它会照着 avoid 里那几条的措辞再写一遍。

@@ -550,3 +550,110 @@ def test_chat_endpoint_survives_radar_failure(monkeypatch):
     assert out["ok"] is True
     assert "雷达不可用" in out["verdict_note"]
     assert out["analysis"]["suggest"]["action"] == "reply"  # 文本规则仍可判断
+
+
+# ---------------------------------------------------------------- 深读（滚动补齐）
+#
+# 2026-10-29 实测背景：消息列表是 `mmui::RecyclerListView`（虚拟列表），
+# `GetPattern(ScrollPattern)` 返回 False —— 没有 UIA 滚动接口，只能发真实滚轮。
+# 这些用例把「拼接 / 到顶 / 回滚 / 不滚」四件事钉死，不碰真微信。
+
+
+def _m(text, side="left"):
+    return {"text": text, "side": side, "speaker": 0, "name": ""}
+
+
+def test_merge_history_aligns_on_overlap():
+    """往上滚一屏后，旧批的尾巴会和新批的头重复 —— 不能拼出两遍同一句话。"""
+    newest = [_m("D"), _m("E"), _m("F")]
+    older = [_m("A"), _m("B"), _m("C"), _m("D"), _m("E")]
+    merged = chat_read.merge_history([newest, older])
+    assert [m["text"] for m in merged] == ["A", "B", "C", "D", "E", "F"]
+
+
+def test_merge_history_keeps_batch_when_no_overlap():
+    """对不上就别猜：宁可多一条重复，也不能吞掉用户的话。"""
+    merged = chat_read.merge_history([[_m("X")], [_m("Y")]])
+    assert [m["text"] for m in merged] == ["Y", "X"]
+
+
+def test_merge_history_tolerates_empty_batches():
+    assert chat_read.merge_history([]) == []
+    assert [m["text"] for m in chat_read.merge_history([[_m("A")], []])] == ["A"]
+
+
+def test_read_chat_deep_collects_scrolled_screens_and_restores(monkeypatch):
+    """翻屏 → 拼接 → 判到顶 → 回到底部，四步都要发生（且只滚一次回去）。"""
+    batches = [
+        _labeled(["C", "D", "E"]),
+        _labeled(["A", "B", "C"]),
+        _labeled(["X", "Y", "A"]),
+        _labeled(["X", "Y", "A"]),      # 滚不动了：Qt 原样再给一遍
+    ]
+    calls = []
+
+    monkeypatch.setattr(chat_read, "collect_labeled", lambda: batches.pop(0))
+    monkeypatch.setattr(chat_read, "_locate_lists", lambda: (object(), None, ""))
+    monkeypatch.setattr(
+        chat_read, "_scroll_chat",
+        lambda ctrl, up, notches=chat_read.NOTCHES_PER_SCREEN: calls.append(up) or True,
+    )
+    monkeypatch.setattr(chat_read.time, "sleep", lambda _s: None)
+
+    snap = chat_read.read_chat(limit=20, screens=3)
+    assert [m["text"] for m in snap["messages"]] == ["X", "Y", "A", "B", "C", "D", "E"]
+    assert snap["screens_read"] == 2
+    assert calls == [True, True, True, False]   # 上滚三次命中到顶，最后一次回底
+
+
+def test_read_chat_shallow_never_scrolls(monkeypatch):
+    """screens=0（默认）不许动鼠标滚轮：这条是「只读、零副作用」的守门人。"""
+    monkeypatch.setattr(chat_read, "collect_labeled", lambda: _labeled(["A"]))
+
+    def _boom(*a, **k):
+        raise AssertionError("screens=0 时不许滚动")
+
+    monkeypatch.setattr(chat_read, "_scroll_chat", _boom)
+    snap = chat_read.read_chat(limit=20)
+    assert snap["screens_read"] == 0
+    assert [m["text"] for m in snap["messages"]] == ["A"]
+
+
+def test_scroll_chat_refuses_when_cursor_is_over_another_app(monkeypatch):
+    """滚轮事件跟着**光标下的窗口**走：不是微信就一律不滚。
+
+    没有这道护栏，微信被浏览器盖住时「自动看上下文」会去滚用户正在读的网页。
+    """
+    import wechat_uia
+
+    monkeypatch.setattr(wechat_uia, "rect_of", lambda ctrl: (0, 0, 100, 100))
+    monkeypatch.setattr(wechat_uia, "_wechat_hwnd_pid", lambda: (1, 456))
+    monkeypatch.setattr(chat_read, "_window_pid", lambda hwnd: 999)
+    assert chat_read._scroll_chat(object(), up=True) is False
+
+
+def test_replies_scales_model_feed_with_screens(monkeypatch):
+    """用户选了几屏，喂给模型的条数就得跟着涨（封顶 30），否则深读白翻。"""
+    import reply_advisor
+
+    seen = {}
+
+    def _suggest(messages, chat="", last_side=None, *, avoid=None, feed=reply_advisor.FEED_MESSAGES):
+        seen["feed"] = feed
+        seen["n"] = len(messages)
+        return {"engine": "local", "replies": []}
+
+    monkeypatch.setattr(reply_advisor, "suggest", _suggest)
+    batches = [
+        _labeled(["C", "D", "E"]),
+        _labeled(["A", "B", "C"]),
+        _labeled(["X", "Y", "A"]),
+    ]
+    monkeypatch.setattr(chat_read, "collect_labeled", lambda: batches.pop(0))
+    monkeypatch.setattr(chat_read, "_locate_lists", lambda: (object(), None, ""))
+    monkeypatch.setattr(chat_read, "_scroll_chat", lambda *a, **k: True)
+    monkeypatch.setattr(chat_read.time, "sleep", lambda _s: None)
+
+    radar_api.replies(limit=14, screens=2)
+    assert seen["feed"] == reply_advisor.FEED_MESSAGES + 8
+    assert seen["n"] >= 5

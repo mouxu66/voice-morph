@@ -16,17 +16,23 @@
 
 只读边界
 --------
-不点击、不切会话、不滚动、不发消息。只读「当前已打开会话」已经渲染出来的
-消息（UIA 只暴露可见 ListItem），所以它是「看一眼」，不是「拉完整历史」。
+不点击、不切会话、不发消息。**默认不滚动**：只读「当前已打开会话」已经渲染
+出来的消息（UIA 只暴露可见 ListItem），所以它是「看一眼」，不是「拉完整历史」。
+
+要往上多读几屏时走 `read_chat(..., screens=N)`（2026-10-29 新增）：在聊天区发
+真实滚轮事件、边滚边收集、读完**滚回底部**并还原鼠标。它仍然是「只读」，但已经
+不是「零副作用」—— 会短暂动一下鼠标和滚动位置，所以必须由用户显式选择，不进轮询。
 发言人归属拿不到（ListItem 只有气泡内容），交给雷达的 last_side/streak；
 群聊里的 @ 以正文形式出现，按文本提示。
 """
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import re
 import time
+from ctypes import wintypes
 
 import wechat_uia
 
@@ -40,6 +46,96 @@ MAX_NODES = 6000
 #: 找不到列表时再走一遍的次数（第 2 次会**强制重开 UIA gate**，见 `_locate_lists`）。
 _WALK_ATTEMPTS = 2
 _WALK_RETRY_DELAY_S = 0.15
+
+# ---------------------------------------------------------------- 深读（滚动补齐）
+#
+# 为什么需要自己发滚轮：消息列表是 `mmui::RecyclerListView`（虚拟列表），
+# `GetPattern(ScrollPattern)` 返回 False —— 没有 UIA 滚动接口可用，只能发真实滚轮
+# （2026-10-29 在 4.2.0.11 实测）。
+MAX_SCREENS = 5              # 最多往上多读 5 屏（再多用户也读不完，且每屏要 ~1s）
+NOTCHES_PER_SCREEN = 3       # 一「屏」≈ 3 格滚轮（实测 2 格就换掉一半可见消息）
+WHEEL_DELTA = 120
+MOUSEEVENTF_WHEEL = 0x0800
+MAX_DEEP = 80                # 深读最多回传多少条（提示词与面板都吃不消更多）
+_SCROLL_SETTLE_S = 0.3       # 滚完等 Qt 重排/物化新 ListItem
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+def _cursor_pos() -> tuple[int, int]:
+    pt = _POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+    return int(pt.x), int(pt.y)
+
+
+def _window_pid(hwnd: int) -> int:
+    pid = wintypes.DWORD()
+    ctypes.windll.user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), ctypes.byref(pid))
+    return int(pid.value)
+
+
+def _scroll_chat(ctrl, up: bool, notches: int = NOTCHES_PER_SCREEN) -> bool:
+    """在聊天区发真实滚轮事件；成功返回 True。
+
+    ⚠️ 护栏（2026-10-29 定，别删）：滚轮事件送给的是**光标下的窗口**，不是前台
+    窗口。微信一旦被别的窗口盖住，这一下就会滚到用户正在读的浏览器/编辑器上 ——
+    这不是理论风险，是本项目「自动操作桌面」最容易伤到用户的一类事故。
+    所以先用 `WindowFromPoint` 确认光标下确实是微信进程的窗口，否则直接放弃。
+
+    滚完把光标放回原处：用户没有要求「鼠标跳到聊天区」，那只是我们的实现细节。
+    """
+    box = wechat_uia.rect_of(ctrl)
+    if not box:
+        return False
+    x = (box[0] + box[2]) // 2
+    y = (box[1] + box[3]) // 2
+    u = ctypes.windll.user32
+    u.WindowFromPoint.restype = wintypes.HWND
+    u.WindowFromPoint.argtypes = [_POINT]
+    hwnd = int(u.WindowFromPoint(_POINT(x, y)) or 0)
+    _hwnd, wx_pid = wechat_uia._wechat_hwnd_pid()
+    if not hwnd or not wx_pid or _window_pid(hwnd) != int(wx_pid):
+        return False
+    saved = _cursor_pos()
+    u.SetCursorPos(x, y)
+    try:
+        delta = WHEEL_DELTA if up else -WHEEL_DELTA
+        for _ in range(max(1, int(notches))):
+            u.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta, 0)
+            time.sleep(0.05)
+    finally:
+        u.SetCursorPos(saved[0], saved[1])
+    return True
+
+
+def _msg_key(m: dict) -> tuple[str, str, str]:
+    return (str(m.get("kind") or ""), str(m.get("text") or ""), str(m.get("side") or ""))
+
+
+def merge_history(batches: list[list[dict]]) -> list[dict]:
+    """把「一屏一批」的消息拼成一条时间线；`batches[0]` 是最新那一屏。
+
+    相邻两批**必然重叠**（往上滚一屏，屏底还留着几条上一屏的消息），靠
+    「旧批的后缀 == 新批的前缀」对齐。对不上就整批接上 —— 宁可多几条重复，
+    也不能把用户的话吞掉。返回仍是**旧 → 新**（与 `parse_messages` 一致）。
+    """
+    if not batches:
+        return []
+    acc = list(batches[0])
+    for older in batches[1:]:
+        older = list(older)
+        if not older:
+            continue
+        acc_keys = [_msg_key(m) for m in acc]
+        overlap = 0
+        for k in range(min(len(older), len(acc_keys)), 0, -1):
+            if [_msg_key(m) for m in older[-k:]] == acc_keys[:k]:
+                overlap = k
+                break
+        acc = older[: len(older) - overlap] + acc
+    return acc
 
 #: 聊天区那份列表叫「消息」，左侧会话列表叫「会话」——同名会取错。
 LIST_CHAT = "消息"
@@ -633,27 +729,65 @@ def collect_labeled() -> tuple[list[dict], list[str], str, str]:
     )
 
 
-def read_chat(limit: int = 20) -> dict:
-    """当前会话快照：标题 + 最近消息（带「谁说的」+ 发言人昵称）+ 会话列表（未读）。"""
+def read_chat(limit: int = 20, screens: int = 0) -> dict:
+    """当前会话快照：标题 + 最近消息（带「谁说的」+ 发言人昵称）+ 会话列表（未读）。
+
+    `screens` = 额外往上翻几屏（0 = 只看得到的那一屏，默认）。用户选「近 25/45 条」
+    时前端传 2/4。翻屏是**有代价**的：每屏多一次 `collect_labeled`（~1s）+ 一次
+    滚轮 + 等重排（~0.3s），所以只在用户显式要求时做，且读完一定滚回底部。
+    """
+    screens = max(0, min(int(screens or 0), MAX_SCREENS))
     msgs, sess_names, chat, err = collect_labeled()
     if err:
         return {"ok": False, "error": err}
-    names = [m["text"] for m in msgs]
-    sides = [m["side"] for m in msgs]
-    speakers = [m.get("name") or "" for m in msgs]
-    sids = [int(m.get("speaker") or 0) for m in msgs]
+
+    batches: list[list[dict]] = [msgs]
+    scrolled = 0
+    if screens:
+        chat_ctrl = _locate_lists()[0]
+        if chat_ctrl is not None:
+            try:
+                for _ in range(screens):
+                    if not _scroll_chat(chat_ctrl, up=True):
+                        break
+                    time.sleep(_SCROLL_SETTLE_S)
+                    more, _sess, _chat, more_err = collect_labeled()
+                    if more_err or not more:
+                        break
+                    # 滚不动 = 已经到顶：Qt 会把同一批原样再给一遍。
+                    if [_msg_key(m) for m in more] == [_msg_key(m) for m in batches[-1]]:
+                        break
+                    batches.append(more)
+                    scrolled += 1
+            finally:
+                # 回到底部：多给一屏的余量，滚轮到底会被微信自己夹住（实测 12 格
+                # 从第 4 屏精确回到原来那一屏）。
+                _scroll_chat(chat_ctrl, up=False, notches=NOTCHES_PER_SCREEN * (scrolled + 2))
+                time.sleep(_SCROLL_SETTLE_S)
+
+    merged = merge_history(batches)
+    names = [m["text"] for m in merged]
+    sides = [m["side"] for m in merged]
+    speakers = [m.get("name") or "" for m in merged]
+    sids = [int(m.get("speaker") or 0) for m in merged]
+    # 深读时 limit 不能按「一屏」算：用户选了 3 屏，20 条的上限会把刚滚出来的全切掉。
+    cap = min(max(limit, 5), 60)
+    if scrolled:
+        cap = min(max(limit, 12 * (scrolled + 1)), MAX_DEEP)
     return {
         "ok": True,
         "chat": chat,
         "messages": parse_messages(
             names,
-            limit=min(max(limit, 5), 60),
+            limit=cap,
             sides=sides,
             speakers=speakers,
             speaker_ids=sids,
         ),
         "sessions": parse_sessions(sess_names),
         "raw_n": len(names),
+        "screens": screens,
+        "screens_read": scrolled,
     }
 
 
@@ -692,8 +826,12 @@ def analyze(snap: dict, verdict: dict | None = None) -> dict:
         highlights.append(f"含 {len(medias)} 条图片/文件类消息")
     if cur_unread:
         highlights.append(f"当前会话还有 {cur_unread} 条未读（往下翻）")
+    deep = int(snap.get("screens_read") or 0)
     if len(bodies) >= 10:
-        highlights.append(f"这次读到 {len(bodies)} 条可见消息")
+        highlights.append(
+            f"这次读到 {len(bodies)} 条（往上翻了 {deep} 屏）" if deep
+            else f"这次读到 {len(bodies)} 条可见消息"
+        )
 
     v = verdict or {}
     act = v.get("action") or ""
@@ -720,7 +858,8 @@ def analyze(snap: dict, verdict: dict | None = None) -> dict:
     parts = []
     if snap.get("chat"):
         parts.append(str(snap["chat"]))
-    parts.append(f"{len(bodies)} 条可见消息")
+    deep = int(snap.get("screens_read") or 0)
+    parts.append(f"{len(bodies)} 条（翻了 {deep} 屏）" if deep else f"{len(bodies)} 条可见消息")
     if unread_total:
         parts.append(f"其他会话 {unread_total} 条未读")
 

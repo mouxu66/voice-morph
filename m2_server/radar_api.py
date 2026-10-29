@@ -98,17 +98,20 @@ def reset():
 
 
 @router.get("/chat")
-def chat(limit: int = 20):
+def chat(limit: int = 20, screens: int = 0):
     """当前会话的只读视图 + 本地规则分析（桌宠「分析聊天」按钮）。
 
     为什么不放进雷达的轮询链路：读消息列表要遍历 UIA 树（~50ms/次），
     只在用户点按钮时跑；雷达那 1.5s 的轮询仍然只走像素投影。
     微信没开 / 最小化是正常状态：200 + ok:false + 人话原因，与 /state 同一约定。
+
+    `screens`：额外往上翻几屏（0 = 只读当前屏）。这是**用户显式选择的范围**
+    （面板头部那个「近 N 条」），不是自动行为 —— 翻屏会动鼠标、改滚动位置。
     """
     from chat_read import analyze, read_chat  # 惰性：不点按钮不碰 UIA
 
     try:
-        snap = read_chat(limit=limit)
+        snap = read_chat(limit=limit, screens=screens)
     except Exception as exc:  # noqa: BLE001 —— 只读视图不该把接口打成 500
         return {"ok": False, "error": f"读微信会话失败：{exc}"}
     if not snap.get("ok"):
@@ -163,7 +166,7 @@ def names(timeout: float = 90.0):
 
 
 @router.get("/replies")
-def replies(limit: int = 14, last_side: str = "", avoid: str = ""):
+def replies(limit: int = 14, screens: int = 0, last_side: str = "", avoid: str = ""):
     """读当前会话 → 本地 Qwen3-VL-4B（llama-server）给 2-3 条可直接发的回复。
 
     为什么单独一个端点、不和 /chat 合并：/chat 是 50ms 的 UIA 只读，
@@ -178,18 +181,21 @@ def replies(limit: int = 14, last_side: str = "", avoid: str = ""):
     只是原样再问一次，temperature 0.4 下多半给出几乎一样的句子。
     """
     from chat_read import read_chat  # 惰性：不点按钮不碰 UIA
-    from reply_advisor import suggest
+    from reply_advisor import FEED_MESSAGES, suggest
 
     try:
-        snap = read_chat(limit=limit)
+        snap = read_chat(limit=limit, screens=screens)
     except Exception as exc:  # noqa: BLE001 —— 只读视图不该把接口打成 500
         return {"ok": False, "error": f"读微信会话失败：{exc}"}
     if not snap.get("ok"):
         return snap
     side = last_side if last_side in ("left", "right") else None
+    # 喂给模型的条数跟着用户选的范围涨，但**封顶 30**：4B 对更长的流水账只会更慢、
+    # 更容易把别人的话当成对自己说的（prompt 长度与判断质量的权衡见 FEED_MESSAGES）。
+    feed = min(30, FEED_MESSAGES + 4 * max(0, int(snap.get("screens_read") or 0)))
     out = suggest(snap.get("messages") or [], snap.get("chat") or "", side,
-                  avoid=_parse_avoid(avoid))
-    return {"ok": True, "chat": snap.get("chat"), **out}
+                  avoid=_parse_avoid(avoid), feed=feed)
+    return {"ok": True, "chat": snap.get("chat"), "screens_read": snap.get("screens_read"), **out}
 
 
 def _parse_avoid(raw: str) -> list[str] | None:

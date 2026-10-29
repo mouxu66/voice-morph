@@ -1126,6 +1126,17 @@
     font-size: 9px; color: rgb(var(--c-t-500));
   }
   #panel #anaRefresh:hover { color: rgb(var(--c-accent-h)); }
+  /* 「读多少」：和「重新分析」同一副长相（9px 灰、可点）—— 它是“再读一遍”的参数，
+     不是新功能的入口。三档循环：1 屏 / 3 屏 / 5 屏。多读一屏要往上滚一次（动鼠标 +
+     改滚动位置，读完自动回底），所以默认只读一屏。 */
+  #panel #anaScope {
+    flex: 0 0 auto; height: auto; padding: 1px 3px;
+    border: 0; background: transparent; box-shadow: none;
+    font-size: 9px; color: rgb(var(--c-t-500));
+  }
+  #panel #anaScope:hover { color: rgb(var(--c-accent-h)); }
+  #panel #anaScope.deep { color: rgb(var(--c-accent-h)); }
+  #panel #anaScope.busy { color: rgb(var(--c-t-500) / 0.45); }
   #panel #anaBack {
     flex: 0 0 auto; width: 22px; height: 20px; padding: 0;
     border-radius: 7px; font-size: 13px; line-height: 1;
@@ -1848,6 +1859,9 @@
         <!-- 认人：昵称条是像素，UIA 里根本没有发送方（见 chat_radar/names.py）。
              点它 = 把这一屏的昵称条拼成一张图让视觉模型读一次（约 3 秒、占 6G 显存）。
              **不自动做**：会和实时变声抢显卡，所以必须是一次点击。 -->
+        <!-- 读多少：微信只给“屏上看得见”的 ListItem，想多看只能往上滚（真的滚动）。
+             滚轮会动鼠标、改滚动位置，所以范围必须由用户选，而且默认只读一屏。 -->
+        <button type="button" id="anaScope" title="只读屏幕上这一屏；点一下多读几屏">近1屏</button>
         <button type="button" id="anaNames" title="让视觉模型读一遍群里谁是谁（约 3 秒，占 6G 显存）">认人</button>
         <!-- 换会话 / 刚来了新消息：点它重读一遍（不自动轮询 —— 读 UIA 是用户主动动作） -->
         <button type="button" id="anaRefresh" title="重新读一遍当前会话">重新分析</button>
@@ -2643,6 +2657,7 @@ const radarLiveEl = document.getElementById("radarLive");
 const analysisLayerEl = document.getElementById("analysisLayer");
 const anaBackEl = document.getElementById("anaBack");
 const anaRefreshEl = document.getElementById("anaRefresh");
+const anaScopeEl = document.getElementById("anaScope");
 const anaNamesEl = document.getElementById("anaNames");
 const anaTitleEl = document.getElementById("anaTitle");
 const anaSuggestEl = document.getElementById("anaSuggest");
@@ -4016,6 +4031,33 @@ let anaReplySeq = 0;
 //: 全是「接接接」的变体，按「换一批」也还是那三个字）。
 let anaLastReplies = [];
 
+/* 读多少历史（用户选）。单位是**屏**不是条：微信只暴露可见 ListItem，条数要滚出来
+   才知道，用户能预期的是“多翻几屏”。0 = 只读当前屏（不滚、不动鼠标）。 */
+const ANA_SCOPE_STEPS = [0, 2, 4];
+const ANA_SCOPE_LABELS = { 0: "近1屏", 2: "近3屏", 4: "近5屏" };
+let anaScreens = (() => {
+  try {
+    const v = Number(localStorage.getItem("vm.radar.screens") || 0);
+    return ANA_SCOPE_STEPS.includes(v) ? v : 0;
+  } catch { return 0; }
+})();
+function syncAnaScope() {
+  if (!anaScopeEl) return;
+  anaScopeEl.textContent = ANA_SCOPE_LABELS[anaScreens] || ("近" + (anaScreens + 1) + "屏");
+  anaScopeEl.classList.toggle("deep", anaScreens > 0);
+  anaScopeEl.title = anaScreens
+    ? "再往上翻 " + anaScreens + " 屏（读完自动滚回底部）；点一下换档"
+    : "只读屏幕上这一屏；点一下多读几屏";
+}
+function cycleAnaScope() {
+  const i = ANA_SCOPE_STEPS.indexOf(anaScreens);
+  anaScreens = ANA_SCOPE_STEPS[(i + 1) % ANA_SCOPE_STEPS.length];
+  try { localStorage.setItem("vm.radar.screens", String(anaScreens)); } catch { /* 不记住也行 */ }
+  syncAnaScope();
+  // 范围变了就按新范围重读一次：不重读的话，用户会以为“选了但没生效”。
+  if (!anaBusy) void analyzeChat();
+}
+
 /** 拉一次 /chat 并渲染。失败按人话写进 #anaNote，不改已有结论卡。 */
 async function analyzeChat() {
   // ⚠️ 这一行必须保持**逐字** `if (!CAP.radar) return;`：与 radarTick 同一门控约定
@@ -4025,7 +4067,7 @@ async function analyzeChat() {
   anaBusy = true;
   if (anaNoteEl) { anaNoteEl.textContent = "正在读当前会话…"; anaNoteEl.className = ""; }
   try {
-    const r = await fetch(RADAR_BASE + "/chat?limit=20", { cache: "no-store" });
+    const r = await fetch(RADAR_BASE + "/chat?limit=20&screens=" + anaScreens, { cache: "no-store" });
     if (!r.ok) {
       if (anaNoteEl) {
         anaNoteEl.textContent = r.status === 404
@@ -4193,7 +4235,7 @@ async function suggestReplies(j, redo) {
   }
   const side = (j && j.signals && j.signals.last_side) || "";
   const av = redo && anaLastReplies.length ? anaLastReplies.slice(0, 6) : [];
-  const qs = "?limit=14"
+  const qs = "?limit=14&screens=" + anaScreens
     + (side === "left" || side === "right" ? "&last_side=" + side : "")
     + (av.length ? "&avoid=" + encodeURIComponent(JSON.stringify(av)) : "");
   try {
@@ -4603,6 +4645,7 @@ function anaApplyNames(people) {
 
 if (anaBackEl) anaBackEl.addEventListener("click", () => setLayer(""));
 if (anaRefreshEl) anaRefreshEl.addEventListener("click", () => { void analyzeChat(); });
+if (anaScopeEl) { anaScopeEl.addEventListener("click", cycleAnaScope); syncAnaScope(); }
 
 // ---------------- 「怎么回」主卡 + 工具行（2026-10-27）----------------
 /**

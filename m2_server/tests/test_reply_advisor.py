@@ -331,11 +331,11 @@ def test_suggest_falls_back_when_output_invalid(monkeypatch):
 def test_radar_replies_passes_side_and_reads_chat(monkeypatch):
     monkeypatch.setattr(
         chat_read, "read_chat",
-        lambda limit=20: {"ok": True, "chat": "117", "messages": list(MSGS)},
+        lambda limit=20, screens=0: {"ok": True, "chat": "117", "messages": list(MSGS)},
     )
     seen = {}
 
-    def fake_suggest(msgs, chat, side, avoid=None):
+    def fake_suggest(msgs, chat, side, avoid=None, feed=None):
         seen.update(msgs=msgs, chat=chat, side=side, avoid=avoid)
         return {"engine": "local", "replies": ["哈哈"], "why": "他想聊"}
 
@@ -352,12 +352,12 @@ def test_radar_replies_passes_side_and_reads_chat(monkeypatch):
 def test_radar_replies_ignores_unknown_side(monkeypatch):
     monkeypatch.setattr(
         chat_read, "read_chat",
-        lambda limit=20: {"ok": True, "chat": "117", "messages": []},
+        lambda limit=20, screens=0: {"ok": True, "chat": "117", "messages": []},
     )
     seen = {}
     monkeypatch.setattr(
         ra, "suggest",
-        lambda msgs, chat, side, avoid=None: seen.update(side=side) or {"engine": "rule", "replies": ["收到"]},
+        lambda msgs, chat, side, avoid=None, feed=None: seen.update(side=side) or {"engine": "rule", "replies": ["收到"]},
     )
     radar_api.replies(limit=14, last_side="up")
     assert seen["side"] is None
@@ -366,7 +366,7 @@ def test_radar_replies_ignores_unknown_side(monkeypatch):
 def test_radar_replies_passthrough_when_wechat_closed(monkeypatch):
     monkeypatch.setattr(
         chat_read, "read_chat",
-        lambda limit=20: {"ok": False, "error": "读不到微信窗口（没开，或 UIA 未激活）"},
+        lambda limit=20, screens=0: {"ok": False, "error": "读不到微信窗口（没开，或 UIA 未激活）"},
     )
     out = radar_api.replies(limit=14)
     assert out["ok"] is False
@@ -1904,7 +1904,7 @@ def test_digest_query_uses_picked_question(monkeypatch):
 
     monkeypatch.setattr(
         "chat_read.read_chat",
-        lambda limit=10: {"ok": True, "chat": "无尽冬日3864区ALL天地联盟",
+        lambda limit=10, screens=0: {"ok": True, "chat": "无尽冬日3864区ALL天地联盟",
                           "messages": BEAR_MSGS},
     )
     got = {}
@@ -2057,12 +2057,12 @@ def test_parse_avoid_takes_json_or_pipe():
 def test_radar_replies_passes_avoid_through(monkeypatch):
     monkeypatch.setattr(
         chat_read, "read_chat",
-        lambda limit=20: {"ok": True, "chat": "117", "messages": []},
+        lambda limit=20, screens=0: {"ok": True, "chat": "117", "messages": []},
     )
     seen = {}
     monkeypatch.setattr(
         ra, "suggest",
-        lambda msgs, chat, side, avoid=None: seen.update(avoid=avoid) or {"engine": "local", "replies": ["666"]},
+        lambda msgs, chat, side, avoid=None, feed=None: seen.update(avoid=avoid) or {"engine": "local", "replies": ["666"]},
     )
     radar_api.replies(limit=14, avoid='["666","别急"]')
     assert seen["avoid"] == ["666", "别急"]
