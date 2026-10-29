@@ -1182,6 +1182,9 @@
     flex: 1 1 auto; min-width: 0; color: rgb(var(--c-t-300));
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  /* 同一个人连发：不再重复昵称，只缩进一点表示「接着上一句」（见 anaMsgRows）。
+     不缩满一整格：昵称宽度是弹性的（短名不该撑出空洞），缩到同一列反而更乱。 */
+  #panel .amsg.cont { padding-left: 6px; }
   #panel .amsg.time { font-size: 8.5px; color: rgb(var(--c-t-500)); }
   #anaNote { margin-top: 3px; font-size: 9.5px; line-height: 1.4; color: rgb(var(--c-t-500)); }
   #anaNote:empty { display: none; }
@@ -4182,7 +4185,7 @@ function renderAnalysis(j, autoReply = true) {
   }
   const msgs = (ok && Array.isArray(j.messages)) ? j.messages : [];
   if (anaMsgsEl) {
-    anaMsgsEl.innerHTML = msgs.map(anaMsgRow).join("");
+    anaMsgsEl.innerHTML = anaMsgRows(msgs);
     anaMsgsEl.hidden = !msgs.length;
   }
   anaMarkNamesHint(msgs);
@@ -4560,7 +4563,7 @@ async function writeFromDigest() {
  *
  *  第一格是**谁说的**（`anaWho`）：后端每条消息都带 `speaker`（像素指纹 id），
  *  所以「这个群有几个人在说话」不用等模型就有答案。 */
-function anaMsgRow(m) {
+function anaMsgRow(m, cont) {
   const kind = (m && m.kind) || "text";
   const text = String((m && m.text) || "");
   if (kind === "time") return `<span class="amsg time">${esc(text)}</span>`;
@@ -4568,9 +4571,29 @@ function anaMsgRow(m) {
   // 「图片/文件 图片」等于把同一件事说两遍。
   const bare = ANA_BARE_PLACEHOLDERS.has(text.trim());
   const k = kind === "voice" || bare ? "" : (ANA_KIND_LABEL[kind] || "·");
-  const w = anaWho(m);
+  // cont = 同一个人的连发：不再重复写名字，只留一点缩进表示「接着上一句」。
+  const w = cont ? null : anaWho(m);
   const who = w ? `<span class="who${w.me ? " me" : ""}">${esc(w.text)}</span>` : "";
-  return `<span class="amsg">${who}${k ? `<span class="k">${esc(k)}</span>` : ""}<span class="t">${esc(text)}</span></span>`;
+  return `<span class="amsg${cont ? " cont" : ""}">${who}${k ? `<span class="k">${esc(k)}</span>` : ""}<span class="t">${esc(text)}</span></span>`;
+}
+
+/**
+ * 把这一屏消息渲染成一列：**同一人连发只显示一次「谁」**。
+ *
+ * 群里 20 条常常只有 3 个人，每条都带一格昵称会让左栏看起来全是名字，
+ * 正文被挤成一条缝；而且「换人了没有」反而更难看出来。时间行结束这一轮
+ * （隔了一段时间再提示一次谁在说，否则滚远了就对不上人）。
+ */
+function anaMsgRows(msgs) {
+  let prev = "";
+  return (msgs || []).map((m) => {
+    if (!m || m.kind === "time") { prev = ""; return anaMsgRow(m); }
+    const w = anaWho(m);
+    const key = w ? (w.me ? "__me" : "s" + (Number(m.speaker) || w.text)) : "";
+    const cont = Boolean(key) && key === prev;
+    prev = key;
+    return anaMsgRow(m, cont);
+  }).join("");
 }
 
 /**
@@ -4641,7 +4664,7 @@ function anaApplyNames(people) {
       touched += 1;
     }
   }
-  if (touched && anaMsgsEl) anaMsgsEl.innerHTML = (anaLast.messages || []).map(anaMsgRow).join("");
+  if (touched && anaMsgsEl) anaMsgsEl.innerHTML = anaMsgRows(anaLast.messages || []);
   if (touched) anaMarkNamesHint(anaLast.messages);
   return touched;
 }

@@ -215,6 +215,12 @@ cd web && npm run ship         # 构建 → 同步进安装目录 → 逐字节�
     现在按**这一屏里首次出现顺序**编号，前端 `anaWho` 优先读 `speaker_no`（无则回退 id）。
     `speaker` id **不变**：认名回填、`chat_names.json` 持久化、聚合都按 id 走，编号只用于显示。
     测试：`test_number_speakers_uses_session_ordinals` / `test_analyze_uses_session_numbers_not_global_ids`
+  - ✅ 2026-10-29 **同人连发只显示一次昵称**（`pet.html` 的 `anaMsgRows`）：
+    同一 `speaker` id 的连续消息只有第一条带「谁」，后续加 `.cont` 缩进 6px；时间行结束这一轮
+    （隔一段时间重新提示是谁）。同名不同 id 仍各占一行（不合并）。两个渲染入口都走 `anaMsgRows`。
+    测试：`node tools/test-pet-msg-grouping.cjs`（7 例，check.py nodetest 自动收）。
+    顺带修了 `test-pet-renderer-script.cjs` 的既有红：DOM 桩缺 `querySelector`，
+    `syncToolCaps` 一调就 TypeError → 修后 80 通过 / 0 失败。
 
 **判断层（要不要回 / 怎么回）**
 

@@ -165,6 +165,9 @@ function mkEl(id) {
     setAttribute(k, v) { this[".attr." + k] = String(v); },
     getAttribute(k) { return this[".attr." + k] === undefined ? null : this[".attr." + k]; },
     closest() { return null; },
+    // 2026-10-29 补：`syncToolCaps` 要按 data-tool 找「托管」按钮，桩缺这个方法
+    // 就会 TypeError 把整个脚本跑挂（而真浏览器里它永远有）→ 门禁红在我们自己身上。
+    querySelector() { return null; },
     querySelectorAll() { return []; },
   };
   Object.defineProperty(el, "className", {
