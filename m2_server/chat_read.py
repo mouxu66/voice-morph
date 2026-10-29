@@ -552,6 +552,22 @@ def _locate_lists():
         if found.get(LIST_CHAT) is not None:
             return found[LIST_CHAT], found.get(LIST_SESSIONS), ""
 
+        # ① 面积最大的窗可能**根本不是主窗**：微信的更新提示 / 图片预览 / 聊天信息
+        #    是同进程、同类名、标题都叫「微信」的弹窗，主窗一最小化就轮到它。
+        #    这时树上只有一个弹窗按钮、0 个列表（2026-10-29 实测 19 个控件 0 个列表）。
+        #    根类名不是 MainWindow 就去拿真正的主窗再走一遍 —— 空壳树不走这条路
+        #    （gate 关掉时根类名仍是 MainWindow），所以和下面的强制重开互不干扰。
+        if attempt == 0 and getattr(root, "ClassName", "") != wechat_uia.CLASS_MAIN:
+            alt = wechat_uia.main_window()
+            if alt is not None:
+                try:
+                    found, seen = _walk_lists(alt)
+                    walk_err = ""
+                except Exception as exc:  # noqa: BLE001 —— 同上，COM 抖动降级
+                    found, walk_err = {}, f"遍历微信控件失败：{exc}"
+                if found.get(LIST_CHAT) is not None:
+                    return found[LIST_CHAT], found.get(LIST_SESSIONS), ""
+
     # 走到这里 = 每一遍都没找到「消息」。留一行 warning 进 backend.log：
     # INFO 级日志不会落盘（没装 handler），这条必须能看见，下次复现才有证据。
     logger.warning(

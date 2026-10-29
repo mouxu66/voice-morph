@@ -321,6 +321,7 @@ def test_collect_missing_message_list_points_at_chat_view(monkeypatch):
     class _Root:
         Name = "root"
         ControlTypeName = "WindowControl"
+        ClassName = "mmui::MainWindow"
 
         def GetChildren(self):
             return [_List("会话")]      # 只有会话列表，没有「消息」
@@ -355,10 +356,15 @@ def test_collect_activates_uia_gate_before_reading(monkeypatch):
 
 
 class _RootEmpty:
-    """空壳树：只有窗口按钮，一个 ListControl 都没有（gate 关回去时的真实形态）。"""
+    """空壳树：只有窗口按钮，一个 ListControl 都没有（gate 关回去时的真实形态）。
+
+    **根类名仍是 `mmui::MainWindow`** —— gate 关掉时 Qt 只是不物化子控件，
+    根控件本身还在，所以这条路径不该被当成「挑错了窗口」。
+    """
 
     Name = "root"
     ControlTypeName = "WindowControl"
+    ClassName = "mmui::MainWindow"
 
     class _Btn:
         Name = "最小化"
@@ -396,6 +402,37 @@ def test_collect_retries_with_forced_activation_when_tree_is_empty(monkeypatch):
     assert calls == [False, True]      # 第一遍普通激活，第二遍强制重开
 
 
+def test_collect_falls_back_to_real_main_window_when_area_pick_is_a_dialog(monkeypatch):
+    """面积最大的窗是「新版本」弹窗时，要换真正的主窗读，别直接报找不到列表。
+
+    2026-10-29 实测：主窗最小化后，微信更新提示窗（847×686，同进程同类名同标题）
+    成了面积最大的那个 → 树上 19 个控件、0 个列表 → 用户看到「找不到消息列表」。
+    """
+    import wechat_uia
+
+    class _Dialog:
+        Name = "微信"
+        ControlTypeName = "WindowControl"
+        ClassName = "Qt51514QWindowIcon"      # 还没物化的弹窗就是这类名
+
+        class _Btn:
+            Name = "更新"
+            ControlTypeName = "ButtonControl"
+
+            def GetChildren(self):
+                return []
+
+        def GetChildren(self):
+            return [self._Btn()]
+
+    monkeypatch.setattr(wechat_uia, "_wechat_hwnd_pid", lambda: (123, 456))
+    monkeypatch.setattr(wechat_uia, "ensure_active", lambda force=False: True)
+    monkeypatch.setattr(chat_read.wechat_uia, "_root", lambda: _Dialog())
+    monkeypatch.setattr(wechat_uia, "main_window", lambda: _RootWithChat())
+    err = chat_read.collect()[3]
+    assert err == ""
+
+
 def test_collect_empty_tree_does_not_blame_the_chat_window(monkeypatch):
     """两遍都是空壳 → 说「控件树读不到」，别再说「请先打开一个聊天」（它明明开着）。"""
     import wechat_uia
@@ -425,6 +462,7 @@ class _RootWithChat:
 
     Name = "root"
     ControlTypeName = "WindowControl"
+    ClassName = "mmui::MainWindow"
 
     class _List:
         def __init__(self, name):

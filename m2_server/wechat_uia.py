@@ -444,6 +444,48 @@ def reset_state() -> None:
 # ---------------------------------------------------------------- UIA 查询
 
 
+def main_window():
+    """**真正的主窗口**控件（根类名 = `mmui::MainWindow`），找不到返回 None。
+
+    为什么不直接用 `_wechat_hwnd_pid()`：它按**窗口面积**挑最大那个，而微信会为
+    更新提示 / 图片预览 / 聊天信息开同样进程、同样类名（`Qt51514QWindowIcon`）、
+    标题都叫「微信」的弹窗。主窗一最小化，弹窗就成了"最大可见窗"，于是整棵树
+    只有一个弹窗按钮、**没有任何列表**，读会话全报「找不到消息列表」
+    （2026-10-29 实测：更新提示窗 847×686 被当成主窗，19 个控件 0 个列表）。
+
+    只在读链路「按面积挑的那个窗读不出列表」时才调这里，一次通常只多几次
+    `ControlFromHandle`（候选窗一般 1~2 个），不在发送链路的关键路径上。
+    """
+    if not UIA_ENABLED:
+        return None
+    try:
+        import wechat_proc
+
+        cands = wechat_proc.enum_wechat_windows()
+    except Exception:
+        return None
+    if not cands:
+        return None
+    try:
+        import uiautomation as auto
+
+        auto.InitializeUIAutomationInCurrentThread()
+        auto.SetGlobalSearchTimeout(min(SEARCH_TIMEOUT, 1.0))
+    except Exception:
+        return None
+    for w in cands:
+        try:
+            ctrl = auto.ControlFromHandle(w["hwnd"])
+        except Exception:
+            continue
+        try:
+            if ctrl is not None and (ctrl.ClassName or "") == CLASS_MAIN:
+                return ctrl
+        except Exception:
+            continue
+    return None
+
+
 def _root():
     """当前线程的微信 UIA 根控件（每线程缓存一个 COM 对象）。"""
     if not UIA_ENABLED:
