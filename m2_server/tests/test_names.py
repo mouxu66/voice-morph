@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -242,3 +243,39 @@ def test_refresh_bad_json_does_not_raise(monkeypatch):
     got, why = nz.refresh([band("巴黎罗")])
     assert got == 0
     assert why
+
+
+# ---------------------------------------------------------------- 落盘
+
+
+def test_names_come_back_after_restart(monkeypatch, tmp_path):
+    """认过的名字要能跨进程活下来 —— 否则每次开应用都重付 2.7s + 6G 显存。"""
+    db = tmp_path / "chat_names.json"
+    monkeypatch.setenv("VM_CHAT_NAMES_DB", str(db))
+    _patch(monkeypatch, _FakeRA('{"items":[{"n":1,"name":"巴黎罗"}]}'))
+    assert nz.refresh([band("巴黎罗")])[0] == 1
+    assert db.exists()
+    nz.reset()  # 模拟后端重启：内存清空，下次识别从盘上读回
+    assert nz.names([band("巴黎罗")]) == ["巴黎罗"]
+
+
+def test_store_corrupt_file_is_ignored(monkeypatch, tmp_path):
+    """坏文件当没有历史：绝不抛，也绝不拿半份数据去认人。"""
+    db = tmp_path / "chat_names.json"
+    monkeypatch.setenv("VM_CHAT_NAMES_DB", str(db))
+    db.write_text("{不是 JSON", encoding="utf-8")
+    nz.reset()
+    assert nz.names([band("巴黎罗")]) == [""]
+
+
+def test_store_is_dropped_when_band_height_changes(monkeypatch, tmp_path):
+    """DPI / 微信字号换了，旧指纹就不再可信 —— 宁可重认，也不能张冠李戴。"""
+    db = tmp_path / "chat_names.json"
+    monkeypatch.setenv("VM_CHAT_NAMES_DB", str(db))
+    _patch(monkeypatch, _FakeRA('{"items":[{"n":1,"name":"巴黎罗"}]}'))
+    assert nz.refresh([band("巴黎罗")])[0] == 1
+    doc = json.loads(db.read_text(encoding="utf-8"))
+    doc["h"] = 62  # 条带高度从 35 变到 62（约 125% → 200%）
+    db.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    nz.reset()
+    assert nz.names([band("巴黎罗")]) == [""]

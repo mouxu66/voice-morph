@@ -194,6 +194,12 @@ cd web && npm run ship         # 构建 → 同步进安装目录 → 逐字节�
     这就是「几个人在说话」的答案，不花一毫秒显存
   - 入口：`POST /api/radar/names`（`radar_api.py`，串行锁 + timeout 夹到 5~180s）
     + 面板右上角「认人」按钮；认完按 `speaker` id **贴回屏上那几行**，不重读 UIA
+  - ✅ 2026-10-29 **认人结果落盘** `outputs/chat_names.json`（`VM_CHAT_NAMES_DB` 可覆盖）：
+    只存「指纹 + 名字」的组合，所以后端重启（= 每次开应用）后同一个人**直接显示真名**，
+    不用再付 2.7s + 6G。安全阀：条带像素高度（≈渲染指纹）与存档偏差 >20% 就**整份不用**
+    （微信字号 / DPI 换过 → 宁可重认，也不能把 A 的名字安到 B 头上）；坏文件静默忽略。
+    测试：`test_names.py::test_names_come_back_after_restart` / `test_store_corrupt_file_is_ignored`
+    / `test_store_is_dropped_when_band_height_changes`
 
 **判断层（要不要回 / 怎么回）**
 

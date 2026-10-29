@@ -44,6 +44,8 @@ from __future__ import annotations
 
 import base64
 import io
+import json
+import os
 import threading
 
 import numpy as np
@@ -98,6 +100,18 @@ _SIG: dict[int, np.ndarray] = {}
 _NAMES: dict[int, str] = {}
 _NEXT = [1]
 _MAX_SPEAKERS = 512
+
+#: 落盘：`outputs/chat_names.json`（`VM_CHAT_NAMES_DB` 可覆盖）。
+#: **只存认过名字的人** —— 没名字的指纹存下来也没用，还会把「宁拆不并」的余量占掉。
+#: 不落盘的代价是每次开应用（后端重启）都要重付 2.7s + 6G 显存认一遍同一批人。
+_STORE_VERSION = 1
+#: 昵称条约高（像素）就是渲染指纹：DPI / 微信字号一改，旧指纹就匹配不上。
+#: 偏差超过这个比例就整份不认（宁可重认，也不能把 A 的名字安到 B 头上）。
+_H_TOL = 0.20
+#: 读盘是懒的：第一次识别前读一次，之后只走内存。
+_LOADED = [False]
+#: 最近一次识别看到的条带高度（取最大，最贴近完整条带）。
+_H = [0.0]
 
 _OCR = None
 
@@ -198,6 +212,7 @@ def identify(bands: list[np.ndarray]) -> list[tuple[int, str]]:
     """
     out: list[tuple[int, str]] = []
     with _LOCK:
+        _load_if_needed(bands)
         for band in bands:
             out.append(_identify_one(band))
     return out
@@ -224,7 +239,9 @@ def set_name(sid: int, name: str) -> None:
     if not sid or not clean:
         return
     with _LOCK:
+        _ensure_loaded()
         _NAMES[sid] = clean
+        _save_locked()
 
 
 # ---------------------------------------------------------------- 读名字
@@ -352,6 +369,8 @@ def refresh(bands: list[np.ndarray], *, timeout: float = 90.0) -> tuple[int, str
             if not _NAMES.get(sid):
                 _NAMES[sid] = name
                 got += 1
+        if got:
+            _save_locked()
     return got, ""
 
 
@@ -405,19 +424,136 @@ def recognize(band: np.ndarray) -> str:
     return ""
 
 
+# ---------------------------------------------------------------- 落盘
+
+
+def _store_path():
+    """身份库文件位置。`VM_CHAT_NAMES_DB` 可覆盖（测试/多实例用）。
+
+    `config` 在函数里 import、每次现算：测试会把 `cfg.OUTPUTS_DIR` 指到 tmp，
+    模块级缓存路径就会绕过隔离、写进用户真实的 outputs。
+    """
+    from pathlib import Path
+
+    env = (os.environ.get("VM_CHAT_NAMES_DB") or "").strip()
+    if env:
+        return Path(env)
+    import config as cfg
+
+    return Path(cfg.OUTPUTS_DIR) / "chat_names.json"
+
+
+def _load_if_needed(bands: list[np.ndarray]) -> None:
+    """第一次识别前读回盘上的身份；顺手记下这批条带的高度（渲染指纹）。"""
+    if bands:
+        hs = [int(b.shape[0]) for b in bands if b is not None and getattr(b, "size", 0)]
+        if hs:
+            _H[0] = float(max(hs))
+    _ensure_loaded(_H[0])
+
+
+def _ensure_loaded(h: float = 0.0) -> None:
+    """读盘恢复 `id → 指纹 + 名字`。坏文件 / 缩放换过都当没有 —— **绝不抛**。
+
+    没有指纹就没有归属，名字单独存下来是无用的；所以恢复的是「两个人的组合」，
+    宁可一条都不恢复，也不能把 A 的名字安到 B 头上（见 `MATCH_IOU` 那段）。
+    """
+    if _LOADED[0]:
+        return
+    _LOADED[0] = True
+    try:
+        doc = json.loads(_store_path().read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 —— 文件不存在/坏掉都走「没有历史」
+        return
+    if not isinstance(doc, dict) or int(doc.get("version") or 0) != _STORE_VERSION:
+        return
+    try:
+        saved_h = float(doc.get("h") or 0)
+    except (TypeError, ValueError):
+        saved_h = 0.0
+    if h and saved_h and abs(h - saved_h) / saved_h > _H_TOL:
+        return  # 微信字号/缩放换过：旧指纹不再可信，等下一次认人重建
+    people = doc.get("people")
+    if not isinstance(people, list):
+        return
+    max_id = 0
+    with _LOCK:
+        for p in people:
+            if not isinstance(p, dict):
+                continue
+            try:
+                sid = int(p.get("id"))
+                bits = np.unpackbits(
+                    np.frombuffer(base64.b64decode(str(p.get("sig") or "")), dtype=np.uint8)
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            if sid <= 0 or len(bits) < NORM_H * NORM_W or sid in _SIG:
+                continue
+            nm = _clean(str(p.get("name") or ""))
+            if not nm:
+                continue
+            _SIG[sid] = bits[: NORM_H * NORM_W].reshape(NORM_H, NORM_W).astype(bool)
+            _NAMES[sid] = nm
+            max_id = max(max_id, sid)
+        try:
+            saved_next = int(doc.get("next") or 0)
+        except (TypeError, ValueError):
+            saved_next = 0
+        _NEXT[0] = max(_NEXT[0], max_id + 1, saved_next)
+        if saved_h:
+            _H[0] = saved_h
+
+
+def _save_locked() -> None:
+    """`id → 指纹/名字` 写回盘（临时文件 + 原子替换）。失败静默：名字是锦上添花。"""
+    try:
+        people = []
+        for sid, nm in _NAMES.items():
+            sig = _SIG.get(sid)
+            # 注意 `if not sig`：ndarray 的多元素真值判断会 ValueError，必须查 size
+            if not nm or sig is None or not sig.size:
+                continue
+            people.append(
+                {
+                    "id": int(sid),
+                    "name": nm,
+                    "sig": base64.b64encode(np.packbits(sig.astype(np.uint8)).tobytes()).decode("ascii"),
+                }
+            )
+        if not people:
+            return
+        path = _store_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        doc = {
+            "version": _STORE_VERSION,
+            "h": round(float(_H[0]), 1),
+            "next": int(_NEXT[0]),
+            "people": people,
+        }
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 —— 落盘失败不该影响本次识别
+        return
+
+
 # ---------------------------------------------------------------- 维护
 
 
 def _reset_locked() -> None:
+    """清空内存身份。**不碰盘** —— 512 个满仓时是被动重置，读回盘就等于没重置。"""
     _SIG.clear()
     _NAMES.clear()
     _NEXT[0] = 1
 
 
 def reset() -> None:
-    """清空全部身份（测试与微信重启后用）。"""
+    """清空全部身份并允许重新读盘（测试与微信重启后用）。"""
     with _LOCK:
         _reset_locked()
+        _LOADED[0] = False
+        _H[0] = 0.0
 
 
 def snapshot() -> dict[int, str]:
