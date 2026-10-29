@@ -354,6 +354,60 @@ def test_collect_activates_uia_gate_before_reading(monkeypatch):
     assert calls == [False]          # 只激活一次，不 force（force 是发送链路的重试用）
 
 
+class _RootEmpty:
+    """空壳树：只有窗口按钮，一个 ListControl 都没有（gate 关回去时的真实形态）。"""
+
+    Name = "root"
+    ControlTypeName = "WindowControl"
+
+    class _Btn:
+        Name = "最小化"
+        ControlTypeName = "ButtonControl"
+
+        def GetChildren(self):
+            return []
+
+    def GetChildren(self):
+        return [self._Btn()]
+
+
+def test_collect_retries_with_forced_activation_when_tree_is_empty(monkeypatch):
+    """空壳树要把 gate **强开一次再走**，别把「找不到消息列表」直接甩给用户。
+
+    2026-10-29 复现：Qt 把 accessibility gate byte 关回 0 之后，进程内 `ready`
+    仍是缓存的 True —— 同一个进程照样读成空树、报「找不到消息列表」；
+    `ensure_active(force=True)` 把 1 写回去，同一份代码立刻恢复。用户看到的是
+    「时灵时不灵，过一会儿自己又好了」（其实是别的进程顺手把它写回去的）。
+    """
+    import wechat_uia
+
+    calls: list[bool] = []
+
+    def _act(force=False):
+        calls.append(force)
+        return True
+
+    roots = [_RootEmpty(), _RootWithChat()]
+    monkeypatch.setattr(wechat_uia, "_wechat_hwnd_pid", lambda: (123, 456))
+    monkeypatch.setattr(wechat_uia, "ensure_active", _act)
+    monkeypatch.setattr(chat_read.wechat_uia, "_root", lambda: roots.pop(0))
+    err = chat_read.collect()[3]
+    assert err == ""
+    assert calls == [False, True]      # 第一遍普通激活，第二遍强制重开
+
+
+def test_collect_empty_tree_does_not_blame_the_chat_window(monkeypatch):
+    """两遍都是空壳 → 说「控件树读不到」，别再说「请先打开一个聊天」（它明明开着）。"""
+    import wechat_uia
+
+    monkeypatch.setattr(wechat_uia, "_wechat_hwnd_pid", lambda: (123, 456))
+    monkeypatch.setattr(wechat_uia, "ensure_active", lambda force=False: True)
+    monkeypatch.setattr(chat_read.wechat_uia, "_root", lambda: _RootEmpty())
+    err = chat_read.collect()[3]
+    assert "控件树" in err
+    assert "通讯录" not in err
+
+
 def test_collect_surfaces_gate_failure_reason(monkeypatch):
     """gate 打不开时要说清「为什么」，别再落到「找不到消息列表」那句误导文案上。"""
     import wechat_uia

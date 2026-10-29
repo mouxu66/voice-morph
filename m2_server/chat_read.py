@@ -24,14 +24,22 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 
 import wechat_uia
+
+logger = logging.getLogger(__name__)
 
 #: 微信的 UIA 树在窗口控件的第 16 层才出现消息列表（2026-10-23 实测 4.1.13.12），
 #: 给到 30 层留余量；节点数封顶防止异常树把接口拖死。
 MAX_DEPTH = 30
 MAX_NODES = 6000
+
+#: 找不到列表时再走一遍的次数（第 2 次会**强制重开 UIA gate**，见 `_locate_lists`）。
+_WALK_ATTEMPTS = 2
+_WALK_RETRY_DELAY_S = 0.15
 
 #: 聊天区那份列表叫「消息」，左侧会话列表叫「会话」——同名会取错。
 LIST_CHAT = "消息"
@@ -464,35 +472,13 @@ def _window_error() -> str:
     return "读不到微信控件树（窗口在，但 UIA 没物化）：把微信切到前台、点开一个聊天再点「重新分析」"
 
 
-def _locate_lists():
-    """共用前置：窗口分因 → UIA 热激活 → 遍历找到「消息 / 会话」两个列表。
+def _walk_lists(root) -> tuple[dict[str, object], int]:
+    """遍历整棵树，取「消息 / 会话」两份 ListControl。返回 `(found, seen)`。
 
-    返回 `(消息列表 ctrl, 会话列表 ctrl, 错误)`。错误非空时两个 ctrl 都是 None。
+    单个节点的 COM 异常只当那一条分支断了（Qt 的 provider 在重绘/重排期间会短暂
+    抛 `E_ELEMENTNOTAVAILABLE`，整棵树读出来像「什么都没打开」），不往外抛 ——
+    由调用方按「没找到」再走一遍。
     """
-    # ① 窗口层：没窗口（微信收进托盘 / 还在登录页）就分因报错，别去碰内存。
-    hwnd, _pid = wechat_uia._wechat_hwnd_pid()
-    if not hwnd:
-        return None, None, _window_error()
-
-    # ② gate 层：微信 4.x 冷启动时 Qt accessibility gate 的 active byte = 0，
-    #    此时 UIA 树是**空的**（遍历出来像「微信什么都没打开」）。发送链路会先
-    #    `ensure_active()`，而「分析聊天」不走那条路 —— 于是**微信每重启一次**，
-    #    第一次点按钮都只会看到「找不到消息列表」，直到用户碰巧发过一条语音才变好
-    #    （犯错档案-微信 §5.1、犯错指南速查表第 15 条）。这里补上同一次热激活：
-    #    只写 1 字节进微信内存 + 等 0.5s（已激活时按 PID 直接命中缓存，零开销），
-    #    不点击、不抢焦点、不改微信任何状态。
-    if not wechat_uia.ensure_active():
-        why = wechat_uia.activation_reason()
-        return None, None, (
-            f"读不到微信控件（{why}）：把微信窗口切到前台再点「重新分析」"
-            if why
-            else "读不到微信控件：把微信窗口切到前台再点「重新分析」"
-        )
-
-    root = wechat_uia._root()
-    if root is None:
-        return None, None, _window_error()
-
     found: dict[str, object] = {}
     seen = 0
 
@@ -513,19 +499,76 @@ def _locate_lists():
         for c in children:
             walk(c, depth + 1)
 
-    try:
-        walk(root, 0)
-    except Exception as exc:  # noqa: BLE001 —— COM 抖动是已知现象，降级不抛
-        return None, None, f"遍历微信控件失败：{exc}"
+    walk(root, 0)
+    return found, seen
 
-    chat = found.get(LIST_CHAT)
-    if chat is None:
-        # 旧文案说「微信可能最小化了」—— 实测最小化（iconic）的窗口照样有这棵 UIA 树，
-        # 真正缺「消息」列表的是「窗口在、但没停在聊天界面」（通讯录/设置/搜索页），
-        # 或者当前会话是「文件传输助手」这类没有消息区的空会话。说错原因会让人去
-        # 反复最小化/还原窗口，怎么试都没用。
-        return None, None, "找不到「消息」列表：请先在微信里打开一个聊天（窗口这会儿可能停在通讯录/设置页）"
-    return chat, found.get(LIST_SESSIONS), ""
+
+def _locate_lists():
+    """共用前置：窗口分因 → UIA 热激活 → 遍历找到「消息 / 会话」两个列表。
+
+    返回 `(消息列表 ctrl, 会话列表 ctrl, 错误)`。错误非空时两个 ctrl 都是 None。
+    """
+    # ① 窗口层：没窗口（微信收进托盘 / 还在登录页）就分因报错，别去碰内存。
+    hwnd, _pid = wechat_uia._wechat_hwnd_pid()
+    if not hwnd:
+        return None, None, _window_error()
+
+    # ② gate 层 + ③ 遍历层：微信 4.x 的 Qt accessibility gate 关着时，UIA 树就是个**空壳**
+    #    （遍历出来像「微信什么都没打开」）。冷启动时 active byte = 0；运行中 Qt 也会自己
+    #    把它关回 0（2026-10-29 实测），所以「开一次就永久有效」不成立：
+    #    第一遍正常走；没找到「消息」就 reset_state + ensure_active(force=True) 把 gate
+    #    重开一次再走一遍。全程只写 1 个字节进微信内存，不点击、不抢焦点、不改微信状态。
+    found: dict[str, object] = {}
+    seen = 0
+    walk_err = ""
+    for attempt in range(_WALK_ATTEMPTS):
+        if attempt:
+            # 第 2 次：先强制把 gate 重开，再重走一遍。
+            #
+            # 为什么必须 force：`ensure_active()` 的 ready 是**按微信 PID 缓存**的，
+            # Qt 自己把 accessibility gate byte 关回 0 之后，缓存照样说「就绪」，
+            # 于是树成了空壳、一直报「找不到消息列表」，直到**别的进程**把它写回 1
+            # —— 用户看到的就是「时灵时不灵，过一会儿自己又好了」
+            # （2026-10-29 复现：写 0 → 同进程立刻读成空树 → force 写回 1 → 立即恢复）。
+            # reset_state() 顺带丢掉本线程缓存的、那一棵已经作废的根控件。
+            wechat_uia.reset_state()
+            time.sleep(_WALK_RETRY_DELAY_S)
+        if not wechat_uia.ensure_active(force=bool(attempt)):
+            why = wechat_uia.activation_reason()
+            return None, None, (
+                f"读不到微信控件（{why}）：把微信窗口切到前台再点「重新分析」"
+                if why
+                else "读不到微信控件：把微信窗口切到前台再点「重新分析」"
+            )
+
+        root = wechat_uia._root()
+        if root is None:
+            return None, None, _window_error()
+        try:
+            found, seen = _walk_lists(root)
+            walk_err = ""
+        except Exception as exc:  # noqa: BLE001 —— COM 抖动是已知现象，降级不抛
+            found, walk_err = {}, f"遍历微信控件失败：{exc}"
+        if found.get(LIST_CHAT) is not None:
+            return found[LIST_CHAT], found.get(LIST_SESSIONS), ""
+
+    # 走到这里 = 每一遍都没找到「消息」。留一行 warning 进 backend.log：
+    # INFO 级日志不会落盘（没装 handler），这条必须能看见，下次复现才有证据。
+    logger.warning(
+        "[chat_read] %d 次遍历都没有「消息」列表：节点 %d 个，列表 %s",
+        _WALK_ATTEMPTS, seen, sorted(found) or ["无"],
+    )
+    if walk_err and not found:
+        return None, None, walk_err
+    if not found:
+        # 空壳树：gate 被关回去、重开也没救回来。别让用户去「打开一个聊天」——
+        # 微信明明开着（2026-10-29 报障就是照着这句去反复点聊天窗口的）。
+        return None, None, (
+            f"读不到微信的控件树（窗口在，遍历到 {seen} 个控件却一个列表都没有，"
+            "已强制重新激活一次）：把微信切到前台再点「重新分析」"
+        )
+    # 树是好的，只是没停在聊天界面（通讯录 / 设置 / 搜索页，或空的文件传输助手）。
+    return None, None, "找不到「消息」列表：请先在微信里打开一个聊天（窗口这会儿可能停在通讯录/设置页）"
 
 
 def collect() -> tuple[list[str], list[str], str, str]:
