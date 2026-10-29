@@ -34,6 +34,10 @@ def test_message_kind_covers_real_uia_names():
     assert chat_read.message_kind("昨天 23:32") == "time"
     assert chat_read.message_kind("7/30") == "time"
     assert chat_read.message_kind('语音4"秒') == "voice"
+    # 4.2.0.11 实测：没播过的语音带后缀（`语音3"秒未播放`），旧正则把这类当成文字
+    assert chat_read.message_kind('语音3"秒未播放') == "voice"
+    assert chat_read.message_kind('语音12"秒已播放') == "voice"
+    assert chat_read.parse_messages(['语音3"秒未播放'])[0]['seconds'] == 3.0
     assert chat_read.message_kind("图片") == "media"
     assert chat_read.message_kind("[链接] 登录操作通知") == "media"
     assert chat_read.message_kind("对方撤回了一条消息") == "system"

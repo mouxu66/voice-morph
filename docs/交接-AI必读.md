@@ -874,7 +874,7 @@ python 走 `PYTHONPATH`，node 走 `NODE_OPTIONS=--require=…`。
 `_do_send` 也用 `cfg.OUTPUTS_DIR` 拼路径，直接调它时必须传绝对路径或相对 `outputs/` 的正确相对名，
 否则得到"找不到音频"的 500 而不是真实错误。
 
-### 9.7 速查表（220 条，按症状匹配）
+### 9.7 速查表（222 条，按症状匹配）
 
 > 表按撞见频率排，越靠前越常撞。`§N.M` 是完整复盘的位置。
 
@@ -1099,8 +1099,9 @@ python 走 `PYTHONPATH`，node 走 `NODE_OPTIONS=--require=…`。
 | 217 | 大面板里给某个块加了 `display:flex`（为了让它填满高度），结果这个块**在三个形态里全都显示** —— analysis / bigreply 底部莫名多出搜索框和「照这个写一条」 | 全局的 `#anaDigest[hidden] { display:none }` 特异度是 1 个 id + 1 个属性，而新加的 `#panel.big #anaDigest { display:flex }` 是 2 个 id → **压过了隐藏**；`[hidden]` 只是浏览器默认的 `display:none`，不是不可覆盖的 | 大模式的 display 规则一律挂 `:not([hidden])`（或补一条 `#panel.big #id[hidden] { display:none }`）。**凡是在可能带 `[hidden]` 的元素上写 display，当场把那个形态的图出一张**（本次就是靠三个形态同屏对比才看出来的）。`web/electron/pet/pet.html`（2026-10-27 ✅本机出图实测） |
 | 218 | 给 grid 容器里的卡片 / 骨架加了「吃掉剩余高度」，出图却是：每张大得像 95px、文字只占顶端，最后一张从容器底被切一半 | 容器在 flex 列里 `flex:1`，而 grid 行的 `align-content` 默认是 `stretch` → **每一行都被拉满容器**；内容总高一旦超过容器就溢出，视觉上就是「从中间截一刀」 | 两条路二选一：①卡片应该自己多高就多高 → `align-content: start`，余下的空由 `margin-top:auto` 的按钮吃掉；②本来就要等分（骨架三条）→ 容器改 `display:flex; flex-direction:column` + 子项 `flex:1 1 0`。**出图里「每块一样高、内容只贴顶」就是这条**。`web/electron/pet/pet.html` 的 `#anaDigestList` / `#anaReplies.skel`（2026-10-27 ✅本机出图实测） |
 | 219 | 「分析聊天 / 怎么回」时灵时不灵：面板说「找不到「消息」列表：请先在微信里打开一个聊天」，而聊天明明开着；重开聊天窗、切前台都没用，过几分钟又自己好了 | 微信 Qt 的 accessibility gate byte 被关回 0，而 `wechat_uia.ensure_active()` 的 ready 是**按 PID 缓存**的 → 缓存说就绪、树却是空壳（一个 ListControl 都没有）；读链路从不 force，于是**一直**卡着，直到别的进程把那个字节写回 1（这就是「自己好了」） | 读不到「消息」就 `reset_state()` + `ensure_active(force=True)` 重走一遍；两次都失败时按「树里有几份列表」分因（空壳 ≠ 停在通讯录），失败打 WARNING 带节点数。`m2_server/chat_read.py::_locate_lists`（2026-10-29 ✅本机实测：写 0 → 必现 → force 写 1 → 立即恢复） |
-| 220 | 想让它「多读几屏历史」，结果滚走的是用户正在看的浏览器 / 编辑器页面 | 滚轮事件送给的是**光标下**的窗口，不是前台窗口（`SendInput(WHEEL)` 同样）；另外消息列表是 `mmui::RecyclerListView` 虚拟列表，**没有 ScrollPattern**，只能发真实滚轮 | 滚之前 `WindowFromPoint(聊天区中心)` + `GetWindowThreadProcessId` 确认是微信 pid，不是就放弃；滚完 `SetCursorPos` 还原光标，再向下多滚一屏余量回到底部；边滚边收集、按「后缀==前缀」去重拼接（一次只物化 8~11 条）。`m2_server/chat_read.py::_scroll_chat / merge_history`（2026-10-29 ✅本机实测：Chrome 盖住微信时确实拒绝滚动；2 屏读完 tail 与滚前逐项一致） |
 | 220 | 「分析聊天」报「遍历到 19 个控件却一个列表都没有」，同时屏幕上微信是开着的 | 微信的更新提示/图片预览/聊天信息与主窗**同进程、同类名、同标题**；`find_wechat_hwnd()` 按面积挑，主窗一最小化弹窗就成了最大窗 → 读到的是弹窗的树 | 用 UIA 根类名 `mmui::MainWindow` 认主窗（`wechat_uia.main_window()`），「读不出列表 + 根类名不对」时换它再来一遍；发送链路不动（2026-10-29 ✅本机实测，截图存证 `outputs/.session/wxdump_*.png`） |
+| 221 | 想让它「多读几屏历史」，结果滚走的是用户正在看的浏览器 / 编辑器页面 | 滚轮事件送给的是**光标下**的窗口，不是前台窗口（`SendInput(WHEEL)` 同样）；另外消息列表是 `mmui::RecyclerListView` 虚拟列表，**没有 ScrollPattern**，只能发真实滚轮 | 滚之前 `WindowFromPoint(聊天区中心)` + `GetWindowThreadProcessId` 确认是微信 pid，不是就放弃；滚完 `SetCursorPos` 还原光标，再向下多滚一屏余量回到底部；边滚边收集、按「后缀==前缀」去重拼接（一次只物化 8~11 条）。`m2_server/chat_read.py::_scroll_chat / merge_history`（2026-10-29 ✅本机实测：Chrome 盖住微信时确实拒绝滚动；2 屏读完 tail 与滚前逐项一致） |
+| 222 | 探针跑完微信窗口不见了；用 `ShowWindow` 拉回来后 **UIA 树永远只剩 2 个节点**（gate byte=1、root=`mmui::MainWindow`，重写 0→1 / 改尺寸 / 点击 / 滚轮全救不回） | ① `SendInput` 的 Esc 发给**前台窗口**，微信主窗收到 Esc 会收进托盘（❓推断：当时脚本 finally 连发两次 Esc）；② 被**外部进程** show 回来的 Qt 窗口不重建 accessibility 树，只有微信自己的显示路径（点托盘图标）或重启才会（✅本机实测） | 探针只在菜单确实开着时才发 Esc，且优先给菜单窗 `PostMessage(WM_KEYDOWN, VK_ESCAPE)`；**别用 ShowWindow 去"救"一个被隐藏的微信**，它会变成空壳。真要恢复：退出微信重开（2026-10-29 ✅本机踩到，代价是当场读不了会话） |
 
 ### 9.8 改动前检查清单（Checklist）
 
