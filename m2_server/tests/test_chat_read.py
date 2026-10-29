@@ -169,6 +169,35 @@ def test_analyze_aggregates_group_by_speaker():
     assert not any("提问" in h for h in out["highlights"])
 
 
+def test_group_reply_signal_is_reassigned_to_the_asker():
+    """雷达只看左右：A 问、B 插一句也会算成「对方连发」—— 别催用户回 B 那句。"""
+    msgs = [
+        {"kind": "text", "text": "你几点到？", "side": "left", "speaker": 7, "name": "老王"},
+        {"kind": "text", "text": "收到啦", "side": "left", "speaker": 5, "name": "小美"},
+    ]
+    out = chat_read.analyze(
+        _snap(messages=msgs, sessions=[]),
+        {"action": "now", "label": "该回了", "reason": "对方连发 2 条"},
+    )
+    assert out["suggest"]["action"] == "wait"
+    assert "小美" in out["suggest"]["reason"]
+    assert "老王" in out["suggest"]["reason"]
+
+
+def test_group_at_me_beats_a_calm_verdict():
+    """群里有人 @ 你：哪怕雷达说「再等等」，也该提醒你回。"""
+    msgs = [
+        {"kind": "text", "text": "今晚谁开车", "side": "left", "speaker": 5, "name": "小美"},
+        {"kind": "text", "text": "@瑜清 你来吗", "side": "left", "speaker": 7, "name": "老王"},
+    ]
+    out = chat_read.analyze(
+        _snap(messages=msgs, sessions=[]),
+        {"action": "wait", "label": "再等等", "reason": "刚聊完"},
+    )
+    assert out["suggest"]["action"] == "reply"
+    assert out["suggest"]["label"] == "有人 @ 你"
+
+
 def test_analyze_does_not_aggregate_single_chat():
     """只有一个人说话（单聊）时不该出现「某某说了 N 条」这种废话。"""
     msgs = [

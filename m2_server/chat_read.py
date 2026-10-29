@@ -884,6 +884,11 @@ def analyze(snap: dict, verdict: dict | None = None) -> dict:
     people = _speaker_summary(bodies)
     group = len(people) >= 2
     last = texts[-1] if texts else None
+    last_body = bodies[-1] if bodies else None
+    last_q = next(
+        (m for m in reversed(texts) if m.get("side") != "right" and is_question(m["text"])),
+        None,
+    )
     if last and is_question(last["text"]) and not (group and _who_label(last)):
         # 群里「谁问的」会写进那个人自己的那一行（排最前），这里不再重复一句。
         highlights.append("最后一条像是提问：「" + last["text"][:24] + "」")
@@ -938,6 +943,23 @@ def analyze(snap: dict, verdict: dict | None = None) -> dict:
         }
     else:
         suggest = {"action": "none", "label": "暂时不用回", "reason": "没看到在等你的问题"}
+
+    # 群聊修正（2026-10-29）：雷达只看「左/右」，不看「谁」—— A 问、B 插一句
+    # 也会被算成「对方连发 2 条」，于是催你回一句根本不是问你的话。
+    # 这里只在证据明确时改口，并把理由写清楚（用户能一眼看出为什么没催）。
+    if group and last_body and last_body.get("side") != "right":
+        txt = str(last_body.get("text") or "")
+        if "@" in txt:
+            suggest = {"action": "reply", "label": "有人 @ 你", "reason": txt[:30]}
+        elif suggest["action"] == "reply" and last_q is not None:
+            q_sid = int(last_q.get("speaker") or 0)
+            sid_last = int(last_body.get("speaker") or 0)
+            if q_sid and sid_last and q_sid != sid_last and not is_question(txt):
+                suggest = {
+                    "action": "wait",
+                    "label": "这条不是问你",
+                    "reason": f"{_who_label(last_body)} 接了一句；问你的是 {_who_label(last_q)}",
+                }
 
     unread_total = sum(s["unread"] for s in unread)
     parts = []
