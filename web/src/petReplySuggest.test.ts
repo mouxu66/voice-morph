@@ -125,6 +125,8 @@ function loadReplyPanel(fetchImpl: (url: string) => Promise<FakeResponse>) {
     ${extractFn('renderReplies')}
     ${extractFn('suggestReplies')}
     ${extractFn('anaMsgRow')}
+    ${extractFn('anaMsgRows')}
+    ${extractFn('anaWho')}
     ${extractFn('renderAnalysis')}
     return {
       suggest: suggestReplies,
